@@ -13,6 +13,42 @@ const intent = (over: Partial<{ quantity: number; materializedQty: number; mater
   ...over,
 });
 
+describe('computeFillDelta — a non-positive price is never booked', () => {
+  // The vendor docs say filled_price "may be zero or null if the order has not
+  // been executed yet", so a broker that advances filled_quantity before
+  // filled_price lands reports a real quantity at price 0. Booking that is the
+  // worst thing this module can do: an entry at 0 gives the position infinite R
+  // and a meaningless cost basis; an exit at 0 books a total loss that never
+  // happened. Everything downstream is derived from those.
+  const intent = { quantity: 10, materializedQty: 0, materializedNotional: 0 };
+
+  it('refuses a fill reported at price 0', () => {
+    const out = computeFillDelta(intent, 10, 0);
+    expect(out.qty).toBe(0);
+    expect(out.warning).toMatch(/non-positive price/i);
+  });
+
+  it('refuses a negative price too', () => {
+    expect(computeFillDelta(intent, 10, -5).qty).toBe(0);
+  });
+
+  it('still refuses when the price only goes bad on a LATER instalment', () => {
+    // First instalment booked normally at 10.00, then the broker reports the
+    // running total at an average of 0 — which cannot be explained by the cost
+    // already recorded.
+    const partly = { quantity: 10, materializedQty: 5, materializedNotional: 50 };
+    const out = computeFillDelta(partly, 10, 0);
+    expect(out.qty).toBe(0);
+    expect(out.warning).toBeTruthy();
+  });
+
+  it('books normally at a good price — the guard must not be a blanket refusal', () => {
+    const out = computeFillDelta(intent, 10, 12.5);
+    expect(out).toMatchObject({ qty: 10, price: 12.5 });
+    expect(out.warning).toBeUndefined();
+  });
+});
+
 describe('computeFillDelta', () => {
   it('books the whole fill when nothing has been booked yet', () => {
     expect(computeFillDelta(intent(), 100, 5)).toMatchObject({ qty: 100, price: 5 });

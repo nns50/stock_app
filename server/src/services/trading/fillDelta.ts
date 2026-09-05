@@ -16,12 +16,25 @@ import { OrderIntentRecord } from '../../db/orders';
 // identical. Duplicating these guards is how they drift, and they are the whole
 // reason partial handling is safe, so they live here once.
 //
-// THE ASSUMPTION. The broker reports `filled_quantity` as a RUNNING TOTAL and
-// `filled_price` as the AVERAGE over all executions, so a new instalment is
-// recovered by subtraction. That reading has NOT been confirmed against a real
-// partial fill — see `npm run capture:broker`, whose --watch mode exists to
-// settle it. Every way it could be wrong is therefore checked below, and each
-// resolves toward booking LESS with a visible warning.
+// THE CONTRACT — confirmed against the vendor docs 2026-09-05
+// (reference/order-detail), which this comment previously recorded as an
+// unverified assumption:
+//
+//   total_quantity   "Total order quantity. Represents the total number of
+//                     units submitted for this order."
+//   filled_quantity  "Quantity that has been executed. Represents the number
+//                     of units that have been filled SO FAR."   -> running total
+//   filled_price     "AVERAGE transaction price of the filled quantity."
+//
+// and there is NO per-execution array anywhere in the response — the schema
+// aggregates to those two fields plus filled_time_at — so backing an instalment
+// out by subtraction is not merely one reading, it is the only one available.
+//
+// What is still unobserved is the BEHAVIOUR: no real partial fill has been
+// captured from this account (see `npm run capture:broker --watch`). A broker
+// departing from its own documented schema is exactly the sort of thing this
+// repo has been bitten by, so every guard below stays, and each still resolves
+// toward booking LESS with a visible warning.
 //
 // The asymmetry is deliberate: under-booking is recoverable (the shares surface
 // in the next broker positions sync, and the warning says why), while
@@ -111,6 +124,37 @@ export function computeFillDelta(
         .filter(Boolean)
         .join(' ');
     }
+  }
+
+  // A fill at a NON-POSITIVE price is never real, and booking one is the worst
+  // outcome this module can produce: an entry at 0 gives a position infinite R
+  // and a meaningless cost basis, an exit at 0 books a total loss that did not
+  // happen, and every risk figure downstream is derived from those.
+  //
+  // Reachable per the vendor docs, which say filled_price "may be zero or null
+  // if the order has not been executed yet" — so a broker that advances
+  // filled_quantity before filled_price lands reports exactly this. The callers
+  // cannot be relied on to catch it either: liveExecute's own fallback is
+  // `broker.filledPrice ?? intent.limitPrice`, and `??` does not fire on 0, so
+  // a literal zero passes straight through. Same shape as the empty-string
+  // buying_power that read as $0 in the balance mapping.
+  //
+  // Refused rather than substituted, in keeping with the rest of this file: a
+  // price we cannot stand behind is not improved by guessing one, and
+  // under-booking is recoverable — the shares surface in the next positions
+  // sync, with this warning saying why.
+  if (!(price > 0)) {
+    return {
+      qty: 0,
+      price,
+      warning: [
+        warning,
+        `broker reported ${delta} filled at a non-positive price (${price}) — nothing booked, ` +
+          `since booking at zero would invent a cost basis. Check this order against your broker.`,
+      ]
+        .filter(Boolean)
+        .join(' '),
+    };
   }
 
   return { qty: delta, price, warning };

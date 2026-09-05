@@ -244,6 +244,41 @@ export async function maybeAutoTune(now: number = Date.now()): Promise<AutoTuneR
     const current = config.riskPerTradePct;
     const delta = Math.max(-config.autoTuneMaxStepPct, Math.min(config.autoTuneMaxStepPct, target - current));
     const next = round2(Math.max(0, current + delta));
+    // Raising risk quietly reduces how many positions can be open at once, and
+    // NOTHING said so. riskPerTradePct and maxAggregateOpenRiskPct are two
+    // expressions of one budget — targetTune.ts derives the second as
+    // `risk x maxConcurrentPositions` — and auto-tune moves only the first.
+    //
+    // The defaults sit at exactly 1% x 2 = 2%, i.e. zero slack, so ANY increase
+    // makes the last slot unopenable. Production has drifted the other way:
+    // aggregate 4.28% is 3 x 1.4267 while risk has been auto-tuned down to
+    // 1.25%, so one 0.5pp step to 1.75% would need 5.25% and silently cut
+    // effective concurrency from 3 to 2.
+    //
+    // Deliberately NOT clamped and NOT auto-widened. Clamping would stop
+    // auto-tune raising risk at all under the shipped defaults; widening the
+    // aggregate cap raises total portfolio risk, which is the operator's call,
+    // not a tuner's. Trading three 1.25% positions and two 1.75% ones are both
+    // defensible shapes — what is not defensible is switching between them
+    // without saying so. So this journals, and the risk change still applies.
+    const slotsThatFit = Math.floor(config.maxAggregateOpenRiskPct / next);
+    if (next > current && Number.isFinite(slotsThatFit) && slotsThatFit < config.maxConcurrentPositions) {
+      logAutotradeEvent({
+        stage: 'config',
+        action: 'auto_tune_concurrency_reduced',
+        detail: {
+          from: current,
+          to: next,
+          maxConcurrentPositions: config.maxConcurrentPositions,
+          maxAggregateOpenRiskPct: config.maxAggregateOpenRiskPct,
+          fullSizePositionsThatNowFit: slotsThatFit,
+          reason:
+            `at ${next}% per trade only ${slotsThatFit} full-size position(s) fit the ` +
+            `${config.maxAggregateOpenRiskPct}% aggregate open-risk cap, below the configured ` +
+            `${config.maxConcurrentPositions} — raise maxAggregateOpenRiskPct to keep every slot usable`,
+        },
+      });
+    }
     if (Math.abs(next - current) > 1e-9) {
       // Walk-forward guard (2026-07-24): before RAISING risk, require the edge to
       // still hold out-of-sample — the in-sample edge the Kelly number is fit to

@@ -233,6 +233,21 @@ liquid territory; it binds only on thin names or oversized budgets, and silently
 when a name's volume can't be resolved rather than blocking the trade. Options are exempt
 (they already screen on open-interest and volume floors).
 
+**Risk-per-trade and the aggregate cap are one budget, not two.** The "tune from target"
+generator derives `maxAggregateOpenRiskPct` as `riskPerTradePct x maxConcurrentPositions`,
+and the shipped defaults sit exactly on it (1% x 2 = 2%) — zero slack. So **raising
+risk-per-trade without raising the aggregate cap quietly costs you a position slot**: at
+3 slots and a 4.28% cap, going from 1.25% to 1.75% per trade needs 5.25% and the third
+position can never open. It shows up only as `max_aggregate_open_risk` refusals, which
+look like a busy book rather than a config that no longer fits itself.
+
+Auto-tune moves risk-per-trade on its own, so it now journals
+`auto_tune_concurrency_reduced` whenever its increase drops the number of full-size
+positions that fit below what you configured. It does **not** clamp the increase (that
+would stop auto-tune working at all on the defaults) and does **not** widen the cap for
+you (that raises total portfolio risk, which is your call). Two 1.75% positions and three
+1.25% ones are both defensible shapes — the point is to choose, not to drift.
+
 **Let the edge you've measured set the size.** The by-grade Edge Report answers whether your
 A-grade setups actually out-earn your C-grade ones — and the Monitoring card's **method
 performance** table answers the same question per instrument: whether long stock, short

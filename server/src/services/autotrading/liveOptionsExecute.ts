@@ -1869,7 +1869,15 @@ function materializeLiveOptionsFill(
   broker: Awaited<ReturnType<typeof webullOrderStatus>>,
   observedQty = broker.filledQty ?? intent.quantity,
 ): LiveOptionsReconcileOutcome {
-  const observedPrice = broker.filledPrice ?? intent.limitPrice ?? 0;
+  // `??` does not fire on 0, and the vendor docs say filled_price "may be zero
+  // or null" before execution completes — so a literal 0 used to reach the
+  // booking core as a real price. Treat a zero exactly like a null and fall
+  // back to the limit price; computeFillDelta refuses outright if that is
+  // unusable too. Same fix as the equity path, kept identical on purpose.
+  const observedPrice =
+    broker.filledPrice !== undefined && broker.filledPrice !== null && broker.filledPrice > 0
+      ? broker.filledPrice
+      : (intent.limitPrice ?? 0);
   // Book only the contracts not already recorded, under the same shared guards
   // the equity and human paths use (trading/fillDelta.ts) — every ambiguous
   // case there resolves toward recording LESS, never toward inflating a
