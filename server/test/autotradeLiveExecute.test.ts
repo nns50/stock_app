@@ -74,6 +74,7 @@ import {
   checkLiveEquityStopAdjusts,
   checkLiveEquityTimeExits,
 } from '../src/services/autotrading/liveExecute';
+import { resetUnplaceableSymbols } from '../src/services/autotrading/unplaceableSymbols';
 import { runWebullPositionsSync } from '../src/providers/webull/positions';
 import { priceMap } from '../src/services/quotes';
 
@@ -192,6 +193,8 @@ const origWebull = { ...config.webull };
 
 beforeAll(() => initDb());
 beforeEach(() => {
+  // Module-level state: a symbol learned in one test must not leak into the next.
+  resetUnplaceableSymbols();
   db.exec(
     'DELETE FROM autotrade_config; DELETE FROM trading_config; DELETE FROM autotrade_events; ' +
       'DELETE FROM autotrade_live_orders; DELETE FROM autotrade_live_options_orders; ' +
@@ -910,6 +913,70 @@ describe('runLiveExecution — sizing to every dollar bound the guardrail applie
     expect(placed[1].quantity).toBeLessThan(placed[0].quantity);
     const total = placed.reduce((sum, i) => sum + i.quantity * i.limitPrice, 0);
     expect(total).toBeLessThanOrEqual(15_000);
+  });
+});
+
+// Webull's market-data side and its trading side disagree about which symbols
+// exist. BF.B and BRK.B quote fine — verified live, BRK.B at 506.03 with a full
+// book — so they screen, score, pass every filter and reach placement, where
+// the order API refuses them:
+//   "Parameter error, invalid market,symbol,instrument_type, value: US,BF.B,EQUITY"
+// Both are in the 528-name universe, and this happened 18 times in July. Each
+// attempt costs a full pipeline plus a round-trip AND creates an order intent,
+// so it also spends one of the day's maxOrdersPerDay allowance on a trade that
+// could never happen.
+describe('runLiveExecution — symbols the broker cannot parse', () => {
+  const cfgFields = {
+    accountEquityUsd: 100_000,
+    riskProfile: 'MODERATE' as const,
+    liveAccountId: 'ACC1',
+    liveTradingEnabled: true,
+    liveEnabledAt: Date.now(),
+    liveMaxOrderUsd: 50_000,
+    liveMaxExposurePct: 1_000,
+    liveMaxDailyLossUsd: 5_000,
+    liveMaxOrdersPerDay: 20,
+    killSwitch: false,
+  };
+  const PARSE_ERROR = 'Parameter error, invalid market,symbol,instrument_type, value: US,BF.B,EQUITY';
+
+  it('learns from the rejection and skips the symbol without touching the broker again', async () => {
+    setAutotradeConfig(cfgFields);
+    mockGetProvider.mockReturnValue(quoteReturning({ 'BF.B': 100 }));
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: false, error: PARSE_ERROR });
+
+    const first = await runLiveExecution([{ signal: signal({ symbol: 'BF.B' }) }]);
+    expect(first[0].ok).toBe(false);
+    expect(mockPlaceOrder).toHaveBeenCalledTimes(1);
+
+    // Second pass: refused before any broker call at all.
+    mockPlaceOrder.mockClear();
+    mockAccountState.mockClear();
+    const second = await runLiveExecution([{ signal: signal({ symbol: 'BF.B' }) }]);
+
+    expect(second[0]).toMatchObject({ symbol: 'BF.B', ok: false });
+    expect(second[0].reason).toMatch(/cannot trade this symbol/i);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(mockAccountState).not.toHaveBeenCalled();
+  });
+
+  it('does not blocklist a symbol on an unrelated broker rejection', async () => {
+    // A false positive here is worse than the bug: it would silently stop
+    // trading a perfectly good name for the life of the process.
+    setAutotradeConfig(cfgFields);
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }));
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: false, error: 'Buying power is insufficient.' });
+
+    await runLiveExecution([{ signal: signal({ symbol: 'AAPL' }) }]);
+    mockPlaceOrder.mockClear();
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-OK' });
+
+    const second = await runLiveExecution([{ signal: signal({ symbol: 'AAPL' }) }]);
+
+    expect(second[0].ok).toBe(true); // still tried, and succeeded
+    expect(mockPlaceOrder).toHaveBeenCalledTimes(1);
   });
 });
 
