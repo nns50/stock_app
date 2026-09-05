@@ -34,6 +34,14 @@ function renderPage() {
   );
 }
 
+// The read-only "All settings" card ships collapsed — seed it open the same way
+// the dashboard tiles are seeded.
+function renderAllSettings() {
+  localStorage.setItem('autotrade.view', JSON.stringify('config'));
+  localStorage.setItem('tile.collapsed.autotrade.config.all', JSON.stringify(false));
+  return renderPage();
+}
+
 // The Configuration/Dashboard split (2026-07-17) persists the active tab in
 // localStorage the same way CollapsibleCard persists collapse state — seed it
 // before render so dashboard-only tests don't need an extra click-and-wait on
@@ -65,6 +73,38 @@ function bookCells(metric: string): HTMLElement[] {
 
 function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfig {
   return {
+    // The 28 that had drifted out of the client type. Values mirror
+    // defaultAutotradeConfig() on the server; typecheck now REQUIRES them, so
+    // the fixture can no longer describe a config shape the API never returns.
+    maxStopDistancePct: 0,
+    liveScaleOutEnabled: false,
+    liveScaleOutCancelReplaceEnabled: false,
+    liveTrailingEnabled: false,
+    dayProtectiveStopEnabled: false,
+    shortDatedOptionsEnabled: false,
+    optionsHardExitMinutesBeforeClose: 120,
+    optionsNoEntryMinutesBeforeClose: 210,
+    optionsUnderlyingStopPct: 0.5,
+    optionsGiveBackArmPct: 40,
+    optionsGiveBackPct: 50,
+    optionsStagnationMinutes: 30,
+    optionsStagnationMinMovePct: 0.3,
+    optionsDisasterStopPct: 70,
+    minRelVolPace: 0,
+    minChangePct: 0,
+    momentumIntradayOnly: false,
+    endOfDayFlattenMinutes: 0,
+    levelExitsEnabled: false,
+    levelMinStrength: 0.35,
+    levelBufferPct: 0.15,
+    levelMaxStopWidenPct: 60,
+    levelMinRewardR: 1,
+    maxRiskAtrFraction: 0,
+    symbolReentryCooldownMinutes: 0,
+    levelTargetReachAtrMultiple: 1,
+    levelBreakoutRelVolPace: 2,
+    levelLookbackBars: 252,
+
     enabled: false,
     killSwitch: false,
     riskProfile: 'MODERATE',
@@ -298,6 +338,53 @@ beforeEach(() => {
   vi.spyOn(client, 'autotradeLiveOptionsPositions').mockResolvedValue({ positions: [] });
   vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(dashboardFixture());
   vi.spyOn(client, 'autotradePortfolioGreeks').mockResolvedValue({ netDelta: 0, netTheta: 0, netVega: 0 });
+});
+
+describe('AutoTradePage — all settings (read-only)', () => {
+  // 28 of the 151 AutotradeConfig fields had no control anywhere in the app,
+  // and had also drifted out of the client type entirely — so they were not
+  // merely uneditable, they were invisible. Several of them
+  // (levelExitsEnabled, maxRiskAtrFraction, symbolReentryCooldownMinutes) are
+  // ON in production and shaping real trades, and the only way to read their
+  // values was to curl /api/autotrade/config.
+  it('shows settings that have no editor anywhere else on the page', async () => {
+    vi.spyOn(client, 'autotradeConfig').mockResolvedValue(
+      configFixture({ levelExitsEnabled: true, maxRiskAtrFraction: 0.7, symbolReentryCooldownMinutes: 90 }),
+    );
+    renderAllSettings();
+
+    const label = await screen.findByText('levelExitsEnabled');
+    expect(label.closest('tr')).toHaveTextContent('true');
+    expect(screen.getByText('maxRiskAtrFraction').closest('tr')).toHaveTextContent('0.7');
+    expect(screen.getByText('symbolReentryCooldownMinutes').closest('tr')).toHaveTextContent('90');
+  });
+
+  it('renders the config OBJECT, so a field added later needs no UI change', async () => {
+    // The real defect was not "28 fields were forgotten" — it was that
+    // forgetting one was invisible. This pins the property that prevents a
+    // recurrence: the panel enumerates whatever the server sent. A rewrite
+    // that hand-lists fields again would fail here.
+    const cfg = configFixture();
+    vi.spyOn(client, 'autotradeConfig').mockResolvedValue({
+      ...cfg,
+      aFieldTheUiHasNeverHeardOf: 42,
+    } as unknown as AutotradeConfig);
+    renderAllSettings();
+
+    const row = await screen.findByText('aFieldTheUiHasNeverHeardOf');
+    expect(row.closest('tr')).toHaveTextContent('42');
+  });
+
+  it('filters by name', async () => {
+    vi.spyOn(client, 'autotradeConfig').mockResolvedValue(configFixture());
+    renderAllSettings();
+    await screen.findByText('levelExitsEnabled');
+
+    fireEvent.change(screen.getByLabelText('Filter settings'), { target: { value: 'levelbuffer' } });
+
+    expect(screen.getByText('levelBufferPct')).toBeInTheDocument();
+    expect(screen.queryByText('levelExitsEnabled')).not.toBeInTheDocument();
+  });
 });
 
 describe('AutoTradePage', () => {

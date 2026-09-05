@@ -1398,6 +1398,43 @@ export type AutotradeOptionsStrategyType = 'single_leg' | 'debit_spread' | 'auto
 export type AutotradeTradeDirectionMode = 'long' | 'short' | 'both';
 
 export interface AutotradeConfig {
+  // These 28 drifted out of the client type entirely — the server has had them
+  // for a while and the web mirror never gained them, so nothing in the app
+  // could display or edit any of them. Most are the LIVE exit machinery
+  // (level-aware exits, the ATR reach filter, the re-entry cooldown, trailing
+  // stops, the scale-out, the end-of-day flatten, the short-dated options
+  // ladder), and several are switched ON in production and shaping real
+  // trades. Restored 2026-09-05 so the read-only "All settings" panel can show
+  // what the loop is actually running.
+  maxStopDistancePct: number;
+  liveScaleOutEnabled: boolean;
+  liveScaleOutCancelReplaceEnabled: boolean;
+  liveTrailingEnabled: boolean;
+  dayProtectiveStopEnabled: boolean;
+  shortDatedOptionsEnabled: boolean;
+  optionsHardExitMinutesBeforeClose: number;
+  optionsNoEntryMinutesBeforeClose: number;
+  optionsUnderlyingStopPct: number;
+  optionsGiveBackArmPct: number;
+  optionsGiveBackPct: number;
+  optionsStagnationMinutes: number;
+  optionsStagnationMinMovePct: number;
+  optionsDisasterStopPct: number;
+  minRelVolPace: number;
+  minChangePct: number;
+  momentumIntradayOnly: boolean;
+  endOfDayFlattenMinutes: number;
+  levelExitsEnabled: boolean;
+  levelMinStrength: number;
+  levelBufferPct: number;
+  levelMaxStopWidenPct: number;
+  levelMinRewardR: number;
+  maxRiskAtrFraction: number;
+  symbolReentryCooldownMinutes: number;
+  levelTargetReachAtrMultiple: number;
+  levelBreakoutRelVolPace: number;
+  levelLookbackBars: number;
+
   enabled: boolean;
   killSwitch: boolean;
   riskProfile: AutotradeRiskProfile;

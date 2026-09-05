@@ -1016,6 +1016,15 @@ guardrails; screening & entry filters; equity exits; options exits; entry timing
 auto-promote) so the field count stays scannable. The kill switch stays visible on
 both tabs, since a halt you need in a hurry shouldn't be a tab-switch away.
 
+At the bottom of the Configuration tab, **All settings (read-only)** lists every field
+the server is actually running, straight from the config API, with a filter box. It is
+there because the editable cards above are hand-built one control at a time, and for a
+while 28 settings had no control at all — not greyed out, simply absent from the app,
+including live-exit behaviour that was switched on and shaping real trades. This panel
+renders whatever the server sends, so a setting can never go missing from the screen
+again even if nobody adds an editor for it. Editing still happens in the cards above;
+anything without an editor can only be changed through the API for now.
+
 **Dashboard** holds everything that reflects live, ongoing state, grouped into three
 labelled sections so the page reads top-to-bottom as one story instead of as six
 equally-weighted cards in the order they happened to be built:
