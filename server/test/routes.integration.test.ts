@@ -3,6 +3,7 @@ import { etToday } from '../src/util/marketDate';
 import type { AddressInfo } from 'node:net';
 import { app } from '../src/index';
 import { db } from '../src/db';
+import { addExclusion } from '../src/db/autotradeExclusions';
 import { config } from '../src/config';
 import { totp } from '../src/services/totp';
 import { resetLoginThrottle } from '../src/services/auth';
@@ -2141,6 +2142,22 @@ describe('autotrade backtest routes (integration)', () => {
   // VNQ is on the default real-estate exclusion list (server/data/reExclusions.json),
   // so it's excluded before runBacktest ever fetches history or hits the network —
   // safe to exercise the real route end to end without mocking Polygon/Yahoo.
+  //
+  // ESTABLISHED HERE rather than assumed. The defaults are seeded exactly once,
+  // by initDb, and only when the table is EMPTY. Three other suites
+  // (dbAutotradeExclusions, autoTune, autotradeMoversPromotion) run
+  // `DELETE FROM autotrade_exclusions` in their own beforeEach, and every server
+  // test shares one SQLite file — so once any of them has run, the seeded rows
+  // are gone for the rest of the run and never come back.
+  //
+  // These six backtest cases then assert on an exclusion that no longer exists,
+  // and pass or fail purely on which file vitest happened to order first. That
+  // is what made them fail intermittently. Same class as livePreview's
+  // trading_config: depending on shared state without establishing it.
+  beforeEach(() => {
+    addExclusion('VNQ', 'Real estate ETF');
+  });
+
   const baseBody = {
     symbols: ['VNQ'],
     from: '2024-01-01',
