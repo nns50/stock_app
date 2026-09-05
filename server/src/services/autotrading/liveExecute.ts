@@ -1869,7 +1869,21 @@ function materializeEntryFill(
         targetPrice: adopted.targetPrice ?? targetPrice,
         grade: adopted.grade ?? meta?.grade ?? null,
         entryScore: adopted.entryScore ?? meta?.entryScore ?? null,
-        entryComponents: meta?.entryComponents ?? null,
+        // `adopted.entryComponents ??` first, like its five siblings. Until
+        // 2026-09-04 this line alone lacked the preserve-existing prefix, so it
+        // was the one write here that could DESTROY a value rather than backfill
+        // one — overwriting components the position already had with null
+        // whenever the order's meta lacked them.
+        //
+        // No production row is known to have been lost to it: this branch only
+        // runs for an UNTAGGED orphan, and the only writers of position
+        // entryComponents are the autotrade entry paths, which tag. (The 17 of
+        // 30 September rows missing components are explained entirely by #471's
+        // ship date — the cutover is clean at 09-03, with no pre-09-03 row
+        // carrying them and no post-09-03 row missing them.) It is fixed as a
+        // reachability-independent asymmetry: one field of six written to a
+        // different rule is a latent bug waiting for a new caller.
+        entryComponents: adopted.entryComponents ?? meta?.entryComponents ?? null,
         marketRegime: adopted.marketRegime ?? meta?.marketRegime ?? null,
         marketAtrPct: adopted.marketAtrPct ?? meta?.marketAtrPct ?? null,
         entryVwap: adopted.entryVwap ?? meta?.entryVwap ?? null,
