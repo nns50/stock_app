@@ -441,7 +441,16 @@ export async function reconcileIntent(id: number, accountId: string): Promise<Re
       });
     }
     if (singleName && observedQty > 0) {
-      outcome = materializeFill(updated, observedQty, broker.filledPrice ?? updated.limitPrice ?? 0);
+      outcome = materializeFill(
+        updated,
+        observedQty,
+        // See fillDelta.ts: `??` does not fire on 0 and the docs allow a zero
+        // filled_price before execution completes, so a literal zero must fall
+        // back to the limit price exactly as a null does.
+        broker.filledPrice !== undefined && broker.filledPrice !== null && broker.filledPrice > 0
+          ? broker.filledPrice
+          : (updated.limitPrice ?? 0),
+      );
     }
   })();
 
