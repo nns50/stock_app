@@ -64,6 +64,47 @@ describe('resolveScreenerConfig', () => {
   });
 });
 
+describe('scoreFromIndicators — a stray weight key must not take down the screen', () => {
+  // POST /api/autotrade/screen types its body as
+  // `config: z.record(z.string(), z.unknown())`, casts it to
+  // Partial<ScreenerConfig>, and spreads it over the base weights. So ANY key
+  // reaches cfg.weights. Scoring used to iterate Object.keys(cfg.weights) and
+  // destructure `scored[key]`, which for an unrecognised key is undefined:
+  //   "Cannot destructure property 'score' of 'scored[key]' as it is undefined"
+  // — thrown for every symbol, so one bad key killed the whole screen. A stale
+  // key left by a renamed indicator would do it just as well as a malformed
+  // request.
+  it('ignores a weight key it has no scorer for', () => {
+    const base = defaultScreenerConfig();
+    const withJunk = { ...base, weights: { ...base.weights, bogusIndicator: 25 } } as unknown as typeof base;
+
+    const clean = scoreFromIndicators('AAA', ind({ rsi: 60, changePct: 1 }), base, 100);
+    const junked = scoreFromIndicators('AAA', ind({ rsi: 60, changePct: 1 }), withJunk, 100);
+
+    // Same score, same components — the stray key changes nothing at all,
+    // rather than either throwing or diluting the weighted average.
+    expect(junked.total).toBe(clean.total);
+    expect(junked.components.map((c) => c.key)).toEqual(clean.components.map((c) => c.key));
+  });
+
+  it('treats a MISSING weight as zero rather than dropping the indicator', () => {
+    // The quieter half of the same bug. Driving the loop from cfg.weights meant
+    // an absent key removed that indicator from `components` entirely — it
+    // vanished from the breakdown AND from the weighted denominator, silently
+    // rescaling every other component's influence.
+    const base = defaultScreenerConfig();
+    const noRsiWeight = { ...base, weights: { ...base.weights } } as typeof base;
+    delete (noRsiWeight.weights as Partial<typeof base.weights>).rsi;
+
+    const out = scoreFromIndicators('AAA', ind({ rsi: 60 }), noRsiWeight, 100);
+
+    const rsi = out.components.find((c) => c.key === 'rsi');
+    expect(rsi, 'rsi should still appear in the breakdown').toBeDefined();
+    expect(rsi!.weight).toBe(0);
+    expect(rsi!.contribution).toBe(0);
+  });
+});
+
 describe('scoreSymbol — transparency contract', () => {
   const result = scoreSymbol('TEST', uptrend, undefined, defaultScreenerConfig());
 

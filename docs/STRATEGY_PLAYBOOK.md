@@ -610,6 +610,26 @@ scoring change, prove it forward (or in a backtest) before trusting it live.
 
 ## Is a backtested edge real, or noise?
 
+**First, a limit that sits underneath every number on that screen (measured
+2026-09-05).** The backtester replays **daily bars**. Daily bars can express a stop, a
+target, a breakeven/trailing ratchet, and a hold-*days* horizon — they cannot express any
+rule written in *session minutes*. And the live loop's dominant exit is exactly that
+kind: of 37 live time-exit placements, **31 were the stagnation exit** at a median hold
+of **91 minutes**, 6 were the end-of-day flatten, and none were `maxHoldDays`. Live
+median hold across all closed trades is **92 minutes**.
+
+So the backtester is simulating a multi-day swing system while the live loop runs an
+intraday one that mostly closes inside ninety minutes, on a rule the backtester has no
+way to represent. This is not a bug to be fixed there — a 90-minute window genuinely
+cannot be judged against one bar per day — it is a limit on what the result *means*.
+Read a backtest as evidence about **entry selection and stop/target geometry**, which it
+does model faithfully. Do not read it as a forecast of live P&L, and be especially wary
+of tuning `targetRMultiple` or the stop multiple from it: the exit that actually ends
+most live trades is not in the simulation. (The re-entry cooldown, finish-line sizing,
+the end-of-day entry cutoff and the ATR-reach filter are likewise unmodelled. The
+level-aware exits are a deliberate exception — live-only on purpose, so paper and
+backtest stay an unmodified control group.)
+
 A walk-forward backtest's stat grid (Auto-Trade → Configuration → **Backtest &
 walk-forward**) tells you *what happened* in the out-of-sample window — win rate,
 expectancy, profit factor. It doesn't tell you *how much to trust* that number. A

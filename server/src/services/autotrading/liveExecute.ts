@@ -21,6 +21,7 @@ import {
   listWebullOpenOrders,
   webullReplaceOrder,
   webullReplaceOrders,
+  webullPlaceStandaloneBracket,
   isExitLeg,
   buildBracketResizePatches,
   WebullOpenOrder,
@@ -2885,7 +2886,14 @@ export interface LiveScaleOutOutcome {
  */
 async function cancelReplaceBracket(
   accountId: string,
-  pos: { id: number; symbol: string; remainingQuantity: number },
+  pos: {
+    id: number;
+    symbol: string;
+    side: 'long' | 'short';
+    remainingQuantity: number;
+    stopPrice: number | null;
+    targetPrice: number | null;
+  },
   resting: WebullOpenOrder[],
   keepQty: number,
   cfg: AutotradeConfig,
@@ -2936,17 +2944,88 @@ async function cancelReplaceBracket(
     return { ok: false, reason: verdict.reason };
   }
 
+  // --- 3. RE-BRACKET THE REMAINDER, BEFORE ANYTHING SELLS -----------------
+  //
+  // cancelReplace.ts documents five steps and only the first two existed: this
+  // function used to journal "unprotected — re-arm by hand" and return ok, and
+  // the caller then sold the partial. So turning the flag on would have left
+  // the remainder with no stop and no target INDEFINITELY. A missed partial is
+  // worth +0.18R; an unhedged real-money position is worth far less than that,
+  // which is why the flag was never safe to enable.
+  //
+  // Bracketing BEFORE the sell (rather than after, as the original sketch had
+  // it) removes the worst state entirely. If this placement fails we have sold
+  // nothing, so the rollback is simply to re-bracket the FULL position and
+  // abandon the scale-out — back to exactly where we started, protected, with
+  // a missed partial. Sell-then-bracket has no such rollback: the shares are
+  // already gone and the only remaining move is a forced close.
+  const protectIntent = (quantity: number): OrderIntent => ({
+    symbol,
+    assetKind: 'stock',
+    // The ENTRY side — bracketExit emits the legs on the closing side.
+    side: pos.side === 'short' ? 'sell' : 'buy',
+    openClose: 'close',
+    quantity,
+    orderType: 'limit',
+  });
+  const rearm = await webullPlaceStandaloneBracket(
+    accountId,
+    protectIntent(keepQty),
+    pos.targetPrice ?? undefined,
+    pos.stopPrice ?? undefined,
+  );
+  if (!rearm.ok) {
+    // Ambiguous means the bracket MAY be resting. Placing a second one for the
+    // full size could leave two stops against one position — the accidental
+    // short. So restore only on a KNOWN rejection, and on an unanswered one
+    // leave it to checkLiveBracketProtection's fresh read next tick.
+    if (!rearm.ambiguous) {
+      const restored = await webullPlaceStandaloneBracket(
+        accountId,
+        protectIntent(pos.remainingQuantity),
+        pos.targetPrice ?? undefined,
+        pos.stopPrice ?? undefined,
+      );
+      logAutotradeEvent({
+        symbol,
+        stage: 'execution',
+        action: restored.ok ? 'live_bracket_rearmed' : 'live_position_unprotected',
+        detail: {
+          positionId: pos.id,
+          quantity: pos.remainingQuantity,
+          reason: restored.ok
+            ? 'cancel-replace abandoned — full bracket restored, nothing was sold'
+            : `cancel-replace abandoned AND the full-size restore failed (${restored.error ?? 'unknown'}) — position is unprotected`,
+        },
+        riskProfile: cfg.riskProfile,
+      });
+    } else {
+      logAutotradeEvent({
+        symbol,
+        stage: 'execution',
+        action: 'live_position_unprotected',
+        detail: {
+          positionId: pos.id,
+          quantity: pos.remainingQuantity,
+          reason: `re-bracket was UNANSWERED (${rearm.error ?? 'no response'}) — protection state unknown, not stacking a second bracket on top of a possibly-live one`,
+        },
+        riskProfile: cfg.riskProfile,
+      });
+    }
+    return { ok: false, reason: `re-bracket failed: ${rearm.error ?? 'unknown'}` };
+  }
+
   logAutotradeEvent({
     symbol,
     stage: 'execution',
-    action: 'live_position_unprotected',
+    action: 'live_bracket_rearmed',
     detail: {
       positionId: pos.id,
-      quantity: pos.remainingQuantity,
-      keepQty,
-      reason:
-        'Bracket CANCELLED for a cancel-replace scale-out. The position is unprotected until the remainder ' +
-        'is re-bracketed — if this is the last such event for this position, re-arm by hand.',
+      quantity: keepQty,
+      targetPrice: pos.targetPrice,
+      stopPrice: pos.stopPrice,
+      clientComboOrderId: rearm.clientComboOrderId ?? null,
+      reason: 'remainder bracketed for a cancel-replace scale-out; the partial sell follows',
     },
     riskProfile: cfg.riskProfile,
   });

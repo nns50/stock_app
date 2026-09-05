@@ -45,6 +45,28 @@ import { mapPool } from '../../util/async';
 //     daily bar can't reveal the actual intraday order of events.
 //   - Any position still open at the end of the period is force-closed at
 //     the last available close, tagged exitReason: 'end_of_period'.
+//
+// WHAT THIS ENGINE DOES NOT MODEL, and why it matters more than it looks
+// (measured 2026-09-05). Daily bars can express a stop, a target, a
+// breakeven/trailing ratchet and a hold-DAYS horizon. They cannot express any
+// rule stated in SESSION MINUTES — and the live loop's dominant exit is
+// exactly that. From the live journal: 31 of 37 time-exit placements were the
+// STAGNATION exit, at a median hold of 91 minutes; 6 were the end-of-day
+// flatten; none were maxHoldDays. Live median hold across all closed trades is
+// 92 minutes.
+//
+// So this engine simulates a multi-day swing system, while the live loop runs
+// an intraday one that mostly closes inside 90 minutes on a rule this engine
+// has no way to represent. That is not a defect to fix here — a 90-minute
+// window genuinely cannot be evaluated against one bar per day — it is a limit
+// on what a backtest result MEANS. Tuning targetRMultiple or the stop multiple
+// from this engine is answering a question about a system whose main exit is
+// absent.
+//
+// Also unmodelled, for completeness: the re-entry cooldown, finish-line
+// sizing, the end-of-day entry cutoff, and the ATR-reach entry filter. The
+// level-aware exits are a separate case — deliberately live-only, so the paper
+// book and the backtest stay an unmodified control group.
 // ---------------------------------------------------------------------------
 
 export const TIMEFRAME: Timeframe = 'daily';
