@@ -680,7 +680,25 @@ export function scoreFromIndicators(
     },
   };
 
-  const keys = Object.keys(cfg.weights) as IndicatorKey[];
+  // Iterate the indicators THIS FUNCTION knows how to score, not the keys that
+  // happen to be in cfg.weights. The two are the same set in normal operation,
+  // and the difference is a crash: an unrecognised weight key made
+  // `scored[key]` undefined and the destructure below threw
+  // "Cannot destructure property 'score' of 'scored[key]'", taking down the
+  // whole screen for every symbol.
+  //
+  // Reachable from the API (verified 2026-09-05): POST /api/autotrade/screen
+  // types its body as `config: z.record(z.string(), z.unknown())`, casts it to
+  // Partial<ScreenerConfig>, and spreads it over the base weights — so any
+  // stray key survives into cfg.weights. A stale key left behind by a renamed
+  // indicator would do it just as well as a malformed request; this is the
+  // same client/server drift that hid four config fields elsewhere.
+  //
+  // Driving from `scored` also fixes the quieter half: a weight key that is
+  // MISSING now scores its indicator at weight 0 (present, contributing
+  // nothing) instead of dropping the indicator from `components` entirely,
+  // which silently changed the denominator.
+  const keys = Object.keys(scored) as IndicatorKey[];
   let weightSum = 0;
   let weighted = 0;
   const components: ComponentScore[] = keys.map((key) => {
