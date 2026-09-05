@@ -1689,7 +1689,15 @@ function reconcileOneLiveOrder(
         // can leave a fill under-recorded — recoverable, and loudly logged —
         // but can never inflate an autotrade position's size or cost basis,
         // which would corrupt every risk figure derived from it.
-        const observedPrice = broker.filledPrice ?? intent.limitPrice ?? 0;
+        // `??` does not fire on 0, and the vendor docs say filled_price "may be
+        // zero or null" before execution completes — so a literal 0 used to
+        // pass straight through to be booked as a real cost basis. Fall back to
+        // the limit price for a zero exactly as for a null; computeFillDelta
+        // refuses outright if that is unusable too.
+        const observedPrice =
+          broker.filledPrice !== undefined && broker.filledPrice !== null && broker.filledPrice > 0
+            ? broker.filledPrice
+            : (intent.limitPrice ?? 0);
         const { qty, price, warning } = computeFillDelta(intent, observedQty, observedPrice);
 
         if (warning) {
