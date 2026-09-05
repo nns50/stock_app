@@ -26,6 +26,7 @@ import {
 import { computeScaleIn } from './scaleIn';
 import { computeEquityCurveDerisk } from './equityCurveDerisk';
 import { computeGradeExpectancyMultipliers } from './expectancySizing';
+import { journalMethodMultipliers, methodOfEquitySignal } from './methodSizing';
 import { getProvider } from '../../providers';
 import { mapPool } from '../../util/async';
 
@@ -339,6 +340,27 @@ export async function runPaperExecution(
 ): Promise<ExecutionOutcome[]> {
   const config = getAutotradeConfig();
   const equity = config.accountEquityUsd ?? 0;
+  // Per-method lean (methodSizing.ts), one journal read per batch — exactly as
+  // runOptionsPaperExecution does it.
+  //
+  // ADDED 2026-09-05. This was the ONLY one of the four books that never
+  // applied it: live equity reads it off getLivePortfolioSnapshot(), both
+  // options books call journalMethodMultipliers() directly, and paper equity
+  // simply left the field off its RiskCheckContext — where evaluateRiskCheck
+  // defaults it to 1. Nothing failed; the sizing was just quietly unweighted.
+  // runOptionsPaperExecution's own comment calls this "the same lean the
+  // equity paths get from their snapshots", plural, which is the symmetry
+  // that did not actually hold.
+  //
+  // It matters because paper is read as evidence for what live would have
+  // done: with methodWeightingEnabled on, the two books sized the same signal
+  // differently, so paper R was never quite live's R.
+  //
+  // Journal-sourced (live trades) in every book, deliberately — "which
+  // instrument/direction earns" is one global question. Only the GRADE
+  // expectancy multiplier below is per-book, because that one is a statement
+  // about this book's own realized edge.
+  const methodMultipliers = journalMethodMultipliers(config);
 
   const snapshot = getPaperPortfolioSnapshot();
   const dailyPnl = snapshot.dailyPnl + seed.dailyPnl;
@@ -410,6 +432,7 @@ export async function runPaperExecution(
             bMinScore: config.convictionGradeBMinScore,
           })
         ] ?? 1,
+      methodMultiplier: methodMultipliers[methodOfEquitySignal(signal.side)] ?? 1,
     };
     const result = evaluateRiskCheck(signal, ctx);
     logAutotradeEvent({

@@ -7,6 +7,7 @@ import { initDb, db } from '../src/db';
 import { setAutotradeConfig } from '../src/db/autotradeConfig';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { hasOpenPaperPosition, listPaperPositions, openPaperPosition } from '../src/db/autotradePaperPositions';
+import { createPosition, addExit } from '../src/db/positions';
 import * as paperPositionsDb from '../src/db/autotradePaperPositions';
 import { attemptPaperEntry, checkPaperExits, runPaperExecution } from '../src/services/autotrading/execute';
 import { evaluateRiskCheck, RiskCheckResult } from '../src/services/autotrading/riskCheck';
@@ -40,7 +41,9 @@ function quoteReturning(prices: Record<string, number>) {
 
 beforeAll(() => initDb());
 beforeEach(() => {
-  db.exec('DELETE FROM autotrade_paper_positions; DELETE FROM autotrade_config; DELETE FROM autotrade_events;');
+  db.exec(
+    'DELETE FROM autotrade_paper_positions; DELETE FROM autotrade_config; DELETE FROM autotrade_events; DELETE FROM position_exits; DELETE FROM positions;',
+  );
   setAutotradeConfig({ accountEquityUsd: 100_000, riskProfile: 'MODERATE' });
   mockGetProvider.mockReset();
 });
@@ -146,6 +149,23 @@ describe('attemptPaperEntry', () => {
   });
 });
 
+// A closed autotrade STOCK LONG in the journal — the source methodSizing.ts
+// reads. entry 100 / stop 95 is 5/share of risk, so exitPrice 95 is exactly
+// realizedR -1 and exitPrice 110 is +2.
+function closedJournalLong(symbol: string, exitPrice: number) {
+  const p = createPosition({
+    assetType: 'stock',
+    symbol,
+    side: 'long',
+    quantity: 1,
+    entryPrice: 100,
+    entryDate: '2026-08-01',
+    stopPrice: 95,
+    tags: ['autotrade', 'live'],
+  });
+  addExit(p.id, { quantity: 1, exitPrice, exitDate: '2026-08-20' });
+}
+
 describe('runPaperExecution', () => {
   it('approves a clean signal with nothing else open', async () => {
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 101 }) as never);
@@ -153,6 +173,35 @@ describe('runPaperExecution', () => {
     expect(outcomes).toHaveLength(1);
     expect(outcomes[0].ok).toBe(true);
     expect(hasOpenPaperPosition('AAPL')).toBe(true);
+  });
+
+  // ADDED 2026-09-05. Paper equity was the only one of the four books that
+  // never applied the per-method lean — live equity reads it off its snapshot,
+  // both options books call journalMethodMultipliers() — so with
+  // methodWeightingEnabled on, paper and live sized the SAME signal
+  // differently, and paper R was not live R. Asserted where it is consumed
+  // (the position that gets opened), not on the multiplier itself: the whole
+  // point is that the value existed and nothing read it.
+  it('sizes a paper entry by the per-method lean, like the other three books', async () => {
+    setAutotradeConfig({
+      methodWeightingEnabled: true,
+      expectancyMinTrades: 3,
+      expectancyMinMultiplier: 0.5,
+      expectancyMaxMultiplier: 1.5,
+    });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 101 }) as never);
+    await runPaperExecution([{ signal: signal({ symbol: 'AAPL' }) }]);
+    const unweighted = listPaperPositions({ status: 'open' })[0].quantity;
+
+    // Same signal, same account — but stock_long now has a losing record, so
+    // the lean should clamp it to the 0.5x floor.
+    db.exec('DELETE FROM autotrade_paper_positions;');
+    for (const sym of ['AAA', 'BBB', 'CCC', 'DDD']) closedJournalLong(sym, 95); // realizedR -1 each
+    await runPaperExecution([{ signal: signal({ symbol: 'AAPL' }) }]);
+    const leaned = listPaperPositions({ status: 'open' })[0].quantity;
+
+    expect(leaned).toBeLessThan(unweighted);
+    expect(leaned).toBe(Math.floor(unweighted * 0.5));
   });
 
   it('stamps a conviction grade on the opened paper position from the signal score', async () => {

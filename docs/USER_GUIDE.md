@@ -1226,6 +1226,13 @@ equally-weighted cards in the order they happened to be built:
   sizing drifts toward whatever is currently working toward the daily-gain goal while
   every method keeps generating the evidence that could change its standing. It never
   presses: multipliers come from realized results, never from distance to the target.
+  One deliberate difference from grade expectancy: the method lean is scored from a
+  **single shared record** — the live journal's closed auto-trade positions plus the live
+  options book — and the same multipliers are then applied to every book, paper included.
+  "Which instrument and direction is earning" is one question about the market, not a
+  per-book one, and the paper books are too thin to answer it separately. (Grade
+  expectancy is the opposite: each book is scored only on its own history, so a paper hot
+  streak can never size up real money.)
   The Monitoring card's **Method performance** table shows each method's recent record
   and the multiplier currently in force (visible even with the lean off, so you can see
   the evidence before acting on it). Every field here

@@ -81,11 +81,38 @@ function num(v: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+/** First candidate that actually PARSES to a finite number, else 0.
+ *
+ *  Not the same as `num(a ?? b ?? c)`, and the difference is the bug it exists
+ *  for: `??` only falls through on null/undefined, but every value in this
+ *  payload is a STRING, and `Number('')` is 0, not NaN. So an empty-string
+ *  `buying_power` short-circuits the chain and `num` turns it into a
+ *  perfectly finite $0 — no error, no fallback, buying power reads as zero.
+ *
+ *  That is not cosmetic any more: since the buying-power sizer landed, this
+ *  number BOUNDS every live order, so a blank field would size the whole book
+ *  to zero and journal it as a legitimate refusal — the same shape as the
+ *  2026-08-27 incident (627 refusals, zero entries), reached through a
+ *  different door. A genuine "0" still parses and is still honoured; only
+ *  blank/unparseable falls through. */
+function firstNum(...candidates: unknown[]): number {
+  for (const c of candidates) {
+    const n = numOrUndefined(c);
+    if (n !== undefined) return n;
+  }
+  return 0;
+}
+
 /** Like num(), but undefined (not 0) when the field is missing/unparseable —
  *  a fabricated 0 would read as "no cash has settled," warning on every buy
  *  for an account this field simply wasn't reported for. */
 function numOrUndefined(v: unknown): number | undefined {
   if (v === undefined || v === null) return undefined;
+  // A blank string is ABSENT, not zero. Number('') === 0 and Number('  ') === 0,
+  // so without this the "missing field" case returns a confident 0 — which for
+  // settledCashUsd reads as "no cash has settled" and warns on every buy, and
+  // for anything routed through firstNum() would stop the fallback chain dead.
+  if (typeof v === 'string' && v.trim() === '') return undefined;
   const n = Number(v);
   return Number.isFinite(n) ? n : undefined;
 }
@@ -152,15 +179,36 @@ export async function webullAccountState(
   }
 
   const bal = (b.data ?? {}) as Record<string, unknown>;
-  const assets = Array.isArray(bal.account_currency_assets) ? bal.account_currency_assets : [];
-  const asset = (assets[0] ?? {}) as Record<string, unknown>;
+  const assets = (Array.isArray(bal.account_currency_assets) ? bal.account_currency_assets : []) as Array<
+    Record<string, unknown>
+  >;
+  // Pick the asset by CURRENCY, not by position.
+  //
+  // The vendor docs (reference/account-balance) list `account_id` as the sole
+  // query parameter — `total_asset_currency` is a RESPONSE field, and passing
+  // it below does not filter anything. `account_currency_assets` is an array
+  // with a REQUIRED `currency` on each entry precisely because an account can
+  // report more than one, and the docs promise no ordering. So `assets[0]`
+  // was an assumption that happens to hold for a USD-only account and would
+  // fail silently the moment it doesn't: every dollar figure here — buying
+  // power, and the order caps derived from it — would come from the wrong
+  // currency with no error to notice.
+  //
+  // Match the currency the response itself says it totalled in, fall back to
+  // USD, then to the first entry (a one-currency account with the field
+  // absent behaves exactly as before).
+  const wantCurrency = String(bal.total_asset_currency ?? 'USD').toUpperCase();
+  const asset = (assets.find((a) => String(a.currency ?? '').toUpperCase() === wantCurrency) ??
+    assets.find((a) => String(a.currency ?? '').toUpperCase() === 'USD') ??
+    assets[0] ??
+    {}) as Record<string, unknown>;
 
   // overnight_buying_power is the honest general-purpose figure: it is what a
   // position can use WITHOUT having to be closed by the bell, which is the
   // question every caller except autotrade's intraday loop is really asking.
   // Falls back to cash only when the broker reports neither.
-  const buyingPowerUsd = num(asset.buying_power ?? asset.overnight_buying_power ?? bal.total_cash_balance);
-  const optionBuyingPowerUsd = num(asset.option_buying_power ?? asset.buying_power ?? buyingPowerUsd);
+  const buyingPowerUsd = firstNum(asset.buying_power, asset.overnight_buying_power, bal.total_cash_balance);
+  const optionBuyingPowerUsd = firstNum(asset.option_buying_power, asset.buying_power, buyingPowerUsd);
   const dayBuyingPowerUsd = numOrUndefined(asset.day_buying_power);
   const exposureUsd = num(bal.total_market_value);
   const netLiquidationUsd = num(bal.total_net_liquidation_value);
