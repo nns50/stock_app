@@ -1323,6 +1323,82 @@ describe('checkLiveEquityStopAdjusts', () => {
     expect(mockReplaceOrder.mock.calls.some((c) => c[1] === 'TGT-1')).toBe(false);
   });
 
+  // -------------------------------------------------------------------------
+  // Identifying the stop leg. combo_type is the primary marker and is exactly
+  // the field that broke before: PR #467 read it one nesting level below where
+  // it lives, which disabled the ratchet completely and silently. The leg also
+  // carries order_type STOP_LOSS (confirmed on the live account 2026-09-05), so
+  // that is now a fallback — a recovery path, never a relaxation.
+  // -------------------------------------------------------------------------
+  it('falls back to the leg order_type when combo_type did not parse', async () => {
+    const { position } = await armed(200);
+    mockOpenOrders.mockResolvedValue({
+      ok: true,
+      orders: [
+        openOrder({ clientOrderId: 'STOP-1', comboType: undefined, orderType: 'STOP_LOSS' }),
+        openOrder({ clientOrderId: 'TGT-1', comboType: undefined, orderType: 'LIMIT' }),
+      ],
+    });
+    mockReplaceOrder.mockResolvedValue({ ok: true });
+
+    const out = await checkLiveEquityStopAdjusts();
+
+    expect(out[0]).toMatchObject({ positionId: position.id, adjusted: true });
+    expect(mockReplaceOrder.mock.calls[0][1]).toBe('STOP-1');
+    // The target is a LIMIT and can never carry order_type STOP_LOSS, which is
+    // why this fallback cannot cause the accident the primary match guards.
+    expect(mockReplaceOrder.mock.calls.some((c) => c[1] === 'TGT-1')).toBe(false);
+  });
+
+  it('does not let the fallback create an ambiguity combo_type had resolved', async () => {
+    // Two resting stops on one symbol: combo_type already says which is the
+    // bracket's. The fallback must not run at all here, or a second lot's stop
+    // would make the ratchet start refusing where it used to work.
+    const { position } = await armed(200);
+    mockOpenOrders.mockResolvedValue({
+      ok: true,
+      orders: [
+        openOrder({ clientOrderId: 'STOP-1', comboType: 'STOP_LOSS', orderType: 'STOP_LOSS' }),
+        openOrder({ clientOrderId: 'STRAY', comboType: 'NORMAL', orderType: 'STOP_LOSS' }),
+      ],
+    });
+    mockReplaceOrder.mockResolvedValue({ ok: true });
+
+    const out = await checkLiveEquityStopAdjusts();
+    expect(out[0]).toMatchObject({ positionId: position.id, adjusted: true });
+    expect(mockReplaceOrder.mock.calls[0][1]).toBe('STOP-1');
+  });
+
+  it('still refuses when NEITHER marker identifies a stop', async () => {
+    await armed(200);
+    mockOpenOrders.mockResolvedValue({
+      ok: true,
+      orders: [
+        openOrder({ clientOrderId: 'A', comboType: undefined, orderType: 'LIMIT' }),
+        openOrder({ clientOrderId: 'B', comboType: undefined, orderType: 'LIMIT' }),
+      ],
+    });
+    mockReplaceOrder.mockResolvedValue({ ok: true });
+
+    await checkLiveEquityStopAdjusts();
+    expect(mockReplaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('still refuses when the fallback itself is ambiguous', async () => {
+    await armed(200);
+    mockOpenOrders.mockResolvedValue({
+      ok: true,
+      orders: [
+        openOrder({ clientOrderId: 'S1', comboType: undefined, orderType: 'STOP_LOSS' }),
+        openOrder({ clientOrderId: 'S2', comboType: undefined, orderType: 'STOP_LOSS' }),
+      ],
+    });
+    mockReplaceOrder.mockResolvedValue({ ok: true });
+
+    await checkLiveEquityStopAdjusts();
+    expect(mockReplaceOrder).not.toHaveBeenCalled();
+  });
+
   it('records the new stop locally only AFTER the broker confirms', async () => {
     const { position } = await armed(200);
     mockOpenOrders.mockResolvedValue({ ok: true, orders: [stopLeg()] });

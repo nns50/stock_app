@@ -3938,8 +3938,26 @@ function restingStopLeg(
   const stops = exits.filter((o) => (o.comboType ?? '').toUpperCase() === 'STOP_LOSS');
   if (stops.length === 1) return { ok: true, leg: stops[0] };
   if (stops.length === 0) {
+    // combo_type identified nothing. Before concluding "we cannot tell", try the
+    // leg's OWN order_type — a second, independent marker confirmed present on
+    // the live account (2026-09-05: the stop leg carries combo_type STOP_LOSS on
+    // its envelope AND order_type STOP_LOSS on the leg itself).
+    //
+    // This is a recovery path, not a relaxation. It runs only when combo_type
+    // matched zero legs, so it can never turn a currently-successful match into
+    // an ambiguous one. And it cannot cause the accident this function exists to
+    // prevent: the hazard named above is moving the TARGET, and the target is a
+    // LIMIT order — it can never carry order_type STOP_LOSS.
+    //
+    // Worth having because combo_type is exactly the field that broke before: it
+    // was read one nesting level below where it lives (PR #467), which disabled
+    // the ratchet completely and silently until someone went looking. A single
+    // point of identification on a safety-critical match is what made that
+    // possible.
+    const byOrderType = exits.filter((o) => (o.orderType ?? '').toUpperCase() === 'STOP_LOSS');
+    if (byOrderType.length === 1) return { ok: true, leg: byOrderType[0] };
     // Either the bracket genuinely has no stop leg (checkLiveBracketProtection's
-    // problem, not ours) or combo_type did not parse. Both mean the same thing
+    // problem, not ours) or neither marker parsed. Both mean the same thing
     // here: we cannot say which resting order is the stop, so we touch none.
     return { ok: false, reason: `no resting leg identifiable as STOP_LOSS among ${exits.length} exit order(s)` };
   }
