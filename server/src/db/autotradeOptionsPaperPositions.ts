@@ -111,6 +111,10 @@ export interface OptionsPaperPosition {
   stopFloorPct: number | null;
   /** Whether the one-time partial-exit trigger has already fired. */
   partialExitTaken: boolean;
+  /** P&L already BANKED by partial exits, in dollars (contracts x 100 already
+   *  applied). 0 for a position that never scaled out. Must be ADDED to the
+   *  remainder's P&L — `quantity` is only what is left. */
+  realizedPartialPnl: number;
   /** At-entry context — null for rows that predate these columns or where the
    *  best-effort read failed. See the DDL comment in db/index.ts. */
   grade: string | null;
@@ -158,6 +162,7 @@ interface Row {
   best_basis_since_entry: number | null;
   stop_floor_pct: number | null;
   partial_exit_taken: number;
+  realized_partial_pnl: number | null;
   grade: string | null;
   entry_score: number | null;
   iv_rank: number | null;
@@ -194,6 +199,7 @@ function map(r: Row): OptionsPaperPosition {
     bestBasisSinceEntry: r.best_basis_since_entry,
     stopFloorPct: r.stop_floor_pct,
     partialExitTaken: r.partial_exit_taken === 1,
+    realizedPartialPnl: r.realized_partial_pnl ?? 0,
     grade: r.grade ?? null,
     entryScore: r.entry_score ?? null,
     ivRank: r.iv_rank ?? null,
@@ -325,14 +331,24 @@ export interface PartialCloseOptionsPaperPositionInput {
   shortExitPrice?: number;
 }
 
-/** Scale out of an open options position: reduces quantity in place and
- *  marks partial_exit_taken so the trigger doesn't re-fire. The position
- *  stays 'open' with the remainder — riskAmount is deliberately left
- *  untouched (the ORIGINAL full-size dollar risk, for the life of the
- *  trade). The closed slice itself isn't written anywhere structured beyond
- *  the caller's own journal event. No-op (returns null) if `id` isn't open
- *  or `quantity` isn't strictly less than the current quantity. Mirrors
- *  autotradePaperPositions.ts's own partialClosePaperPosition. */
+/** Scale out of an open options position: reduces quantity in place, BANKS the
+ *  closed slice's P&L into realized_partial_pnl, and marks partial_exit_taken
+ *  so the trigger doesn't re-fire. The position stays 'open' with the
+ *  remainder — riskAmount is deliberately left untouched (the ORIGINAL
+ *  full-size dollar risk, for the life of the trade). Mirrors
+ *  autotradePaperPositions.ts's own partialClosePaperPosition, banking
+ *  included: without it the row's exit-minus-entry would describe the final
+ *  slice alone, which cost the equity book $356.99 of deleted profit across 17
+ *  of 70 closed rows before it was noticed on 2026-09-05. Fixed here before
+ *  this book's first scale-out ever fired.
+ *
+ *  The slice P&L is computed HERE, from the row's own entry prices and kind,
+ *  rather than taken as an argument — the CASE below is the SQL twin of
+ *  optionsExecute's optionsPnl(): net credit minus net debit for a spread,
+ *  plain premium difference for a single leg, times 100 shares a contract.
+ *
+ *  No-op (returns null) if `id` isn't open or `quantity` isn't strictly less
+ *  than the current quantity. */
 export function partialCloseOptionsPaperPosition(
   id: number,
   input: PartialCloseOptionsPaperPositionInput,
@@ -341,10 +357,28 @@ export function partialCloseOptionsPaperPosition(
   const info = db
     .prepare(
       `UPDATE autotrade_options_paper_positions
-       SET quantity = quantity - ?, partial_exit_taken = 1, updated_at = ?
+       SET quantity = quantity - ?,
+           realized_partial_pnl = realized_partial_pnl +
+             CASE kind
+               WHEN 'debit_spread'
+                 THEN ((? - COALESCE(?, 0)) - (entry_price - COALESCE(short_entry_price, 0))) * ? * 100
+               ELSE (? - entry_price) * ? * 100
+             END,
+           partial_exit_taken = 1,
+           updated_at = ?
        WHERE id = ? AND status = 'open' AND ? < quantity`,
     )
-    .run(input.quantity, now, id, input.quantity);
+    .run(
+      input.quantity,
+      input.exitPrice,
+      input.shortExitPrice ?? null,
+      input.quantity,
+      input.exitPrice,
+      input.quantity,
+      now,
+      id,
+      input.quantity,
+    );
   if (info.changes === 0) return null;
   return map(db.prepare('SELECT * FROM autotrade_options_paper_positions WHERE id = ?').get(id) as Row);
 }

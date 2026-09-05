@@ -121,6 +121,21 @@ function optionsPnl(
   return (exitPrice - p.entryPrice) * p.quantity * 100;
 }
 
+/**
+ * The REALIZED P&L of a closed options paper position — the slice still held
+ * at the exit, PLUS whatever earlier scale-outs already banked.
+ *
+ * optionsPnl above prices `p.quantity` contracts, and after a scale-out that is
+ * only the remainder, so it alone is the final leg. That is exactly the defect
+ * that cost the equity paper book $356.99 across 17 of 70 closed trades
+ * (2026-09-05); this book had not yet taken a single partial when the same hole
+ * was found in it, so there is nothing to repair here — only to prevent.
+ */
+export function optionsPaperRealizedPnl(p: OptionsPaperPosition): number {
+  const remainder = p.exitPrice === null ? 0 : optionsPnl(p, p.exitPrice);
+  return remainder + p.realizedPartialPnl;
+}
+
 export interface OptionsExecutionOutcome {
   symbol: string;
   ok: boolean;
@@ -394,7 +409,9 @@ export function getOptionsPaperPortfolioSnapshot(): OptionsPaperPortfolioSnapsho
   const closedTodayChrono = recent
     .filter((p) => p.status === 'closed' && p.exitAt !== null && etDateStr(p.exitAt) === today)
     .sort((a, b) => a.exitAt! - b.exitAt!);
-  const closedPnlsChrono = closedTodayChrono.map((p) => optionsPnl(p, p.exitPrice!));
+  // optionsPaperRealizedPnl, not optionsPnl: after a scale-out `quantity` is
+  // only the remainder, so the bare call is the final leg alone.
+  const closedPnlsChrono = closedTodayChrono.map((p) => optionsPaperRealizedPnl(p));
   const dailyPnl = closedPnlsChrono.reduce((s, p) => s + p, 0);
   const { currentStreak } = computeStreaksAndDrawdown(closedPnlsChrono);
   const consecutiveLosses = currentStreak.type === 'loss' ? currentStreak.count : 0;
@@ -800,7 +817,9 @@ export async function checkOptionsPaperExits(): Promise<OptionsExitCheckOutcome[
               exitReason: sdReason,
               exitPrice: exitMarks.exitPrice,
               shortExitPrice: exitMarks.shortExitPrice,
-              pnl: optionsPnl(pos, exitMarks.exitPrice, exitMarks.shortExitPrice ?? null),
+              // Whole trade, banked partials included — not the final leg.
+              pnl: optionsPnl(pos, exitMarks.exitPrice, exitMarks.shortExitPrice ?? null) + pos.realizedPartialPnl,
+              realizedPartialPnl: pos.realizedPartialPnl,
             },
             riskProfile: pos.riskProfile,
           });
@@ -868,7 +887,8 @@ export async function checkOptionsPaperExits(): Promise<OptionsExitCheckOutcome[
       exitReason,
     });
     if (closed) {
-      const pnl = optionsPnl(pos, marks.exitPrice, marks.shortExitPrice ?? null);
+      // Whole trade, banked partials included — not the final leg.
+      const pnl = optionsPnl(pos, marks.exitPrice, marks.shortExitPrice ?? null) + pos.realizedPartialPnl;
       logAutotradeEvent({
         symbol: pos.symbol,
         stage: 'execution',
@@ -878,6 +898,7 @@ export async function checkOptionsPaperExits(): Promise<OptionsExitCheckOutcome[
           exitPrice: marks.exitPrice,
           shortExitPrice: marks.shortExitPrice,
           pnl,
+          realizedPartialPnl: pos.realizedPartialPnl,
           dte: ev.dte,
           unrealizedPct: ev.unrealizedPct,
         },
@@ -923,7 +944,10 @@ function applyOptionsPositionManagement(
         shortExitPrice: marks.shortExitPrice,
       });
       if (updated) {
-        const pnl = optionsPnl({ ...pos, quantity: closeQty }, marks.exitPrice, marks.shortExitPrice ?? null);
+        // Read what the row banked rather than deriving the same dollars a
+        // second time — the SQL CASE in partialCloseOptionsPaperPosition is
+        // authoritative, and two independent derivations are free to drift.
+        const pnl = updated.realizedPartialPnl - pos.realizedPartialPnl;
         logAutotradeEvent({
           symbol: pos.symbol,
           stage: 'execution',

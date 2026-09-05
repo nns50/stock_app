@@ -17,6 +17,8 @@ import {
   listPaperPositions,
   openPaperPosition,
   partialClosePaperPosition,
+  paperRealizedPnl,
+  paperRealizedR,
   ratchetPaperPositionStop,
   updatePaperPositionBestPrice,
   addToPaperPosition,
@@ -221,9 +223,10 @@ export function getPaperPortfolioSnapshot(): PaperPortfolioSnapshot {
   const closedTodayChrono = recent
     .filter((p) => p.status === 'closed' && p.exitAt !== null && etDateStr(p.exitAt) === today)
     .sort((a, b) => a.exitAt! - b.exitAt!);
-  const closedPnlsChrono = closedTodayChrono.map(
-    (p) => (p.exitPrice! - p.entryPrice) * p.quantity * (p.side === 'buy' ? 1 : -1),
-  );
+  // paperRealizedPnl, not the subtraction: `quantity` is what REMAINS after a
+  // scale-out, so the open-coded version was the final leg alone and dropped
+  // every banked partial (see db/autotradePaperPositions.ts).
+  const closedPnlsChrono = closedTodayChrono.map((p) => paperRealizedPnl(p));
   const dailyPnl = closedPnlsChrono.reduce((s, p) => s + p, 0);
   const { currentStreak } = computeStreaksAndDrawdown(closedPnlsChrono);
   const consecutiveLosses = currentStreak.type === 'loss' ? currentStreak.count : 0;
@@ -237,7 +240,7 @@ export function getPaperPortfolioSnapshot(): PaperPortfolioSnapshot {
     .filter((p) => p.status === 'closed' && p.exitAt !== null && p.exitPrice !== null)
     .map((p) => ({
       date: etDateStr(p.exitAt as number),
-      pnl: (p.exitPrice! - p.entryPrice) * p.quantity * (p.side === 'buy' ? 1 : -1),
+      pnl: paperRealizedPnl(p),
     }));
   const equityCurveDeriskActive = computeEquityCurveDerisk(closedHistory, {
     enabled: config.equityCurveDeriskEnabled,
@@ -247,16 +250,13 @@ export function getPaperPortfolioSnapshot(): PaperPortfolioSnapshot {
 
   // Per-grade expectancy multipliers from the paper book's OWN closed trades.
   const gradeExpectancyMultipliers = computeGradeExpectancyMultipliers(
-    recent.flatMap((p) =>
-      p.status === 'closed' && p.exitPrice !== null && p.riskAmount > 0
-        ? [
-            {
-              grade: p.grade,
-              realizedR: ((p.exitPrice - p.entryPrice) * p.quantity * (p.side === 'buy' ? 1 : -1)) / p.riskAmount,
-            },
-          ]
-        : [],
-    ),
+    recent.flatMap((p) => {
+      // paperRealizedR banks the partials. This is the site that mattered
+      // most: it SIZES the paper book, and the partial only ever fires at a
+      // profit, so the old reading was systematically pessimistic.
+      const realizedR = p.status === 'closed' ? paperRealizedR(p) : null;
+      return realizedR === null ? [] : [{ grade: p.grade, realizedR }];
+    }),
     {
       enabled: config.expectancyWeightingEnabled,
       minTrades: config.expectancyMinTrades,
@@ -520,12 +520,16 @@ export async function checkPaperExits(): Promise<ExitCheckOutcome[]> {
     const exitPrice = stopHit ? pos.stopPrice : targetHit ? pos.targetPrice : last;
     const closed = closePaperPosition(pos.id, { exitPrice, exitReason });
     if (closed) {
-      const pnl = (exitPrice - pos.entryPrice) * pos.quantity * (long ? 1 : -1);
+      // paperRealizedPnl over the CLOSED row: the whole trade, partials
+      // included. Deriving it from pos.quantity here would have journaled the
+      // final leg alone, so a scaled-out winner read as a scratch in the
+      // journal exactly as it did everywhere else.
+      const pnl = paperRealizedPnl(closed);
       logAutotradeEvent({
         symbol: pos.symbol,
         stage: 'execution',
         action: 'paper_position_closed',
-        detail: { exitReason, exitPrice, pnl },
+        detail: { exitReason, exitPrice, pnl, realizedPartialPnl: closed.realizedPartialPnl },
         riskProfile: pos.riskProfile,
       });
     }
@@ -568,7 +572,11 @@ function applyPositionManagement(pos: PaperPosition, last: number, cfg: ReturnTy
       const updated = partialClosePaperPosition(pos.id, { quantity: closeQty, exitPrice: last });
       if (updated) {
         partialFired = true;
-        const pnl = (last - pos.entryPrice) * closeQty * (long ? 1 : -1);
+        // Read the banked figure back rather than deriving it a second time.
+        // This journal line and the row's own P&L used to be two independent
+        // computations of the same dollars; only one of them was ever read
+        // again, and it was the one thrown away.
+        const pnl = updated.realizedPartialPnl - pos.realizedPartialPnl;
         logAutotradeEvent({
           symbol: pos.symbol,
           stage: 'execution',

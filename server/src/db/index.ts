@@ -53,6 +53,83 @@ CREATE TABLE IF NOT EXISTS alerts (
 // never trail/ratchet again once this migrates (nothing to backfill: their
 // history before this feature existed is unrecoverable, and they'll close
 // out normally via stop/target/time-exit regardless).
+/**
+ * One-time repair for `realized_partial_pnl` (2026-09-05).
+ *
+ * `partialClosePaperPosition` has always reduced `quantity` in place and
+ * written the closed slice nowhere structured, so every P&L read of a
+ * scaled-out paper trade was its FINAL leg alone. The column fixes that going
+ * forward; this puts the history back, because the history is what the
+ * grade-expectancy multipliers and the scale-out's own evaluation are computed
+ * from — leaving it wrong would keep sizing the paper book down off a book
+ * whose winners had their best slice deleted.
+ *
+ * The `paper_partial_exit` journal event is the only surviving record. It
+ * carries symbol / quantity / exitPrice / pnl but NOT the position id, so each
+ * event is matched to the one paper row for that symbol that was open when it
+ * fired. Ambiguous or unmatched events are skipped rather than guessed at: a
+ * missing repair leaves a known-pessimistic number, an invented one is worse.
+ *
+ * Idempotent by construction — it runs only inside the `ADD COLUMN` branch, so
+ * a database that already has the column is never touched again.
+ *
+ * Takes the handle rather than closing over the singleton, the same way
+ * rebuildAutotradePaperPositionsTable does: a migration that only ever runs
+ * against the real database on startup is a migration nothing can test, and
+ * this one is repairing money figures.
+ */
+export function backfillPaperPartialPnl(
+  database: Database.Database,
+  /** Which book to repair. Defaults to the equity one, which is the only one
+   *  that had anything to repair — the options twin was fixed before it ever
+   *  fired, and runs this for nothing more than symmetry and safety. */
+  book: 'equity' | 'options' = 'equity',
+): void {
+  const table = book === 'equity' ? 'autotrade_paper_positions' : 'autotrade_options_paper_positions';
+  const action = book === 'equity' ? 'paper_partial_exit' : 'options_paper_partial_exit';
+  const events = database
+    .prepare('SELECT symbol, detail, created_at FROM autotrade_events WHERE action = ?')
+    .all(action) as { symbol: string | null; detail: string | null; created_at: number }[];
+  if (events.length === 0) return;
+
+  const findRow = database.prepare(
+    `SELECT id FROM ${table}
+      WHERE symbol = ? AND entry_at <= ? AND (exit_at IS NULL OR exit_at >= ?)`,
+  );
+  const addPnl = database.prepare(`UPDATE ${table} SET realized_partial_pnl = realized_partial_pnl + ? WHERE id = ?`);
+
+  let repaired = 0;
+  let skipped = 0;
+  for (const ev of events) {
+    if (!ev.symbol || !ev.detail) {
+      skipped++;
+      continue;
+    }
+    let pnl: unknown;
+    try {
+      pnl = (JSON.parse(ev.detail) as { pnl?: unknown }).pnl;
+    } catch {
+      skipped++;
+      continue;
+    }
+    if (typeof pnl !== 'number' || !Number.isFinite(pnl)) {
+      skipped++;
+      continue;
+    }
+    const matches = findRow.all(ev.symbol, ev.created_at, ev.created_at) as { id: number }[];
+    // Exactly one open-at-the-time row, or we do not know which trade it was.
+    if (matches.length !== 1) {
+      skipped++;
+      continue;
+    }
+    addPnl.run(pnl, matches[0].id);
+    repaired++;
+  }
+  if (repaired > 0 || skipped > 0) {
+    console.log(`[db] backfilled ${table}.realized_partial_pnl: ${repaired} repaired, ${skipped} unmatched`);
+  }
+}
+
 const AUTOTRADE_PAPER_POSITIONS_TABLE_SQL = `
 CREATE TABLE IF NOT EXISTS autotrade_paper_positions (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -85,6 +162,18 @@ CREATE TABLE IF NOT EXISTS autotrade_paper_positions (
   entry_score   REAL,
   market_regime TEXT,                 -- 'risk-on' | 'neutral' | 'risk-off'
   market_atr_pct REAL,
+  -- Realized P&L already BANKED by partial exits on this row (2026-09-05).
+  -- partialClosePaperPosition reduces quantity in place, so the row's own
+  -- (exit_price - entry_price) * quantity only ever describes the FINAL slice;
+  -- without this column the P&L of every scaled-out trade was the last leg
+  -- alone. It fed grade-expectancy sizing, the paper equity curve and the
+  -- daily P&L, always understating a trade that scaled out -- the partial only
+  -- fires at a PROFIT (>= partialExitRMultiple), so the bias was strictly
+  -- one-directional: $356.99 across 17 of 70 closed rows when this was found.
+  -- Accumulates (a row could scale out more than once if the one-time
+  -- partial_exit_taken guard is ever lifted). Always add it: see
+  -- paperRealizedPnl(), which is the only correct way to read this table's P&L.
+  realized_partial_pnl REAL NOT NULL DEFAULT 0,
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL
 );`;
@@ -533,6 +622,14 @@ CREATE TABLE IF NOT EXISTS autotrade_options_paper_positions (
   best_basis_since_entry REAL,                 -- running peak of (mark - short mark); null pre-feature or unchecked
   stop_floor_pct         REAL,                 -- ratcheted minimum acceptable gain %; null until first ratcheted
   partial_exit_taken     INTEGER NOT NULL DEFAULT 0,
+  -- Realized P&L already BANKED by partial exits (2026-09-05). Same reason as
+  -- autotrade_paper_positions' column of the same name: the scale-out reduces
+  -- quantity in place, so the row's own exit-minus-entry describes the FINAL
+  -- slice alone. Fixed here BEFORE it ever fired -- 0 of 13 options paper rows
+  -- had scaled out -- because the equity twin cost $356.99 of deleted profit
+  -- across 17 of 70 rows before anyone noticed, and the short-dated ladder that
+  -- arms this one had only just been switched on.
+  realized_partial_pnl   REAL NOT NULL DEFAULT 0,
   -- At-entry context (2026-07-26), mirroring autotrade_paper_positions plus
   -- the two options-only readings: the underlying's conviction grade + raw
   -- screener total (this table never had a grade column at all), the IV rank
@@ -1042,11 +1139,33 @@ function migrate(): void {
   if (!hasApp('market_atr_pct')) {
     db.exec('ALTER TABLE autotrade_paper_positions ADD COLUMN market_atr_pct REAL');
   }
+  // Banked partial-exit P&L (2026-09-05) — see the DDL comment. The backfill
+  // matters as much as the column: 17 of 70 closed rows had already scaled out
+  // when this was found, and without repairing them the expectancy multipliers
+  // would keep reading a book whose winners had their best slice deleted.
+  //
+  // The `paper_partial_exit` journal event is the only record of those slices
+  // (the caller journals quantity/exitPrice/pnl; the row kept nothing), so the
+  // backfill reads them back. Matched on symbol + the partial's own timestamp
+  // against the position that was open at that moment -- ids were never
+  // journaled. A row that cannot be matched is left at 0 rather than guessed.
+  if (!hasApp('realized_partial_pnl')) {
+    db.exec('ALTER TABLE autotrade_paper_positions ADD COLUMN realized_partial_pnl REAL NOT NULL DEFAULT 0');
+    backfillPaperPartialPnl(db);
+  }
 
   // autotrade_options_paper_positions gained a debit-spread shape (Task #69):
   // a kind discriminator plus the short leg's contract/strike/entry/exit.
   const oppCols = db.prepare('PRAGMA table_info(autotrade_options_paper_positions)').all() as { name: string }[];
   const hasOpp = (c: string) => oppCols.some((col) => col.name === c);
+  // Banked partial-exit P&L (2026-09-05) — the options twin of the equity
+  // column. Nothing to repair when this ships (no options paper position had
+  // scaled out yet), but the backfill runs anyway: it costs one query on an
+  // empty result set, and a database restored from elsewhere might differ.
+  if (!hasOpp('realized_partial_pnl')) {
+    db.exec('ALTER TABLE autotrade_options_paper_positions ADD COLUMN realized_partial_pnl REAL NOT NULL DEFAULT 0');
+    backfillPaperPartialPnl(db, 'options');
+  }
   if (!hasOpp('kind')) {
     db.exec("ALTER TABLE autotrade_options_paper_positions ADD COLUMN kind TEXT NOT NULL DEFAULT 'single_leg'");
   }

@@ -8,6 +8,7 @@ import { logAutotradeEvent, listAutotradeEvents } from '../../db/autotradeEvents
 import { listUniverse } from '../../db/universe';
 import { getMarketAtrPct } from './executionGuards';
 import { computeEquityCurveDerisk } from './equityCurveDerisk';
+import { cutFactor, effectiveRiskPct as computeEffectiveRiskPct } from './effectiveRisk';
 import { computeGradeExpectancyMultipliers } from './expectancySizing';
 import { computeMethodMultipliers, methodOfEquitySignal } from './methodSizing';
 import { fundableMaxQuantity, isTooSmallToFund, MIN_FUNDED_SIZE_FRACTION } from './buyingPowerSizing';
@@ -494,14 +495,18 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
   const expectancyMultiplier = ctx.expectancyMultiplier ?? 1;
   const methodMultiplier = ctx.methodMultiplier ?? 1;
   const finishLineFactor = ctx.finishLineFactor ?? 1;
-  const effectiveRiskPct =
-    ctx.riskPerTradePct *
-    (stepDownActive ? 1 - ctx.stepDownSizeCutPct / 100 : 1) *
-    (regimeActive ? 1 - ctx.regimeSizeCutPct / 100 : 1) *
-    (equityCurveDeriskActive ? 1 - equityCurveCutPct / 100 : 1) *
-    expectancyMultiplier *
-    methodMultiplier *
-    finishLineFactor;
+  // Through the shared SizingFactors, not a local product: optionsRiskCheck
+  // carried its own copy of this line and they drifted (see effectiveRisk.ts).
+  // Every field is required, so a new factor cannot be added to one book and
+  // forgotten on the other.
+  const effectiveRiskPct = computeEffectiveRiskPct(ctx.riskPerTradePct, {
+    stepDown: cutFactor(stepDownActive, ctx.stepDownSizeCutPct),
+    regime: cutFactor(regimeActive, ctx.regimeSizeCutPct),
+    equityCurveDerisk: cutFactor(equityCurveDeriskActive, equityCurveCutPct),
+    expectancy: expectancyMultiplier,
+    method: methodMultiplier,
+    finishLine: finishLineFactor,
+  });
   check(
     'step_down_sizing',
     true,

@@ -1474,6 +1474,16 @@ equally-weighted cards in the order they happened to be built:
   whenever its trigger gets turned on — so leaving them untouched changes nothing.
   R-multiples here are always measured against the position's own original stop
   distance, fixed at entry, even after the stop itself has since moved.
+  A paper scale-out **banks** the closed slice's P&L onto the position
+  (`realizedPartialPnl`), and every P&L figure the app shows for that trade —
+  the row, the day's realized total, the journal event, the per-grade edge
+  report — is the banked slices **plus** whatever the remainder finally made.
+  Before 2026-09-05 the slice was recorded only as a journal line and no P&L
+  read included it, so a trade that took 67% off at +0.25R and then trailed to
+  breakeven displayed as a **$0 scratch** rather than the winner it was; since
+  the scale-out only fires at a profit, the error only ever ran one way. The
+  existing history was repaired from those journal lines when the fix shipped
+  ($356.99 across 17 of 70 closed paper trades).
   On a **live** position the stop is not a number in a database but a resting
   **STOP_LOSS** order at the broker, so a ratchet is a *replace* on that leg —
   atomic, so the position is never momentarily unprotected. Two consequences
@@ -1531,6 +1541,11 @@ equally-weighted cards in the order they happened to be built:
   its trigger gets turned on — leaving them untouched changes nothing, and the
   loop's only automated options exit stays time-based (closing as expiration
   approaches, see "Options paper positions" below).
+  As on the equity side, an options scale-out **banks** the closed slice's P&L
+  onto the position, and every P&L figure for that trade is the banked slices
+  plus whatever the remainder made. (This book had not yet taken a single
+  partial when that was wired in on 2026-09-05 — it was fixed here before it
+  could cost anything, after the equity book lost $356.99 to the same gap.)
   **Options entry rules** control the contract-quality screen the options decision
   stage runs on every candidate **before** risk-check ever sees it — a candidate that
   fails here is what shows up in **Recent activity** as `No contract passed entry
