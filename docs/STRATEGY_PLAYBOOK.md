@@ -807,6 +807,22 @@ position. It stayed hidden while the two triggers were 1.0R and 0.3R apart — t
 scale-out simply always went first — and would have surfaced the moment they were set
 equal.
 
+**A sizing rule that reasons about size must read the size that will be used.** The
+finish-line trim asks "would a full-size winner overshoot what is left to the goal?"
+— and its own answer is then one of six multipliers applied to the entry, beside the
+losing-streak step-down, the high-ATR regime cut and the two realized-edge
+multipliers. Given the *raw* risk-per-trade % it reasoned about a payoff the trade
+was never going to produce: it fired when it should not have, cut deeper when it did,
+and then multiplied with the very cut it had ignored. At a 1.25% risk, 2R target and
+a 50% step-down, an $80 gap against a real $64.51 payoff should leave the trim off
+entirely; instead it trimmed to 62%, sizing the closing trade down to a ~$40 win it
+could no longer reach the line with. Always the same direction — under-sizing near
+the goal, right after the losses that make a day worth rescuing.
+
+The general rule: **a factor that composes with others cannot be computed as if it
+were alone.** When a rule's output multiplies into a product, its input has to be the
+rest of that product, not the starting value.
+
 **A scale-out you don't count is a scale-out that looks like it doesn't work.** The same
 trade shape has a second failure mode, and it is about measurement rather than triggers.
 Scaling out reduces the position's size in place, so the obvious P&L reading — exit price

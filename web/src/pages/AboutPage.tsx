@@ -105,9 +105,24 @@ export default function AboutPage() {
           <span className="tabular-nums">multiplier = 1 + avg&nbsp;R</span>, clamped to a min/max bound you choose (e.g.{' '}
           <span className="tabular-nums">0.5×–1.5×</span>), so a grade that has proven positive expectancy risks more
           and one that bleeds risks less, while a grade with too few closed trades stays neutral at{' '}
-          <span className="tabular-nums">1×</span>. It multiplies with the other sizing factors (step-down, regime,
-          equity-curve) and never lifts total exposure past the aggregate-risk cap; paper and live are scored on
-          separate books.
+          <span className="tabular-nums">1×</span>. It multiplies with the other sizing factors and never lifts total
+          exposure past the aggregate-risk cap; paper and live are scored on separate books.
+        </p>
+        <p className="mt-2">
+          There are <strong className="text-slate-200">six</strong> such factors, and the risk actually used is
+          risk-per-trade <span className="tabular-nums">×</span> all six — they compound rather than the tightest one
+          winning, so two reasons to size down both apply. In order: the{' '}
+          <strong className="text-slate-200">consecutive-loss step-down</strong>, the{' '}
+          <strong className="text-slate-200">high-market-ATR regime cut</strong>,{' '}
+          <strong className="text-slate-200">equity-curve de-risking</strong>, the{' '}
+          <strong className="text-slate-200">grade expectancy</strong> multiplier above, the{' '}
+          <strong className="text-slate-200">method lean</strong> (the same idea per trade method rather than per
+          grade), and <strong className="text-slate-200">finish-line sizing</strong>. Two of them are equity-only by
+          decision — options positions apply neither equity-curve de-risking nor grade expectancy, since an option's R
+          is premium paid while its grade is scored from the <em>underlying's</em> screener total. Finish-line sizing is
+          live-only on both instruments, because the daily goal is a percentage of the real account; and because its own
+          answer is one of these six, it measures a "full-size win" against the risk % left after the other five, not
+          against the raw configured percentage.
         </p>
         <p className="mt-2">
           Alongside the grade, every auto-traded entry also records its <em>at-entry context</em>: the{' '}

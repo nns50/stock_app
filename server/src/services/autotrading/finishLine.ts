@@ -46,11 +46,27 @@ export interface FinishLineFactorResult {
  * equity path's targetRMultiple, the options path's takeProfitPct/100.
  * Degrades to 1 (no trim) whenever the goal isn't measurable, the day is
  * behind, or a full-size win wouldn't overshoot.
+ *
+ * `riskPerTradePct` MUST be the effective risk % for THIS entry with every
+ * other sizing factor already applied — effectiveRisk.ts's
+ * preFinishLineRiskPct — not the raw config value.
+ *
+ * The distinction is the whole correctness of this function. Its own answer
+ * becomes one of six multipliers beside step-down, the regime cut, the equity
+ * -curve cut and the two edge multipliers. Handed the raw config %, it reasons
+ * about a payoff bigger than the trade will produce, so it fires when it
+ * should not and cuts deeper when it does — and then its factor multiplies
+ * with the very cut it ignored. At the live config (1.25% risk, 2R target, a
+ * 50% step-down after 2 losses) an $80 gap against a real $64.51 payoff should
+ * leave the trim INACTIVE; on the raw % it trimmed to 62%, sizing the closing
+ * trade down to a ~$40 win it could no longer reach the line with. Always the
+ * same direction: under-sizing near the goal, right after a couple of losses.
  */
 export function computeFinishLineFactor(input: {
   enabled: boolean;
   dailyTarget: DailyTargetStatus;
   equity: number;
+  /** The EFFECTIVE risk % for this entry — see the note above. */
   riskPerTradePct: number;
   rewardMultiple: number;
 }): FinishLineFactorResult {

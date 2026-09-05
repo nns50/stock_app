@@ -60,6 +60,7 @@ import { computeMethodMultipliers, methodOfEquitySignal } from './methodSizing';
 import { activeSymbolCooldowns, journalEntrySkipOncePerDay } from './symbolCooldown';
 import { isUnparseableSymbolError, markUnplaceableSymbol, unplaceableReason } from './unplaceableSymbols';
 import { computeFinishLineFactor, finishLineScoreGate } from './finishLine';
+import { cutFactor, preFinishLineFactors, preFinishLineRiskPct } from './effectiveRisk';
 import { evaluateStagnation } from './stagnationExit';
 import { evaluateEndOfDayFlatten, evaluateEntryCutoff } from './endOfDayFlatten';
 import { evaluateStopAdjust } from './stopAdjust';
@@ -1114,13 +1115,10 @@ export async function runLiveExecution(
   // name is not the loop's thesis and must not gate it.
   const closedAutotradeForReentry =
     cfg.symbolReentryCooldownMinutes > 0 ? listPositions({ status: 'closed' }).filter(isAutotradePosition) : [];
-  const finishLine = computeFinishLineFactor({
-    enabled: cfg.finishLineSizingEnabled,
-    dailyTarget,
-    equity,
-    riskPerTradePct: cfg.riskPerTradePct,
-    rewardMultiple: cfg.targetRMultiple,
-  });
+  // The finish-line trim is derived PER SIGNAL, below — not once per batch. It
+  // has to reason about the risk % this particular entry will actually take,
+  // and two of the factors that set it (grade expectancy, method lean) are
+  // per-signal. See computeFinishLineFactor's own note.
 
   const outcomes: LiveExecutionOutcome[] = [];
   for (const { signal: candidateSignal } of candidates) {
@@ -1327,6 +1325,39 @@ export async function runLiveExecution(
       runningPositions,
       sectorOf,
     );
+    const expectancyMultiplier =
+      snapshot.gradeExpectancyMultipliers[
+        convictionGrade(signal.score, {
+          aMinScore: cfg.convictionGradeAMinScore,
+          bMinScore: cfg.convictionGradeBMinScore,
+        })
+      ] ?? 1;
+    const methodMultiplier = snapshot.methodMultipliers[methodOfEquitySignal(signal.side)] ?? 1;
+    // The finish-line trim, from every OTHER factor this entry will be sized
+    // by. It is one of six multipliers in the same product, so comparing the
+    // gap to the bank line against a payoff derived from the raw
+    // cfg.riskPerTradePct double-counted every cut already in force — see
+    // computeFinishLineFactor's own note for the worked case.
+    const finishLine = computeFinishLineFactor({
+      enabled: cfg.finishLineSizingEnabled,
+      dailyTarget,
+      equity,
+      riskPerTradePct: preFinishLineRiskPct(
+        cfg.riskPerTradePct,
+        preFinishLineFactors({
+          consecutiveLosses,
+          stepDownAfterLosses: cfg.stepDownAfterLosses,
+          stepDownSizeCutPct: cfg.stepDownSizeCutPct,
+          marketAtrPct,
+          regimeAtrThresholdPct: cfg.regimeAtrThresholdPct,
+          regimeSizeCutPct: cfg.regimeSizeCutPct,
+          equityCurveDerisk: cutFactor(snapshot.equityCurveDeriskActive, cfg.equityCurveDeriskCutPct),
+          expectancy: expectancyMultiplier,
+          method: methodMultiplier,
+        }),
+      ),
+      rewardMultiple: cfg.targetRMultiple,
+    });
     const ctx: RiskCheckContext = {
       equity,
       dailyPnl,
@@ -1363,14 +1394,8 @@ export async function runLiveExecution(
       // not the raw signal entry. Signed: a buy's limit is above the quote and
       // a short's below, matching attemptLiveEntry's own buffer exactly.
       limitBufferPct: (signal.side === 'buy' ? 1 : -1) * MARKETABLE_LIMIT_BUFFER_PCT,
-      expectancyMultiplier:
-        snapshot.gradeExpectancyMultipliers[
-          convictionGrade(signal.score, {
-            aMinScore: cfg.convictionGradeAMinScore,
-            bMinScore: cfg.convictionGradeBMinScore,
-          })
-        ] ?? 1,
-      methodMultiplier: snapshot.methodMultipliers[methodOfEquitySignal(signal.side)] ?? 1,
+      expectancyMultiplier,
+      methodMultiplier,
       finishLineFactor: finishLine.factor,
       finishLineDetail: finishLine.detail,
     };

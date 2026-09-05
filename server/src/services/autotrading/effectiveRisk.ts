@@ -75,3 +75,77 @@ export function effectiveRiskPct(riskPerTradePct: number, f: SizingFactors): num
     riskPerTradePct * f.stepDown * f.regime * f.equityCurveDerisk * f.expectancy * f.method * f.finishLine;
   return Number.isFinite(product) ? Math.max(0, product) : 0;
 }
+
+// ---------------------------------------------------------------------------
+// Assembling the factors. Split out so the finish-line trim can see the risk %
+// a trade will ACTUALLY use.
+//
+// computeFinishLineFactor asks "would a full-size win overshoot the remaining
+// gap to the bank line?" and it was handed the raw config riskPerTradePct,
+// while its own answer then became the sixth multiplier beside step-down and
+// the rest. So whenever any other factor was below 1 the payoff it reasoned
+// about was larger than the payoff the trade would produce: it fired when it
+// should not have, and cut deeper when it did — twice over, since its factor
+// then multiplied with the cut it had ignored. Always in the same direction,
+// under-sizing near the goal exactly after a couple of losses.
+//
+// preFinishLineRiskPct is the fix: the risk % the trade would take if the trim
+// did not exist. The finish line reasons about that, and the result multiplies
+// it. Both books assemble their factors through the same builder, so this
+// cannot become a third copy of the product.
+// ---------------------------------------------------------------------------
+
+/** Every factor except the finish line — what a book knows before the trim. */
+export type PreFinishLineFactors = Omit<SizingFactors, 'finishLine'>;
+
+/** Consecutive-loss step-down is active. */
+export function isStepDownActive(consecutiveLosses: number, stepDownAfterLosses: number): boolean {
+  return consecutiveLosses >= stepDownAfterLosses;
+}
+
+/**
+ * The high-ATR regime cut is active.
+ *
+ * A threshold of 0 means OFF, matching every other "0 disables" field in this
+ * config. Without the `> 0` guard any market ATR% exceeds 0, so setting the
+ * threshold to 0 to turn the feature off instead pinned the cut permanently ON
+ * — which is exactly what happened: the equity copy of this test was fixed and
+ * the options copy was missed, halving every options position while the equity
+ * path correctly used the full risk %. It lives here now so there is one copy
+ * to be right.
+ */
+export function isRegimeActive(marketAtrPct: number | null | undefined, thresholdPct: number): boolean {
+  return thresholdPct > 0 && marketAtrPct != null && marketAtrPct > thresholdPct;
+}
+
+export interface PreFinishLineInputs {
+  consecutiveLosses: number;
+  stepDownAfterLosses: number;
+  stepDownSizeCutPct: number;
+  marketAtrPct: number | null | undefined;
+  regimeAtrThresholdPct: number;
+  regimeSizeCutPct: number;
+  /** Already-decided multipliers. Pass NEUTRAL where a book deliberately does
+   *  not apply one — a written opt-out, not an omission. */
+  equityCurveDerisk: number;
+  expectancy: number;
+  method: number;
+}
+
+export function preFinishLineFactors(i: PreFinishLineInputs): PreFinishLineFactors {
+  return {
+    stepDown: cutFactor(isStepDownActive(i.consecutiveLosses, i.stepDownAfterLosses), i.stepDownSizeCutPct),
+    regime: cutFactor(isRegimeActive(i.marketAtrPct, i.regimeAtrThresholdPct), i.regimeSizeCutPct),
+    equityCurveDerisk: i.equityCurveDerisk,
+    expectancy: i.expectancy,
+    method: i.method,
+  };
+}
+
+/**
+ * The risk % this trade would use if the finish-line trim did not exist — the
+ * ONLY correct basis for deciding whether a win would overshoot the bank line.
+ */
+export function preFinishLineRiskPct(riskPerTradePct: number, f: PreFinishLineFactors): number {
+  return effectiveRiskPct(riskPerTradePct, { ...f, finishLine: NEUTRAL });
+}

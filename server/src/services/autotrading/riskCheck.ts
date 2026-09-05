@@ -8,7 +8,13 @@ import { logAutotradeEvent, listAutotradeEvents } from '../../db/autotradeEvents
 import { listUniverse } from '../../db/universe';
 import { getMarketAtrPct } from './executionGuards';
 import { computeEquityCurveDerisk } from './equityCurveDerisk';
-import { cutFactor, effectiveRiskPct as computeEffectiveRiskPct } from './effectiveRisk';
+import {
+  cutFactor,
+  effectiveRiskPct as computeEffectiveRiskPct,
+  isRegimeActive,
+  isStepDownActive,
+  preFinishLineFactors,
+} from './effectiveRisk';
 import { computeGradeExpectancyMultipliers } from './expectancySizing';
 import { computeMethodMultipliers, methodOfEquitySignal } from './methodSizing';
 import { fundableMaxQuantity, isTooSmallToFund, MIN_FUNDED_SIZE_FRACTION } from './buyingPowerSizing';
@@ -483,13 +489,8 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
   );
   if (!equityOk) return blocked(ZERO_SIZING, false, false, false);
 
-  const stepDownActive = ctx.consecutiveLosses >= ctx.stepDownAfterLosses;
-  // A threshold of 0 means OFF, matching how every other "0 disables" field in
-  // this config reads (and what the config route documents for this one). Without
-  // the > 0 guard, any market ATR% exceeds 0, so setting the threshold to 0 to
-  // turn the feature off instead pinned the regime size cut permanently ON.
-  const regimeActive =
-    ctx.regimeAtrThresholdPct > 0 && ctx.marketAtrPct != null && ctx.marketAtrPct > ctx.regimeAtrThresholdPct;
+  const stepDownActive = isStepDownActive(ctx.consecutiveLosses, ctx.stepDownAfterLosses);
+  const regimeActive = isRegimeActive(ctx.marketAtrPct, ctx.regimeAtrThresholdPct);
   const equityCurveDeriskActive = ctx.equityCurveDeriskActive === true;
   const equityCurveCutPct = ctx.equityCurveDeriskCutPct ?? 0;
   const expectancyMultiplier = ctx.expectancyMultiplier ?? 1;
@@ -498,13 +499,21 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
   // Through the shared SizingFactors, not a local product: optionsRiskCheck
   // carried its own copy of this line and they drifted (see effectiveRisk.ts).
   // Every field is required, so a new factor cannot be added to one book and
-  // forgotten on the other.
+  // forgotten on the other. The caller derives finishLineFactor from
+  // preFinishLineRiskPct over these same five, so the trim reasons about the
+  // payoff this trade will really produce.
   const effectiveRiskPct = computeEffectiveRiskPct(ctx.riskPerTradePct, {
-    stepDown: cutFactor(stepDownActive, ctx.stepDownSizeCutPct),
-    regime: cutFactor(regimeActive, ctx.regimeSizeCutPct),
-    equityCurveDerisk: cutFactor(equityCurveDeriskActive, equityCurveCutPct),
-    expectancy: expectancyMultiplier,
-    method: methodMultiplier,
+    ...preFinishLineFactors({
+      consecutiveLosses: ctx.consecutiveLosses,
+      stepDownAfterLosses: ctx.stepDownAfterLosses,
+      stepDownSizeCutPct: ctx.stepDownSizeCutPct,
+      marketAtrPct: ctx.marketAtrPct,
+      regimeAtrThresholdPct: ctx.regimeAtrThresholdPct,
+      regimeSizeCutPct: ctx.regimeSizeCutPct,
+      equityCurveDerisk: cutFactor(equityCurveDeriskActive, equityCurveCutPct),
+      expectancy: expectancyMultiplier,
+      method: methodMultiplier,
+    }),
     finishLine: finishLineFactor,
   });
   check(
