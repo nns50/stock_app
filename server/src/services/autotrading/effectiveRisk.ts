@@ -149,3 +149,24 @@ export function preFinishLineFactors(i: PreFinishLineInputs): PreFinishLineFacto
 export function preFinishLineRiskPct(riskPerTradePct: number, f: PreFinishLineFactors): number {
   return effectiveRiskPct(riskPerTradePct, { ...f, finishLine: NEUTRAL });
 }
+
+/**
+ * How a single factor should be DESCRIBED, derived from the factor itself
+ * rather than from whatever triggered it.
+ *
+ * A trigger firing and a size actually changing are two different facts, and
+ * saying "active" for the first is how a status comes to lie. Found live on
+ * 2026-09-05: regimeAtrThresholdPct was 3 with regimeSizeCutPct 0, so on a
+ * high-ATR day the risk check reported `regime_sizing: active — market ATR 3.5%
+ * exceeds 3%, sizing at 1.25% instead of 1.25% (0% cut)`. Every word true, the
+ * headline wrong: nothing was cut.
+ *
+ * Reading the factor is what makes this impossible to get wrong — a factor of
+ * exactly 1 changed nothing, whatever fired.
+ */
+export type FactorState = 'inactive' | 'triggered-but-neutral' | 'active';
+
+export function factorState(triggered: boolean, factor: number): FactorState {
+  if (!triggered) return 'inactive';
+  return factor === NEUTRAL ? 'triggered-but-neutral' : 'active';
+}

@@ -1,7 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { cutFactor, effectiveRiskPct, NEUTRAL, SizingFactors } from '../src/services/autotrading/effectiveRisk';
+import {
+  cutFactor,
+  effectiveRiskPct,
+  factorState,
+  NEUTRAL,
+  SizingFactors,
+} from '../src/services/autotrading/effectiveRisk';
 
 // ---------------------------------------------------------------------------
 // The shared sizing-factor product (2026-09-05). riskCheck.ts and
@@ -107,5 +113,46 @@ describe('both risk checks derive the risk % here and nowhere else', () => {
       .filter((l) => !l.trimStart().startsWith('//') && !l.trimStart().startsWith('*'))
       .join('\n');
     expect(body).not.toMatch(/riskPerTradePct\s*\*/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A trigger firing and a size actually changing are different facts. Found live
+// on 2026-09-05: regimeAtrThresholdPct 3 with regimeSizeCutPct 0, so on a
+// high-ATR day the risk check reported
+//   regime_sizing: active — market ATR 3.5% exceeds 3%, sizing at 1.25% instead
+//   of 1.25% (0% cut)
+// Every word true and the headline wrong. Reading the FACTOR is what makes that
+// impossible: a factor of exactly 1 changed nothing, whatever fired.
+// ---------------------------------------------------------------------------
+describe('factorState', () => {
+  it('is inactive when nothing triggered, whatever the cut would have been', () => {
+    expect(factorState(false, cutFactor(false, 50))).toBe('inactive');
+    expect(factorState(false, cutFactor(false, 0))).toBe('inactive');
+  });
+
+  it('is active when something triggered AND the size moved', () => {
+    expect(factorState(true, cutFactor(true, 50))).toBe('active');
+  });
+
+  it('separates a trigger that cut nothing — the live case', () => {
+    expect(factorState(true, cutFactor(true, 0))).toBe('triggered-but-neutral');
+  });
+
+  it('reads a non-cut multiplier the same way', () => {
+    // Expectancy and method arrive as multipliers rather than cut percentages.
+    expect(factorState(true, 1)).toBe('triggered-but-neutral');
+    expect(factorState(true, 1.12)).toBe('active');
+    expect(factorState(true, 0.5)).toBe('active');
+  });
+});
+
+describe('the risk checks never call a zero cut "active"', () => {
+  const BOOKS = ['riskCheck.ts', 'optionsRiskCheck.ts'] as const;
+  it.each(BOOKS)('%s derives its sizing status from factorState', (name) => {
+    const src = readFileSync(join(__dirname, '..', 'src', 'services', 'autotrading', name), 'utf8');
+    expect(src).toMatch(/factorState\(/);
+    // The old shape: a bare boolean choosing the word "active".
+    expect(src).not.toMatch(/\n\s*(?:stepDownActive|regimeActive|equityCurveDeriskActive)\n\s*\?\s*`active/);
   });
 });
