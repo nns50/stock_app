@@ -170,6 +170,28 @@ export function evaluateOptionsRiskCheck(signal: OptionsTradeSignal, ctx: RiskCh
     ctx.regimeAtrThresholdPct > 0 && ctx.marketAtrPct != null && ctx.marketAtrPct > ctx.regimeAtrThresholdPct;
   const methodMultiplier = ctx.methodMultiplier ?? 1;
   const finishLineFactor = ctx.finishLineFactor ?? 1;
+  // NOT here, deliberately as of 2026-09-05: the GRADE-expectancy multiplier
+  // (expectancySizing.ts). Options entries are stamped with a grade like every
+  // other autotrade entry, and that grade feeds the Journal's per-grade edge
+  // report — but it does not size them.
+  //
+  // Recorded because it was the one asymmetry in the sizing stack with no
+  // stated reason. Auditing all four books, every other difference is either
+  // uniform or explained: the method lean now applies to all four, the
+  // finish-line factor is live-only on both instruments (it is about the live
+  // daily target), equity-curve de-risk says "options never sets it" a few
+  // lines up, and the ADV participation cap is a share-volume idea options
+  // replace with their own open-interest and volume floors. Grade expectancy
+  // was simply never wired here.
+  //
+  // Left OFF rather than switched on, for two reasons. It is live money, and
+  // turning on a new size multiplier is not a change to make on inference
+  // about intent. And it would do nothing yet in any case: the multiplier is
+  // gated on expectancyMinTrades (10) closed trades PER GRADE, and the options
+  // books are nowhere near that. Worth a deliberate decision once they are —
+  // the argument against is that an option's R is premium paid while the grade
+  // is scored from the UNDERLYING's screener total, so the two are further
+  // apart than they are for a stock.
   const effectiveRiskPct =
     ctx.riskPerTradePct *
     (stepDownActive ? 1 - ctx.stepDownSizeCutPct / 100 : 1) *

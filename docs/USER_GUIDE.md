@@ -1225,6 +1225,12 @@ equally-weighted cards in the order they happened to be built:
   the multiplier recomputes every tick from realized results, and it stacks multiplicatively
   with step-down, regime, and equity-curve sizing — the aggregate-risk cap still binds on top.
   Live + paper only, no backtest equivalent (same as the other sizing multipliers).
+  **Equity only:** options entries are stamped with a grade and appear in the per-grade
+  edge report, but grade expectancy does not size them. That is a standing decision
+  rather than an oversight — an option's R is the premium paid, while its grade comes
+  from the *underlying's* screener score, so the two are further apart than they are for
+  a stock — and it would be inert today regardless, since neither options book is near
+  the min-sample floor. The per-method lean below is the one that does reach options.
   **Method-weighted sizing** (2026-08-21, off by default) is the same realized-edge lean
   sliced along a different axis: instead of conviction grades, it scores the four
   **methods** — long stock, short stock, calls, puts — each on its **most recent** closed
