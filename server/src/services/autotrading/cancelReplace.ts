@@ -25,15 +25,34 @@ import { WebullOpenOrder } from '../../providers/webull/orders';
 //      accepted REQUEST, not a completed action, and selling against a leg
 //      that is still resting is the accidental-short bug the whole scale-out
 //      design exists to avoid
-//   3. only then sell the partial
-//   4. immediately re-bracket the remainder
-//   5. if 4 fails, the remainder is NAKED — force-close it rather than leave
-//      unhedged exposure nobody chose
+//   3. re-bracket the REMAINDER (keepQty), before anything sells
+//   4. only then sell the partial
+//
+// REORDERED 2026-09-05, and the old shape is worth recording because it was
+// live-but-unreachable behind the flag for a day. It read: sell the partial,
+// then re-bracket, and force-close the remainder if that re-bracket failed.
+// Only steps 1 and 2 were ever implemented — the function journalled
+// "unprotected … re-arm by hand" and RETURNED OK, and the caller then sold.
+// Turning the flag on would therefore have cancelled the bracket, sold the
+// partial, and left the remainder with no stop and no target indefinitely.
+//
+// Bracketing before selling removes the bad state rather than recovering from
+// it. If the re-bracket fails, nothing has been sold, so the rollback is to
+// place a bracket for the FULL position and abandon the scale-out — back to a
+// protected position and a missed partial, exactly where we started.
+// Sell-first has no such rollback: the shares are gone and the only move left
+// is a forced close, which is a worse outcome chosen under time pressure.
 //
 // Step 2 is the one that cannot be skipped for latency. If the confirmation
 // read fails or is ambiguous, the correct move is to RE-PLACE the bracket we
-// just cancelled and abandon the scale-out — back to a fully protected
-// position and a missed partial, which is exactly where we started.
+// just cancelled and abandon the scale-out.
+//
+// One asymmetry that matters in step 3's failure handling: a KNOWN rejection
+// means no bracket exists, so restoring a full-size one is safe. An UNANSWERED
+// placement may well be resting, and stacking a second bracket on top of it
+// would leave two stops against one position — the accidental short again. So
+// an unanswered re-bracket is journalled and left to the next tick's
+// checkLiveBracketProtection read, never "fixed" by placing more orders.
 //
 // The PREFERRED route is not this one. Two brackets placed at entry (67% at a
 // 0.25R target, 33% at the full target) needs no modification and never leaves

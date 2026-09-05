@@ -387,6 +387,81 @@ export function buildOrderRequest(intent: OrderIntent, clientOrderId: string, is
   return { new_orders: [buildWebullOrder(intent, clientOrderId, isShort)] };
 }
 
+/**
+ * A bracket for shares ALREADY HELD — take-profit + stop-loss, no MASTER.
+ *
+ * Documented (reference/common-order-place, confirmed 2026-09-04): "To sell and
+ * close an existing position with take-profit/stop-loss, submit only
+ * STOP_PROFIT/STOP_LOSS sub-orders (side = SELL)… no MASTER order is required."
+ * Everything else here builds a bracket around an ENTRY, which is the wrong
+ * shape when the shares are already owned.
+ *
+ * Added 2026-09-05 for step 4 of the cancel-replace scale-out. That sequence is
+ * documented in cancelReplace.ts as five steps, and only the first three
+ * existed: it cancelled the bracket, sold the partial, and then simply
+ * RETURNED — leaving the remainder with no stop and no target indefinitely,
+ * with a journal note telling a human to "re-arm by hand". A missed partial is
+ * worth +0.18R; an unhedged real-money position is worth much less than that,
+ * so the flag was never safe to turn on.
+ *
+ * `intent.side` is the ENTRY side (buy for a long); the legs are emitted on the
+ * closing side, exactly as bracketExit does for an entry bracket, and
+ * `intent.quantity` is the number of shares to protect.
+ */
+export function buildStandaloneBracketRequest(
+  intent: OrderIntent,
+  takeProfitPrice: number | undefined,
+  stopLossPrice: number | undefined,
+): WebullOrderRequest | null {
+  const new_orders: WebullOrderPayload[] = [];
+  if (takeProfitPrice !== undefined) {
+    new_orders.push(bracketExit(intent, 'STOP_PROFIT', 'LIMIT', takeProfitPrice, newClientOrderId()));
+  }
+  if (stopLossPrice !== undefined) {
+    new_orders.push(bracketExit(intent, 'STOP_LOSS', 'STOP_LOSS', stopLossPrice, newClientOrderId()));
+  }
+  // Nothing to place is not "an empty bracket" — it is a caller that has no
+  // protection to re-arm, and silently posting zero orders would read as
+  // success. Fail closed and let the caller force-close instead.
+  if (new_orders.length === 0) return null;
+  return { new_orders, client_combo_order_id: newClientOrderId() };
+}
+
+/**
+ * Place a standalone bracket over shares already held. THIS SUBMITS LIVE
+ * ORDERS — same contract as webullPlaceOrder: the caller owns the gating.
+ */
+export async function webullPlaceStandaloneBracket(
+  accountId: string,
+  intent: OrderIntent,
+  takeProfitPrice: number | undefined,
+  stopLossPrice: number | undefined,
+): Promise<WebullPlaceResult> {
+  if (!webullConfigured()) return { ok: false, error: 'Webull is not configured.' };
+  const request = buildStandaloneBracketRequest(intent, takeProfitPrice, stopLossPrice);
+  if (!request) return { ok: false, error: 'no take-profit or stop-loss price to bracket with' };
+  const r = await webullClient().call('POST', '/openapi/trade/order/place', {
+    body: { account_id: accountId, ...request },
+    surface: 'trade',
+  });
+  if (!r.ok) {
+    const j = (r.data ?? {}) as { msg?: string; message?: string; error_msg?: string };
+    return {
+      ok: false,
+      // An UNANSWERED placement is not a known failure: the orders may well be
+      // resting. Mirrors webullPlaceOrder's own ambiguity handling so the
+      // caller can decide rather than assuming the worst.
+      // Same derivation webullPlaceOrder uses: no answer, a rate limit, or a
+      // 5xx means the orders MAY be resting. A caller that force-closes on a
+      // known rejection must not force-close on an unanswered one.
+      ambiguous: r.status === 0 || r.status === 429 || r.status >= 500,
+      raw: r.data,
+      error: j.msg || j.message || j.error_msg || `Webull request failed (${r.status})`,
+    };
+  }
+  return { ok: true, raw: r.data, clientComboOrderId: request.client_combo_order_id };
+}
+
 export interface WebullPreview {
   ok: boolean;
   /** Raw broker payload — always included so the real estimate fields can be read. */

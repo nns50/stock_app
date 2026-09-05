@@ -24,6 +24,7 @@ vi.mock('../src/providers/webull/orders', async (importOriginal) => {
     webullCancelOrder: vi.fn(),
     webullReplaceOrder: vi.fn(),
     webullReplaceOrders: vi.fn(),
+    webullPlaceStandaloneBracket: vi.fn(),
     listWebullOpenOrders: vi.fn(),
   };
 });
@@ -37,6 +38,7 @@ import {
   webullCancelOrder,
   webullReplaceOrder,
   webullReplaceOrders,
+  webullPlaceStandaloneBracket,
   listWebullOpenOrders,
   WebullOrderStatus,
 } from '../src/providers/webull/orders';
@@ -67,6 +69,7 @@ const mockOrderStatus = vi.mocked(webullOrderStatus);
 const mockCancelOrder = vi.mocked(webullCancelOrder);
 const mockReplaceOrder = vi.mocked(webullReplaceOrder);
 const mockReplaceOrders = vi.mocked(webullReplaceOrders);
+const mockStandaloneBracket = vi.mocked(webullPlaceStandaloneBracket);
 const mockOpenOrders = vi.mocked(listWebullOpenOrders);
 
 /** A resting broker open order (defaults to a working SELL on AAPL — a long's
@@ -215,6 +218,7 @@ beforeEach(() => {
   mockCancelOrder.mockReset();
   mockReplaceOrder.mockReset();
   mockReplaceOrders.mockReset();
+  mockStandaloneBracket.mockReset();
   mockOpenOrders.mockReset();
   // Default: no resting orders at the broker, so a triggered force-close finds
   // nothing to cancel and proceeds. Tests exercising the cancel path override.
@@ -991,6 +995,100 @@ describe('checkLiveEquityScaleOuts', () => {
     expect(await checkLiveEquityScaleOuts()).toEqual([]);
     expect(mockPlaceOrder).not.toHaveBeenCalled();
     expect(mockReplaceOrders).not.toHaveBeenCalled();
+  });
+
+  // Cancel-and-replace is the fallback for when the broker will not resize a
+  // resting combo leg. It was shipped behind a flag with only the first TWO of
+  // its five documented steps implemented: it cancelled the bracket, journalled
+  // "unprotected — re-arm by hand", and returned OK, after which the caller sold
+  // the partial. Turning the flag on would have left the remainder with no stop
+  // and no target INDEFINITELY, which is strictly worse than the missed partial
+  // (+0.18R) it was meant to rescue.
+  //
+  // The re-bracket now happens BEFORE the sell, so a failure rolls back with
+  // nothing sold.
+  describe('cancel-replace fallback', () => {
+    const bothLegs = () => ({ ok: true, orders: [restingLeg('STOP-1', 'sl'), restingLeg('TGT-1', 'tp')] });
+
+    it('brackets the remainder BEFORE selling the partial', async () => {
+      const { position, quantity } = await armed(200);
+      setAutotradeConfig({ liveScaleOutCancelReplaceEnabled: true });
+      mockOpenOrders.mockResolvedValueOnce(bothLegs()).mockResolvedValueOnce({ ok: true, orders: [] }); // re-read after the cancels: gone
+      mockReplaceOrders.mockResolvedValue({ ok: false, error: 'combo leg quantity is not modifiable' });
+      mockCancelOrder.mockResolvedValue({ ok: true });
+      mockStandaloneBracket.mockResolvedValue({ ok: true, clientComboOrderId: 'COMBO-NEW' });
+
+      const out = await checkLiveEquityScaleOuts();
+
+      expect(out[0]).toMatchObject({ positionId: position.id, requested: true });
+      const keep = quantity - Math.floor(quantity / 2);
+      // The remainder is bracketed, at the position's own stop and target...
+      expect(mockStandaloneBracket).toHaveBeenCalledTimes(1);
+      const [, protectIntent, tp, sl] = mockStandaloneBracket.mock.calls[0];
+      expect(protectIntent).toMatchObject({ symbol: 'AAPL', quantity: keep, side: 'buy' });
+      expect(tp).toBe(position.targetPrice ?? undefined);
+      expect(sl).toBe(position.stopPrice ?? undefined);
+      // ...and only THEN does anything sell. This ordering is the whole fix:
+      // reversed, a failed re-bracket leaves shares already sold and unhedged.
+      expect(mockPlaceOrder.mock.invocationCallOrder[0]).toBeGreaterThan(
+        mockStandaloneBracket.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('rolls back to a FULL-size bracket and sells nothing when the re-bracket is rejected', async () => {
+      await armed(200);
+      setAutotradeConfig({ liveScaleOutCancelReplaceEnabled: true });
+      mockOpenOrders.mockResolvedValueOnce(bothLegs()).mockResolvedValueOnce({ ok: true, orders: [] });
+      mockReplaceOrders.mockResolvedValue({ ok: false, error: 'not modifiable' });
+      mockCancelOrder.mockResolvedValue({ ok: true });
+      mockStandaloneBracket
+        .mockResolvedValueOnce({ ok: false, error: 'rejected' }) // keepQty bracket
+        .mockResolvedValueOnce({ ok: true }); // full-size restore
+
+      const out = await checkLiveEquityScaleOuts();
+
+      expect(out[0]).toMatchObject({ requested: false });
+      expect(mockStandaloneBracket).toHaveBeenCalledTimes(2);
+      // The restore covers the FULL position, not just the slice we meant to keep.
+      const [, restoreIntent] = mockStandaloneBracket.mock.calls[1];
+      expect((restoreIntent as { quantity: number }).quantity).toBeGreaterThan(
+        (mockStandaloneBracket.mock.calls[0][1] as { quantity: number }).quantity,
+      );
+      // Nothing was sold — that is what makes the rollback clean.
+      expect(mockPlaceOrder).not.toHaveBeenCalled();
+    });
+
+    it('does NOT stack a second bracket when the re-bracket goes unanswered', async () => {
+      // Ambiguous means it may well be resting. A full-size restore on top of a
+      // live bracket is two stops against one position — the accidental short
+      // this whole design exists to avoid.
+      await armed(200);
+      setAutotradeConfig({ liveScaleOutCancelReplaceEnabled: true });
+      mockOpenOrders.mockResolvedValueOnce(bothLegs()).mockResolvedValueOnce({ ok: true, orders: [] });
+      mockReplaceOrders.mockResolvedValue({ ok: false, error: 'not modifiable' });
+      mockCancelOrder.mockResolvedValue({ ok: true });
+      mockStandaloneBracket.mockResolvedValue({ ok: false, ambiguous: true, error: 'timeout' });
+
+      const out = await checkLiveEquityScaleOuts();
+
+      expect(out[0]).toMatchObject({ requested: false });
+      expect(mockStandaloneBracket).toHaveBeenCalledTimes(1); // no restore attempt
+      expect(mockPlaceOrder).not.toHaveBeenCalled();
+    });
+
+    it('stays inert while the flag is off — the bracket is never cancelled', async () => {
+      await armed(200);
+      setAutotradeConfig({ liveScaleOutCancelReplaceEnabled: false });
+      mockOpenOrders.mockResolvedValue(bothLegs());
+      mockReplaceOrders.mockResolvedValue({ ok: false, error: 'not modifiable' });
+
+      const out = await checkLiveEquityScaleOuts();
+
+      expect(out[0]).toMatchObject({ requested: false });
+      expect(mockCancelOrder).not.toHaveBeenCalled();
+      expect(mockStandaloneBracket).not.toHaveBeenCalled();
+      expect(mockPlaceOrder).not.toHaveBeenCalled();
+    });
   });
 
   it('reduces BOTH resting legs in ONE request, before selling', async () => {
