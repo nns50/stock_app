@@ -12,7 +12,13 @@ import {
   RiskCheckResult,
   RiskCheckRule,
 } from './riskCheck';
-import { cutFactor, effectiveRiskPct as computeEffectiveRiskPct, NEUTRAL } from './effectiveRisk';
+import {
+  effectiveRiskPct as computeEffectiveRiskPct,
+  isRegimeActive,
+  isStepDownActive,
+  preFinishLineFactors,
+  NEUTRAL,
+} from './effectiveRisk';
 
 // ---------------------------------------------------------------------------
 // The options counterpart to riskCheck.ts (docs/AUTOTRADING_SPEC.md, phase 10)
@@ -161,14 +167,12 @@ export function evaluateOptionsRiskCheck(signal: OptionsTradeSignal, ctx: RiskCh
   );
   if (!equityOk) return blocked(zeroSizing, false, false);
 
-  const stepDownActive = ctx.consecutiveLosses >= ctx.stepDownAfterLosses;
-  // Mirrors riskCheck.ts's equity guard: a threshold of 0 means OFF. Without
-  // the > 0 term any market ATR% exceeds 0, so setting the threshold to 0 to
-  // disable the feature instead pinned the regime size cut permanently ON —
-  // halving every options position while the equity path correctly used the
-  // full risk %. The equity copy was fixed; this one was missed.
-  const regimeActive =
-    ctx.regimeAtrThresholdPct > 0 && ctx.marketAtrPct != null && ctx.marketAtrPct > ctx.regimeAtrThresholdPct;
+  // Both predicates come from effectiveRisk.ts now. The "threshold of 0 means
+  // OFF" guard used to be written out twice, and the equity copy was fixed
+  // while this one was missed — pinning the regime cut permanently ON here and
+  // halving every options position. One copy cannot be half-fixed.
+  const stepDownActive = isStepDownActive(ctx.consecutiveLosses, ctx.stepDownAfterLosses);
+  const regimeActive = isRegimeActive(ctx.marketAtrPct, ctx.regimeAtrThresholdPct);
   const methodMultiplier = ctx.methodMultiplier ?? 1;
   const finishLineFactor = ctx.finishLineFactor ?? 1;
   // NOT here, deliberately as of 2026-09-05: the GRADE-expectancy multiplier
@@ -199,13 +203,19 @@ export function evaluateOptionsRiskCheck(signal: OptionsTradeSignal, ctx: RiskCh
   // is a written NEUTRAL with a reason, and a new factor does not compile here
   // until this book says what it does with it.
   const effectiveRiskPct = computeEffectiveRiskPct(ctx.riskPerTradePct, {
-    stepDown: cutFactor(stepDownActive, ctx.stepDownSizeCutPct),
-    regime: cutFactor(regimeActive, ctx.regimeSizeCutPct),
-    // Equity-only, as the blocked() path a few lines up already states.
-    equityCurveDerisk: NEUTRAL,
-    // Off by decision, not by omission — see the block above.
-    expectancy: NEUTRAL,
-    method: methodMultiplier,
+    ...preFinishLineFactors({
+      consecutiveLosses: ctx.consecutiveLosses,
+      stepDownAfterLosses: ctx.stepDownAfterLosses,
+      stepDownSizeCutPct: ctx.stepDownSizeCutPct,
+      marketAtrPct: ctx.marketAtrPct,
+      regimeAtrThresholdPct: ctx.regimeAtrThresholdPct,
+      regimeSizeCutPct: ctx.regimeSizeCutPct,
+      // Equity-only, as the blocked() path a few lines up already states.
+      equityCurveDerisk: NEUTRAL,
+      // Off by decision, not by omission — see the block above.
+      expectancy: NEUTRAL,
+      method: methodMultiplier,
+    }),
     finishLine: finishLineFactor,
   });
   check(

@@ -64,6 +64,7 @@ import { evaluateOptionsRiskCheck, OptionsRiskCheckResult, optionsPositionNotion
 import { journalMethodMultipliers, methodOfOptionsSignal } from './methodSizing';
 import { activeSymbolCooldowns, journalEntrySkipOncePerDay } from './symbolCooldown';
 import { computeFinishLineFactor, finishLineScoreGate } from './finishLine';
+import { preFinishLineFactors, preFinishLineRiskPct, NEUTRAL } from './effectiveRisk';
 import { evaluateDailyTarget } from './dailyTarget';
 import { getDailyBaseline } from '../../db/dailyBaseline';
 import { correlatedNotional, sectorNotional, buildSectorOf, RiskCheckContext } from './riskCheck';
@@ -882,13 +883,9 @@ export async function runLiveOptionsExecution(
   // % of premium, in R terms.
   const dailyTarget = evaluateDailyTarget(cfg, getDailyBaseline());
   const cooldowns = activeSymbolCooldowns(cfg);
-  const finishLine = computeFinishLineFactor({
-    enabled: cfg.finishLineSizingEnabled,
-    dailyTarget,
-    equity,
-    riskPerTradePct: cfg.riskPerTradePct,
-    rewardMultiple: cfg.optionsTakeProfitPct / 100,
-  });
+  // The trim itself is derived PER SIGNAL, below: it must reason about the risk
+  // % this entry will actually take, and the method lean that helps set that is
+  // per-signal. See computeFinishLineFactor's own note.
 
   // --- Short-dated entry gates (docs/SHORT_DATED_OPTIONS_SPEC.md) ----------
   // Both are batch-level: neither depends on which candidate is being looked
@@ -954,6 +951,34 @@ export async function runLiveOptionsExecution(
       runningPositions,
       sectorOf,
     );
+    const methodMultiplier = methodMultipliers[methodOfOptionsSignal(signal.side)] ?? 1;
+    // Every OTHER factor first, so the trim compares the gap to the bank line
+    // against the payoff this entry can really produce rather than one derived
+    // from the raw config %. equityCurveDerisk and expectancy are NEUTRAL here
+    // for the same reasons optionsRiskCheck states — equity-only, and off by
+    // decision — so this mirrors the risk check's own factor set exactly.
+    const finishLine = computeFinishLineFactor({
+      enabled: cfg.finishLineSizingEnabled,
+      dailyTarget,
+      equity,
+      riskPerTradePct: preFinishLineRiskPct(
+        cfg.riskPerTradePct,
+        preFinishLineFactors({
+          consecutiveLosses,
+          stepDownAfterLosses: cfg.stepDownAfterLosses,
+          stepDownSizeCutPct: cfg.stepDownSizeCutPct,
+          marketAtrPct,
+          regimeAtrThresholdPct: cfg.regimeAtrThresholdPct,
+          regimeSizeCutPct: cfg.regimeSizeCutPct,
+          equityCurveDerisk: NEUTRAL,
+          expectancy: NEUTRAL,
+          method: methodMultiplier,
+        }),
+      ),
+      // What an options winner pays per $1 of premium risked: the take-profit
+      // % of premium, in R terms.
+      rewardMultiple: cfg.optionsTakeProfitPct / 100,
+    });
     const ctx: RiskCheckContext = {
       equity,
       dailyPnl,
@@ -982,7 +1007,7 @@ export async function runLiveOptionsExecution(
       marketAtrPct,
       regimeAtrThresholdPct: cfg.regimeAtrThresholdPct,
       regimeSizeCutPct: cfg.regimeSizeCutPct,
-      methodMultiplier: methodMultipliers[methodOfOptionsSignal(signal.side)] ?? 1,
+      methodMultiplier,
       finishLineFactor: finishLine.factor,
       finishLineDetail: finishLine.detail,
     };

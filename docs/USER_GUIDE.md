@@ -1147,7 +1147,12 @@ equally-weighted cards in the order they happened to be built:
   first place: **finish-line sizing** trims the closing trade's risk to just what
   banks the day once the remaining gap is smaller than a full-size winner's expected
   payoff (floored at quarter size, never sizes up — visible as the
-  `finish_line_sizing` risk-check line), and an **armed-day min signal score** holds
+  `finish_line_sizing` risk-check line). "Full-size" there means the size **this
+  entry will actually take**, after the step-down, the regime cut and the edge
+  multipliers have had their say — not the raw risk-per-trade %. It has to: the trim
+  is itself one of those multipliers, so measuring against the raw % double-counted
+  every cut already in force and trimmed a trade that could no longer overshoot
+  anyway (fixed 2026-09-05). An **armed-day min signal score** holds
   new live entries to a higher conviction bar while the guard is armed (0 = off).
   Separately, a **symbol loss cooldown** (also 2026-08-22, off by default) gives the
   loop a memory of losing on a name: once a symbol takes the configured number of
