@@ -119,6 +119,7 @@ autotradeRouter.post(
         // interactions, and the dollar caps + their anchor to tell a hand-set cap
         // from a derived one so it preserves the former.
         config,
+        // Buying power WARNS, it does not bound — see ComputeTargetTuneInput.
         ...(await tuneBuyingPower(config)),
       }),
     );
@@ -134,14 +135,11 @@ autotradeRouter.get(
     if (config.accountEquityUsd == null) {
       throw new HttpError(400, 'Set account equity before resetting to moderate.');
     }
-    const bp = await tuneBuyingPower(config);
     res.json({
-      patch: resetToModerate(
-        config.accountEquityUsd,
-        config.maxStopDistancePct,
-        bp.buyingPowerUsd,
-        config.liveScaleOutEnabled,
-      ),
+      // No broker call here: the STORED caps deliberately no longer depend on
+      // buying power (see deriveDollarCaps). Funding is enforced at decision
+      // time by the sizer, which is the only place the live figure is in hand.
+      patch: resetToModerate(config.accountEquityUsd, config.maxStopDistancePct, config.liveScaleOutEnabled),
     });
   }),
 );

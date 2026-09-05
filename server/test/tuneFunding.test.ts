@@ -28,16 +28,18 @@ describe('tuneBuyingPower', () => {
   beforeEach(() => mockAccountState.mockReset());
 
   it('feeds the tune a buying power at all — the wiring that was missing', () => {
-    // deriveDollarCaps could bound by buying power since 2026-08-27, but the
-    // route never passed one, so the bound was dead code. This is the guard.
+    // Originally the guard on a plumbed-but-dead bound. The bound is gone
+    // (2026-09-05 — it froze the caps out of re-anchoring; see
+    // deriveDollarCaps), but the figure still has to arrive: computeTargetTune
+    // warns when the cap it is about to store is above what today can fund.
     mockAccountState.mockResolvedValue(okState());
     return expect(tuneBuyingPower(cfg())).resolves.toEqual({ buyingPowerUsd: DAY_BP });
   });
 
-  it('does NOT return option BP — a stored cap must not be bound to it', async () => {
-    // See deriveDollarCaps: liveCapsReanchor re-derives the same caps from
-    // config alone and cannot see option BP, so a cap bound to it would read
-    // as hand-edited there and freeze out of re-anchoring.
+  it('does NOT return option BP — nothing downstream has a use for it', async () => {
+    // The options cap deliberately tracks the equity cap, so there is no
+    // options-side warning to raise; returning option BP would only invite
+    // someone to bind a stored cap to a figure the re-anchor cannot see.
     mockAccountState.mockResolvedValue(okState());
     expect(await tuneBuyingPower(cfg())).not.toHaveProperty('optionBuyingPowerUsd');
   });
@@ -72,6 +74,8 @@ describe('tuneBuyingPower', () => {
   });
 
   it('fails soft on a broker error, rather than failing the tune', async () => {
+    // Soft failure costs one warning now, not a different patch — the caps
+    // derive identically with or without this number.
     mockAccountState.mockResolvedValue({ ok: false, error: 'nope' });
     expect(await tuneBuyingPower(cfg())).toEqual({});
   });
