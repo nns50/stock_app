@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeAll, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import { initDb, db } from '../src/db';
 import { config } from '../src/config';
 import { livePreview } from '../src/services/trading/livePreview';
@@ -7,6 +7,21 @@ import type { OrderIntent } from '../src/services/trading/guardrails';
 
 const orig = { ...config.webull };
 beforeAll(() => initDb());
+// BEFORE, not just after. setTradingConfig merges onto the existing row
+// (`{...getTradingConfig(), ...patch}`), ten test files write trading_config,
+// and they share one SQLite file with no guaranteed ordering between them. So
+// cleaning up only in afterEach protects every OTHER file from this one while
+// leaving this one at the mercy of whichever ran before it: `setTradingConfig({
+// enabled: true })` would inherit a stale kill switch or a tight cap and every
+// guardrail assertion here would fail.
+//
+// That is not theoretical — it turned CI red on 2026-09-05 while the same
+// commit passed locally twice, purely because the file order differed. Every
+// other file that touches this table already resets in beforeEach; this one was
+// the outlier.
+beforeEach(() => {
+  db.exec('DELETE FROM trading_config');
+});
 afterEach(() => {
   Object.assign(config.webull, orig);
   db.exec('DELETE FROM trading_config');

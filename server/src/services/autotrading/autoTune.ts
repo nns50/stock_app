@@ -9,7 +9,7 @@ import { checkOosEdgeConfirmation } from './significance';
 import { getAutotradeConfig, setAutotradeConfig } from '../../db/autotradeConfig';
 import { addExclusion, isExcluded } from '../../db/autotradeExclusions';
 import { listAutotradeEvents, logAutotradeEvent } from '../../db/autotradeEvents';
-import { dispatchNotifications } from '../notifier';
+import { dispatchAutotradeNotification } from './notify';
 
 // ---------------------------------------------------------------------------
 // Auto-tune from realized edge (2026-07-18 follow-up to the Journal page's
@@ -322,7 +322,7 @@ export async function maybeAutoTune(now: number = Date.now()): Promise<AutoTuneR
         // Same "push it, don't just journal it" treatment as the daily-drawdown
         // halt — a live risk-% change is consequential enough to surface
         // immediately, not just discoverable later on Recent Activity.
-        await dispatchNotifications([
+        await dispatchAutotradeNotification('auto-tune', [
           {
             title: 'Autotrade auto-tune: risk-per-trade adjusted',
             message:
@@ -354,7 +354,7 @@ export async function maybeAutoTune(now: number = Date.now()): Promise<AutoTuneR
     });
     // Same reasoning as the risk-% adjustment above: worth a push, not just a
     // journal entry — the symbol stops being traded starting now.
-    await dispatchNotifications([
+    await dispatchAutotradeNotification('auto-tune', [
       {
         title: `Autotrade auto-tune: ${g.symbol} excluded`,
         message:
@@ -400,7 +400,7 @@ export async function maybeAutoTune(now: number = Date.now()): Promise<AutoTuneR
           avgWinnerMfeR: result.diagnostics.avgWinnerMfeR,
         },
       });
-      await dispatchNotifications([
+      await dispatchAutotradeNotification('auto-tune', [
         {
           title: 'Autotrade auto-tune: exit geometry adjusted',
           message:

@@ -7,7 +7,9 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 // control. (alertScheduler.test.ts covers config/collect logic separately.)
 vi.mock('../src/db/settings', () => ({ getSetting: vi.fn(), setSetting: vi.fn() }));
 vi.mock('../src/services/alertRun', () => ({ runAlertEvaluation: vi.fn() }));
-vi.mock('../src/services/notifier', () => ({ dispatchNotifications: vi.fn() }));
+vi.mock('../src/services/notifier', () => ({
+  dispatchNotifications: vi.fn().mockResolvedValue({ delivered: true, count: 1, results: [] }),
+}));
 
 import { getSetting } from '../src/db/settings';
 import { runAlertEvaluation } from '../src/services/alertRun';

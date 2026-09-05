@@ -7,6 +7,7 @@ import {
 } from '../../db/autotradeLiveOptionsPositions';
 import { ExpiredOptionDisposition, ExpiringOption, classifyExpiredOptions, optionLabel } from '../expiredOptions';
 import { etToday, resolveExpiryCloses } from '../expiredOptionsSweep';
+import { dispatchAutotradeNotification } from './notify';
 
 // ---------------------------------------------------------------------------
 // Expired-but-still-open positions in autotrade's LIVE OPTIONS book.
@@ -133,6 +134,10 @@ export async function sweepExpiredLiveOptions(opts: { now?: number } = {}): Prom
 
   const closed: LiveOptionsExpiryOutcome[] = [];
   const needsReview: LiveOptionsExpiryOutcome[] = [];
+  // Only the ones flagged for the FIRST time today get pushed — see the
+  // dispatch below. A needs-review row is never auto-closed, so it is still
+  // here on every subsequent tick.
+  const newlyFlagged: LiveOptionsExpiryOutcome[] = [];
 
   for (const { pos, findings: legFindings } of byPosition.values()) {
     const label = optionLabel({
@@ -169,6 +174,7 @@ export async function sweepExpiredLiveOptions(opts: { now?: number } = {}): Prom
           },
           riskProfile: pos.riskProfile,
         });
+        newlyFlagged.push(outcome);
       }
       needsReview.push(outcome);
       continue;
@@ -212,6 +218,37 @@ export async function sweepExpiredLiveOptions(opts: { now?: number } = {}): Prom
       reason: legFindings.map((f) => f.reason).join('; '),
       closed: true,
     });
+  }
+
+  // PUSH the ones that need a human. This is the sweep's only outcome that
+  // someone has to act on, and until 2026-09-05 it was the one thing here that
+  // never left the journal: an expired IN-THE-MONEY contract has been exercised
+  // or assigned, so the account now holds a STOCK position this app does not
+  // model, while a far smaller event — an auto-tuned risk-% nudge — already
+  // pushes on the stated grounds that it is "consequential enough to surface
+  // immediately, not just discoverable later on Recent Activity".
+  //
+  // It also tends to happen at the worst time to be reading a journal: expiry
+  // is Friday's close, and a 0DTE contract only reaches it because the hard
+  // time exit failed to place.
+  //
+  // Gated on newlyFlagged, which the once-per-day journal guard above already
+  // computes — a needs-review row is never auto-closed, so notifying off
+  // `needsReview` itself would re-push on every tick for as long as it sits
+  // there. One message for all of them, not one each.
+  if (newlyFlagged.length > 0) {
+    const lines = newlyFlagged.map(
+      (o) =>
+        `${o.label} — ${o.disposition === 'in_the_money' ? 'expired IN THE MONEY' : 'disposition unknown'} (${o.reason})`,
+    );
+    await dispatchAutotradeNotification('expired options need review', [
+      {
+        title: `Autotrade: ${newlyFlagged.length} expired option position${newlyFlagged.length === 1 ? '' : 's'} need review`,
+        message:
+          `${lines.join('; ')}. An in-the-money expiry is exercised or assigned, so the account may now hold ` +
+          `stock this app does not track — check the broker and close the position by hand.`,
+      },
+    ]);
   }
 
   return { examined: expired.length, closed, needsReview };

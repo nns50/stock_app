@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../src/providers', () => ({ getProvider: vi.fn() }));
+vi.mock('../src/services/notifier', () => ({
+  dispatchNotifications: vi.fn().mockResolvedValue({ delivered: true, count: 1, results: [] }),
+}));
 
 import { getProvider } from '../src/providers';
 import { initDb, db } from '../src/db';
@@ -12,8 +15,10 @@ import {
   listLiveOptionsPositions,
 } from '../src/db/autotradeLiveOptionsPositions';
 import { hasExpiredLiveOptions, sweepExpiredLiveOptions } from '../src/services/autotrading/liveOptionsExpiry';
+import { dispatchNotifications } from '../src/services/notifier';
 
 const mockGetProvider = vi.mocked(getProvider);
+const mockDispatch = vi.mocked(dispatchNotifications);
 
 // 2026-03-20 was a Friday; the sweep only acts on expirations strictly BEFORE
 // "today", so every fixture below expires on that date and is swept as of the
@@ -53,6 +58,7 @@ beforeEach(() => {
   db.exec('DELETE FROM autotrade_config; DELETE FROM autotrade_events; DELETE FROM autotrade_live_options_positions;');
   setAutotradeConfig({ ...defaultAutotradeConfig(), liveAccountId: 'ACC1' });
   mockGetProvider.mockReset();
+  mockDispatch.mockClear();
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -196,5 +202,49 @@ describe('hasExpiredLiveOptions', () => {
     openPosition();
     setAutotradeConfig({ liveAccountId: null });
     expect(hasExpiredLiveOptions(AFTER_EXPIRY)).toBe(false);
+  });
+});
+
+describe('sweepExpiredLiveOptions — the needs-review push', () => {
+  // The sweep's only outcome a human must ACT on, and until 2026-09-05 the one
+  // thing here that never left the journal. An in-the-money expiry is exercised
+  // or assigned, so the account now holds stock this app does not model —
+  // while a far smaller event, an auto-tuned risk-% nudge, already pushes.
+  it('notifies once when a position first needs review', async () => {
+    openPosition({ strike: 100 });
+    mockGetProvider.mockReturnValue(candlesClosing(130) as ReturnType<typeof getProvider>); // above the strike
+
+    const r = await sweepExpiredLiveOptions({ now: AFTER_EXPIRY });
+
+    expect(r.needsReview).toHaveLength(1);
+    expect(mockDispatch).toHaveBeenCalledTimes(1);
+    const [events] = mockDispatch.mock.calls[0];
+    expect(events[0].title).toMatch(/need review/i);
+    expect(events[0].message).toMatch(/exercised or assigned/i);
+  });
+
+  it('does NOT re-push on later ticks — the row is never auto-closed', async () => {
+    // hasExpiredLiveOptions stays true for as long as the row sits there, so
+    // the sweep runs every tick. Notifying off needsReview itself would push
+    // on every one of them.
+    openPosition({ strike: 100 });
+    mockGetProvider.mockReturnValue(candlesClosing(130) as ReturnType<typeof getProvider>);
+
+    await sweepExpiredLiveOptions({ now: AFTER_EXPIRY });
+    mockDispatch.mockClear();
+    const again = await sweepExpiredLiveOptions({ now: AFTER_EXPIRY });
+
+    expect(again.needsReview).toHaveLength(1); // still flagged...
+    expect(mockDispatch).not.toHaveBeenCalled(); // ...but silent
+  });
+
+  it('says nothing when everything expired worthless', async () => {
+    openPosition({ strike: 100 });
+    mockGetProvider.mockReturnValue(candlesClosing(50) as ReturnType<typeof getProvider>); // far below the strike
+
+    const r = await sweepExpiredLiveOptions({ now: AFTER_EXPIRY });
+
+    expect(r.closed).toHaveLength(1);
+    expect(mockDispatch).not.toHaveBeenCalled();
   });
 });

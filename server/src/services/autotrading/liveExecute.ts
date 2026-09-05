@@ -112,7 +112,7 @@ import {
 } from './riskCheck';
 import { listAutotradeEvents, logAutotradeEvent } from '../../db/autotradeEvents';
 import { getProvider } from '../../providers';
-import { dispatchNotifications } from '../notifier';
+import { dispatchAutotradeNotification } from './notify';
 
 // ---------------------------------------------------------------------------
 // The LIVE counterpart to execute.ts's paper execution (Phase 8 — see
@@ -933,7 +933,7 @@ export async function attemptLiveEntry(
   // infra the price-alert system already dispatches through, rather than a
   // second notification path — this is the one live autotrade event a human
   // most wants to know about without having the app open.
-  await dispatchNotifications([
+  await dispatchAutotradeNotification('live equity', [
     {
       title: symbol,
       message: `Autotrade LIVE ${signal.side === 'buy' ? 'BUY' : 'SELL'}: ${quantity} ${symbol} @ ~$${limitPrice.toFixed(2)} (stop ${signal.stop.toFixed(2)}, target ${signal.target.toFixed(2)})`,
@@ -2865,7 +2865,7 @@ async function placeLiveEquityTimeExitClose(
     },
     riskProfile,
   });
-  await dispatchNotifications([
+  await dispatchAutotradeNotification('live equity', [
     {
       title: symbol,
       message: `Autotrade LIVE closing ${symbol} (${trigger.notice}): ${intent.quantity} @ ~$${limitPrice.toFixed(2)}`,
@@ -3854,7 +3854,7 @@ async function placeLiveScaleInAddOn(
     },
     riskProfile,
   });
-  await dispatchNotifications([
+  await dispatchAutotradeNotification('live equity', [
     {
       title: symbol,
       message: `Autotrade LIVE SCALE-IN: +${add.addQty} ${symbol} @ ~$${limitPrice.toFixed(2)} (stop ${add.newStopPrice.toFixed(2)}, target ${targetPrice.toFixed(2)})`,

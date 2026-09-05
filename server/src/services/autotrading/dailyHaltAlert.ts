@@ -1,5 +1,5 @@
 import { listAutotradeEvents, logAutotradeEvent } from '../../db/autotradeEvents';
-import { dispatchNotifications } from '../notifier';
+import { dispatchAutotradeNotification } from './notify';
 import { getAutotradeDashboard } from './dashboard';
 
 // ---------------------------------------------------------------------------
@@ -104,7 +104,7 @@ export async function maybeAlertDailyDrawdownHalt(now: number = Date.now()): Pro
       detail: { pool, date: today } satisfies AlertMarkerDetail,
     });
     const label = POOL_LABEL[pool];
-    await dispatchNotifications([
+    await dispatchAutotradeNotification('daily drawdown halt', [
       {
         title: `Autotrade daily-drawdown halt (${label})`,
         message:
