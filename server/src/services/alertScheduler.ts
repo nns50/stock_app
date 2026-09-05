@@ -67,7 +67,24 @@ export function collectEvents(result: Awaited<ReturnType<typeof runAlertEvaluati
 export async function runSchedulerTick(): Promise<void> {
   const result = await runAlertEvaluation();
   const events = collectEvents(result);
-  if (events.length) await dispatchNotifications(events);
+  if (!events.length) return;
+  // Read the delivery result rather than dropping it. dispatchNotifications
+  // never throws and reports per-channel outcomes its own doc calls something
+  // "the caller can log/surface" — and no caller did, here or anywhere else.
+  // So an expired Slack URL or a revoked Discord app silently swallowed every
+  // price alert, and a broken notifier looked exactly like a quiet market.
+  //
+  // console only, deliberately: this poller has no journal of its own, and the
+  // autotrade events feed is a different subsystem's. A zero-channel setup
+  // means "notifications are off", not a failure, so it is not reported.
+  const outcome = await dispatchNotifications(events);
+  if (outcome.results.length > 0 && !outcome.delivered) {
+    console.error(
+      '[alert-scheduler] every configured webhook failed — %d alert(s) reached nobody: %s',
+      events.length,
+      outcome.results.map((r) => `${r.label}: ${r.error ?? 'failed'}`).join('; '),
+    );
+  }
 }
 
 let timer: NodeJS.Timeout | null = null;

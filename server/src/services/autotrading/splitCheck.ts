@@ -4,7 +4,7 @@ import { listOpenOptionsPaperPositions } from '../../db/autotradeOptionsPaperPos
 import { listOpenLiveOptionsPositions } from '../../db/autotradeLiveOptionsPositions';
 import { listAutotradeLivePositions } from './liveExecute';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
-import { dispatchNotifications } from '../notifier';
+import { dispatchAutotradeNotification } from './notify';
 
 // ---------------------------------------------------------------------------
 // Recent stock-split detection for autotrade's own open positions (paper +
@@ -81,7 +81,8 @@ export async function checkForRecentSplits(): Promise<void> {
   }
   const hits = Array.from(splitsBySymbol.entries()).filter(([, splits]) => splits.length > 0);
   if (hits.length > 0) {
-    await dispatchNotifications(
+    await dispatchAutotradeNotification(
+      'split check',
       hits.flatMap(([symbol, splits]) =>
         splits.map((split) => ({
           title: symbol,

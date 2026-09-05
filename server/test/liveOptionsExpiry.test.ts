@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../src/providers', () => ({ getProvider: vi.fn() }));
-vi.mock('../src/services/notifier', () => ({ dispatchNotifications: vi.fn(async () => undefined) }));
+vi.mock('../src/services/notifier', () => ({
+  dispatchNotifications: vi.fn().mockResolvedValue({ delivered: true, count: 1, results: [] }),
+}));
 
 import { getProvider } from '../src/providers';
 import { initDb, db } from '../src/db';

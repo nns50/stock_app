@@ -7,7 +7,7 @@ import {
 } from '../../db/autotradeLiveOptionsPositions';
 import { ExpiredOptionDisposition, ExpiringOption, classifyExpiredOptions, optionLabel } from '../expiredOptions';
 import { etToday, resolveExpiryCloses } from '../expiredOptionsSweep';
-import { dispatchNotifications } from '../notifier';
+import { dispatchAutotradeNotification } from './notify';
 
 // ---------------------------------------------------------------------------
 // Expired-but-still-open positions in autotrade's LIVE OPTIONS book.
@@ -241,7 +241,7 @@ export async function sweepExpiredLiveOptions(opts: { now?: number } = {}): Prom
       (o) =>
         `${o.label} — ${o.disposition === 'in_the_money' ? 'expired IN THE MONEY' : 'disposition unknown'} (${o.reason})`,
     );
-    await dispatchNotifications([
+    await dispatchAutotradeNotification('expired options need review', [
       {
         title: `Autotrade: ${newlyFlagged.length} expired option position${newlyFlagged.length === 1 ? '' : 's'} need review`,
         message:

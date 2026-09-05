@@ -68,7 +68,7 @@ import { evaluateDailyTarget } from './dailyTarget';
 import { getDailyBaseline } from '../../db/dailyBaseline';
 import { correlatedNotional, sectorNotional, buildSectorOf, RiskCheckContext } from './riskCheck';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
-import { dispatchNotifications } from '../notifier';
+import { dispatchAutotradeNotification } from './notify';
 import { fetchContractQuote, validPremium } from './optionsExecute';
 import { getLivePortfolioSnapshot, combinedLiveOpenRisk, ProbationStatus } from './liveExecute';
 import { previewWebullPositions, contractKey } from '../../providers/webull/positions';
@@ -756,7 +756,7 @@ async function finishEntryPlacement(
     },
     riskProfile,
   });
-  await dispatchNotifications([
+  await dispatchAutotradeNotification('live options', [
     {
       title: symbol,
       message:
@@ -1337,7 +1337,7 @@ async function placeLiveOptionsExit(
     },
     riskProfile: pos.riskProfile,
   });
-  await dispatchNotifications([
+  await dispatchAutotradeNotification('live options', [
     {
       title: symbol,
       message: `Autotrade LIVE OPTIONS closing ${pos.kind === 'debit_spread' ? 'spread' : 'position'}: ${symbol} (${reasonLabel})`,

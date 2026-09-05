@@ -1,6 +1,6 @@
 import { listAutotradeEvents, logAutotradeEvent } from '../../db/autotradeEvents';
 import { isUsEquityMarketOpen } from '../trading/marketHours';
-import { dispatchNotifications } from '../notifier';
+import { dispatchAutotradeNotification } from './notify';
 
 // ---------------------------------------------------------------------------
 // Live-order anomaly alerting — two independent alerts over the same journal:
@@ -219,7 +219,7 @@ export async function maybeAlertLiveOrderFailures(now: number = Date.now()): Pro
     action: ALERT_ACTION,
     detail: { consecutiveFailures, latestSymbol: symbol, latestReason: reason },
   });
-  await dispatchNotifications([
+  await dispatchAutotradeNotification('live order failures', [
     {
       title: 'Autotrade live orders failing',
       message:
@@ -300,7 +300,7 @@ export async function maybeAlertLiveAmbiguity(now: number = Date.now()): Promise
     action: AMBIGUITY_ALERT_ACTION,
     detail: { unreported, latestSymbol: symbol, latestAction: action, latestReason: latest?.reason ?? null },
   });
-  await dispatchNotifications([
+  await dispatchAutotradeNotification('live order failures', [
     {
       title: 'Autotrade: unresolved live order state',
       message:

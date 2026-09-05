@@ -6,7 +6,9 @@ vi.mock('../src/db/autotradeOptionsPaperPositions', () => ({ listOpenOptionsPape
 vi.mock('../src/db/autotradeLiveOptionsPositions', () => ({ listOpenLiveOptionsPositions: vi.fn() }));
 vi.mock('../src/services/autotrading/liveExecute', () => ({ listAutotradeLivePositions: vi.fn() }));
 vi.mock('../src/db/autotradeEvents', () => ({ logAutotradeEvent: vi.fn() }));
-vi.mock('../src/services/notifier', () => ({ dispatchNotifications: vi.fn() }));
+vi.mock('../src/services/notifier', () => ({
+  dispatchNotifications: vi.fn().mockResolvedValue({ delivered: true, count: 1, results: [] }),
+}));
 
 import { getRecentSplits } from '../src/services/splits';
 import { listOpenPaperPositions } from '../src/db/autotradePaperPositions';
