@@ -2507,7 +2507,7 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
  * Prefer source_intent_id when present (it is the precise link), fall back to
  * the entry order's own intentId, and return null only when neither exists.
  */
-function entryIntentIdForPosition(pos: { id: number; sourceIntentId: number | null }): number | null {
+export function entryIntentIdForPosition(pos: { id: number; sourceIntentId: number | null }): number | null {
   if (pos.sourceIntentId !== null) return pos.sourceIntentId;
   return getLiveEntryOrderForPosition(pos.id)?.intentId ?? null;
 }

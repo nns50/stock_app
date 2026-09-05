@@ -161,7 +161,20 @@ async function buildAutotradeExcursionReport(): Promise<ExcursionReport> {
           entryPrice: p.entryPrice,
           quantity: p.quantity,
           multiplier: p.multiplier,
-          stopPrice: p.stopPrice,
+          // The FROZEN stop, matching routes/journal.ts's excursion read. This
+          // is the R DENOMINATOR, and the ratchet mutates p.stopPrice — a
+          // position whose stop was pulled to breakeven has p.stopPrice ==
+          // entryPrice, so the denominator collapses toward zero and every
+          // mfeR/maeR/realizedR derived from it inflates without bound.
+          //
+          // The journal route was corrected for exactly this and carries the
+          // same comment; THIS caller was not, so the two derivations of one
+          // quantity disagreed — the invariant CLAUDE.md warns about. It
+          // matters most here: these rows feed computeExcursionTune, i.e. the
+          // multiples the auto-tuner would PROPOSE. On 2026-09-04 the ratchet
+          // fired 36 times, so the trades most likely to be mis-scaled are
+          // precisely the winners the tuner is meant to learn from.
+          stopPrice: p.initialStopPrice ?? p.stopPrice,
           realizedPnl: realizedPnlOf(p),
           entryDate: p.entryDate,
           exitDate: lastExitDateOf(p),

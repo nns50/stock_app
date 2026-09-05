@@ -6,7 +6,7 @@ vi.mock('../src/services/notifier', () => ({
 vi.mock('../src/providers', () => ({ getProvider: vi.fn() }));
 
 import { initDb, db } from '../src/db';
-import { createPosition, addExit } from '../src/db/positions';
+import { createPosition, addExit, updatePosition } from '../src/db/positions';
 import { createIntent } from '../src/db/orders';
 import { getAutotradeConfig, setAutotradeConfig, defaultAutotradeConfig } from '../src/db/autotradeConfig';
 import { isExcluded, listExclusions } from '../src/db/autotradeExclusions';
@@ -34,6 +34,19 @@ function candleReturning(high: number, low: number) {
       { time: Date.parse(`${q?.start ?? '2026-08-01'}T16:00:00Z`), open: 100, high, low, close: 100, volume: 1000 },
     ]),
   };
+}
+
+/** The same winner, but with its stop RATCHETED to breakeven — what
+ *  checkLiveEquityStopAdjusts does to every trade that reaches the trigger (36
+ *  times on 2026-09-04 alone). initialStopPrice stays 95, stopPrice becomes 100.
+ *
+ *  This is the discriminator the ordinary fixture cannot be: reading the CURRENT
+ *  stop makes risk |100-100| = 0, the R denominator collapses and every
+ *  excursion R inflates without bound. */
+function closedAutotradeWinnerRatchetedToBreakeven(symbol: string, day: string) {
+  const p = closedAutotradeWinner(symbol, day);
+  updatePosition(p.id, { stopPrice: 100 }); // ratcheted; initialStopPrice stays 95
+  return p;
 }
 
 /** A closed WINNING autotrade stock trade: tagged so buildAutotradeExcursionReport
@@ -380,6 +393,33 @@ describe('maybeAutoTune', () => {
       expect(getAutotradeConfig().stopAtrMultiple).toBe(1.5); // untouched defaults
       expect(getAutotradeConfig().targetRMultiple).toBe(2);
       expect(mockGetProvider).not.toHaveBeenCalled(); // no excursion fetch when disabled
+    });
+
+    // 2026-09-04: autoTune passed p.stopPrice to excursionForTrade while
+    // routes/journal.ts passed initialStopPrice ?? stopPrice — two derivations
+    // of one quantity, disagreeing. The ratchet mutates stopPrice, so a winner
+    // pulled to breakeven has risk 0 and its R values blow up. It matters most
+    // HERE: these rows are what the tuner proposes multiples from, and the
+    // trades most likely to be mis-scaled are exactly the winners it learns from.
+    it('uses the FROZEN stop for R, so a breakeven-ratcheted winner still scales correctly', async () => {
+      setAutotradeConfig({
+        autoTuneEnabled: true,
+        autoTuneExitsEnabled: true,
+        autoTuneMinTrades: 2,
+        autoTuneExitMaxStep: 5,
+      });
+      mockGetProvider.mockReturnValue(candleReturning(120, 98) as never);
+      closedAutotradeWinnerRatchetedToBreakeven('AAA', '2026-08-01');
+      closedAutotradeWinnerRatchetedToBreakeven('BBB', '2026-08-02');
+
+      const result = await maybeAutoTune(ET_DAY_1);
+
+      // Identical to the un-ratcheted case above: the ratchet must not move the
+      // R denominator at all. Reading the current stop yields risk 0 and the
+      // tune either collapses or explodes — never these numbers.
+      expect(result.exitsAdjusted).toBe(true);
+      expect(getAutotradeConfig().stopAtrMultiple).toBeCloseTo(0.66, 5);
+      expect(getAutotradeConfig().targetRMultiple).toBeCloseTo(3.2, 5);
     });
 
     it('tunes the stop/target from winner MAE/MFE, journals it, and pushes a notification', async () => {
