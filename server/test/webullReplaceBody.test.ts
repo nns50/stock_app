@@ -41,6 +41,42 @@ describe('webullReplaceOrders — the request body', () => {
     ]);
   });
 
+  // Shape #5, and the first drawn from the REPLACE endpoint's own documented
+  // schema: reference/common-order-replace lists order_type as an accepted
+  // modify_orders field and does NOT list combo_type. Since "the number of
+  // take-profit orders and the number of stop-loss orders must be the same" is
+  // a complaint about telling the legs apart, and both legs of a long bracket
+  // are `sell`, order_type (LIMIT vs STOP_LOSS) is the documented thing that
+  // separates them.
+  it('sends order_type on each modify entry so the broker can classify the legs', async () => {
+    const body = await bodyOf(() =>
+      webullReplaceOrders('ACC1', [
+        { clientOrderId: 'TGT', quantity: 4, limitPrice: 110, comboType: 'STOP_PROFIT', orderType: 'LIMIT' },
+        { clientOrderId: 'STP', quantity: 4, stopPrice: 96, comboType: 'STOP_LOSS', orderType: 'STOP_LOSS_LIMIT' },
+      ]),
+    );
+    expect(body.modify_orders).toEqual([
+      { client_order_id: 'TGT', combo_type: 'STOP_PROFIT', order_type: 'LIMIT', quantity: '4', limit_price: '110' },
+      {
+        client_order_id: 'STP',
+        combo_type: 'STOP_LOSS',
+        order_type: 'STOP_LOSS_LIMIT',
+        quantity: '4',
+        stop_price: '96',
+      },
+    ]);
+  });
+
+  it('omits order_type entirely when the leg carried none', async () => {
+    // Absent, not the string "undefined" — and never derived from the leg's
+    // role, which would convert a STOP_LOSS_LIMIT into a plain STOP_LOSS while
+    // claiming only to identify it.
+    const body = await bodyOf(() =>
+      webullReplaceOrders('ACC1', [{ clientOrderId: 'STP', quantity: 4, stopPrice: 96 }]),
+    );
+    expect(body.modify_orders).toEqual([{ client_order_id: 'STP', quantity: '4', stop_price: '96' }]);
+  });
+
   it('puts client_combo_order_id at the REQUEST level, beside modify_orders', async () => {
     // Every documented combo request places it there — a sibling of the orders
     // array, never inside a leg.
