@@ -13,7 +13,12 @@ import { isUsEquityMarketOpen } from '../trading/marketHours';
 // ---------------------------------------------------------------------------
 
 const OPEN_MINUTES = 9 * 60 + 30; // 09:30 ET
-const CLOSE_MINUTES = 16 * 60; // 16:00 ET
+import { sessionCloseMinute } from '../trading/marketCalendar';
+
+// No local CLOSE_MINUTES: the session's close is 13:00 on an early-close day,
+// and a fixed 16:00 made the "within N minutes of the close" buffer measure the
+// wrong bell — at 12:50 on a half-day it read as six hours of runway left.
+// One authority, marketCalendar.sessionCloseMinute.
 
 function etMinutesSinceMidnight(now: Date): number {
   const parts = new Intl.DateTimeFormat('en-US', {
@@ -46,7 +51,7 @@ export function checkSessionWindow(bufferMinutes: number, now: Date = new Date()
   if (minutes < OPEN_MINUTES + bufferMinutes) {
     return { ok: false, reason: `Within ${bufferMinutes}m of the session open` };
   }
-  if (minutes > CLOSE_MINUTES - bufferMinutes) {
+  if (minutes > sessionCloseMinute(now) - bufferMinutes) {
     return { ok: false, reason: `Within ${bufferMinutes}m of the session close` };
   }
   return { ok: true };

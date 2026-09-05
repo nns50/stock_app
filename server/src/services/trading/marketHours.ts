@@ -4,13 +4,19 @@
 // pre-trade check — options can't trade outside RTH at all, and core-session
 // stock orders won't fill until the open.
 //
-// Heuristic by design: it does NOT know market holidays or early-close days, so
-// it must only ever drive a WARNING, never a hard block. The broker remains the
-// authority on whether an order can be placed.
+// It knows market holidays and early closes as of 2026-09-05 (marketCalendar.ts)
+// — it did not before, which meant Labor Day looked like an ordinary Monday and
+// a 13:00 half-day looked like it ran to 16:00. The calendar is hand-maintained
+// and announces its own expiry, so this remains a best-effort read and the
+// broker is still the authority on whether an order can actually be placed.
+//
+// Every calendar answer only ever NARROWS the session, so a stale or wrong
+// entry costs a missed morning, never an order into a shut market.
 // ---------------------------------------------------------------------------
 
+import { isMarketHoliday, sessionCloseMinute } from './marketCalendar';
+
 const OPEN_MINUTES = 9 * 60 + 30; // 09:30 ET
-const CLOSE_MINUTES = 16 * 60; // 16:00 ET
 
 /** Whether US regular trading hours are (heuristically) open at `now`. */
 export function isUsEquityMarketOpen(now: Date = new Date()): boolean {
@@ -26,10 +32,13 @@ export function isUsEquityMarketOpen(now: Date = new Date()): boolean {
 
   const weekday = get('weekday');
   if (weekday === 'Sat' || weekday === 'Sun') return false;
+  // A full holiday is a weekday the exchange simply does not open.
+  if (isMarketHoliday(now)) return false;
 
   const hour = Number(get('hour')) % 24; // some platforms render midnight as "24"
   const minutes = hour * 60 + Number(get('minute'));
-  return minutes >= OPEN_MINUTES && minutes < CLOSE_MINUTES;
+  // Early closes end at 13:00; every other session at 16:00.
+  return minutes >= OPEN_MINUTES && minutes < sessionCloseMinute(now);
 }
 
 /**

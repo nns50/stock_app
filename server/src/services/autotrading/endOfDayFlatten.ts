@@ -1,4 +1,5 @@
 import { AutotradeConfig } from '../../db/autotradeConfig';
+import { isMarketHoliday, sessionCloseMinute } from '../trading/marketCalendar';
 
 // ---------------------------------------------------------------------------
 // End-of-day flatten (2026-08-25). Close what's still open a few minutes before
@@ -152,6 +153,10 @@ export function evaluateEntryCutoff(cfg: EntryCutoffConfig, now: number): EntryC
 }
 
 const SESSION_OPEN_MIN = 9 * 60 + 30;
+/** The ORDINARY close. Kept exported for callers that want the usual bell, but
+ *  never used to decide a session's length — an early close ends at 13:00, and
+ *  measuring against 16:00 there is what made the flatten fire nearly three
+ *  hours after the market shut. sessionCloseMinute is the authority. */
 export const SESSION_CLOSE_MIN = 16 * 60;
 
 const etParts = new Intl.DateTimeFormat('en-US', {
@@ -162,18 +167,28 @@ const etParts = new Intl.DateTimeFormat('en-US', {
   hour12: false,
 });
 
-/** Minutes until the 16:00 ET close, or null when the regular session is not
- *  open at `now` (weekend, or outside 9:30–16:00). Holidays are not known here,
- *  the same documented limit isUsEquityMarketOpen carries — a holiday simply
- *  has no open positions to flatten and no orders will place. */
+/**
+ * Minutes until THIS session's close, or null when the regular session is not
+ * open at `now` — weekend, full holiday, or outside the day's own hours.
+ *
+ * Holidays and early closes now come from marketCalendar.ts. They did not
+ * before, and the note here used to argue a holiday was harmless because it
+ * "has no open positions to flatten". A half-day is the case that breaks: a
+ * normal trading morning genuinely leaves positions open, and counting down to
+ * 16:00 on a 13:00 close had this returning 5 at 15:55 — so the flatten would
+ * cancel a live bracket and place a replacement that cannot fill until the next
+ * open, turning a protected position into a naked overnight one.
+ */
 export function minutesUntilClose(now: number): number | null {
   const parts = etParts.formatToParts(now);
   const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
   const day = get('weekday');
   if (day === 'Sat' || day === 'Sun') return null;
+  if (isMarketHoliday(now)) return null;
+  const closeMin = sessionCloseMinute(now);
   const minutes = (Number(get('hour')) % 24) * 60 + Number(get('minute'));
-  if (minutes < SESSION_OPEN_MIN || minutes >= SESSION_CLOSE_MIN) return null;
-  return SESSION_CLOSE_MIN - minutes;
+  if (minutes < SESSION_OPEN_MIN || minutes >= closeMin) return null;
+  return closeMin - minutes;
 }
 
 export interface FlattenDecision {

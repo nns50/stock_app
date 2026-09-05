@@ -1445,6 +1445,15 @@ equally-weighted cards in the order they happened to be built:
   actually buying — live can't answer that about itself, since it closed the
   trade. Anything else that differs between the two books is a bug, not a
   comparison.
+  Since 2026-09-05 the flatten (and every other session gate) also knows
+  **market holidays and early closes**: the loop is idle all day on a full
+  holiday instead of trading off the previous session's stale closes, and on a
+  half-day it flattens against the **13:00** bell rather than 16:00. Before
+  that, a half-day's flatten fired at 15:55 — nearly three hours after the
+  market shut — cancelling a live position's protective bracket and leaving it
+  naked overnight. The calendar is hand-maintained and **announces its own
+  expiry**: a test fails once the clock passes the last date it covers, so a
+  stale table can't quietly start treating holidays as trading days again.
   It
   Since 2026-08-28 the flatten also closes the **entry** side of that window:
   no new live equity position opens within **the flatten window plus a runway**
