@@ -482,6 +482,13 @@ export type TunablePatch = Pick<
  *  half of the classification TunablePatch starts. Grouped by the reason each
  *  is excluded; a key belongs here only with a reason, not by omission. */
 export const NEVER_TUNED_KEYS = [
+  // An EVIDENCE-driven floor, not a risk-appetite dial. minSignalScore beside
+  // it is tuned per band (60/50/40) because loosening the screen is a coherent
+  // way to want more trades; this one is the opposite question -- where the
+  // measured edge actually begins -- and the answer comes from closed trades,
+  // never from a target daily gain. A tune that lowered it to reach 3% would be
+  // buying the trades the evidence says lose money.
+  'liveMinSignalScore',
   // Account CAPACITY, not strategy. Both describe what the brokerage account
   // can actually fund; neither follows from a target daily gain, and a tune
   // that "helpfully" widened either would be inventing leverage the broker

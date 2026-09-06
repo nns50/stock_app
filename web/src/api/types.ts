@@ -1607,6 +1607,10 @@ export interface AutotradeConfig {
   /** Min signal score for new live entries while the give-back guard is
    *  armed. 0 = off. */
   finishLineMinSignalScore: number;
+  /** Everyday minimum signal score for new LIVE EQUITY entries — separate from
+   *  minSignalScore, which gates signal generation for BOTH books and so can't
+   *  be raised without starving the paper control group. 0 = off. */
+  liveMinSignalScore: number;
   /** Intraday stagnation exit: a live equity position under the R-progress
    *  bar after this many minutes (regular session only) is scratched to free
    *  its slot. 0 = off. */

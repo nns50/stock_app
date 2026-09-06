@@ -2733,6 +2733,7 @@ export default function AutoTradePage() {
   const [symbolCooldownDaysDraft, setSymbolCooldownDaysDraft] = useState<number | undefined>();
   const [finishLineSizingEnabled, setFinishLineSizingEnabled] = useState(false);
   const [finishLineMinSignalScoreDraft, setFinishLineMinSignalScoreDraft] = useState<number | undefined>();
+  const [liveMinSignalScoreDraft, setLiveMinSignalScoreDraft] = useState<number | undefined>();
   const [stagnationExitMinutesDraft, setStagnationExitMinutesDraft] = useState<number | undefined>();
   const [stagnationExitMinRDraft, setStagnationExitMinRDraft] = useState<number | undefined>();
   const [expectancyMinTradesDraft, setExpectancyMinTradesDraft] = useState<number | undefined>();
@@ -2866,6 +2867,7 @@ export default function AutoTradePage() {
     sync('symbolCooldownDays', setSymbolCooldownDaysDraft);
     sync('finishLineSizingEnabled', setFinishLineSizingEnabled);
     sync('finishLineMinSignalScore', setFinishLineMinSignalScoreDraft);
+    sync('liveMinSignalScore', setLiveMinSignalScoreDraft);
     sync('stagnationExitMinutes', setStagnationExitMinutesDraft);
     sync('stagnationExitMinR', setStagnationExitMinRDraft);
     sync('expectancyMinTrades', setExpectancyMinTradesDraft);
@@ -2973,6 +2975,7 @@ export default function AutoTradePage() {
     symbolCooldownDays?: number;
     finishLineSizingEnabled?: boolean;
     finishLineMinSignalScore?: number;
+    liveMinSignalScore?: number;
     stagnationExitMinutes?: number;
     stagnationExitMinR?: number;
     expectancyMinTrades?: number;
@@ -4845,6 +4848,33 @@ export default function AutoTradePage() {
                           finishLineMinSignalScoreDraft == null ||
                           finishLineMinSignalScoreDraft < 0 ||
                           finishLineMinSignalScoreDraft === config.data?.finishLineMinSignalScore
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Live conviction floor"
+                    hint="Everyday minimum signal score for a new LIVE EQUITY entry. Separate from the screening minimum, which gates signal generation for BOTH books — raising that one would starve the paper control group, so this holds live to a higher bar while paper keeps taking every signal as the comparison. Measured 2026-09-06 over 57 closed live trades: score predicts realized R (rho +0.32), and the bottom two thirds of the score range lost $247 while the top third made $411. The evidence points at the low 70s. 0 = off."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={liveMinSignalScoreDraft}
+                        onChange={setLiveMinSignalScoreDraft}
+                        min={0}
+                        step={1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save live conviction floor"
+                        onClick={() =>
+                          liveMinSignalScoreDraft != null && saveConfig({ liveMinSignalScore: liveMinSignalScoreDraft })
+                        }
+                        disabled={
+                          liveMinSignalScoreDraft == null ||
+                          liveMinSignalScoreDraft < 0 ||
+                          liveMinSignalScoreDraft === config.data?.liveMinSignalScore
                         }
                       >
                         Save

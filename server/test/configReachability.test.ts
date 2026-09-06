@@ -101,12 +101,33 @@ function configFieldNames(): string[] {
   return [...new Set([...iface[1].matchAll(/^ {2}([a-zA-Z][a-zA-Z0-9]*)\??:/gm)].map((m) => m[1]))].sort();
 }
 
+/** Comment lines dropped before scanning. The header above concedes this scan
+ *  "will count a mention in a comment", and that concession is load-bearing in
+ *  the wrong direction: every field in this codebase is DESCRIBED in prose
+ *  somewhere near the code that used to use it, so a field whose last real
+ *  reader is deleted keeps passing on the strength of the comment explaining
+ *  what it once did. Demonstrated 2026-09-06 — removing liveMinSignalScore's
+ *  only read left this test green, because the module header still named it.
+ *  Stripping comments can only ever REMOVE false passes; a field genuinely read
+ *  by code is unaffected. (A mention in a TYPE — a Pick<AutotradeConfig, ...> —
+ *  still counts, and that is the remaining soft spot.) */
+const codeOnly = (src: string): string =>
+  src
+    .split('\n')
+    .filter((l) => {
+      const t = l.trimStart();
+      return !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*');
+    })
+    .join('\n');
+
 const files = walk(SRC);
-const liveSrc = files
-  .filter((f) => !PLUMBING.has(f) && !PAPER_PATHS.has(f))
-  .map((f) => fs.readFileSync(f, 'utf8'))
-  .join('\n');
-const paperSrc = [...PAPER_PATHS].map((f) => fs.readFileSync(f, 'utf8')).join('\n');
+const liveSrc = codeOnly(
+  files
+    .filter((f) => !PLUMBING.has(f) && !PAPER_PATHS.has(f))
+    .map((f) => fs.readFileSync(f, 'utf8'))
+    .join('\n'),
+);
+const paperSrc = codeOnly([...PAPER_PATHS].map((f) => fs.readFileSync(f, 'utf8')).join('\n'));
 const fields = configFieldNames();
 
 const readBy = (haystack: string, field: string) => new RegExp(`\\b${field}\\b`).test(haystack);
