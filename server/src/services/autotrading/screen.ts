@@ -61,6 +61,25 @@ export interface ScreenResult {
    *  and not blacklisted; may be reconsidered next cycle. */
   skipped: { symbol: string; reason: string }[];
   errors: { symbol: string; message: string }[];
+  /** Symbols that were fully SCORED and then failed the screener's own filters
+   *  (minChangePct, minScore, weekly-trend alignment, minPrice, minAvgVolume).
+   *
+   *  These reasons used to be computed and dropped on the floor: `scoreSymbol`
+   *  has always returned `filterReasons`, and the call sites discarded them for
+   *  anything that did not pass. So the journal could say why a symbol was
+   *  excluded for real estate, pace, volatility, earnings or an unknown sector,
+   *  and could say NOTHING about a name that simply never appeared — which is
+   *  the more common case and the more useful question. SPY and QQQ were added
+   *  to the universe on an explicit operator decision (2026-08-27), had their
+   *  unknown-sector skip fixed on 2026-09-03, and then produced zero candidates
+   *  and zero signals on 2026-09-04 with no record anywhere of what stopped
+   *  them.
+   *
+   *  Kept IN MEMORY and never journaled: `excluded_re` alone is already 31% of
+   *  a 507k-row table that nothing prunes, and a per-symbol reason for all 528
+   *  names every tick would dwarf it. The explain route reads this from a live
+   *  screen instead — a question you ask, not a query you had to anticipate. */
+  rejected: { symbol: string; direction: Direction; total: number; reasons: string[] }[];
   /** The universe's median relVolume this tick — the market's current pace, and
    *  the denominator every relVolPace was measured against. Computed every tick
    *  since 2026-09-01 (it used to be skipped when the pace GATE was off), because
@@ -321,6 +340,7 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
   // announces a candidate this screen then discards.
   const pendingCandidates: { symbol: string; candidate: ScreenCandidate }[] = [];
   const excluded: { symbol: string; reason: string }[] = [];
+  const rejected: { symbol: string; direction: Direction; total: number; reasons: string[] }[] = [];
   const skipped: { symbol: string; reason: string }[] = [];
   const errors: { symbol: string; message: string }[] = [];
 
@@ -466,7 +486,15 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
               // Sampled from the LONG score, but relVolume is direction-free —
               // both directions read the same indicator computation.
               relVolSamples.push(both.long.indicators.relVolume);
-              return pickDirection(both);
+              const chosen = pickDirection(both);
+              if (!chosen) {
+                // Neither direction passed. Report the side that scored higher,
+                // since that is the one the reader is asking about.
+                const best = both.long.total >= both.short.total ? both.long : both.short;
+                const dir: Direction = best === both.long ? 'long' : 'short';
+                rejected.push({ symbol, direction: dir, total: best.total, reasons: best.filterReasons });
+              }
+              return chosen;
             })()
           : (() => {
               const score = scoreSymbol(
@@ -484,6 +512,14 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
               // pace, so it must come from the whole scored universe, not from
               // the survivors of the very filter it feeds.
               relVolSamples.push(score.indicators.relVolume);
+              if (!score.passedFilters) {
+                rejected.push({
+                  symbol,
+                  direction: directionMode,
+                  total: score.total,
+                  reasons: score.filterReasons,
+                });
+              }
               return score.passedFilters ? { direction: directionMode, score } : null;
             })();
       if (picked) {
@@ -583,6 +619,7 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
     excluded,
     skipped,
     errors,
+    rejected,
     relVolMedian: median,
     discovery: { universeCount, moversCount, scannedCount: symbols.length, moversError },
   };

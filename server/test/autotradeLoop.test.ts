@@ -399,6 +399,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      rejected: [],
       relVolMedian: null,
       discovery: { universeCount: 0, moversCount: 0, scannedCount: 0, moversError: null },
     });
@@ -418,6 +419,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      rejected: [],
       relVolMedian: null,
       discovery: { universeCount: 0, moversCount: 0, scannedCount: 0, moversError: null },
     });
@@ -471,6 +473,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      rejected: [],
       relVolMedian: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
@@ -512,6 +515,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      rejected: [],
       relVolMedian: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
@@ -549,6 +553,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      rejected: [],
       relVolMedian: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
@@ -586,6 +591,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      rejected: [],
       relVolMedian: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
@@ -613,6 +619,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      rejected: [],
       relVolMedian: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
@@ -640,6 +647,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      rejected: [],
       relVolMedian: null,
       discovery: { universeCount: 1, moversCount: 35, scannedCount: 36, moversError: null },
     });
@@ -662,6 +670,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      rejected: [],
       relVolMedian: null,
       discovery: { universeCount: 1, moversCount: 35, scannedCount: 36, moversError: null },
     });
@@ -685,6 +694,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      rejected: [],
       relVolMedian: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: 'webull session expired' },
     });
@@ -714,6 +724,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      rejected: [],
       relVolMedian: null,
       discovery: { universeCount: 0, moversCount: 0, scannedCount: 0, moversError: null },
     });
@@ -741,6 +752,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      rejected: [],
       relVolMedian: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
@@ -762,6 +774,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      rejected: [],
       relVolMedian: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
@@ -791,6 +804,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      rejected: [],
       relVolMedian: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
@@ -826,6 +840,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      rejected: [],
       relVolMedian: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
@@ -879,6 +894,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      rejected: [],
       relVolMedian: null,
       discovery: { universeCount: 0, moversCount: 0, scannedCount: 0, moversError: null },
     });
@@ -897,6 +913,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      rejected: [],
       relVolMedian: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
@@ -926,6 +943,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      rejected: [],
       relVolMedian: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
@@ -957,6 +975,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      rejected: [],
       relVolMedian: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
@@ -978,6 +997,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      rejected: [],
       relVolMedian: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
@@ -1042,6 +1062,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      rejected: [],
       relVolMedian: null,
       discovery: { universeCount: 1, moversCount: 1, scannedCount: 2, moversError: null },
     });
@@ -1083,6 +1104,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      rejected: [],
       relVolMedian: null,
       discovery: { universeCount: 2, moversCount: 0, scannedCount: 2, moversError: null },
     });
@@ -1109,6 +1131,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      rejected: [],
       relVolMedian: null,
       discovery: { universeCount: 2, moversCount: 0, scannedCount: 2, moversError: null },
     });
@@ -1129,6 +1152,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      rejected: [],
       relVolMedian: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
@@ -1151,6 +1175,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      rejected: [],
       relVolMedian: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
@@ -1176,6 +1201,7 @@ describe('runAutotradeLoopTick', () => {
       excluded: [],
       skipped: [],
       errors: [],
+      rejected: [],
       relVolMedian: null,
       discovery: { universeCount: 0, moversCount: 0, scannedCount: 0, moversError: null },
     });
@@ -1249,6 +1275,7 @@ describe('runAutotradeLoopTick', () => {
         excluded: [],
         skipped: [],
         errors: [],
+        rejected: [],
         relVolMedian: null,
         discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
       };
@@ -1276,6 +1303,7 @@ describe('runAutotradeLoopTick', () => {
         excluded: [],
         skipped: [],
         errors: [],
+        rejected: [],
         relVolMedian: null,
         discovery: { universeCount: 0, moversCount: 0, scannedCount: 0, moversError: null },
       };
@@ -1296,6 +1324,7 @@ describe('runAutotradeLoopTick', () => {
         excluded: [],
         skipped: [],
         errors: [],
+        rejected: [],
         relVolMedian: null,
         discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
       });
@@ -1392,6 +1421,7 @@ describe('runAutotradeLoopTick', () => {
           excluded: [],
           skipped: [],
           errors: [],
+          rejected: [],
           relVolMedian: null,
           discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
         };
@@ -1421,6 +1451,7 @@ describe('runAutotradeLoopTick', () => {
         excluded: [],
         skipped: [],
         errors: [],
+        rejected: [],
         relVolMedian: null,
         discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
       });
@@ -1526,6 +1557,7 @@ describe('runAutotradeLoopTick', () => {
           excluded: [],
           skipped: [],
           errors: [],
+          rejected: [],
           relVolMedian: null,
           discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
         };
@@ -1574,6 +1606,7 @@ describe('startAutotradeLoop / stopAutotradeLoop', () => {
         excluded: [],
         skipped: [],
         errors: [],
+        rejected: [],
         relVolMedian: null,
         discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
       };

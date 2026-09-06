@@ -1491,6 +1491,21 @@ equally-weighted cards in the order they happened to be built:
   derived from the flatten rather than set separately, so the two can never
   disagree, and it disables itself along with the flatten.
 
+- **"Why wasn't this traded today?"** — `GET /api/autotrade/explain/:symbol` answers it for
+  any symbol, on demand. The screener journals *some* rejections per symbol (real estate,
+  relative-volume pace, volatility, earnings, unknown sector) and says nothing about the
+  filters inside the score — today's move, the score minimum, weekly-trend alignment,
+  price, average volume. Those reasons were computed and dropped, so a name that simply
+  never appeared left no trace of what stopped it. This runs a **real screen over the whole
+  universe** and reports where your symbol landed: `candidate`, `rejected_by_filters` (with
+  the exact reasons), `excluded`, `skipped`, `error`, `not_scanned`, or `not_in_universe` —
+  along with the score, the pace denominator the reasons were measured against, and both
+  the screen minimum and the live conviction floor. It screens everything rather than the
+  one name deliberately: relative-volume *pace* is a multiple of the universe's median that
+  tick, so a one-symbol screen would make every pace exactly 1.0× and the answer would stop
+  matching what the loop does. Nothing is journaled — it is a question you ask, not a query
+  you had to anticipate.
+
   fires on **working positions too** — the decision is about the clock, not the
   trade, since a winner gaps down as easily as a loser — and it never runs after
   the bell, because closing into after-hours liquidity pays a wide spread to
