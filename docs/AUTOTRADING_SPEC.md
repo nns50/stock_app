@@ -5810,3 +5810,79 @@ live case.
 Mutation-verified five ways, including reverting the wiring in `liveExecute.ts`
 while leaving `cancelOrderForLegs` correct — asserting at the consumer, per
 CLAUDE.md, not just at the producer.
+
+## 2026-09-06 — auto-tune's risk ratchet only turns one way
+
+Every risk adjustment auto-tune has ever made, from the production journal:
+
+| date | change | Kelly | n |
+|---|---|---|---|
+| 07-29 | 1.74 → 1.24 | 0.56 | 41 |
+| 07-30 | 1.24 → 0.94 | 0.94 | 45 |
+| 08-06 | 1.74 → 1.24 | 0 | 68 |
+| 08-07 | 1.24 → 0.74 | 0 | 69 |
+| 08-08 | 0.74 → 0.24 | 0 | 70 |
+| 08-09 | 0.24 → **0** | 0 | 70 |
+| 08-26 | 2.14 → 1.97 | 1.97 | 30 |
+
+**Seven adjustments, seven decreases.** Against that, `auto_tune_risk_increase_blocked`
+has fired **22 times** — every single increase the tuner has ever wanted, refused. The
+tuner has never once raised risk.
+
+### Why the increase path is effectively closed
+
+A decrease applies on a raw Kelly point estimate with no significance test at all. An
+increase must clear `checkOosEdgeConfirmation`: a bootstrap 95% CI on the most recent
+half of closed trades, whose low end must sit above zero.
+
+Measured 2026-09-06 on the 87 dated closed autotrade trades (OOS window = the last 43):
+
+```
+expectancy  +$1.51/trade      stdev  $38.34      SE  $5.85
+bootstrap 95% CI   -$8.85 … +$13.75      ->  not confirmed
+to confirm at n=43 the expectancy would have to exceed  ~$11.46/trade  (7.6x the actual)
+required OOS n at the CURRENT edge:  ~2,473  ->  ~4,945 closed trades in total
+```
+
+At roughly 9 trades a session that is over 500 sessions. The gate is not "hard to pass",
+it is closed for this strategy at this edge.
+
+One real contributor is that the guard judges in DOLLARS while `riskPerTradePct` itself
+moved 2.14 → 1.97 → 1.25 (and 2.14 → 0 → 2.14 before that) across the same window, so a
+dollar result mixes bets of very different size. Re-running the identical bootstrap on
+R-multiples instead:
+
+```
+expectancy  +0.051R      stdev  0.617      CI  -0.119 … +0.234   ->  still not confirmed
+required OOS n:  ~566  (a 4.4x improvement on the dollar figure, still far away)
+```
+
+So R-normalising the guard would be a genuine improvement — and would still refuse today.
+**The guard is right.** An expectancy of +0.051R ± 0.18R is not a demonstrated edge, and
+declining to size up on it is the correct call.
+
+### What IS wrong is the asymmetry
+
+The two directions are judged by wildly different standards: a decrease needs a point
+estimate, an increase needs statistical significance. So noise walks risk down and can
+never walk it back. That is exactly the 08-06 → 08-09 march: Kelly read 0 on a noisy
+window and risk fell to zero in four nights with no test applied to any step.
+
+And zero is not a smaller bet, it is a halt — 0 risk sizes every position to 0 shares.
+Recovery is worse than an ordinary halt because the guard's population is CLOSED trades:
+at 0 nothing opens, nothing closes, and the evidence set is frozen. Every recovery in the
+record (0 → 2.14 between 08-09 and 08-26) was a human.
+
+### Shipped now, and what was deliberately not
+
+Shipped: a step that lands on 0 journals its own `auto_tune_book_halted` action and
+pushes a notification that says the book will open nothing, that auto-tune cannot raise
+it back on its own, and that risk must be set by hand to resume. Observability only —
+**it does not change the number.**
+
+Not shipped, because it is a decision about how much real money is at risk rather than a
+diff (same rule as `liveMinSignalScore`'s default): a floor under the auto-tune cut, and
+R-normalising the OOS guard. Both are recorded in task #47.
+
+No Tuesday exposure either way: Kelly currently reads 3.0 (the cap), so tonight's run is
+an *increase* attempt, which the guard will block. Risk stays at 1.25%.
