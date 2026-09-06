@@ -280,6 +280,22 @@ A phase doesn't start until the previous one is merged and you've used it.
     action a consumer filters on has no emitter — one hit on the tree today, this one,
     with no false positives.
 
+  - **Pinned (2026-09-06), every live equity entry goes out with its stop attached.**
+    Not a fix — an invariant that was true because two call sites happened to be
+    written that way, with nothing asserting it. A third entry path added without a
+    `bracket` would place a naked position, and the only thing that would notice is the
+    unprotected-position ALARM, which fires after the fact and tells a human to re-arm
+    protection by hand. It has fired 6 times for real (last 2026-08-25). Attaching the
+    bracket to the ENTRY REQUEST is what makes the guarantee: stop and target are legs
+    of one OTOCO (MASTER + STOP_PROFIT + STOP_LOSS), so there is no window between the
+    fill and the protection. `liveEntryBracketInvariant.test.ts` now asserts every
+    `openClose: 'open'` intent in `liveExecute.ts` carries a bracket, that the built
+    request really is three legs with a live stop price on the third, and that OPTIONS
+    remain the documented exception ("No bracket, ever") rather than drifting into one
+    silently. That asymmetry is worth knowing: an options position's only protection is
+    the loop running and its exit path working, which is why the sub-$3 tick rejection
+    mattered far more there than the same bug would have on the equity side.
+
 - The submit path is **never** exercised against the live broker in tests — `fetch` is
   mocked, exactly as the existing Webull tests do.
 - A "panic" test: kill switch on ⇒ every submit refuses.
