@@ -96,7 +96,22 @@ export function decideLiveCapsReanchor(cfg: AutotradeConfig, equityUsd: number |
     // deference means the loop never trades again. Proportionality is the
     // user's call; blocking every entry is not a thing to be deferential
     // about. Only the blocking cap is overridden; the rest stay theirs.
-    const mustFix = blocking && (key === 'liveMaxOrderUsd' || key === 'liveOptionsMaxOrderUsd');
+    //
+    // And "the blocking cap" means the EQUITY one, which is the only cap
+    // `blocking` is about: it tests `liveMaxOrderUsd < sizerFloorUsd(...)`,
+    // where the floor is riskPerTradePct/maxStopDistancePct of equity — a
+    // share-sizing quantity with no bearing on what an options order costs.
+    // This used to override liveOptionsMaxOrderUsd on that same verdict, so an
+    // equity-side problem silently discarded a deliberately hand-set options
+    // cap. Found 2026-09-06, latent rather than live: `blocking` is false at
+    // today's $3,871 against a $2,596 floor and needs equity above $7,742 —
+    // a 49% rise — to become true. But that is roughly where the options cap's
+    // own written-down revisit trigger sits, so the two would have collided
+    // exactly when someone was about to look, and the value it would have been
+    // reset to is the equity-shaped one this book already rejected. There is no
+    // options sizer floor computed here to justify an override, so the options
+    // cap stays what it always was: the operator's.
+    const mustFix = blocking && key === 'liveMaxOrderUsd';
     if (cfg[key] === atAnchor[key] || mustFix) {
       if (cfg[key] === atCurrent[key]) continue;
       patch[key] = atCurrent[key];
