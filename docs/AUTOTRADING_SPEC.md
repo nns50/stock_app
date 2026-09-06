@@ -3203,6 +3203,33 @@ review should report the distribution and explicitly decline to act on it.
 | R3 | No plan in the sample ever reaches `levelMaxStopWidenPct` | The cap is not the binding constraint, so coupling it to the floor changes nothing. Report and stop. |
 | R4 | R2 fired and `levelMinRewardR` needs a number | Set it from the observed distribution of realized R on degraded trades. Never from a guess, and never to hit a target trade count. |
 
+**Interim measurement, 2026-09-06 — the VETO half of the question, which does not
+need the 25-trade sample.** R1-R4 above are about degraded trades that got
+*booked*; the adjacent question is whether widening pushes a setup into the veto.
+Over 400 `level_veto` events (2026-09-01 to 09-04): **142 (36%)** measured reward
+against a stop widened past support, so the coupling is mechanically real — but
+only **5 of 400 (1.25%)** would have cleared the 1R bar at the un-widened ATR
+stop, and three of those five miss by 0.01-0.04R. `levelPlan.ts`'s own claim that
+"the veto never fires on widening alone" is therefore very nearly right: the
+arithmetic bound (a kR signal can only fall to k/(1 + maxStopWidenPct/100)) holds,
+and the exceptions are trades whose target was *also* cut. **No change on the
+veto side.** The booked-trade question above stays open on its own sample, which
+at 19 matched closed positions (10 widened, 9 not) is still short of the 25+10
+this document requires.
+
+**Fixed the same day: `rewardR` was unsigned.** It was
+`Math.abs(newTarget - entry) / newRisk`, so a target the wall capped onto the
+WRONG SIDE of the entry was journaled as a small POSITIVE reward — PSKY on
+2026-09-02 (entry 10.96, resistance 10.97, capped target 10.95) recorded as
+"only 0.04R to the wall". 34 of those 400 vetoes carried the inversion, and it
+reads as a thin setup rather than an impossible one to anything later counting
+`rewardR` out of the journal — including the measurement above, which had to
+solve for the implied stop to notice. Behaviour is unchanged (`reachedWrongSide`
+already vetoed these, and a negative number is under any positive
+`minRewardR`); the recorded fact is now true, and the message says "the capped
+target is on the wrong side of the entry" instead of quoting a reward that does
+not exist.
+
 **The confound to respect.** A stop widens *because* support sits near the entry,
 which is not a random property of a setup — it may correlate with quality in
 either direction. So compare **target-hit rates**, not raw expectancy, and treat

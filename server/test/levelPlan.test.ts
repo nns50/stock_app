@@ -341,3 +341,57 @@ describe('planAroundLevels — breakout allowance', () => {
     expect(p.breakoutAllowed).toBe(false);
   });
 });
+
+describe('rewardR is SIGNED — a wrong-side target is not a thin setup', () => {
+  it('reports a NEGATIVE reward when the wall caps the target below the entry', () => {
+    // The live shape (PSKY, 2026-09-02): entry 10.96, resistance 10.97, and the
+    // buffer puts the capped target at 10.95 — a cent BELOW the entry. Math.abs
+    // reported that as +0.04R, so a trade that cannot exist read in the journal
+    // as a thin one, and anything later counting rewardR out of the journal
+    // counted it as positive reward.
+    const p = planAroundLevels({
+      side: 'long',
+      entry: 10.96,
+      stop: 10.69,
+      target: 11.5,
+      levels: [level(10.97, { from: 'highs', touches: 1, strength: 0.6 })],
+      cfg,
+    });
+    expect(p.veto).toBe(true);
+    expect(p.rewardR).not.toBeNull();
+    expect(p.rewardR!).toBeLessThan(0);
+    expect(p.detail).toContain('wrong side of the entry');
+    expect(p.detail).not.toContain('to the wall, under');
+  });
+
+  it('says so for a short too, where the sign flips the other way', () => {
+    const p = planAroundLevels({
+      side: 'short',
+      entry: 10.0,
+      stop: 10.3,
+      target: 9.4,
+      levels: [level(9.99, { from: 'lows', touches: 1, strength: 0.6 })],
+      cfg,
+    });
+    expect(p.veto).toBe(true);
+    expect(p.rewardR!).toBeLessThan(0);
+    expect(p.detail).toContain('wrong side of the entry');
+  });
+
+  it('still reports an ordinary thin setup as a small POSITIVE reward', () => {
+    // The control: the sign change must not relabel a genuinely thin-but-real
+    // setup, which is the common veto and reads correctly today.
+    const p = planAroundLevels({ ...long, levels: [level(101.5, { touches: 3, strength: 0.8 })], cfg });
+    expect(p.rewardR!).toBeGreaterThan(0);
+    expect(p.rewardR!).toBeLessThan(cfg.minRewardR);
+    expect(p.veto).toBe(true);
+    expect(p.detail).toContain('to the wall, under');
+  });
+
+  it('derives the intended and the adjusted reward through the same helper', () => {
+    // Both are "reward in R"; two formulas would be two chances to disagree.
+    const p = planAroundLevels({ ...long, levels: [level(93, { from: 'lows' })], cfg });
+    expect(p.intendedRewardR).toBeCloseTo((110 - 100) / (100 - 95), 2);
+    expect(p.rewardR).toBeCloseTo((p.target - 100) / (100 - p.stop), 2);
+  });
+});
