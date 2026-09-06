@@ -160,14 +160,46 @@ export interface OosConfirmation {
    *  looks real on the trades the tune hasn't already been fit to. */
   confirmed: boolean;
   oosSampleSize: number;
-  oosExpectancy: number | null;
-  oosCiLow: number | null;
+  /** Expectancy in R MULTIPLES, not dollars — see the note on
+   *  checkOosEdgeConfirmation. Renamed from `oosExpectancy` on 2026-09-06 with
+   *  the unit change, deliberately: journal rows written before and after carry
+   *  different quantities under the same name otherwise, and a $5.54 sitting
+   *  next to a 0.051 in the same field is exactly the kind of silent unit
+   *  mismatch CLAUDE.md's "two places deriving the same quantity" rule is about. */
+  oosExpectancyR: number | null;
+  oosCiLowR: number | null;
   reliable: boolean;
   /** Plain-English one-liner for journaling. */
   reason: string;
 }
 
 /**
+ * JUDGED IN R MULTIPLES, NOT DOLLARS (2026-09-06).
+ *
+ * This guard reads the loop's own closed trades, and `riskPerTradePct` moved
+ * 2.14 -> 1.97 -> 1.25 across that same window (and 2.14 -> 0 -> 2.14 before
+ * it). So a dollar result mixes bets of very different size, and the spread it
+ * measures is partly the SIZING history rather than the edge. Dividing each
+ * trade by the risk it actually took removes that.
+ *
+ * Measured on the 43-trade out-of-sample window as it stood:
+ *
+ *   dollars   expectancy +$1.51   stdev $38.34   CI  -$8.85 … +$13.75
+ *             -> needs ~2,473 out-of-sample trades to confirm at this edge
+ *   R         expectancy +0.051R  stdev 0.617    CI  -0.119 … +0.234
+ *             -> needs ~566
+ *
+ * A 4.4x improvement, and it still refuses today — which is the point. This is
+ * a correction to WHAT is measured, not a loosening of the bar: +0.051R +/-
+ * 0.18R is not a demonstrated edge, and the guard is right to say so. What it
+ * fixes is that in dollars the bar was unreachable in any realistic number of
+ * trades, which made the risk ratchet permanently one-way (see task #47: seven
+ * risk adjustments, all decreases, and all 22 increases blocked).
+ *
+ * Trades with no usable initial stop have no R and are DROPPED by the caller
+ * rather than counted as zero. That shrinks the window, which can only make
+ * this refuse — the safe direction for a gate that guards a risk increase.
+ *
  * Walk-forward guard for the auto-tune risk-% INCREASE (docs/AUTOTRADING_SPEC.md
  * — VALIDATION GATE, applied live). Given all decisive closed trades in
  * chronological order (oldest → newest), split off the most recent
@@ -182,27 +214,35 @@ export interface OosConfirmation {
  * rng. Only ever used to GATE an increase — decreases never call it.
  */
 export function checkOosEdgeConfirmation(
-  chronoTrades: { pnl: number }[],
+  chronoTrades: { rMultiple: number }[],
   opts: { rng?: () => number; resamples?: number; oosFraction?: number } = {},
 ): OosConfirmation {
   const frac = opts.oosFraction ?? DEFAULT_OOS_FRACTION;
   const n = chronoTrades.length;
   const oosCount = n === 0 ? 0 : Math.min(n, Math.max(1, Math.floor(n * frac)));
   const oos = chronoTrades.slice(n - oosCount);
-  const stats = computeSignificanceStats(oos, { rng: opts.rng, resamples: opts.resamples });
+  // The statistic is unit-agnostic — it bootstraps a mean over whatever numbers
+  // it is handed — so the `pnl` field here carries an R MULTIPLE. Measured
+  // 2026-09-06, that substitution is worth roughly 4.4x: the same 43 trades need
+  // ~2,473 out-of-sample observations to confirm in dollars and ~566 in R.
+  const stats = computeSignificanceStats(
+    oos.map((t) => ({ pnl: t.rMultiple })),
+    { rng: opts.rng, resamples: opts.resamples },
+  );
   const confirmed = stats.reliable && stats.ciLow !== null && stats.ciLow > 0;
   const reason = confirmed
-    ? `out-of-sample edge holds: ${stats.sampleSize} recent trades, expectancy ${stats.expectancy} ` +
+    ? `out-of-sample edge holds: ${stats.sampleSize} recent trades, expectancy ${stats.expectancy}R ` +
       `(95% CI ${stats.ciLow}…${stats.ciHigh}, entirely positive)`
     : !stats.reliable
-      ? `out-of-sample window too thin to confirm (${stats.sampleSize} recent trades, needs ${MIN_RELIABLE_TRADES})`
-      : `out-of-sample edge not confirmed: expectancy ${stats.expectancy}, 95% CI ${stats.ciLow}…${stats.ciHigh} ` +
+      ? `out-of-sample window too thin to confirm (${stats.sampleSize} recent trades with a usable ` +
+        `initial stop, needs ${MIN_RELIABLE_TRADES})`
+      : `out-of-sample edge not confirmed: expectancy ${stats.expectancy}R, 95% CI ${stats.ciLow}…${stats.ciHigh} ` +
         `includes zero or below`;
   return {
     confirmed,
     oosSampleSize: stats.sampleSize,
-    oosExpectancy: stats.expectancy,
-    oosCiLow: stats.ciLow,
+    oosExpectancyR: stats.expectancy,
+    oosCiLowR: stats.ciLow,
     reliable: stats.reliable,
     reason,
   };

@@ -80,7 +80,7 @@ function nextIdempotencyKey(): string {
  *  tripping the slippage-exclusion side). Tagged 'autotrade' because since
  *  2026-08-21 the risk tuner only reads the loop's own trades — an untagged
  *  (manual) trade is invisible to it, which manual-trade tests below assert. */
-function closedTrade(pnl: number, day: string) {
+function closedTrade(pnl: number, day: string, stopPrice: number | null = 90) {
   const p = createPosition({
     assetType: 'stock',
     symbol: 'AAPL',
@@ -89,6 +89,13 @@ function closedTrade(pnl: number, day: string) {
     entryPrice: 100,
     entryDate: day,
     tags: ['autotrade'],
+    // The walk-forward guard judges in R multiples (2026-09-06), so a trade
+    // needs an initial stop to be on the scale at all. Real autotrade positions
+    // always carry one — every trade in the live book's out-of-sample window
+    // had a usable initial stop — so a fixture without one was the unrealistic
+    // case, not this. Pass NULL to exercise the drop: an explicit `undefined`
+    // would silently take this default, which is a JS default-parameter trap.
+    stopPrice,
   });
   addExit(p.id, { quantity: 1, exitPrice: 100 + pnl, exitDate: day });
   return p;
@@ -438,6 +445,71 @@ describe('maybeAutoTune', () => {
       expect(result.riskAdjusted).toBe(true);
       expect(getAutotradeConfig().riskPerTradePct).toBeGreaterThan(1);
       expect(listAutotradeEvents({ actions: ['auto_tune_risk_increase_blocked'] })).toHaveLength(0);
+    });
+
+    // -----------------------------------------------------------------------
+    // The guard judges in R MULTIPLES, not dollars (2026-09-06).
+    //
+    // riskPerTradePct moved 2.14 -> 1.97 -> 1.25 across the very window this
+    // reads (and 2.14 -> 0 -> 2.14 before it), so a dollar series mixes bets of
+    // very different size and the guard measures the sizing history as much as
+    // the edge. On the live book that cost 4.4x: ~2,473 out-of-sample trades
+    // needed to confirm in dollars against ~566 in R.
+    // -----------------------------------------------------------------------
+    it('drops a trade with no initial stop rather than counting it as a scratch', async () => {
+      setAutotradeConfig({
+        autoTuneEnabled: true,
+        autoTuneMinTrades: 2,
+        autoTuneMaxStepPct: 0.3,
+        riskPerTradePct: 1,
+        // Pinned, not inherited: setAutotradeConfig is a partial patch over a
+        // shared row, and a preceding test in this file turns this off.
+        autoTuneRequireOosConfirmation: true,
+      });
+      // The same fixture that confirms above, but with NO stop on any trade —
+      // so none of them has an R, the out-of-sample window is empty, and the
+      // guard refuses. Counting them as 0R instead would drag the mean toward
+      // zero with a number that was never measured.
+      for (let i = 0; i < 22; i++)
+        closedTrade(i % 2 === 0 ? 100 : -40, `2026-07-${String(i + 1).padStart(2, '0')}`, null);
+      for (let i = 0; i < 22; i++) closedTrade(100, `2026-08-${String(i + 1).padStart(2, '0')}`, null);
+
+      await maybeAutoTune(ET_DAY_1);
+
+      expect(getAutotradeConfig().riskPerTradePct).toBe(1); // refused, not raised
+      const blocked = listAutotradeEvents({ actions: ['auto_tune_risk_increase_blocked'] });
+      expect(blocked).toHaveLength(1);
+      const detail = JSON.parse(blocked[0].detail ?? '{}') as Record<string, unknown>;
+      expect(detail.oosSampleSize).toBe(0);
+      expect(String(detail.reason)).toMatch(/usable initial stop/);
+      // Renamed with the unit change, so a dollar row and an R row can never be
+      // read as the same quantity.
+      expect(detail).toHaveProperty('oosExpectancyR');
+      expect(detail).not.toHaveProperty('oosExpectancy');
+    });
+
+    it('reports the blocked increase in R, not dollars', async () => {
+      setAutotradeConfig({
+        autoTuneEnabled: true,
+        autoTuneMinTrades: 2,
+        autoTuneMaxStepPct: 0.3,
+        riskPerTradePct: 1,
+        autoTuneRequireOosConfirmation: true,
+      });
+      // 1R = $10 on this fixture (entry 100, stop 90, qty 1). A noisy recent
+      // half so the CI spans zero and the increase is refused.
+      for (let i = 0; i < 22; i++) closedTrade(i % 2 === 0 ? 100 : -40, `2026-07-${String(i + 1).padStart(2, '0')}`);
+      for (let i = 0; i < 22; i++) closedTrade(i % 2 === 0 ? 100 : -95, `2026-08-${String(i + 1).padStart(2, '0')}`);
+
+      await maybeAutoTune(ET_DAY_1);
+
+      const blocked = listAutotradeEvents({ actions: ['auto_tune_risk_increase_blocked'] });
+      expect(blocked).toHaveLength(1);
+      const detail = JSON.parse(blocked[0].detail ?? '{}') as { oosExpectancyR: number; oosSampleSize: number };
+      expect(detail.oosSampleSize).toBe(22);
+      // The recent half averages $2.50, which is 0.25R at $10 a unit. In dollars
+      // this field would read ~2.5; the assertion is what pins the unit.
+      expect(detail.oosExpectancyR).toBeCloseTo(0.25, 2);
     });
 
     it('does NOT guard an increase when the confirmation flag is off (opt-out honored)', async () => {
