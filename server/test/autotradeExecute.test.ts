@@ -493,6 +493,77 @@ describe('checkPaperExits', () => {
     });
   });
 
+  // -------------------------------------------------------------------------
+  // A CLOCK EXIT IS NOT A PRICE QUESTION.
+  //
+  // Every paper exit used to sit below an unconditional `return` on a quote
+  // failure, so a symbol the provider can no longer quote produced a position
+  // nothing could ever close — and paper has no broker-side bracket to fall
+  // back on. GREE was opened 2026-07-21 and was still open 47 days later,
+  // holding one of three paper slots, because /api/quotes/GREE answers
+  // "No Webull quote for GREE" and always will.
+  // -------------------------------------------------------------------------
+  describe('a symbol that cannot be quoted at all', () => {
+    const MS_PER_DAY = 24 * 60 * 60 * 1000;
+    const noQuote = () =>
+      mockGetProvider.mockReturnValue({
+        getQuote: vi.fn().mockRejectedValue(new Error('No Webull quote for GREE')),
+      } as never);
+
+    it('still force-closes on maxHoldDays, booked FLAT and marked unquotable', async () => {
+      setAutotradeConfig({ maxHoldDays: 5 });
+      const pos = openPos({ symbol: 'GREE', entryPrice: 100 });
+      db.prepare('UPDATE autotrade_paper_positions SET entry_at = ? WHERE id = ?').run(
+        Date.now() - 47 * MS_PER_DAY,
+        pos.id,
+      );
+      noQuote();
+
+      const outcomes = await checkPaperExits();
+
+      expect(outcomes[0].closed).toBe(true);
+      expect(outcomes[0].position!.exitReason).toBe('time_exit');
+      // entryPrice — the only NEUTRAL choice. Not the stop, not the target,
+      // and not bestPriceSinceEntry, which would flatter every such trade.
+      expect(outcomes[0].position!.exitPrice).toBe(100);
+      const closed = listAutotradeEvents({ stage: 'execution', symbol: 'GREE' }).find(
+        (e) => e.action === 'paper_position_closed',
+      )!;
+      expect(JSON.parse(closed.detail!)).toMatchObject({ unquotable: true, pnlIsNotAMeasurement: true });
+    });
+
+    it('leaves it open while no clock exit is due, and says so ONCE per day', async () => {
+      openPos({ symbol: 'GREE' }); // maxHoldDays defaults to 0 (disabled)
+      noQuote();
+
+      const first = await checkPaperExits();
+      expect(first[0].closed).toBe(false);
+      expect(first[0].reason).toMatch(/No Webull quote/);
+      expect(hasOpenPaperPosition('GREE')).toBe(true);
+      const stuck = () =>
+        listAutotradeEvents({ stage: 'execution', symbol: 'GREE' }).filter(
+          (e) => e.action === 'paper_position_unquotable',
+        );
+      expect(stuck()).toHaveLength(1);
+      expect(String(stuck()[0].detail)).toMatch(/keeps occupying a paper slot/);
+
+      // Repeats until someone acts, so every tick would bury it.
+      await checkPaperExits();
+      await checkPaperExits();
+      expect(stuck()).toHaveLength(1);
+    });
+
+    it('does not invent a stop or target hit from a missing price', async () => {
+      // The failure mode the null-guard prevents: a comparison against
+      // undefined must never read as "the stop was hit".
+      openPos({ symbol: 'GREE' });
+      noQuote();
+      const outcomes = await checkPaperExits();
+      expect(outcomes[0].closed).toBe(false);
+      expect(listPaperPositions({ symbol: 'GREE' })[0].exitReason).toBeNull();
+    });
+  });
+
   describe('trailing stop / breakeven / partial profit-taking', () => {
     // openPos() defaults: entryPrice 100, stopPrice 95, targetPrice 110, quantity 10
     // -> initialStopDistance = 5, so 1R = a $5 favorable move.

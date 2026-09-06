@@ -5886,3 +5886,66 @@ R-normalising the OOS guard. Both are recorded in task #47.
 
 No Tuesday exposure either way: Kelly currently reads 3.0 (the cap), so tonight's run is
 an *increase* attempt, which the guard will block. Risk stays at 1.25%.
+
+## 2026-09-06 — a paper position on an unquotable symbol was immortal
+
+`checkPaperExits` opened with an unconditional early return on a quote failure:
+
+```ts
+try { last = (await getProvider().getQuote(pos.symbol)).last }
+catch (err) { return { symbol, closed: false, reason: `Quote fetch failed: ...` } }
+```
+
+Every paper exit — stop, target, hold-days, end-of-day flatten — sits BELOW that
+line. So a symbol the provider can no longer quote produced a position nothing
+could ever close, and unlike the live book there is no broker-side bracket to
+fall back on: this loop **is** the broker.
+
+It happened. GREE was opened 2026-07-21 10:11 ET and was still open on 09-06 —
+**47 days** — because `/api/quotes/GREE` answers `{"error":"No Webull quote for
+GREE"}` and always will. At `maxConcurrentPositions: 3` that is a third of the
+paper book's capacity dead since July.
+
+That cost is not confined to paper P&L. Paper is the control group every "should
+we turn this on live?" decision is measured against — the shorts verdict in task
+#21 is decided on exactly this population — so a permanently held slot quietly
+shrinks the evidence behind those calls.
+
+### The rule that was missing
+
+A clock exit is not a price question. The live path already gets this right and
+says so in its own comment: `checkLiveEquityTimeExits` sets the flatten trigger
+**before** fetching any quote, and a failed quote there produces a journaled
+`timeExitFailure` that retries next tick, with the resting broker bracket
+protecting the position meanwhile.
+
+Paper now matches. `last` is `number | null`; `stopHit` and `targetHit` require a
+price (they are genuinely questions about price) while hold-days and the flatten
+do not. `applyPositionManagement` is skipped rather than guessed — a trailing
+stop cannot be ratcheted against a price we do not have.
+
+### Booking a close with no price
+
+Every candidate exit price is a fabrication, so the choice is which bias to take:
+
+| candidate | why not |
+|---|---|
+| `bestPriceSinceEntry` | a high-water mark — flatters every such trade |
+| `stopPrice` / `targetPrice` | asserts a fill that never happened |
+| `entryPrice` | **neutral** — books a scratch, biases nothing |
+
+So it books flat, and the journal carries `unquotable: true` and
+`pnlIsNotAMeasurement: true`. Anything reading paper performance should exclude
+these rows rather than average a fabricated zero into the record.
+
+### And it is no longer silent
+
+A quote failure used to put a `reason` on the returned outcome and nothing else —
+no journal row, no alert. A new `paper_position_unquotable` action fires once per
+position per ET day (the same throttle `live_position_unprotected` uses, and for
+the same reason: the condition persists until someone acts, so every tick would
+bury it and once-ever would let it go quiet while the slot is still held).
+
+Mutation-verified four ways: restoring the early return, booking at the stop
+instead of entry, dropping the once-per-day throttle, and letting a missing price
+read as a stop hit.

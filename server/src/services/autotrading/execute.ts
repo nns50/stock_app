@@ -9,7 +9,7 @@ import {
   RiskCheckResult,
 } from './riskCheck';
 import { computeStreaksAndDrawdown } from '../pnl';
-import { logAutotradeEvent } from '../../db/autotradeEvents';
+import { listAutotradeEvents, logAutotradeEvent } from '../../db/autotradeEvents';
 import {
   closePaperPosition,
   hasOpenPaperPosition,
@@ -557,23 +557,53 @@ export async function checkPaperExits(): Promise<ExitCheckOutcome[]> {
   const flatten = evaluateEndOfDayFlatten(cfg, Date.now());
   const open = listOpenPaperPositions();
   return mapPool(open, 6, async (pos): Promise<ExitCheckOutcome> => {
-    let last: number;
+    let last: number | null = null;
+    let quoteError: string | null = null;
     try {
       last = (await getProvider().getQuote(pos.symbol)).last;
     } catch (err) {
-      return { symbol: pos.symbol, closed: false, reason: `Quote fetch failed: ${(err as Error).message}` };
+      quoteError = (err as Error).message;
     }
 
+    // A CLOCK-BASED EXIT IS NOT A PRICE QUESTION (2026-09-06).
+    //
+    // This used to `return` on any quote failure, before evaluating anything.
+    // Every paper exit — stop, target, hold-days, end-of-day flatten — sits
+    // BELOW that line, so a symbol the provider can no longer quote produced a
+    // position nothing could ever close. Paper has no broker-side bracket to
+    // fall back on: this loop IS the broker.
+    //
+    // It happened. GREE was opened 2026-07-21 10:11 ET and was still open 47
+    // days later, because /api/quotes/GREE answers "No Webull quote for GREE"
+    // and always will. At maxConcurrentPositions 3 that is a THIRD of the paper
+    // book's capacity dead since July — and paper is the control group every
+    // "should we turn this on live?" decision is measured against, so a stuck
+    // slot quietly shrinks the evidence behind those calls.
+    //
+    // The live path already gets this right for the same reason and says so:
+    // its flatten trigger is set before any quote is fetched, and a failed
+    // quote there produces a journaled timeExitFailure that retries, with the
+    // resting broker bracket still protecting the position meanwhile.
+    //
+    // So the clock exits now run WITHOUT a price, and only stop/target — which
+    // are genuinely questions about price — require one.
     const long = pos.side === 'buy';
-    const stopHit = long ? last <= pos.stopPrice : last >= pos.stopPrice;
-    const targetHit = long ? last >= pos.targetPrice : last <= pos.targetPrice;
+    const stopHit = last !== null && (long ? last <= pos.stopPrice : last >= pos.stopPrice);
+    const targetHit = last !== null && (long ? last >= pos.targetPrice : last <= pos.targetPrice);
     const timeHit = !stopHit && !targetHit && maxHoldDays > 0 && Date.now() - pos.entryAt >= maxHoldDays * MS_PER_DAY;
     // Last, so a stop or target that genuinely hit this tick still books as
     // itself: the flatten is what happens to a position nothing else closed.
     const flattenHit = !stopHit && !targetHit && !timeHit && flatten.active;
     if (!stopHit && !targetHit && !timeHit && !flattenHit) {
-      applyPositionManagement(pos, last, cfg);
-      return { symbol: pos.symbol, closed: false };
+      // Position management is genuinely price-driven — a trailing stop cannot
+      // be ratcheted against a price we do not have. Skipped, not guessed.
+      if (last !== null) applyPositionManagement(pos, last, cfg);
+      else journalUnquotable(pos, quoteError);
+      return {
+        symbol: pos.symbol,
+        closed: false,
+        reason: quoteError ? `Quote fetch failed: ${quoteError}` : undefined,
+      };
     }
 
     const exitReason: PaperExitReason = stopHit
@@ -585,7 +615,14 @@ export async function checkPaperExits(): Promise<ExitCheckOutcome[]> {
           // four values, so they share 'time_exit'; the journal detail below
           // carries which one it was.
           'time_exit';
-    const exitPrice = stopHit ? pos.stopPrice : targetHit ? pos.targetPrice : last;
+    // A clock exit with no quote has to book at SOME price, and every candidate
+    // is a fabrication. entryPrice is the only NEUTRAL one — bestPriceSinceEntry
+    // is a high-water mark and would flatter every such trade, and the stop or
+    // target would assert a fill that never happened. So it books as a scratch,
+    // and `unquotable` in the journal says the P&L is not a measurement. Anything
+    // reading paper performance should exclude these rather than average them in.
+    const bookedFlat = last === null;
+    const exitPrice = stopHit ? pos.stopPrice : targetHit ? pos.targetPrice : last === null ? pos.entryPrice : last;
     const closed = closePaperPosition(pos.id, { exitPrice, exitReason });
     if (closed) {
       // paperRealizedPnl over the CLOSED row: the whole trade, partials
@@ -604,11 +641,55 @@ export async function checkPaperExits(): Promise<ExitCheckOutcome[]> {
           realizedPartialPnl: closed.realizedPartialPnl,
           // Which clock closed it — 'time_exit' covers both.
           ...(flattenHit ? { closedBy: 'end_of_day_flatten', minutesLeft: flatten.minutesLeft } : {}),
+          // Booked flat because the symbol could not be priced at all. The
+          // trade is over; its P&L is unknown, not zero.
+          ...(bookedFlat ? { unquotable: true, quoteError, pnlIsNotAMeasurement: true } : {}),
         },
         riskProfile: pos.riskProfile,
       });
     }
     return { symbol: pos.symbol, closed: !!closed, position: closed ?? undefined };
+  });
+}
+
+/**
+ * Say out loud that a paper position cannot be priced.
+ *
+ * Before 2026-09-06 a quote failure returned a `reason` on the outcome and
+ * nothing else — no journal row, no alert — so a position stuck on a delisted
+ * or unquotable symbol was invisible as well as immortal. Once per position per
+ * ET day, on the same throttle the other persistent conditions use: this
+ * repeats until someone acts, so every tick would bury it and once-ever would
+ * let it go quiet while the slot is still held.
+ */
+function journalUnquotable(pos: PaperPosition, quoteError: string | null): void {
+  const today = etDateStr();
+  const already = listAutotradeEvents({ stage: 'execution', actions: ['paper_position_unquotable'], limit: 200 }).some(
+    (e) => {
+      if (etDateStr(e.createdAt) !== today) return false;
+      try {
+        return (JSON.parse(e.detail ?? '{}') as { positionId?: unknown }).positionId === pos.id;
+      } catch {
+        return false;
+      }
+    },
+  );
+  if (already) return;
+  const heldDays = Math.floor((Date.now() - pos.entryAt) / MS_PER_DAY);
+  logAutotradeEvent({
+    symbol: pos.symbol,
+    stage: 'execution',
+    action: 'paper_position_unquotable',
+    detail: {
+      positionId: pos.id,
+      heldDays,
+      quoteError,
+      reason:
+        `No quote for ${pos.symbol} — its stop and target cannot be evaluated. Held ${heldDays} day(s). ` +
+        'The clock exits (hold-days, end-of-day flatten) still apply and will close it flat; until one of ' +
+        'them is due it keeps occupying a paper slot.',
+    },
+    riskProfile: pos.riskProfile,
   });
 }
 
