@@ -1,4 +1,4 @@
-import { WebullOpenOrder } from '../../providers/webull/orders';
+import { WebullOpenOrder, exitLegKind } from '../../providers/webull/orders';
 
 // ---------------------------------------------------------------------------
 // Cancel-and-replace scale-out — the LAST-RESORT route (2026-09-04)
@@ -113,4 +113,56 @@ export function safePartialQuantity(brokerQuantity: number, intendedKeepQty: num
   if (brokerQuantity <= intendedKeepQty) return null;
   const sell = Math.floor(brokerQuantity - intendedKeepQty);
   return sell > 0 ? sell : null;
+}
+
+/**
+ * The order to cancel a bracket's resting legs in: TAKE-PROFIT first, STOP last.
+ *
+ * cancelReplaceBracket cancels one leg at a time and returns on the first
+ * failure, so a bracket can be left HALF cancelled. Which half decides whether
+ * that is a nuisance or a naked position:
+ *
+ *   stop cancelled first, target cancel fails  -> the position runs with a
+ *                                                 take-profit and NO STOP. Real
+ *                                                 money, unbounded downside,
+ *                                                 and nothing sells to reveal
+ *                                                 it — checkLiveBracketProtection
+ *                                                 only reports it (once per ET
+ *                                                 day) and tells a human to
+ *                                                 re-arm by hand.
+ *   target cancelled first, stop cancel fails  -> the position keeps its STOP
+ *                                                 and loses only its target.
+ *                                                 Protected; the worst case is
+ *                                                 an exit that has to come from
+ *                                                 the stop or a time exit.
+ *
+ * Both outcomes abandon the scale-out. The difference is entirely in what the
+ * position is left holding, and until now it was decided by whatever order the
+ * broker happened to list the legs in.
+ *
+ * Legs whose role cannot be read sort BETWEEN the two — never last, because
+ * "unclassifiable" must not be allowed to displace the stop from the safest
+ * slot. The sort is stable, so legs of equal rank keep the broker's own order.
+ *
+ * This does not make the cancel succeed. It makes its FAILURE survivable.
+ */
+export function cancelOrderForLegs(legs: WebullOpenOrder[]): WebullOpenOrder[] {
+  const rank = (l: WebullOpenOrder): number => {
+    const kind = exitLegKind(l);
+    if (kind === 'tp') return 0;
+    if (kind === 'sl') return 2;
+    return 1;
+  };
+  return [...legs].sort((a, b) => rank(a) - rank(b));
+}
+
+/**
+ * Did the legs we managed to cancel include the STOP?
+ *
+ * The question the mid-cancel journal has to answer, because it decides whether
+ * a human needs to act right now or merely knows a target is gone. Takes the
+ * legs in the order they were ATTEMPTED and how many of them succeeded.
+ */
+export function stopWasCancelled(attempted: WebullOpenOrder[], cancelledCount: number): boolean {
+  return attempted.slice(0, cancelledCount).some((l) => exitLegKind(l) === 'sl');
 }

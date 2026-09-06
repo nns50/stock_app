@@ -5484,13 +5484,30 @@ decision:
 
 ### The ordering rule, which is stricter than the in-place path's
 
-1. cancel BOTH legs
+1. cancel the legs, **TAKE-PROFIT first and STOP last** (`cancelOrderForLegs`)
 2. **RE-READ the broker and confirm both are gone.** A cancel is an accepted
    REQUEST, not a completed action; selling against a leg that is still resting
    is the accidental short the whole scale-out design exists to prevent
-3. only then sell the partial
-4. immediately re-bracket the remainder
-5. if 4 fails, force-close the remainder rather than leave unhedged exposure
+3. **re-bracket the REMAINDER, before anything sells**
+4. only then sell the partial
+
+Steps 3 and 4 were the other way round until 2026-09-05, and the old shape is
+worth recording because it was live-but-unreachable behind the flag for a day:
+sell the partial, re-bracket, and force-close the remainder if that re-bracket
+failed. Only steps 1 and 2 were ever implemented — the function journalled
+"unprotected … re-arm by hand" and returned OK, and the caller then sold.
+Turning the flag on would have cancelled the bracket, sold the partial, and left
+the remainder with no stop and no target indefinitely.
+
+Bracketing before selling removes the bad state rather than recovering from it.
+If the re-bracket fails, nothing has been sold, so the rollback is to place a
+bracket for the FULL position and abandon — back to a protected position and a
+missed partial. Sell-first has no such rollback: the shares are gone and the only
+move left is a forced close, chosen under time pressure. One asymmetry in that
+rollback: a KNOWN rejection means no bracket exists, so a full-size restore is
+safe, while an UNANSWERED placement may well be resting and stacking a second
+bracket on it is two stops against one position — so an unanswered re-bracket is
+journalled and left to the next tick's `checkLiveBracketProtection`.
 
 Step 2 cannot be skipped for latency. If the confirmation read fails or is
 ambiguous the correct move is to abandon — back to a protected position and a
@@ -5715,3 +5732,81 @@ winners (task #32).
 Regression test ratchets two winners to breakeven and asserts the tune lands on
 the same multiples as the un-ratcheted case. Reverting to `p.stopPrice` makes
 `exitsAdjusted` false — the tuner finds no usable winners at all.
+
+## 2026-09-06 — the scale-out has never once executed, and the half-cancelled bracket
+
+Two findings, one of which is the answer to "why does profit never get taken
+quicker".
+
+### The scale-out has never executed. Not once.
+
+`live_scale_out_placed` has **never been journalled** — the events endpoint
+reports it in `actionsNeverSeen`. Against that, `live_scale_out_blocked` has
+fired **141 times** across three sessions (89 on 09-02, 9 on 09-03, 43 on 09-04),
+every one of them the same broker refusal:
+
+> The number of take-profit orders and the number of stop-loss orders must be the
+> same.
+
+Every attempt sends exactly one `STOP_PROFIT` and one `STOP_LOSS` — one of each,
+which is what the message asks for — and is refused anyway. (An earlier read of
+this journal suggested some attempts sent only ONE leg; that was wrong. The 98
+rows without a `sent` field predate that diagnostic being added, and their
+`reason` names two leg ids. All 141 attempts are two-leg.)
+
+So the 0.30R partial profit-take is armed (`liveScaleOutEnabled: true` in
+production), tries every tick, and has never taken a dollar. All three routes to
+reducing a bracket are closed at once:
+
+| route | state |
+|---|---|
+| in-place modify | refused by the broker, 141/141 |
+| cancel-and-replace | implemented, `liveScaleOutCancelReplaceEnabled: false` |
+| two brackets at entry (per-lot) | not built |
+
+That is worth stating plainly because the mechanism *reads* as active
+everywhere — config, UI, journal — while taking no profit at all. It is the same
+disease CLAUDE.md's config-reachability rules exist for, one layer further out:
+the field is read, the code runs, and the broker refuses.
+
+### The half-cancelled bracket (fixed)
+
+The blocker keeping cancel-and-replace off was a real one.
+`cancelReplaceBracket` cancels the resting legs one at a time and returns on the
+first failure, so a refused second cancel leaves the bracket **half** gone —
+and which half survived was decided by whatever order the broker listed the legs
+in:
+
+| cancelled first | second cancel fails | result |
+|---|---|---|
+| STOP | target | position runs with a take-profit and **NO STOP** |
+| target | STOP | position keeps its **STOP**, loses only its target |
+
+The first row is real money with unbounded downside and nothing that sells to
+reveal it. `checkLiveBracketProtection` does identify it (since 2026-09-05 it
+asks "is THIS position's stop still there", not "is anything resting") — but it
+only *reports*, once per ET day, and tells a human to re-arm by hand.
+
+`cancelOrderForLegs` now orders the cancels: **take-profit first, stop last**.
+Legs whose role cannot be read sort *between* the two, never last — "I cannot
+tell what this is" must not displace "this is the protection" from the safest
+slot — and the sort is stable, so equal ranks keep the broker's order.
+`buildBracketResizePatches` has already refused anything that is not one
+take-profit plus one stop (or a lone leg) before this point, so the ordering is
+total for every input that can reach it.
+
+This does not make the cancel succeed. **It makes its failure survivable**, which
+is the difference between a nuisance and a naked position.
+
+The journal follows: the mid-cancel row now says which legs actually went,
+*derived* from what was cancelled rather than assumed, and a lost stop is
+reported as `live_position_unprotected` — an action `liveFailureAlert` pages on,
+verified in production as reaching a `live_ambiguity_alerted` dispatch within
+1–60 minutes on all 6 occurrences to date — rather than `live_scale_out_blocked`,
+which alerts on nothing. The `stopGone` branch is unreachable given the ordering
+and is documented in the code as a defence against a future change, not as a
+live case.
+
+Mutation-verified five ways, including reverting the wiring in `liveExecute.ts`
+while leaving `cancelOrderForLegs` correct — asserting at the consumer, per
+CLAUDE.md, not just at the producer.

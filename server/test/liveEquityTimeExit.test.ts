@@ -1076,6 +1076,59 @@ describe('checkLiveEquityScaleOuts', () => {
       expect(mockPlaceOrder).not.toHaveBeenCalled();
     });
 
+    // -----------------------------------------------------------------------
+    // WHICH LEG GOES FIRST. This loop cancels one leg at a time and returns on
+    // the first failure, so a bracket can be left half cancelled — and until
+    // 2026-09-06 the surviving half was decided by whatever order the broker
+    // listed the legs in. `bothLegs()` mirrors a real read and puts the STOP
+    // first, which is the bad order: cancel the stop, fail on the target, and
+    // the position runs on real money with unbounded downside while nothing
+    // sells to reveal it.
+    // -----------------------------------------------------------------------
+    it('cancels the TAKE-PROFIT leg before the STOP, whatever order the broker lists them in', async () => {
+      await armed(200);
+      setAutotradeConfig({ liveScaleOutCancelReplaceEnabled: true });
+      mockOpenOrders.mockResolvedValueOnce(bothLegs()).mockResolvedValueOnce({ ok: true, orders: [] });
+      mockReplaceOrders.mockResolvedValue({ ok: false, error: 'not modifiable' });
+      mockCancelOrder.mockResolvedValue({ ok: true });
+      mockStandaloneBracket.mockResolvedValue({ ok: true });
+
+      await checkLiveEquityScaleOuts();
+
+      // bothLegs() lists STOP-1 first; the stop must still be cancelled LAST.
+      expect(mockCancelOrder.mock.calls.map((c) => c[1])).toEqual(['TGT-1', 'STOP-1']);
+    });
+
+    it('leaves the STOP resting when the second cancel fails, and says so', async () => {
+      await armed(200);
+      setAutotradeConfig({ liveScaleOutCancelReplaceEnabled: true });
+      mockOpenOrders.mockResolvedValue(bothLegs());
+      mockReplaceOrders.mockResolvedValue({ ok: false, error: 'not modifiable' });
+      // The target cancels; the stop's cancel is refused.
+      mockCancelOrder.mockResolvedValueOnce({ ok: true }).mockResolvedValueOnce({ ok: false, error: 'too late' });
+
+      const out = await checkLiveEquityScaleOuts();
+
+      expect(out[0]).toMatchObject({ requested: false });
+      // Nothing sold and no bracket replaced — the scale-out abandons.
+      expect(mockPlaceOrder).not.toHaveBeenCalled();
+      expect(mockStandaloneBracket).not.toHaveBeenCalled();
+      // And it is journalled as a blocked scale-out, NOT as an unprotected
+      // position, because the stop is still there. Reporting a healthy position
+      // as naked is the cry-wolf failure checkLiveBracketProtection also guards.
+      const events = listAutotradeEvents({ limit: 50 });
+      expect(events.some((e) => e.action === 'live_position_unprotected')).toBe(false);
+      // Two live_scale_out_blocked rows are journalled for this: the inner one
+      // from the cancel loop (which knows WHICH legs went) and the outer one
+      // from the caller. The inner one is the one carrying cancelledSoFar.
+      const inner = events
+        .filter((e) => e.action === 'live_scale_out_blocked')
+        .map((e) => JSON.parse(e.detail ?? '{}') as Record<string, unknown>)
+        .find((d) => d.cancelledSoFar !== undefined);
+      expect(inner?.cancelledSoFar).toEqual(['TGT-1']);
+      expect(String(inner?.note)).toMatch(/STOP was NOT among the legs cancelled/);
+    });
+
     it('stays inert while the flag is off — the bracket is never cancelled', async () => {
       await armed(200);
       setAutotradeConfig({ liveScaleOutCancelReplaceEnabled: false });

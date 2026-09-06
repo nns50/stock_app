@@ -66,7 +66,7 @@ import { evaluateStagnation } from './stagnationExit';
 import { evaluateEndOfDayFlatten, evaluateEntryCutoff } from './endOfDayFlatten';
 import { evaluateStopAdjust } from './stopAdjust';
 import { evaluateScaleOut } from './scaleOut';
-import { verifyLegsGone } from './cancelReplace';
+import { cancelOrderForLegs, stopWasCancelled, verifyLegsGone } from './cancelReplace';
 import { attributeByEntryOrder, groupExitLegsByCombo, isSingleBracket, summarizeGroups } from './bracketGroups';
 import {
   resizeAttemptSignature,
@@ -3019,8 +3019,13 @@ async function cancelReplaceBracket(
   cfg: AutotradeConfig,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   const symbol = pos.symbol.toUpperCase();
-  const ids = resting.map((l) => l.clientOrderId).filter((v): v is string => !!v);
-  if (ids.length !== resting.length) {
+  // TAKE-PROFIT first, STOP last. This loop cancels one leg at a time and
+  // returns on the first failure, so the bracket can be left HALF cancelled —
+  // and which half survives decides whether the position is merely missing a
+  // target or is running naked. See cancelOrderForLegs in cancelReplace.ts.
+  const attempted = cancelOrderForLegs(resting);
+  const ids = attempted.map((l) => l.clientOrderId).filter((v): v is string => !!v);
+  if (ids.length !== attempted.length) {
     return { ok: false, reason: 'a resting leg has no client order id to cancel by' };
   }
 
@@ -3028,15 +3033,36 @@ async function cancelReplaceBracket(
   for (const id of ids) {
     const c = await webullCancelOrder(accountId, id);
     if (!c.ok) {
+      // Did we already remove the protection? With cancelOrderForLegs in front
+      // of this loop the answer is NO for every input that can reach here:
+      // buildBracketResizePatches has already refused anything that is not one
+      // take-profit + one stop (or a lone leg), so the sort is total and the
+      // stop is always cancelled last. This is therefore a DEFENCE, not a live
+      // case — it exists so that a future change to the ordering, or a bracket
+      // shape this code has not seen, degrades into a loud alert instead of a
+      // quiet lie in the note below. Derived, never assumed.
+      const stopGone = stopWasCancelled(attempted, cancelled.length);
       logAutotradeEvent({
         symbol,
         stage: 'execution',
-        action: 'live_scale_out_blocked',
+        // A cancelled STOP is not a blocked scale-out, it is an unprotected
+        // position — the action liveFailureAlert pages on. Journaling it as
+        // live_scale_out_blocked (which alerts on nothing) is how this state
+        // would stay silent until the next protection sweep.
+        action: stopGone ? 'live_position_unprotected' : 'live_scale_out_blocked',
         detail: {
           positionId: pos.id,
-          reason: `cancel-replace: cancelling leg ${id} failed: ${c.error ?? 'unknown'}`,
+          quantity: pos.remainingQuantity,
+          reason: stopGone
+            ? `cancel-replace: cancelling leg ${id} failed (${c.error ?? 'unknown'}) AFTER the stop was already ` +
+              'cancelled — this position has NO downside protection. Re-arm the stop by hand.'
+            : `cancel-replace: cancelling leg ${id} failed: ${c.error ?? 'unknown'}`,
           cancelledSoFar: cancelled,
-          note: 'The bracket may now be PARTLY cancelled — check the broker.',
+          note: stopGone
+            ? 'The bracket is PARTLY cancelled and the STOP is the part that is gone.'
+            : 'The bracket may now be PARTLY cancelled, but the STOP was NOT among the legs cancelled — ' +
+              'the position keeps its downside protection and has lost only its target. ' +
+              'Checked, not assumed: see cancelOrderForLegs.',
         },
         riskProfile: cfg.riskProfile,
       });
