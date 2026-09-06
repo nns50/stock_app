@@ -33,6 +33,7 @@ import { saveDailyBaseline } from '../src/db/dailyBaseline';
 import { config } from '../src/config';
 import { runLiveExecution } from '../src/services/autotrading/liveExecute';
 import { etToday } from '../src/util/marketDate';
+import { evaluateEntryCutoff } from '../src/services/autotrading/endOfDayFlatten';
 
 // ---------------------------------------------------------------------------
 // THE WIRING, not the arithmetic (2026-09-05).
@@ -75,6 +76,23 @@ const cfgFields = {
   expectancyWeightingEnabled: false,
   methodWeightingEnabled: false,
   symbolReentryCooldownMinutes: 0,
+  // MUST BE SET, not inherited (2026-09-06). runLiveExecution consults
+  // evaluateEntryCutoff(cfg, Date.now()) against the REAL clock and returns
+  // before evaluateRiskCheck when it blocks — which is exactly this file's
+  // failure mode, `seenContexts.length` 0 in all four wiring tests.
+  //
+  // setAutotradeConfig is a PARTIAL patch over a config row every test file
+  // shares, and autotradeLiveExecute.test.ts (which sorts earlier, so it always
+  // runs first) leaves endOfDayFlattenMinutes at 5. Inheriting that put the
+  // cutoff at 5 + max(runway, stagnationExitMinutes) ≈ 95 minutes, so this file
+  // failed whenever the suite happened to run inside a real ET session within
+  // ~95 minutes of the close — and passed every other time.
+  //
+  // That is task #46's Signature B: intermittent under a deterministic file
+  // order, clustered rather than spread, and impossible to reproduce outside
+  // market hours because minutesUntilClose() returns null there.
+  endOfDayFlattenMinutes: 0,
+  stagnationExitMinutes: 0,
 };
 
 const okAccountState = {
@@ -120,14 +138,53 @@ afterEach(() => {
 });
 
 const factorAfterRun = async (): Promise<number> => {
-  await runLiveExecution([{ signal: signal() }]);
-  expect(seenContexts.length).toBeGreaterThan(0);
+  const outcomes = await runLiveExecution([{ signal: signal() }]);
+  // runLiveExecution has a dozen batch- and per-signal gates that return BEFORE
+  // evaluateRiskCheck, and a bare "expected 0 to be greater than 0" names none
+  // of them — which is why task #46's Signature B went unattributed for days.
+  // The outcomes carry the refusal reason, so put it in the failure message
+  // rather than making the next person reproduce an intermittent failure just
+  // to learn which gate fired.
+  expect(seenContexts.length, `runLiveExecution refused the batch: ${JSON.stringify(outcomes)}`).toBeGreaterThan(0);
   return seenContexts[0].finishLineFactor ?? 1;
 };
 
 /** The step-down cut, without needing a losing streak in the database:
  *  "step down after 0 losses" is active from the first trade. It exercises the
  *  same thing the streak would — a pre-finish-line factor below 1. */
+// ---------------------------------------------------------------------------
+// The clock must not decide whether this file passes.
+//
+// runLiveExecution gates on evaluateEntryCutoff(cfg, Date.now()) and returns
+// BEFORE evaluateRiskCheck when it blocks. Until cfgFields pinned
+// endOfDayFlattenMinutes to 0, this file inherited 5 from an earlier test file
+// (setAutotradeConfig is a partial patch over a config row every file shares,
+// and autotradeLiveExecute.test.ts sorts earlier so it always runs first).
+// That put the cutoff at 5 + max(runway, stagnationExitMinutes) ~= 95 minutes,
+// so all four wiring tests failed whenever the suite happened to run inside a
+// real ET session within ~95 minutes of the close, and passed at every other
+// hour — task #46's Signature B.
+//
+// Asserted as a PROPERTY of the config rather than by moving the system clock.
+// Fake timers in a file whose other tests share its state are their own hazard,
+// and the thing that actually needs guarding is that this file's config cannot
+// arm the cutoff at all.
+// ---------------------------------------------------------------------------
+describe('cannot be decided by what time the suite runs', () => {
+  it('pins the entry cutoff off, so no clock can block the batch', () => {
+    // One minute before a real 16:00 ET close on a real trading day — the exact
+    // moment that used to break the four tests below.
+    const oneMinuteToClose = Date.parse('2026-09-04T19:59:00Z');
+    expect(evaluateEntryCutoff(cfgFields, oneMinuteToClose)).toMatchObject({
+      blocked: false,
+      cutoffMinutes: 0,
+    });
+    // And the sanity check that the moment is genuinely hostile: with the value
+    // this file used to inherit, it DOES block.
+    expect(evaluateEntryCutoff({ ...cfgFields, endOfDayFlattenMinutes: 5 }, oneMinuteToClose).blocked).toBe(true);
+  });
+});
+
 const STEP_DOWN_ON = { stepDownAfterLosses: 0, stepDownSizeCutPct: 50 };
 const STEP_DOWN_OFF = { stepDownAfterLosses: 99, stepDownSizeCutPct: 50 };
 
