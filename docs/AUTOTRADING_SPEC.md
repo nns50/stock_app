@@ -5949,3 +5949,81 @@ bury it and once-ever would let it go quiet while the slot is still held).
 Mutation-verified four ways: restoring the early return, booking at the stop
 instead of entry, dropping the once-per-day throttle, and letting a missing price
 read as a stop hit.
+
+## 2026-09-06 — the intermittent suite failure was a recycled pid
+
+Task #46 recorded two failure signatures from six full-suite runs, unattributed.
+Signature A is now reproduced, root-caused and fixed.
+
+### The mechanism
+
+`vitest.config.ts` pointed the tests at
+`os.tmpdir()/stock-app-vitest-${process.pid}.db`, and **nothing ever deleted
+it**. Two facts turn that into a flake:
+
+- 603 of those files were sitting in `/tmp` on 2026-09-06.
+- `/proc/sys/kernel/pid_max` is 32768, and Linux hands pids out sequentially and
+  wraps — so a later run eventually opens a file an earlier run left behind.
+
+`initDb()` is all `CREATE TABLE IF NOT EXISTS`, so it **adopts** that state
+rather than replacing it.
+
+### Reproduced exactly
+
+Pointing the suite at one of the stale files reproduces Signature A's four
+failures, by name and by message:
+
+```
+autotradeRealEstateClassifier  "caches a successful classification"
+historicalData                 "fetches from Polygon and caches"
+historicalData                 "serves from cache without a second fetch"
+historicalData                 "re-fetches when the requested range extends"
+```
+
+All four are cache tests, and all four fail as "the mock was never called" —
+because a previous run had already populated the cache the test expects to be
+empty. The stale file carried `autotrade_sector_cache` 72 rows, `universe` 509,
+plus `backtest_bars`, `backtest_fetch_log` and `quote_cache`.
+
+Two nastier variants exist and were both observed while investigating:
+
+- a stale file whose WAL sidecar is missing is **malformed**, and better-sqlite3
+  throws `database disk image is malformed` on the first pragma — killing a
+  whole test file before one test runs;
+- a stale file carries an **old schema** (one had an `autotrade_config` with 3
+  columns), which `migrate()` only partially repairs since it names specific
+  tables.
+
+CI never saw any of this: a fresh container per run means there is never a file
+to collide with. That is precisely why the suite could be red locally and green
+on every PR.
+
+### The fix
+
+Make reuse impossible rather than detectable. `test/dbFile.ts` builds a path
+that is unique per run (pid **plus** random suffix), and `test/globalSetup.ts`
+deletes it — with its `-wal`/`-shm` sidecars — on teardown, and sweeps
+same-prefix leftovers older than a day for runs that crashed before teardown.
+The sweep is bounded three ways (temp dir, exact prefix, one day old) so it can
+never delete a concurrent run's database.
+
+Mutation-verified four ways: collapsing the name back to pid-only, dropping the
+sidecar removal, dropping the age bound, and dropping the prefix bound.
+
+### What is NOT fixed
+
+**Signature B is still unattributed.** After the fix, 16 consecutive full-suite
+runs produced one failure (1 file, 4 tests — Signature B's shape) with **zero
+leftover database files**, so it is a second, independent cause. It did not
+reproduce in the 16 runs that followed, and the failing run's log was not
+retained — an error in how that batch was captured, not a tooling limit.
+
+One deduction worth keeping: `sequence.shuffle` is not configured, so with
+`fileParallelism: false` the file order is deterministic. A failure that is
+intermittent under a fixed order is therefore **not order-dependent**, which
+rules out the hypothesis #46 recorded as its next step and points instead at
+wall-clock/timing dependence or async raciness inside a single file.
+
+NEXT TIME: keep the full log (`npx vitest run --root server > run.log 2>&1` in a
+loop, breaking on failure) and note the wall-clock time — a test that behaves
+differently across an ET session boundary would look exactly like this.
