@@ -319,16 +319,62 @@ export async function maybeAutoTune(now: number = Date.now()): Promise<AutoTuneR
           action: 'auto_tune_risk_adjusted',
           detail: { from: current, to: next, kellySuggested: target, sampleSize: stats.kelly.sampleSize },
         });
+        // ZERO IS NOT AN ADJUSTMENT, IT IS A HALT (2026-09-06).
+        //
+        // `next` is floored at 0, and 0 risk sizes every position to 0 shares —
+        // the book stops opening anything at all. That happened on 2026-08-09,
+        // the last of a four-night march 1.74 → 1.24 → 0.74 → 0.24 → 0, and it
+        // was journalled and pushed as an ordinary "risk-per-trade adjusted"
+        // reading `0.24% → 0%`. Technically true, and it does not say that the
+        // strategy has just been switched off.
+        //
+        // It is worse than an ordinary halt because of how it recovers. A
+        // DECREASE applies unconditionally; an INCREASE must clear
+        // checkOosEdgeConfirmation, whose population is CLOSED trades. At risk
+        // 0 nothing opens, so no new closed trades arrive and the evidence set
+        // is frozen — the tuner can only ever climb back on the strength of
+        // history it already had. Every recovery in the record so far (0 →
+        // 2.14 between 08-09 and 08-26) was a human, not the tuner.
+        //
+        // So this gets its own action and its own words. It does NOT change
+        // the number — a floor would be a decision about how much real money
+        // is at risk, not a diff (see task #47).
+        const halted = next === 0 && current > 0;
+        if (halted) {
+          logAutotradeEvent({
+            stage: 'config',
+            action: 'auto_tune_book_halted',
+            detail: {
+              from: current,
+              kellySuggested: target,
+              sampleSize: stats.kelly.sampleSize,
+              reason:
+                'auto-tune set riskPerTradePct to 0 — every position now sizes to 0 shares, so the book ' +
+                'will not open anything. Raising it again requires the out-of-sample guard to pass, and ' +
+                'that guard reads CLOSED trades, which can no longer accumulate. Set it by hand to resume.',
+            },
+          });
+        }
         // Same "push it, don't just journal it" treatment as the daily-drawdown
         // halt — a live risk-% change is consequential enough to surface
         // immediately, not just discoverable later on Recent Activity.
         await dispatchAutotradeNotification('auto-tune', [
-          {
-            title: 'Autotrade auto-tune: risk-per-trade adjusted',
-            message:
-              `riskPerTradePct ${current}% → ${next}% (Kelly suggests ${target}% from ` +
-              `${stats.kelly.sampleSize} decisive closed trades).`,
-          },
+          halted
+            ? {
+                title: 'Autotrade auto-tune: TRADING HALTED (risk set to 0%)',
+                message:
+                  `⛔ riskPerTradePct ${current}% → 0% (Kelly suggests ${target}% from ` +
+                  `${stats.kelly.sampleSize} decisive closed trades). At 0% every position sizes to 0 ` +
+                  'shares, so the book will open NOTHING. Auto-tune cannot raise it back on its own — ' +
+                  'no new trades close, so the evidence its guard reads can never grow. ' +
+                  'Set riskPerTradePct by hand to resume trading.',
+              }
+            : {
+                title: 'Autotrade auto-tune: risk-per-trade adjusted',
+                message:
+                  `riskPerTradePct ${current}% → ${next}% (Kelly suggests ${target}% from ` +
+                  `${stats.kelly.sampleSize} decisive closed trades).`,
+              },
         ]);
         riskAdjusted = true;
       }

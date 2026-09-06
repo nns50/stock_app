@@ -208,6 +208,62 @@ describe('maybeAutoTune', () => {
       expect(events[0].message).toMatch(/riskPerTradePct 1% → 1\.3% \(Kelly suggests/);
     });
 
+    // -----------------------------------------------------------------------
+    // ZERO IS A HALT, NOT AN ADJUSTMENT.
+    //
+    // This is not hypothetical. On 2026-08-09 auto-tune ended a four-night
+    // march (1.74 -> 1.24 -> 0.74 -> 0.24 -> 0) by setting riskPerTradePct to
+    // 0, which sizes every position to 0 shares. It was journalled and pushed
+    // as an ordinary "risk-per-trade adjusted" reading `0.24% -> 0%` — true,
+    // and it does not say the strategy has just been switched off.
+    // -----------------------------------------------------------------------
+    it('announces a step that lands on ZERO as a HALT, not an ordinary adjustment', async () => {
+      setAutotradeConfig({
+        autoTuneEnabled: true,
+        autoTuneMinTrades: 2,
+        autoTuneMaxStepPct: 0.5,
+        riskPerTradePct: 0.2,
+      });
+      // A payoff bad enough that Kelly clamps to 0 — the 2026-08-06..09 shape.
+      closedTrade(10, '2026-08-01');
+      closedTrade(-100, '2026-08-02');
+      expect(kellySuggestion(50, 10, -100, 2)!.suggestedRiskPct).toBe(0);
+
+      await maybeAutoTune(ET_DAY_1);
+
+      expect(getAutotradeConfig().riskPerTradePct).toBe(0);
+      // A DISTINCT action, so this is findable without reading every
+      // adjustment's numbers to notice one of them was terminal.
+      const halt = listAutotradeEvents({ stage: 'config' }).find((e) => e.action === 'auto_tune_book_halted');
+      expect(halt, 'a step to 0 must journal auto_tune_book_halted').toBeDefined();
+      expect(JSON.parse(halt?.detail ?? '{}').from).toBe(0.2);
+      // And the PUSH says what 0 means and that the tuner cannot undo it —
+      // the notification is the only part of this a human actually sees.
+      const events = mockDispatch.mock.calls[0][0];
+      expect(events[0].title).toMatch(/HALTED/);
+      expect(events[0].message).toMatch(/will open NOTHING/);
+      expect(events[0].message).toMatch(/cannot raise it back on its own/);
+      expect(events[0].message).toMatch(/by hand/);
+    });
+
+    it('leaves an ordinary decrease reading as an ordinary decrease', async () => {
+      // The other half: a cut that does NOT reach 0 must not cry halt.
+      setAutotradeConfig({
+        autoTuneEnabled: true,
+        autoTuneMinTrades: 2,
+        autoTuneMaxStepPct: 0.5,
+        riskPerTradePct: 1.5,
+      });
+      closedTrade(10, '2026-08-01');
+      closedTrade(-100, '2026-08-02');
+
+      await maybeAutoTune(ET_DAY_1);
+
+      expect(getAutotradeConfig().riskPerTradePct).toBe(1);
+      expect(listAutotradeEvents({ stage: 'config' }).some((e) => e.action === 'auto_tune_book_halted')).toBe(false);
+      expect(mockDispatch.mock.calls[0][0][0].title).toMatch(/risk-per-trade adjusted/);
+    });
+
     // riskPerTradePct and maxAggregateOpenRiskPct are two expressions of one
     // budget — targetTune.ts derives the second as risk x maxConcurrentPositions.
     // Auto-tune moved the first alone, so it could break that invariant: at the

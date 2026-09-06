@@ -1678,7 +1678,17 @@ equally-weighted cards in the order they happened to be built:
   uses). A _cut_ is always applied — down is the safe direction — but an in-sample edge
   that hasn't held up on recent trades won't talk the loop into sizing up; a blocked
   increase is journaled with its reason. Turn it off only if you deliberately want the
-  Kelly nudge to raise risk on the full-history edge alone. A symbol it excludes lands on the same exclusion list your
+  Kelly nudge to raise risk on the full-history edge alone.
+
+  **If a cut ever lands on 0%, that is a halt, and it says so.** Risk-per-trade is
+  floored at 0, and at 0% every position sizes to 0 shares — the loop opens nothing at
+  all. That happened once, on 2026-08-09, at the end of a four-night run of cuts, and it
+  was announced as an ordinary "risk-per-trade adjusted" reading `0.24% → 0%`. It now
+  gets its own journal entry (`auto_tune_book_halted`) and its own push, saying plainly
+  that the book will open nothing and that **you have to set risk-per-trade by hand to
+  resume**. Auto-tune cannot undo it on its own: raising risk needs the walk-forward
+  guard to pass, that guard reads _closed_ trades, and at 0% no new trades ever close —
+  so the evidence it waits for can never arrive. A symbol it excludes lands on the same exclusion list your
   manual entries use (Settings), so it's visible and reversible there, not a hidden
   blocklist. A separate, independently-toggled **Also auto-tune exit geometry** (2026-07-24,
   off by default) extends the same once-a-day pass to your **stop (× ATR)** and **target
