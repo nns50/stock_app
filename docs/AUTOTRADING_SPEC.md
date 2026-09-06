@@ -6010,13 +6010,50 @@ never delete a concurrent run's database.
 Mutation-verified four ways: collapsing the name back to pid-only, dropping the
 sidecar removal, dropping the age bound, and dropping the prefix bound.
 
-### What is NOT fixed
+### Signature B: mechanism found, and reproducible on demand
 
-**Signature B is still unattributed.** After the fix, 16 consecutive full-suite
-runs produced one failure (1 file, 4 tests — Signature B's shape) with **zero
-leftover database files**, so it is a second, independent cause. It did not
-reproduce in the 16 runs that followed, and the failing run's log was not
-retained — an error in how that batch was captured, not a tooling limit.
+`runLiveExecution` gates on `evaluateEntryCutoff(cfg, Date.now())` — the **real
+clock** — and returns before `evaluateRiskCheck` when it blocks, which is exactly
+`seenContexts.length === 0` in all four wiring tests.
+
+`setAutotradeConfig` is a PARTIAL patch over a config row every test file shares,
+and `finishLineWiring.test.ts`'s `cfgFields` never set `endOfDayFlattenMinutes`.
+`autotradeLiveExecute.test.ts` sets it to 5 and sorts earlier, so it always runs
+first — leaving the cutoff at `5 + max(runway, stagnationExitMinutes)` ≈ 95
+minutes. The file therefore failed whenever the suite happened to run inside a
+real ET session within ~95 minutes of the close, and passed at every other hour.
+
+That accounts for every property of the signature: intermittent under a
+deterministic file order, clustered rather than spread, and impossible to
+reproduce outside market hours because `minutesUntilClose()` returns null there.
+
+Reproduced exactly — all four failures, same assertion, same line — by giving the
+file the inherited value and a system clock inside the window.
+
+Fixed by pinning `endOfDayFlattenMinutes: 0` and `stagnationExitMinutes: 0` in
+`cfgFields`, and asserting it as a property (`evaluateEntryCutoff` cannot block
+with this config, at a moment one minute before a real close) rather than by
+moving the system clock — fake timers in a file whose other tests share its state
+are their own hazard. Mutation-verified: restoring the inherited values fails the
+new test.
+
+### What is STILL not fixed
+
+**A residual flake with the same outward shape survives both fixes.** Across four batches of full-suite runs
+after both fixes: 1 failure in 16, then 2 in 6, then 0 in 6, then 0 in 6 — always
+the same four `finishLineWiring` tests, always `seenContexts.length === 0`, and
+always with **zero leftover database files**. So it is a third cause, not the
+two above.
+
+It also evades instrumentation: six runs with a `console.error` dumping the
+refusal reason were all clean. The rate is noisy enough (roughly 10-20%) that the
+probe's presence is more likely coincidence than an observer effect, but it means
+the gate that fires is still unknown.
+
+What the next occurrence will now say for itself: `factorAfterRun` puts the
+`runLiveExecution` outcomes — which carry the refusal reason — into the assertion
+message. A bare "expected 0 to be greater than 0" names none of the dozen gates
+that can return early, and that is the single reason this took days to attribute.
 
 One deduction worth keeping: `sequence.shuffle` is not configured, so with
 `fileParallelism: false` the file order is deterministic. A failure that is
