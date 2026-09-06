@@ -258,6 +258,28 @@ A phase doesn't start until the previous one is merged and you've used it.
     blocked mark is a live position that cannot be closed. Caught by an existing test
     rather than in production, which is the point of asserting at the consumer.
 
+  - **Fixed (2026-09-06), the risk-check PREVIEW counted trades from a journal action
+    nothing emits.** `riskCheck.ts`'s `getPortfolioSnapshot()` derived `tradesToday` by
+    filtering execution events for `action === 'order_placed'` — an action that has never
+    been journaled once. The emitters are named `paper_order_placed` / `live_order_placed`
+    and the consumer was never renamed with them; production's own events endpoint says so
+    outright, answering that query with
+    `{"events":[],"actionsNeverSeen":["order_placed"]}`. So the count was a permanent 0
+    and `max_trades_per_day` could never fail — confirmed live, `POST
+    /api/autotrade/risk-check` answering `max_trades_per_day passed=True — 0 placed vs
+    14/day` on demand. Scope is the two manual preview endpoints and only those
+    (`runAutotradeRiskCheck`, `runOptionsRiskCheck`); both execution paths count position
+    rows and were right throughout, as does the dashboard. So it is a decision-support
+    defect rather than a money one — the preview approves a signal the loop would refuse —
+    the same shape as the `avgVolume` gap already recorded on `signalBody`. `tradesToday`
+    now comes from position ROWS through one shared `tradesEnteredOn()` in `pnl.ts` that
+    the live snapshot calls too, because a row that exists cannot be zeroed by a rename.
+    **The test was the accomplice**: it manufactured an `order_placed` event by hand and
+    then asserted the reader found it, so it passed against a fixture production never
+    produces. New `journalActionsReachability.test.ts` scans the source and fails when any
+    action a consumer filters on has no emitter — one hit on the tree today, this one,
+    with no false positives.
+
 - The submit path is **never** exercised against the live broker in tests — `fetch` is
   mocked, exactly as the existing Webull tests do.
 - A "panic" test: kill switch on ⇒ every submit refuses.

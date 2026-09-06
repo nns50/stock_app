@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 import { initDb, db } from '../src/db';
 import { createPosition } from '../src/db/positions';
 import { setAutotradeConfig } from '../src/db/autotradeConfig';
-import { listAutotradeEvents, logAutotradeEvent } from '../src/db/autotradeEvents';
+import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { evaluateRiskCheck, RiskCheckContext, runAutotradeRiskCheck } from '../src/services/autotrading/riskCheck';
 import { TradeSignal } from '../src/services/autotrading/decide';
 
@@ -670,6 +670,48 @@ describe('runAutotradeRiskCheck — batch orchestration', () => {
     expect(results[0].stepDownActive).toBe(true);
   });
 
+  it('counts tradesToday from position rows, so the preview matches what the loop enforces', async () => {
+    // The defect (2026-09-06): getPortfolioSnapshot() derived tradesToday by
+    // filtering journal events for action === 'order_placed' -- an action NOTHING
+    // has ever emitted. The emitters are paper_order_placed / live_order_placed;
+    // the consumer was never renamed with them. Production's own events endpoint
+    // says so, answering that query with
+    //   {"events":[],"actionsNeverSeen":["order_placed"]}
+    // so the count was a permanent 0 and max_trades_per_day could never fail on
+    // the two PREVIEW endpoints that read this snapshot, while both execution
+    // paths -- which counted rows, like this now does -- were right all along.
+    // Live check at the time: POST /api/autotrade/risk-check answered
+    // "max_trades_per_day passed=True -- 0 placed vs 14/day" on demand.
+    setAutotradeConfig({ maxTradesPerDay: 2 });
+    const entered = (symbol: string, entryDate: string) =>
+      createPosition({
+        assetType: 'stock',
+        symbol,
+        side: 'long',
+        quantity: 10,
+        entryPrice: 100,
+        entryDate,
+        tags: ['autotrade'],
+      });
+    entered('CNT1', etDateStr());
+    // ...and one that was entered today and is ALREADY CLOSED. Counting only
+    // open rows would miss it, and it is the common case rather than the corner:
+    // maxHoldDays is 1 and the 90-minute stagnation exit closes most live trades
+    // the same session, so a book that round-trips twice would report one trade.
+    const roundTrip = entered('CNT2', etDateStr());
+    db.prepare("UPDATE positions SET status = 'closed' WHERE id = ?").run(roundTrip.id);
+    db.prepare(
+      'INSERT INTO position_exits (position_id, quantity, exit_price, exit_date, fees, created_at) VALUES (?,?,?,?,0,?)',
+    ).run(roundTrip.id, 10, 101, etDateStr(), Date.now());
+    // An entry from a PREVIOUS day must not count toward today's budget.
+    entered('CNT0', '2026-01-02');
+
+    const results = await runAutotradeRiskCheck([signal({ symbol: 'AAPL' })]);
+    const check = findCheck(results[0], 'max_trades_per_day');
+    expect(check.detail).toMatch(/^2 placed vs 2\/day/);
+    expect(check.passed).toBe(false); // the cap now actually bites on the preview
+  });
+
   it('buckets dailyPnl and tradesToday by US/Eastern, not UTC, across the UTC-midnight boundary', async () => {
     // 11:30pm ET on Jul 3 is 3:30am UTC on Jul 4 (EDT = UTC-4) — a UTC-based
     // "today" would wrongly call this exit/order "yesterday." Regression for
@@ -693,12 +735,27 @@ describe('runAutotradeRiskCheck — batch orchestration', () => {
       db.prepare(
         'INSERT INTO position_exits (position_id, quantity, exit_price, exit_date, fees, created_at) VALUES (?,?,?,?,0,?)',
       ).run(p1.id, 10, 90, etDateStr(), Date.now()); // -$100, dated "today" in ET
-      logAutotradeEvent({ symbol: 'LATE1', stage: 'execution', action: 'order_placed' });
+      // ENTERED late in the ET evening: 2026-07-03 in ET, already the 4th in UTC.
+      // This used to be `logAutotradeEvent({ action: 'order_placed' })`, and that
+      // fixture is precisely why the count could be broken for months without a
+      // test noticing — NOTHING in the app emits `order_placed`, so the test was
+      // manufacturing the one event production never writes and then asserting
+      // the reader found it. tradesToday now counts position ROWS, which is what
+      // actually exists, so the fixture has to be a row too.
+      createPosition({
+        assetType: 'stock',
+        symbol: 'LATE2',
+        side: 'long',
+        quantity: 10,
+        entryPrice: 100,
+        entryDate: etDateStr(),
+        tags: ['autotrade'],
+      });
 
       const results = await runAutotradeRiskCheck([signal({ symbol: 'AAPL' })]);
       const dailyHaltLevel = findCheck(results[0], 'daily_drawdown_halt').detail;
       expect(dailyHaltLevel).toMatch(/\$-100\.00/); // dailyPnl picked up the late exit (usd() formats as $-100.00)
-      expect(findCheck(results[0], 'max_trades_per_day').detail).toMatch(/^1 placed/); // tradesToday picked up the late order
+      expect(findCheck(results[0], 'max_trades_per_day').detail).toMatch(/^1 placed/); // tradesToday picked up the late entry
     } finally {
       vi.useRealTimers();
     }

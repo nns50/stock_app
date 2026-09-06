@@ -100,7 +100,7 @@ import {
   ratchetPositionStop,
   updatePositionBestPrice,
 } from '../../db/positions';
-import { realizedPnlOf, initialRiskOf, openRiskOf, computeStreaksAndDrawdown } from '../pnl';
+import { realizedPnlOf, initialRiskOf, openRiskOf, computeStreaksAndDrawdown, tradesEnteredOn } from '../pnl';
 import { etTimeOfDay } from '../../util/marketDate';
 import { TradeSignal, convictionGrade } from './decide';
 import {
@@ -345,9 +345,7 @@ export function getLivePortfolioSnapshot(): LivePortfolioSnapshot {
   const { currentStreak } = computeStreaksAndDrawdown(closedPnlsChrono);
   const consecutiveLosses = currentStreak.type === 'loss' ? currentStreak.count : 0;
 
-  const tradesToday =
-    openPositions.filter((p) => p.entryDate === today).length +
-    closedAutotrade.filter((p) => p.entryDate === today).length;
+  const tradesToday = tradesEnteredOn(openPositions, today) + tradesEnteredOn(closedAutotrade, today);
   // Current risk, not the frozen R denominator: a ratcheted stop really has
   // reduced exposure, and shares sold in a scale-out are no longer at risk.
   // See openRiskOf vs initialRiskOf in services/pnl.ts.
