@@ -223,6 +223,41 @@ A phase doesn't start until the previous one is merged and you've used it.
     `order_intent` — never a plain manually-logged position, which could be tracked at a
     different broker entirely. Enabled by default once an account id is set on Settings;
     also available on-demand via a "Sync now" button.
+  - **Fixed (2026-09-06), every live option price was rounded to the cent, and Webull
+    demands NICKELS under $3 of premium.** The broker rejects the order outright: _"The
+    limit price increment is not correct. Orders placed with a premium of less than $3
+    must be in increments of 0.05."_ All four price sites in `liveOptionsExecute.ts` used
+    `Math.round(x * 100) / 100`, and `priceStr()` in `providers/webull/orders.ts` — the
+    backstop that exists precisely so a tick rejection cannot reach the broker — rounds to
+    the cent too, because it was written for equities, where the cent IS the grid. The one
+    live options position this app has ever taken is the whole case study: SRAD opened
+    2026-08-03 at a `1.05` limit (a nickel multiple by luck) and then could not be closed
+    — three exit attempts on 08-04 were rejected with that exact string, the position sat
+    unmanaged for seventeen days, and on 08-21 the broker sync noticed it was simply gone
+    and booked **-$87 from an ESTIMATED price, not a confirmed fill**. New
+    `services/trading/optionTick.ts` is the single grid authority: round to the nearest
+    cent first (float hygiene, byte-identical to the old behaviour at/above $3), then snap
+    a sub-$3 price onto the nickel **toward filling** — a BUY limit up, a SELL limit down —
+    so making an order placeable can never make it less likely to fill. Applied at all four
+    live sites ahead of the guardrails (so the notional and buying-power caps see the price
+    that is actually sent) and again in the option order builders as a backstop.
+  - **Fixed (2026-09-06), the fat-finger check refused the only sayable price on a cheap
+    option.** A percentage is the wrong unit at the bottom of the price scale: an option
+    under $3 quotes in nickels, so on a $0.20 mark the nearest expressible step down is
+    `0.15` — 25% off, and `fat_finger` (10% in production) blocked it. The tick rounding
+    above would have traded a broker rejection for a guardrail rejection one layer up. The
+    rule now judges the deviation **beyond one tick** — a nickel for a sub-$3 option, a
+    cent otherwise — against the percentage band. Subtracting the tick rather than
+    exempting any sub-tick deviation is what closes the STACKING case, which is the one
+    that actually bites: the exit path applies a 5% marketable buffer and *then* snaps to
+    the grid, so a $0.31 mark lands at `0.25` — 0.06 away, both more than a tick and 19%
+    of the reference, while what the order really is, is a 5% buffer plus unavoidable
+    rounding. Two nickels off that same mark is still 19% after the allowance and still
+    blocked. A test now sweeps every cent of premium from $0.01 to $3.00, prices it the
+    way `liveOptionsExecute` does, and requires the guardrail to pass all of it — a single
+    blocked mark is a live position that cannot be closed. Caught by an existing test
+    rather than in production, which is the point of asserting at the consumer.
+
 - The submit path is **never** exercised against the live broker in tests — `fetch` is
   mocked, exactly as the existing Webull tests do.
 - A "panic" test: kill switch on ⇒ every submit refuses.

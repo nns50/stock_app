@@ -438,6 +438,14 @@ with a take-profit around 50–100% is a sane starting shape. Whatever numbers y
 they're % of premium (net debit for a spread), and the Journal's exit-reason badges
 will show you which rule is actually doing the closing.
 
+One mechanical thing worth knowing, because it decides whether an exit is placeable at
+all: **an option under $3 of premium can only be priced in nickels.** Webull rejects
+anything else outright, so the live path snaps every option limit onto that grid — a buy
+rounds up, a sell rounds down, always toward filling. On a $0.40 contract that is up to
+a tick of slippage on the way out; the alternative, until 2026-09-06, was an exit the
+broker refused every cycle while the contract decayed. Expect exit fills to land on
+`.00`/`.05` boundaries, and don't read that as the engine mis-pricing.
+
 **Considering a roll instead of closing outright? (Options → Strategy → Roll analyzer,
 2026-07-23.)** A time-exit trigger, or an ITM short leg risking assignment, doesn't have
 to mean flat — rolling to a later expiration (and often a different strike) keeps the
