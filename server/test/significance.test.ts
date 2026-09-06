@@ -115,32 +115,37 @@ describe('computeSignificanceStats', () => {
   });
 });
 
+/** oscillating() speaks in {pnl}; the walk-forward guard speaks in R multiples
+ *  (2026-09-06). The statistic is unit-agnostic, so the fixtures still exercise
+ *  exactly the same arithmetic — this only relabels the quantity. */
+const asR = (trades: { pnl: number }[]) => trades.map((t) => ({ rMultiple: t.pnl }));
+
 describe('checkOosEdgeConfirmation (auto-tune walk-forward guard)', () => {
   it('confirms when the RECENT (out-of-sample) half is a reliable, entirely-positive sample', () => {
     // Old half bad, recent half good — the guard must judge on the RECENT half.
     const chrono = [...oscillating(40, -100, 5), ...oscillating(40, 100, 5)];
-    const r = checkOosEdgeConfirmation(chrono, { rng: mulberry32(1) });
+    const r = checkOosEdgeConfirmation(asR(chrono), { rng: mulberry32(1) });
     expect(r.confirmed).toBe(true);
     expect(r.oosSampleSize).toBe(40); // recent 50%
-    expect(r.oosCiLow).toBeGreaterThan(0);
+    expect(r.oosCiLowR).toBeGreaterThan(0);
   });
 
   it('does NOT confirm when the out-of-sample CI includes zero (edge decayed)', () => {
     const chrono = [...oscillating(40, 100, 5), ...oscillating(40, 0, 100)];
-    const r = checkOosEdgeConfirmation(chrono, { rng: mulberry32(2) });
+    const r = checkOosEdgeConfirmation(asR(chrono), { rng: mulberry32(2) });
     expect(r.confirmed).toBe(false);
   });
 
   it('does NOT confirm when the out-of-sample edge is negative', () => {
     const chrono = [...oscillating(40, 100, 5), ...oscillating(40, -50, 5)];
-    const r = checkOosEdgeConfirmation(chrono, { rng: mulberry32(3) });
+    const r = checkOosEdgeConfirmation(asR(chrono), { rng: mulberry32(3) });
     expect(r.confirmed).toBe(false);
   });
 
   it('does NOT confirm (conservatively) when the out-of-sample window is too thin to be reliable', () => {
     // 20 total → recent 50% = 10 trades < MIN_RELIABLE_TRADES, even though positive.
     const chrono = oscillating(20, 100, 5);
-    const r = checkOosEdgeConfirmation(chrono, { rng: mulberry32(4) });
+    const r = checkOosEdgeConfirmation(asR(chrono), { rng: mulberry32(4) });
     expect(r.confirmed).toBe(false);
     expect(r.reliable).toBe(false);
     expect(r.oosSampleSize).toBeLessThan(MIN_RELIABLE_TRADES);
@@ -148,7 +153,7 @@ describe('checkOosEdgeConfirmation (auto-tune walk-forward guard)', () => {
 
   it('honors a custom oosFraction for the window size', () => {
     const chrono = oscillating(100, 100, 5);
-    const r = checkOosEdgeConfirmation(chrono, { rng: mulberry32(5), oosFraction: 0.25 });
+    const r = checkOosEdgeConfirmation(asR(chrono), { rng: mulberry32(5), oosFraction: 0.25 });
     expect(r.oosSampleSize).toBe(25);
   });
 });

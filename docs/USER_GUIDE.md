@@ -1675,7 +1675,13 @@ equally-weighted cards in the order they happened to be built:
   lets it _raise_ risk-per-trade if the edge still holds out-of-sample: the most recent
   half of the loop's own closed trades must be a large-enough sample whose expectancy confidence
   interval sits entirely above zero (the same bootstrap the backtest's significance panel
-  uses). A _cut_ is always applied — down is the safe direction — but an in-sample edge
+  uses). Since 2026-09-06 it judges that in **R multiples** rather than dollars: risk-per-trade
+  itself moved between 2.14% and 0% across the window this reads, so a dollar series mixes bets
+  of very different size and measures the sizing history as much as the edge. On the live book
+  that correction is worth about 4.4x — roughly 2,473 out-of-sample trades were needed to confirm
+  in dollars against ~566 in R. It is a change to _what_ is measured, not a lowering of the bar,
+  and it still refuses today. A trade with no recorded initial stop has no R and is left out
+  rather than counted as a scratch, which can only make the guard refuse. A _cut_ is always applied — down is the safe direction — but an in-sample edge
   that hasn't held up on recent trades won't talk the loop into sizing up; a blocked
   increase is journaled with its reason. Turn it off only if you deliberately want the
   Kelly nudge to raise risk on the full-history edge alone.

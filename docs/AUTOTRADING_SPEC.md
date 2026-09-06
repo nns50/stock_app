@@ -6064,3 +6064,53 @@ wall-clock/timing dependence or async raciness inside a single file.
 NEXT TIME: keep the full log (`npx vitest run --root server > run.log 2>&1` in a
 loop, breaking on failure) and note the wall-clock time — a test that behaves
 differently across an ET session boundary would look exactly like this.
+
+## 2026-09-06 — the walk-forward guard now judges in R, not dollars
+
+Task #47's second half. The guard that gates every auto-tune risk INCREASE read
+per-trade **dollars**, while `riskPerTradePct` itself moved `2.14 → 1.97 → 1.25`
+across the very window it reads (and `2.14 → 0 → 2.14` before that). So the
+series mixed bets of very different size, and the spread it measured was partly
+the **sizing history** rather than the edge.
+
+Measured on the 43-trade out-of-sample window as it stood:
+
+```
+dollars   expectancy +$1.51    stdev $38.34   CI  -$8.85 … +$13.75
+          -> ~2,473 out-of-sample trades needed to confirm at this edge
+R         expectancy +0.051R   stdev 0.617    CI  -0.119 … +0.234
+          -> ~566
+```
+
+A **4.4x** improvement, and it still refuses today — which is the point. This
+corrects *what* is measured; it does not lower the bar. `+0.051R ± 0.18R` is not
+a demonstrated edge and the guard is right to say so. What it fixes is that in
+dollars the bar was unreachable in any realistic number of trades, which is what
+made the risk ratchet permanently one-way: seven risk adjustments in the whole
+record, all decreases, and all 22 increases blocked.
+
+### Two details that matter
+
+**A trade with no usable initial stop has no R, and is DROPPED rather than
+counted as zero.** Counting it as a scratch would drag the mean toward zero with
+a number that was never measured. Dropping shrinks the window, which can only
+make the guard *refuse* — the safe direction for a gate on a risk increase.
+(Coverage is not a problem in practice: every trade in the live book's
+out-of-sample window had a usable initial stop.)
+
+**The journal fields were renamed with the unit.** `oosExpectancy` → 
+`oosExpectancyR`, `oosCiLow` → `oosCiLowR`. Rows written before and after
+otherwise carry different quantities under the same name, and a `$5.54` sitting
+next to a `0.051` in one field is exactly the silent unit mismatch CLAUDE.md's
+"two places deriving the same quantity" rule exists to prevent.
+
+Mutation-verified two ways: reverting to dollars, and counting a stopless trade
+as 0R instead of dropping it. One test fixture had to gain a stop — real
+autotrade positions always carry one, so a fixture without it was the
+unrealistic case.
+
+### Still not done
+
+The **floor** under an auto-tune cut (#47's first half) is unchanged and remains
+an operator decision about real money, not a diff. Nothing here stops
+`riskPerTradePct` reaching 0; it only makes the road back reachable in principle.

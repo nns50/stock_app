@@ -2,7 +2,7 @@ import { listPositions, Position } from '../../db/positions';
 import { getIntents } from '../../db/orders';
 import { getProvider } from '../../providers';
 import { computeSlippage, groupSlippageBySymbol, SlippageRow } from '../slippage';
-import { computeJournalStats, realizedPnlOf } from '../pnl';
+import { computeJournalStats, initialRiskOf, realizedPnlOf } from '../pnl';
 import { aggregateExcursions, excursionForTrade, ExcursionReport, TradeExcursion } from '../excursion';
 import { computeExcursionTune } from './excursionTune';
 import { checkOosEdgeConfirmation } from './significance';
@@ -287,12 +287,28 @@ export async function maybeAutoTune(now: number = Date.now()): Promise<AutoTuneR
       // from, oldest → newest.
       let oosBlocked = false;
       if (next > current && config.autoTuneRequireOosConfirmation) {
+        // R MULTIPLES, not dollars. riskPerTradePct moved 2.14 -> 1.97 -> 1.25
+        // across this very window (and 2.14 -> 0 -> 2.14 before it), so a dollar
+        // series mixes bets of very different size and the guard ends up
+        // measuring the sizing history as much as the edge. See
+        // checkOosEdgeConfirmation's header for the 4.4x this is worth.
         const chrono = closedPositions
-          .map((p) => ({ pnl: realizedPnlOf(p), date: lastExitDateOf(p) }))
+          .map((p) => {
+            const risk = initialRiskOf(p);
+            return {
+              // null, not 0: a trade with no usable initial stop has no R, and
+              // counting it as a scratch would drag the mean toward zero with a
+              // number that was never measured.
+              rMultiple: risk === null ? null : realizedPnlOf(p) / risk,
+              date: lastExitDateOf(p),
+            };
+          })
           // Undated trades have no place on a chronological curve — dropped rather
           // than anchored to a guessed date (see db/positions.ts on why entryDate
-          // can be null at all).
-          .filter((t): t is { pnl: number; date: string } => t.date !== null)
+          // can be null at all). Trades with no R are dropped for the same reason:
+          // they cannot be placed on the scale being measured. Both shrink the
+          // window, which can only make the guard REFUSE — the safe direction.
+          .filter((t): t is { rMultiple: number; date: string } => t.date !== null && t.rMultiple !== null)
           .sort((a, b) => a.date.localeCompare(b.date));
         const guard = checkOosEdgeConfirmation(chrono);
         if (!guard.confirmed) {
@@ -306,8 +322,8 @@ export async function maybeAutoTune(now: number = Date.now()): Promise<AutoTuneR
               kellySuggested: target,
               reason: guard.reason,
               oosSampleSize: guard.oosSampleSize,
-              oosExpectancy: guard.oosExpectancy,
-              oosCiLow: guard.oosCiLow,
+              oosExpectancyR: guard.oosExpectancyR,
+              oosCiLowR: guard.oosCiLowR,
             },
           });
         }
