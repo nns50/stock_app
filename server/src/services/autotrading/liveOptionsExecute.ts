@@ -21,6 +21,7 @@ import {
   webullOrderStatus,
   webullOrderStatusBatch,
 } from '../../providers/webull/orders';
+import { optionTickUsd, roundOptionPrice } from '../trading/optionTick';
 import {
   advanceMaterialized,
   createIntent,
@@ -594,7 +595,11 @@ export async function attemptLiveOptionsEntry(
     if (netDebit <= 0) {
       return { symbol, ok: false, reason: `Net debit vanished at fill (long ${longFill} <= short ${shortFill})` };
     }
-    const limitPrice = Math.round(netDebit * buffer * 100) / 100;
+    // Onto the broker's tick grid, UP because this is a buy limit — see
+    // optionTick.ts. Rounding happens before the guardrails below, so the
+    // order-notional and buying-power caps are checked against the price that
+    // will actually be sent.
+    const limitPrice = roundOptionPrice(netDebit * buffer, 'up');
 
     const intent: OrderIntent = {
       symbol,
@@ -669,7 +674,9 @@ export async function attemptLiveOptionsEntry(
   if (!validPremium(fillPremium)) {
     return { symbol, ok: false, reason: `Invalid premium: ${fillPremium}` };
   }
-  const limitPrice = Math.round(fillPremium * buffer * 100) / 100;
+  // Onto the broker's tick grid, UP because this is a buy limit — see
+  // optionTick.ts. Before the guardrails, so the caps see the sent price.
+  const limitPrice = roundOptionPrice(fillPremium * buffer, 'up');
 
   const intent: OrderIntent = {
     symbol,
@@ -1240,7 +1247,11 @@ async function placeLiveOptionsExit(
       return optionsExitFailure(pos, `Quote fetch failed: ${(err as Error).message}`);
     }
     const netValue = longMark - shortMark;
-    const limitPrice = Math.round(netValue * buffer * 100) / 100;
+    // DOWN, because this is a sell limit: snapping to the grid may only make
+    // the close more likely to fill (optionTick.ts). Ahead of the validPremium
+    // guard on purpose — a net value that rounds off the bottom of the grid is
+    // unplaceable, and the guard is what says so instead of the broker.
+    const limitPrice = roundOptionPrice(netValue * buffer, 'down');
     // Same guard as the single-leg branch below: a crossed/stale spread quote
     // (short mark >= long mark), or a net value tiny enough that the sell-side
     // buffer rounds it to 0, makes limitPrice <= 0. The limit_price>0 guardrail
@@ -1249,7 +1260,11 @@ async function placeLiveOptionsExit(
     // Skip this cycle with a precise, journaled reason instead of spinning on an
     // unplaceable order (mirrors attemptLiveOptionsEntry's premium guard).
     if (!validPremium(limitPrice)) {
-      return optionsExitFailure(pos, `No usable exit quote (net ${netValue}: long ${longMark}, short ${shortMark})`);
+      return optionsExitFailure(
+        pos,
+        `No usable exit quote (net ${netValue}: long ${longMark}, short ${shortMark}) — ` +
+          `below the $${optionTickUsd(netValue)} option tick`,
+      );
     }
     intent = {
       symbol,
@@ -1280,7 +1295,8 @@ async function placeLiveOptionsExit(
     } catch (err) {
       return optionsExitFailure(pos, `Quote fetch failed: ${(err as Error).message}`);
     }
-    const limitPrice = Math.round(mark * buffer * 100) / 100;
+    // DOWN, because this is a sell limit — see the spread branch above.
+    const limitPrice = roundOptionPrice(mark * buffer, 'down');
     // Mirror the entry-side premium guard (attemptLiveOptionsEntry). A
     // near-worthless or unquoted contract marks at 0 -- or a value tiny enough
     // that the sell-side marketable buffer rounds it to 0 -- so limitPrice
@@ -1289,7 +1305,10 @@ async function placeLiveOptionsExit(
     // expiration, the exact outcome the time-exit exists to prevent. Skip with
     // a precise, journaled reason instead of spinning on an unplaceable order.
     if (!validPremium(limitPrice)) {
-      return optionsExitFailure(pos, `No usable exit quote (mark ${mark})`);
+      return optionsExitFailure(
+        pos,
+        `No usable exit quote (mark ${mark}) — below the $${optionTickUsd(mark)} option tick`,
+      );
     }
     intent = {
       symbol,

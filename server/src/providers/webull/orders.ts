@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import { roundOptionPrice } from '../../services/trading/optionTick';
 import { webullClient, webullConfigured } from './account';
 import type { CallResult } from './client';
 import type { OrderIntent, OrderType } from '../../services/trading/guardrails';
@@ -44,6 +45,18 @@ const ORDER_TYPE_TO_WEBULL: Record<OrderType, string> = {
  *  here at the one place every live order price actually gets sent. */
 function priceStr(n: number): string {
   return String(Math.round(n * 100) / 100);
+}
+
+/** The same last checkpoint for an OPTION price, where the cent is not the
+ *  grid: under $3 of premium Webull demands nickels and rejects the order
+ *  otherwise. priceStr above is an equity backstop and silently passes a
+ *  sub-$3 penny price straight through — which is how the only live options
+ *  position this app ever took became impossible to close (optionTick.ts has
+ *  the whole account). Direction follows the order-level side so snapping can
+ *  only make an order more marketable: a BUY limit rounds up, a SELL limit
+ *  rounds down. */
+function optionPriceStr(n: number, side: 'BUY' | 'SELL'): string {
+  return String(roundOptionPrice(n, side === 'BUY' ? 'up' : 'down'));
 }
 
 /** The price fields a Webull body carries for this order type: limit_price for
@@ -148,7 +161,7 @@ export function buildWebullOptionOrder(intent: OrderIntent, clientOrderId: strin
       symbol,
       legs,
     };
-    if (intent.limitPrice !== undefined) body.limit_price = priceStr(intent.limitPrice); // NET debit/credit
+    if (intent.limitPrice !== undefined) body.limit_price = optionPriceStr(intent.limitPrice, side); // NET debit/credit
     return body;
   }
 
@@ -186,7 +199,7 @@ export function buildWebullOptionOrder(intent: OrderIntent, clientOrderId: strin
       symbol,
       legs,
     };
-    if (intent.limitPrice !== undefined) body.limit_price = priceStr(intent.limitPrice); // NET debit
+    if (intent.limitPrice !== undefined) body.limit_price = optionPriceStr(intent.limitPrice, side); // NET debit
     return body;
   }
 
@@ -218,7 +231,7 @@ export function buildWebullOptionOrder(intent: OrderIntent, clientOrderId: strin
       symbol,
       legs,
     };
-    if (intent.limitPrice !== undefined) body.limit_price = priceStr(intent.limitPrice); // NET credit/debit
+    if (intent.limitPrice !== undefined) body.limit_price = optionPriceStr(intent.limitPrice, side); // NET credit/debit
     return body;
   }
 
@@ -246,7 +259,12 @@ export function buildWebullOptionOrder(intent: OrderIntent, clientOrderId: strin
     symbol,
     legs: [leg],
   };
-  Object.assign(body, priceFields(intent));
+  // priceFields() is the equity path's cent grid; an option's price fields go
+  // through the option grid instead, same fields and same conditions.
+  const f = priceFields(intent);
+  if (f.limit_price !== undefined) f.limit_price = optionPriceStr(Number(f.limit_price), side);
+  if (f.stop_price !== undefined) f.stop_price = optionPriceStr(Number(f.stop_price), side);
+  Object.assign(body, f);
   return body;
 }
 
@@ -350,8 +368,9 @@ function optionBracketExit(
     symbol,
     legs: [leg],
   };
-  if (orderType === 'LIMIT') body.limit_price = priceStr(price);
-  else body.stop_price = priceStr(price);
+  // Option grid, not the cent grid, and in the exit leg's own direction.
+  if (orderType === 'LIMIT') body.limit_price = optionPriceStr(price, exitSide);
+  else body.stop_price = optionPriceStr(price, exitSide);
   return body;
 }
 
@@ -1316,6 +1335,11 @@ export async function webullReplaceOrders(
     if (patch.comboType !== undefined) modify.combo_type = patch.comboType;
     if (patch.orderType !== undefined) modify.order_type = patch.orderType;
     if (patch.quantity !== undefined) modify.quantity = String(patch.quantity);
+    // Cent grid: every caller of this today is the EQUITY scale-out, where the
+    // cent IS the grid. A patch carries no side and no asset kind, so an option
+    // replace could not pick a rounding direction here even if one arrived —
+    // it would have to snap its price with roundOptionPrice() before building
+    // the patch. Written down rather than guessed at; see optionTick.ts.
     if (patch.limitPrice !== undefined) modify.limit_price = priceStr(patch.limitPrice);
     if (patch.stopPrice !== undefined) modify.stop_price = priceStr(patch.stopPrice);
     return modify;

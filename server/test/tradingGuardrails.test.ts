@@ -339,6 +339,44 @@ describe('trading guardrails', () => {
     expect(check(r, 'fat_finger').passed).toBe(true);
   });
 
+  it('does not call a ONE-TICK move on a cheap option a fat finger', () => {
+    // The percentage is the wrong unit at the bottom of the price scale. An
+    // option under $3 quotes in nickels, so on a $0.20 mark the nearest sayable
+    // price one step down is 0.15 -- 25% off, and this rule used to refuse it.
+    // That is what the tick-rounding fix hit: a legitimate close, snapped to
+    // the only price the broker accepts, blocked here instead of there.
+    const r = evaluateGuardrails(
+      order({ assetKind: 'option', limitPrice: 0.15, referencePrice: 0.2, quantity: 1 }),
+      acct(),
+      cfg({ fatFingerPct: 10 }),
+    );
+    expect(check(r, 'fat_finger').passed).toBe(true);
+  });
+
+  it('still blocks an option limit more than a tick away', () => {
+    // The exemption is one tick, not a blanket pass for cheap options: two
+    // nickels off a $0.20 mark is 50% and stays a fat finger.
+    const r = evaluateGuardrails(
+      order({ assetKind: 'option', limitPrice: 0.1, referencePrice: 0.2, quantity: 1 }),
+      acct(),
+      cfg({ fatFingerPct: 10 }),
+    );
+    expect(failed(r)).toContain('fat_finger');
+  });
+
+  it('gives a stock the cent as its tick, not the nickel', () => {
+    // A $0.05 stock moved one cent is 20% off and legitimate; moved a nickel it
+    // is 100% off and is not.
+    const near = evaluateGuardrails(
+      order({ limitPrice: 0.06, referencePrice: 0.05 }),
+      acct(),
+      cfg({ fatFingerPct: 10 }),
+    );
+    expect(check(near, 'fat_finger').passed).toBe(true);
+    const far = evaluateGuardrails(order({ limitPrice: 0.1, referencePrice: 0.05 }), acct(), cfg({ fatFingerPct: 10 }));
+    expect(failed(far)).toContain('fat_finger');
+  });
+
   it('blocks a fat-finger STOP-LIMIT whose limit is far from its own stop', () => {
     // Regression (hardening audit): stop_loss_limit had NO fat-finger check. The
     // limit is checked against the STOP (9 -> 13 = 44% > 20%), not the market —

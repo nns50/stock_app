@@ -1,3 +1,5 @@
+import { optionTickUsd } from './optionTick';
+
 // ---------------------------------------------------------------------------
 // Live-trading guardrails — the safety core (see docs/LIVE_TRADING_DESIGN.md).
 //
@@ -484,10 +486,21 @@ export function evaluateGuardrails(
   // server-side in placeOrder, so it can't be omitted/spoofed by the client).
   if (intent.orderType === 'limit' && intent.limitPrice !== undefined && intent.limitPrice > 0) {
     if (intent.referencePrice !== undefined && intent.referencePrice > 0) {
-      const devPct = (Math.abs(intent.limitPrice - intent.referencePrice) / intent.referencePrice) * 100;
+      const dev = Math.abs(intent.limitPrice - intent.referencePrice);
+      const devPct = (dev / intent.referencePrice) * 100;
+      // A percentage is the wrong unit at the bottom of the price scale. An
+      // option under $3 quotes in NICKELS, so on a $0.20 mark the smallest
+      // price you can even express one step away is 25% off — and this check
+      // would refuse it as a fat finger. That is not a hypothetical: it is what
+      // the tick-rounding fix ran into, where a legitimate close snapped from
+      // 0.19 to the only sayable price, 0.15, and got blocked here instead of
+      // at the broker. One tick is the minimum representable deviation, never a
+      // mistake, so it is exempt whatever percentage it works out to. Anything
+      // beyond a tick is still judged on the percentage.
+      const tick = intent.assetKind === 'option' ? optionTickUsd(intent.referencePrice) : 0.01;
       block(
         'fat_finger',
-        devPct <= config.fatFingerPct,
+        devPct <= config.fatFingerPct || dev <= tick + 1e-9,
         `limit is ${devPct.toFixed(1)}% from reference (max ${config.fatFingerPct}%)`,
       );
     } else {
