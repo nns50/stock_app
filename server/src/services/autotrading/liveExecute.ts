@@ -59,7 +59,8 @@ import { computeGradeExpectancyMultipliers } from './expectancySizing';
 import { computeMethodMultipliers, methodOfEquitySignal } from './methodSizing';
 import { activeSymbolCooldowns, journalEntrySkipOncePerDay } from './symbolCooldown';
 import { isUnparseableSymbolError, markUnplaceableSymbol, unplaceableReason } from './unplaceableSymbols';
-import { computeFinishLineFactor, finishLineScoreGate } from './finishLine';
+import { computeFinishLineFactor } from './finishLine';
+import { liveEntryScoreGate } from './entryScoreGate';
 import { cutFactor, preFinishLineFactors, preFinishLineRiskPct } from './effectiveRisk';
 import { evaluateStagnation } from './stagnationExit';
 import { evaluateEndOfDayFlatten, evaluateEntryCutoff } from './endOfDayFlatten';
@@ -1203,13 +1204,20 @@ export async function runLiveExecution(
       outcomes.push({ symbol, ok: false, reason });
       continue;
     }
-    const scoreGate = finishLineScoreGate(candidateSignal.score, dailyTarget, cfg);
+    // ONE conviction gate, composing the everyday live floor with the
+    // armed-day ramp — whichever bar is stricter right now decides, and the
+    // gate says which, so a refusal stays attributable. See entryScoreGate.ts
+    // for the 57-trade evidence behind the everyday floor.
+    const scoreGate = liveEntryScoreGate(candidateSignal.score, dailyTarget, cfg);
     if (scoreGate.skip) {
-      journalEntrySkipOncePerDay(symbol, 'finish_line_skipped', {
+      journalEntrySkipOncePerDay(symbol, scoreGate.action ?? 'live_score_floor_skipped', {
         score: candidateSignal.score,
+        bar: scoreGate.bar,
+        source: scoreGate.source,
         reason: scoreGate.detail,
       });
-      outcomes.push({ symbol, ok: false, reason: `Armed-day selectivity: ${scoreGate.detail}` });
+      const label = scoreGate.source === 'armed_day' ? 'Armed-day selectivity' : 'Below the live conviction floor';
+      outcomes.push({ symbol, ok: false, reason: `${label}: ${scoreGate.detail}` });
       continue;
     }
     // Level-aware exits (levelPlan.ts): re-place this signal's ATR stop and R

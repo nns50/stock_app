@@ -215,6 +215,7 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     symbolCooldownDays: 3,
     finishLineSizingEnabled: false,
     finishLineMinSignalScore: 0,
+    liveMinSignalScore: 0,
     stagnationExitMinutes: 0,
     stagnationExitMinR: 0.5,
     liveOptionsFatFingerPct: 10,

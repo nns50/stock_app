@@ -438,6 +438,39 @@ with a take-profit around 50–100% is a sane starting shape. Whatever numbers y
 they're % of premium (net debit for a spread), and the Journal's exit-reason badges
 will show you which rule is actually doing the closing.
 
+### The live conviction floor
+
+The screener's score is not decoration — it predicts outcome. Measured 2026-09-06 over the
+57 closed live trades that carry an `entryScore`, Spearman rho(score, realized R) is
+**+0.320**, past the 5% significance line at that sample size. Split into thirds:
+
+| score band | n | mean R | P&L |
+| --- | --- | --- | --- |
+| 56–69 | 19 | −0.073 | −$59 |
+| 70–75 | 19 | −0.055 | −$153 |
+| **76–94** | 19 | **+0.501** | **+$411** |
+
+Every dollar came from the top third, and the bottom two thirds lost $247 between them.
+Worse, they were not merely losing: 17 of the 35 trades under a 74 score were holding one
+of the three concurrent slots while the book sat at its cap, so they also blocked the
+higher-scoring signals queued behind them.
+
+`liveMinSignalScore` is the everyday floor a **live equity** entry must clear. It is
+deliberately separate from `minSignalScore`, which gates signal generation for **both**
+books — raising that one would starve the paper track that every open question depends on.
+Paper keeps taking every signal at 60 and stays the control group; live takes only what
+clears the floor.
+
+Two things to hold loosely. The number is **fitted in-sample**: 72, 74, 76 and 78 all score
+within noise of each other on n=57, so the sweep identifies the low 70s as a *region*, not
+a point — start at the conservative end. And it cuts trade count, so it buys a better
+average rather than more 3% days; if anything it makes a 3% session rarer, because those
+need a fat tail and this trims the number of shots. It ships at **0 (off)** and is set
+deliberately, never by a default.
+
+On an armed day the finish-line ramp raises the bar further; the two compose, and whichever
+is stricter at that moment is the one that decides.
+
 One mechanical thing worth knowing, because it decides whether an exit is placeable at
 all: **an option under $3 of premium can only be priced in nickels.** Webull rejects
 anything else outright, so the live path snaps every option limit onto that grid — a buy

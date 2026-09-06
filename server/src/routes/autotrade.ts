@@ -295,6 +295,7 @@ const configBody = z.object({
   symbolCooldownDays: z.number().int().min(1).optional(),
   finishLineSizingEnabled: z.boolean().optional(),
   finishLineMinSignalScore: z.number().min(0).max(100).optional(),
+  liveMinSignalScore: z.number().min(0).max(100).optional(),
   stagnationExitMinutes: z.number().int().nonnegative().optional(),
   stagnationExitMinR: z.number().min(0).optional(),
   // Capped at one session (390 minutes): a longer window would mean "always
@@ -544,6 +545,7 @@ autotradeRouter.put(
     if (body.symbolCooldownDays !== undefined) patch.symbolCooldownDays = body.symbolCooldownDays;
     if (body.finishLineSizingEnabled !== undefined) patch.finishLineSizingEnabled = body.finishLineSizingEnabled;
     if (body.finishLineMinSignalScore !== undefined) patch.finishLineMinSignalScore = body.finishLineMinSignalScore;
+    if (body.liveMinSignalScore !== undefined) patch.liveMinSignalScore = body.liveMinSignalScore;
     if (body.stagnationExitMinutes !== undefined) patch.stagnationExitMinutes = body.stagnationExitMinutes;
     if (body.stagnationExitMinR !== undefined) patch.stagnationExitMinR = body.stagnationExitMinR;
     if (body.endOfDayFlattenMinutes !== undefined) patch.endOfDayFlattenMinutes = body.endOfDayFlattenMinutes;

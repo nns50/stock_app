@@ -1159,6 +1159,15 @@ equally-weighted cards in the order they happened to be built:
   every cut already in force and trimmed a trade that could no longer overshoot
   anyway (fixed 2026-09-05). An **armed-day min signal score** holds
   new live entries to a higher conviction bar while the guard is armed (0 = off).
+  Beside it, a **live conviction floor** (`liveMinSignalScore`, 2026-09-06, 0 = off)
+  applies the same idea on an ordinary day: a new **live equity** entry must clear
+  it, whatever the tape is doing. It is a separate setting from the screening
+  minimum on purpose — that one gates signal generation for **both** books, so
+  raising it would starve the paper track the strategy is measured against. Paper
+  keeps taking every signal; live takes only what clears the floor, which keeps the
+  comparison honest. The two bars compose, and whichever is stricter at that moment
+  decides; a refusal is journaled as `live_score_floor_skipped` or
+  `finish_line_skipped` depending on which one bit.
   Separately, a **symbol loss cooldown** (also 2026-08-22, off by default) gives the
   loop a memory of losing on a name: once a symbol takes the configured number of
   losing live trades (2+) within a rolling window of calendar days, its new live

@@ -758,6 +758,14 @@ export interface AutotradeConfig {
    *  almost-banked day back are held to a higher conviction bar. 0 = off;
    *  needs the guard levels set (it rides the guard's arm flag). */
   finishLineMinSignalScore: number;
+  /** LIVE CONVICTION FLOOR (services/autotrading/entryScoreGate.ts): the
+   *  minimum signal score a new LIVE EQUITY entry must clear, every day —
+   *  separate from `minSignalScore`, which gates SIGNAL GENERATION for both
+   *  books and so cannot be raised without starving the paper control group.
+   *  Evidence (2026-09-06, 57 closed live trades): score predicts realized R
+   *  at rho +0.320, and the bottom two thirds of the score range lost $247
+   *  between them while the top third made $411. 0 = off. */
+  liveMinSignalScore: number;
   /** INTRADAY STAGNATION EXIT (services/autotrading/stagnationExit.ts): a
    *  live equity position that has made less than stagnationExitMinR of R
    *  progress after this many wall-clock minutes (evaluated only while the
@@ -1150,6 +1158,12 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     symbolCooldownDays: 3,
     finishLineSizingEnabled: false,
     finishLineMinSignalScore: 0,
+    // Ships OFF. The evidence points at the low 70s (see entryScoreGate.ts),
+    // but a default that changes what a live book trades the moment it deploys
+    // is a decision taken by a diff rather than by an operator. It is set
+    // explicitly through PUT /api/autotrade/config and recorded in the decision
+    // log, the same way regimeSizeCutPct and liveOptionsMaxOrderUsd were.
+    liveMinSignalScore: 0,
     stagnationExitMinutes: 0,
     stagnationExitMinR: 0.5,
     endOfDayFlattenMinutes: 0,
@@ -1447,6 +1461,7 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     finishLineSizingEnabled:
       typeof input.finishLineSizingEnabled === 'boolean' ? input.finishLineSizingEnabled : d.finishLineSizingEnabled,
     finishLineMinSignalScore: pct(input.finishLineMinSignalScore, d.finishLineMinSignalScore),
+    liveMinSignalScore: pct(input.liveMinSignalScore, d.liveMinSignalScore),
     stagnationExitMinutes: posInt(input.stagnationExitMinutes, d.stagnationExitMinutes),
     stagnationExitMinR: nonNeg(input.stagnationExitMinR, d.stagnationExitMinR),
     // Capped at the session's own length: a window longer than the trading day
