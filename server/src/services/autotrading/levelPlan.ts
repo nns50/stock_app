@@ -131,6 +131,13 @@ const round2 = (n: number): number => Math.round(n * 100) / 100;
  * and `target` are what the decision stage already produced; the returned plan
  * is what should actually be used.
  */
+/** Reward in R, SIGNED by the trade's direction — negative when the target
+ *  sits on the wrong side of the entry. One helper for both the adjusted and
+ *  the intended figure so the two cannot drift apart on what "R" means. */
+function signedRewardR(side: 'long' | 'short', entry: number, target: number, risk: number): number {
+  return (side === 'long' ? target - entry : entry - target) / risk;
+}
+
 export function planAroundLevels(input: {
   side: 'long' | 'short';
   entry: number;
@@ -254,11 +261,24 @@ export function planAroundLevels(input: {
   const reachCapped = boundBy === 'reach';
 
   // --- 3. veto: is what's left actually worth the risk? ---------------------
-  const rewardR = newRisk > 0 ? round2(Math.abs(newTarget - entry) / newRisk) : null;
+  // SIGNED, and that is the fix: this used to be Math.abs(newTarget - entry),
+  // which reports a target that landed on the WRONG SIDE of the entry as a
+  // small POSITIVE reward. PSKY on 2026-09-02: entry 10.96, resistance 10.97,
+  // capped target 10.95 — one cent BELOW the entry — journaled as "only 0.04R
+  // to the wall". There is no 0.04R there; there is no trade there at all.
+  // 34 of 400 vetoes in that window carried the same inversion, and it reads
+  // as a thin setup rather than an impossible one to anyone (or anything)
+  // later counting rewardR out of the journal.
+  //
+  // Behaviour is unchanged either way — `reachedWrongSide` below already
+  // vetoed these, and a negative number is still under any positive
+  // minRewardR — so this is the recorded FACT being made true, not a new gate.
+  const rewardR = newRisk > 0 ? round2(signedRewardR(side, entry, newTarget, newRisk)) : null;
   // The signal's own ask, against its own (pre-widening) risk — `risk`, not
   // `newRisk`. Using newRisk here would silently make the two numbers equal
-  // and record nothing.
-  const intendedRewardR = round2(Math.abs(target - entry) / risk);
+  // and record nothing. Same helper, so the two can never disagree about what
+  // "reward in R" means.
+  const intendedRewardR = round2(signedRewardR(side, entry, target, risk));
   const reachedWrongSide = side === 'long' ? newTarget <= entry : newTarget >= entry;
   const veto = cfg.minRewardR > 0 && (reachedWrongSide || (rewardR !== null && rewardR < cfg.minRewardR));
 
@@ -277,7 +297,12 @@ export function planAroundLevels(input: {
     );
   if (breakoutAllowed && wallLimit !== null)
     parts.push(`breakout: ${relVolPace}x pace clears pricing through ${targetSideLevel!.price}`);
-  if (veto) parts.push(`REJECTED — only ${rewardR}R to the wall, under the ${cfg.minRewardR}R minimum`);
+  if (veto)
+    parts.push(
+      reachedWrongSide
+        ? `REJECTED — the capped target ${newTarget} is on the wrong side of the entry ${entry}; there is no trade left, not a thin one`
+        : `REJECTED — only ${rewardR}R to the wall, under the ${cfg.minRewardR}R minimum`,
+    );
   if (parts.length === 0)
     parts.push(
       noStructure
