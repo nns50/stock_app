@@ -488,20 +488,31 @@ export function evaluateGuardrails(
     if (intent.referencePrice !== undefined && intent.referencePrice > 0) {
       const dev = Math.abs(intent.limitPrice - intent.referencePrice);
       const devPct = (dev / intent.referencePrice) * 100;
-      // A percentage is the wrong unit at the bottom of the price scale. An
-      // option under $3 quotes in NICKELS, so on a $0.20 mark the smallest
+      // ONE TICK IS FREE; everything past it is judged on the percentage.
+      //
+      // A bare percentage is the wrong unit at the bottom of the price scale.
+      // An option under $3 quotes in NICKELS, so on a $0.20 mark the smallest
       // price you can even express one step away is 25% off — and this check
-      // would refuse it as a fat finger. That is not a hypothetical: it is what
-      // the tick-rounding fix ran into, where a legitimate close snapped from
-      // 0.19 to the only sayable price, 0.15, and got blocked here instead of
-      // at the broker. One tick is the minimum representable deviation, never a
-      // mistake, so it is exempt whatever percentage it works out to. Anything
-      // beyond a tick is still judged on the percentage.
+      // would refuse it as a fat finger. Not hypothetical: it is what the
+      // tick-rounding fix ran into, where a legitimate close snapped from 0.19
+      // to the only sayable price, 0.15, and was blocked here instead of at the
+      // broker.
+      //
+      // Subtracting the tick rather than exempting a whole sub-tick deviation
+      // is what closes the STACKING case, and that case is real: the live exit
+      // path applies a 5% marketable buffer and THEN snaps to the grid, so on a
+      // $0.31 mark the limit lands at 0.25 — 0.06 away, which is both more than
+      // a tick and 19% of the reference. Judging (dev - tick) puts that at
+      // 0.01, or 3%, which is what the order actually is: a 5% buffer plus the
+      // unavoidable rounding. Two nickels off that same mark is still 19% after
+      // the allowance and still blocked.
       const tick = intent.assetKind === 'option' ? optionTickUsd(intent.referencePrice) : 0.01;
+      const beyondTickPct = (Math.max(0, dev - tick) / intent.referencePrice) * 100;
       block(
         'fat_finger',
-        devPct <= config.fatFingerPct || dev <= tick + 1e-9,
-        `limit is ${devPct.toFixed(1)}% from reference (max ${config.fatFingerPct}%)`,
+        beyondTickPct <= config.fatFingerPct,
+        `limit is ${devPct.toFixed(1)}% from reference — ${beyondTickPct.toFixed(1)}% beyond the ` +
+          `$${tick} tick (max ${config.fatFingerPct}%)`,
       );
     } else {
       warn('fat_finger', true, 'no reference price to sanity-check the limit');

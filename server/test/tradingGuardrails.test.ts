@@ -9,6 +9,7 @@ import {
   type TradingConfig,
   type GuardrailReport,
 } from '../src/services/trading/guardrails';
+import { roundOptionPrice } from '../src/services/trading/optionTick';
 
 // Baselines that pass every rule; each test overrides just what it exercises.
 const cfg = (over: Partial<TradingConfig> = {}): TradingConfig => ({
@@ -354,14 +355,56 @@ describe('trading guardrails', () => {
   });
 
   it('still blocks an option limit more than a tick away', () => {
-    // The exemption is one tick, not a blanket pass for cheap options: two
-    // nickels off a $0.20 mark is 50% and stays a fat finger.
+    // The allowance is one tick, not a blanket pass for cheap options: two
+    // nickels off a $0.20 mark is still 25% past the tick and stays a fat
+    // finger.
     const r = evaluateGuardrails(
       order({ assetKind: 'option', limitPrice: 0.1, referencePrice: 0.2, quantity: 1 }),
       acct(),
       cfg({ fatFingerPct: 10 }),
     );
     expect(failed(r)).toContain('fat_finger');
+  });
+
+  it('lets a marketable buffer and the tick STACK without becoming a fat finger', () => {
+    // The gap a bare sub-tick exemption leaves, and the reason the rule
+    // subtracts the tick instead. The live exit path applies a 5% marketable
+    // buffer and THEN snaps to the grid: a $0.31 mark buffers to 0.2945 and
+    // snaps to 0.25, which is 0.06 away — more than a tick AND 19% of the
+    // reference. What the order actually is, is a 5% buffer plus unavoidable
+    // rounding, and 0.01 past the tick is 3%.
+    const r = evaluateGuardrails(
+      order({ assetKind: 'option', limitPrice: 0.25, referencePrice: 0.31, quantity: 1 }),
+      acct(),
+      cfg({ fatFingerPct: 10 }),
+    );
+    expect(check(r, 'fat_finger').passed).toBe(true);
+  });
+
+  it('clears every sub-$3 premium the live options path can produce', () => {
+    // The consumer-level assertion, since the point of the tick rounding is
+    // that an exit becomes PLACEABLE. Sweep every cent of premium the book can
+    // hold, price it exactly the way liveOptionsExecute does — 5% marketable
+    // buffer, then snap toward filling — and require the guardrail to pass it.
+    // A single blocked mark here means a live position that cannot be closed,
+    // which is the failure this whole change exists to end.
+    for (let cents = 1; cents <= 300; cents += 1) {
+      const mark = cents / 100;
+      for (const [side, direction] of [
+        ['sell', 'down'],
+        ['buy', 'up'],
+      ] as const) {
+        const buffered = side === 'sell' ? mark * 0.95 : mark * 1.05;
+        const limitPrice = roundOptionPrice(buffered, direction);
+        if (limitPrice <= 0) continue; // validPremium's job, journaled upstream
+        const r = evaluateGuardrails(
+          order({ assetKind: 'option', side, openClose: 'close', limitPrice, referencePrice: mark, quantity: 1 }),
+          acct({ currentPositionQty: 10 }),
+          cfg({ fatFingerPct: 10 }),
+        );
+        expect(check(r, 'fat_finger').passed, `${side} at mark ${mark} -> ${limitPrice}`).toBe(true);
+      }
+    }
   });
 
   it('gives a stock the cent as its tick, not the nickel', () => {

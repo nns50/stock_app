@@ -245,11 +245,18 @@ A phase doesn't start until the previous one is merged and you've used it.
     option.** A percentage is the wrong unit at the bottom of the price scale: an option
     under $3 quotes in nickels, so on a $0.20 mark the nearest expressible step down is
     `0.15` — 25% off, and `fat_finger` (10% in production) blocked it. The tick rounding
-    above would have traded a broker rejection for a guardrail rejection one layer up. A
-    deviation of **at most one tick** — a nickel for a sub-$3 option, a cent otherwise — is
-    now never a fat finger, whatever percentage it works out to; anything beyond a tick is
-    still judged on the percentage. Caught by an existing test rather than in production,
-    which is the point of asserting at the consumer.
+    above would have traded a broker rejection for a guardrail rejection one layer up. The
+    rule now judges the deviation **beyond one tick** — a nickel for a sub-$3 option, a
+    cent otherwise — against the percentage band. Subtracting the tick rather than
+    exempting any sub-tick deviation is what closes the STACKING case, which is the one
+    that actually bites: the exit path applies a 5% marketable buffer and *then* snaps to
+    the grid, so a $0.31 mark lands at `0.25` — 0.06 away, both more than a tick and 19%
+    of the reference, while what the order really is, is a 5% buffer plus unavoidable
+    rounding. Two nickels off that same mark is still 19% after the allowance and still
+    blocked. A test now sweeps every cent of premium from $0.01 to $3.00, prices it the
+    way `liveOptionsExecute` does, and requires the guardrail to pass all of it — a single
+    blocked mark is a live position that cannot be closed. Caught by an existing test
+    rather than in production, which is the point of asserting at the consumer.
 
 - The submit path is **never** exercised against the live broker in tests — `fetch` is
   mocked, exactly as the existing Webull tests do.

@@ -369,11 +369,12 @@ yourself once you've decided.
   price available comes from the local cache (which has no age limit), the cached number is
   discarded rather than used, and the fat-finger check falls back to your own reference (or to
   a warning if you gave none). A price of unknown age deciding whether today's limit is sane is
-  worse than no reference at all. One exception, added 2026-09-06: a limit that sits within **one
-  tick** of the reference is never treated as a fat finger. Options under $3 of premium quote in
-  **nickels**, so on a $0.20 mark the nearest price you can even express is 25% away — a
-  percentage band alone would refuse the only sayable price. Beyond a tick, the percentage still
-  rules.
+  worse than no reference at all. One allowance, added 2026-09-06: **one tick is
+  free** — the check measures how far past a tick the limit sits, not how far past the reference.
+  Options under $3 of premium quote in **nickels**, so on a $0.20 mark the nearest price you can
+  even express is 25% away, and a percentage band alone would refuse the only sayable price.
+  Everything beyond that tick is still judged on the percentage, so a genuinely absurd limit is
+  still blocked.
 - **Bracket** (stock **and single-leg option** limit orders) — optionally attach a **take-profit**
   and/or **stop-loss** that fire as the entry fills (Webull MASTER + STOP_PROFIT/STOP_LOSS, one
   cancels the other). For a buy, take-profit sits **above** the entry and stop-loss **below** (for an
