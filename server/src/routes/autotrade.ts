@@ -59,6 +59,7 @@ import { getProvider } from '../providers';
 import { dispatchNotifications } from '../services/notifier';
 import { suggestLiveCaps } from '../services/autotrading/liveCaps';
 import { computeTargetTune, resetToModerate } from '../services/autotrading/targetTune';
+import { listUniverseSymbols } from '../db/universe';
 
 export const autotradeRouter = Router();
 
@@ -921,6 +922,118 @@ autotradeRouter.post(
       moversEnabled: config.moversDiscoveryEnabled,
     });
     res.json(result);
+  }),
+);
+
+// ---- Explain: why did this symbol not get traded today? ---------------------
+//
+// The screener journals SOME rejections per symbol -- excluded_re,
+// excluded_rel_vol_pace, excluded_volatility, excluded_earnings,
+// skipped_unknown_sector -- and NOT the ones inside the score filter
+// (minChangePct, minScore, weekly-trend alignment, minPrice, minAvgVolume).
+// Those reasons were computed and dropped, so a name that simply never appeared
+// left no trace of what stopped it. That is the more common case and the more
+// useful question: SPY and QQQ were added to the universe on an explicit
+// operator decision (2026-08-27), had their unknown-sector skip fixed
+// (2026-09-03), and then produced zero candidates and zero signals with nothing
+// anywhere saying why.
+//
+// The fix is NOT to journal every rejection. `excluded_re` alone is 31% of a
+// 507k-row table that nothing prunes; per-symbol reasons for 528 names every
+// tick would dwarf it. This asks the question on demand instead.
+//
+// WHY IT SCREENS THE WHOLE UNIVERSE for a single answer. runAutotradeScreen
+// takes a `symbols` override and scanning one name would be far cheaper -- and
+// would give a WRONG answer. relVolPace is a multiple of the universe's MEDIAN
+// relVolume this tick, so a one-symbol screen makes that median the symbol's
+// own relVolume and every pace comes out at exactly 1.0x. The pace gate would
+// then pass or fail on an arithmetic artifact. An explain endpoint whose
+// verdict differs from the loop's is worse than none, which is this codebase's
+// most repeated lesson, so it pays for the real screen.
+autotradeRouter.get(
+  '/explain/:symbol',
+  asyncHandler(async (req, res) => {
+    const symbol = String(req.params.symbol || '')
+      .trim()
+      .toUpperCase();
+    if (!symbol) throw new HttpError(400, 'A symbol is required.');
+    const config = getAutotradeConfig();
+    const regimeLabel = await currentRegimeLabel(config);
+    const result = await runAutotradeScreen({
+      config: screenerConfigOverride(config, undefined, regimeLabel),
+      earningsBlackoutDays: config.earningsBlackoutDays,
+      directionMode: config.tradeDirection,
+      moversEnabled: config.moversDiscoveryEnabled,
+    });
+
+    const inUniverse = listUniverseSymbols().includes(symbol);
+    const candidate = result.candidates.find((c) => c.symbol === symbol) ?? null;
+    const rejected = result.rejected.find((r) => r.symbol === symbol) ?? null;
+    const excluded = result.excluded.find((e) => e.symbol === symbol) ?? null;
+    const skipped = result.skipped.find((e) => e.symbol === symbol) ?? null;
+    const errored = result.errors.find((e) => e.symbol === symbol) ?? null;
+
+    // Ordered by how far the symbol actually got, so `outcome` answers "where
+    // did it stop" rather than "which list happened to be checked first".
+    const outcome = candidate
+      ? 'candidate'
+      : errored
+        ? 'error'
+        : skipped
+          ? 'skipped'
+          : excluded
+            ? 'excluded'
+            : rejected
+              ? 'rejected_by_filters'
+              : inUniverse
+                ? 'not_scanned'
+                : 'not_in_universe';
+
+    const detail = candidate
+      ? `passed the screen with a score of ${candidate.total}`
+      : errored
+        ? errored.message
+        : skipped
+          ? skipped.reason
+          : excluded
+            ? excluded.reason
+            : rejected
+              ? rejected.reasons.join('; ')
+              : inUniverse
+                ? 'in the universe but not scanned this cycle — discovery or a provider error dropped it before scoring'
+                : 'not in the universe and not surfaced by movers discovery this cycle';
+
+    res.json({
+      symbol,
+      outcome,
+      detail,
+      inUniverse,
+      score: candidate?.total ?? rejected?.total ?? null,
+      direction: candidate?.direction ?? rejected?.direction ?? null,
+      reasons: rejected?.reasons ?? [],
+      candidate,
+      // The context the reasons only make sense against: the pace denominator
+      // is the market's median this tick, not a fixed number.
+      screen: {
+        generatedAt: result.generatedAt,
+        scannedCount: result.discovery.scannedCount,
+        candidateCount: result.candidates.length,
+        relVolMedian: result.relVolMedian,
+      },
+      filters: {
+        minChangePct: config.minChangePct,
+        minSignalScore: config.minSignalScore,
+        minPrice: config.minPrice,
+        minAvgVolume: config.minAvgVolume,
+        minRelVol: config.minRelVol,
+        minRelVolPace: config.minRelVolPace,
+        requireWeeklyTrendAlignment: config.requireWeeklyTrendAlignment,
+        // Live entries face a HIGHER bar than the screen's own minimum, so an
+        // explain that only reported minSignalScore would say "passed" about a
+        // signal the live book then refuses.
+        liveMinSignalScore: config.liveMinSignalScore,
+      },
+    });
   }),
 );
 
