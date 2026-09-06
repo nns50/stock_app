@@ -288,6 +288,40 @@ describe('the per-order cap and the position sizer cannot contradict each other'
     expect(d.patch.liveMaxOrderUsd!).toBeGreaterThanOrEqual(sizerFloorUsd(cfg, 5_161));
   });
 
+  it('a BLOCKING equity cap does not drag the hand-set OPTIONS cap with it', () => {
+    // `blocking` tests liveMaxOrderUsd against sizerFloorUsd — riskPerTradePct
+    // over maxStopDistancePct, a SHARE-sizing quantity with nothing to say
+    // about what an options contract costs. Overriding the options cap on that
+    // verdict discards a deliberate decision for an unrelated reason, and
+    // replaces it with the equity-shaped number this book has explicitly
+    // rejected (the anchor formula derives the two as EQUAL).
+    //
+    // Latent when found on 2026-09-06 rather than live — at $3,871 against a
+    // $2,596 floor, `blocking` needs equity above $7,742 to turn true — but
+    // that is roughly where the options cap's own revisit trigger sits, so the
+    // reset would have landed exactly when someone was about to look at it.
+    const cfg: AutotradeConfig = {
+      ...defaultAutotradeConfig(),
+      ...sizing,
+      riskProfile: 'MODERATE',
+      liveMaxOrderUsd: 1_600, // below the floor: blocking
+      liveOptionsMaxOrderUsd: 300, // deliberately hand-set, and not blocking anything
+      liveCapsAnchorEquityUsd: 5_352,
+      accountEquityUsd: 5_161,
+    };
+    expect(sizerFloorUsd(cfg, 5_161)).toBeGreaterThan(cfg.liveMaxOrderUsd);
+
+    const d = decideLiveCapsReanchor(cfg, 5_161);
+    expect(d.action).toBe('reanchor');
+    if (d.action !== 'reanchor') throw new Error('unreachable');
+    // The equity cap is fixed, because it genuinely blocks every entry...
+    expect(d.handEdited).not.toContain('liveMaxOrderUsd');
+    expect(d.patch.liveMaxOrderUsd).toBeDefined();
+    // ...and the options cap is left exactly alone.
+    expect(d.handEdited).toContain('liveOptionsMaxOrderUsd');
+    expect(d.patch.liveOptionsMaxOrderUsd).toBeUndefined();
+  });
+
   it('still holds when the cap is NOT blocking and drift is small — no churn', () => {
     // The pair to the case above: same small drift, but a cap that clears the
     // floor. Without this, the new trigger would re-anchor on every tick.
