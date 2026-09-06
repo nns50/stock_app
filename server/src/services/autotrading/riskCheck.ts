@@ -1,10 +1,10 @@
 import { getProvider } from '../../providers';
 import { listPositions, Position } from '../../db/positions';
-import { realizedPnlOf, initialRiskOf, computeStreaksAndDrawdown } from '../pnl';
+import { realizedPnlOf, initialRiskOf, computeStreaksAndDrawdown, tradesEnteredOn } from '../pnl';
 import { computeRiskSizing, RiskSizingResult } from '../riskSizing';
 import { dailyReturns, pearsonCorrelation } from '../../indicators/indicators';
 import { getAutotradeConfig } from '../../db/autotradeConfig';
-import { logAutotradeEvent, listAutotradeEvents } from '../../db/autotradeEvents';
+import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { listUniverse } from '../../db/universe';
 import { getMarketAtrPct } from './executionGuards';
 import { computeEquityCurveDerisk } from './equityCurveDerisk';
@@ -185,17 +185,19 @@ export function getPortfolioSnapshot(): PortfolioSnapshot {
     listLiveOptionsPositions({ status: 'closed' }),
   );
 
-  const tradesToday = listAutotradeEvents({ stage: 'execution', limit: 1000 }).filter(
-    (e) => e.action === 'order_placed' && etDateStr(e.createdAt) === todayStr,
-  ).length;
+  const openAutotrade = listPositions({ status: 'open' }).filter(isAutotradePosition);
+  // Position ROWS, through the same helper getLivePortfolioSnapshot uses. This
+  // used to filter journal events for action 'order_placed' — an action nothing
+  // emits (the emitters are paper_order_placed / live_order_placed), so the
+  // count was a permanent 0 and max_trades_per_day below could never fail on
+  // the preview endpoints that read this snapshot. See pnl.ts's tradesEnteredOn.
+  const tradesToday = tradesEnteredOn(openAutotrade, todayStr) + tradesEnteredOn(closedPositions, todayStr);
 
-  const openPositions: OpenRiskItem[] = listPositions({ status: 'open' })
-    .filter(isAutotradePosition)
-    .map((p) => ({
-      symbol: p.symbol,
-      riskAmount: p.stopPrice != null ? Math.abs(p.entryPrice - p.stopPrice) * p.remainingQuantity * p.multiplier : 0,
-      notional: p.entryPrice * p.remainingQuantity * p.multiplier,
-    }));
+  const openPositions: OpenRiskItem[] = openAutotrade.map((p) => ({
+    symbol: p.symbol,
+    riskAmount: p.stopPrice != null ? Math.abs(p.entryPrice - p.stopPrice) * p.remainingQuantity * p.multiplier : 0,
+    notional: p.entryPrice * p.remainingQuantity * p.multiplier,
+  }));
 
   return {
     equity,

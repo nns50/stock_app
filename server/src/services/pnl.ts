@@ -625,6 +625,30 @@ export function computeJournalStats(closed: Position[]): JournalStats {
   };
 }
 
+/**
+ * How many of `positions` were ENTERED on `etDate` — the count `maxTradesPerDay`
+ * is judged against.
+ *
+ * One function because three places used to answer this and one of them was
+ * silently wrong. riskCheck.ts's snapshot counted journal events whose action
+ * was `order_placed`, an action **nothing has ever emitted** — the emitters are
+ * named `paper_order_placed` / `live_order_placed`, and the consumer was never
+ * updated when they were. Production's own events endpoint says so outright:
+ * querying it returns `{"events":[],"actionsNeverSeen":["order_placed"]}`. The
+ * effect was a permanent 0, so `max_trades_per_day` could never fail on the
+ * preview endpoints that read that snapshot, while the two execution paths —
+ * which counted position rows, like this — were right all along.
+ *
+ * Counting ROWS rather than events is the durable shape: a position that exists
+ * is a trade that happened, and no rename can quietly zero it. Pass whichever
+ * rows represent the book being asked about; an undated row (`entryDate` null —
+ * see db/positions.ts on why that happens) is not counted, because a trade with
+ * no date has no day to belong to.
+ */
+export function tradesEnteredOn(positions: { entryDate: string | null }[], etDate: string): number {
+  return positions.filter((p) => p.entryDate === etDate).length;
+}
+
 export function lastExitDate(p: Position): string | null {
   if (p.exits.length === 0) return null;
   return p.exits
