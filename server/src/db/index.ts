@@ -846,6 +846,24 @@ CREATE INDEX IF NOT EXISTS idx_autotrade_events_symbol ON autotrade_events(symbo
 -- collecting every row for that stage -- an ever-growing set, since nothing
 -- prunes this table -- before it can sort and cut to N.
 CREATE INDEX IF NOT EXISTS idx_autotrade_events_stage ON autotrade_events(stage, id);
+-- The same argument one column over, for the RARE actions. The autotrade loop
+-- is full of "have I already said this today?" reads -- the unprotected-position
+-- alarm, the bracket-groups observer, the failure and ambiguity alerts, the
+-- daily-halt alert, auto-tune's own once-a-day guard -- and each is a
+-- WHERE action IN (...) ORDER BY id DESC LIMIT N over an action with a handful
+-- of rows in the whole table. Without an index on action, stage(+id) is the
+-- best SQLite has: it walks EVERY execution-stage row, newest to oldest,
+-- looking for matches that mostly are not there, and only stops when it runs
+-- out of table.
+--
+-- Measured 2026-09-06 on a 482k-row copy shaped like production (which was at
+-- 506,945 rows and growing ~21,300/day, with nothing pruning it): the
+-- live_position_unprotected lookup -- 6 matching rows, ever -- took
+--   12.55 ms without this index, 0.031 ms with it.
+-- Several of those reads happen per position per tick, so the cost is paid
+-- every 60 seconds and grows with the journal; the table roughly doubles every
+-- three and a half weeks at the current rate.
+CREATE INDEX IF NOT EXISTS idx_autotrade_events_action ON autotrade_events(action, id);
 CREATE INDEX IF NOT EXISTS idx_autotrade_events_created ON autotrade_events(created_at);
 CREATE INDEX IF NOT EXISTS idx_backtest_fetch_log_lookup ON backtest_fetch_log(symbol, timeframe);
 -- status-leading: listOpenXxxPositions() queries WHERE status = 'open' with
