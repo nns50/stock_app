@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { Position } from '../src/db/positions';
 import type { LiveOptionsPosition } from '../src/db/autotradeLiveOptionsPositions';
-import { addDays, computeSymbolCooldowns } from '../src/services/autotrading/symbolCooldown';
+import { addDays, addSessions, computeSymbolCooldowns } from '../src/services/autotrading/symbolCooldown';
 
 // Same minimal closed-position builder as methodSizing.test.ts: entry 100,
 // stop 95, one full exit. exitPrice 95 => a LOSS; 110 => a win; 100 => scratch.
@@ -91,9 +91,13 @@ describe('computeSymbolCooldowns', () => {
     expect(computeSymbolCooldowns([closed()], [], cfg, TODAY).size).toBe(0);
   });
 
-  it('two losses within the window cool the symbol until N days after the last', () => {
+  it('two losses within the window cool the symbol for N SESSIONS after the last', () => {
+    // The second loss is Friday 2026-08-21. Under the old calendar-day rule
+    // this expected '2026-08-24' — Monday — so a 3-day cooldown after a Friday
+    // loss skipped exactly ONE session. Counting sessions runs it through
+    // Mon 24 / Tue 25 / Wed 26, which is what "3 days" always claimed to mean.
     const m = computeSymbolCooldowns([closed({ exitDate: '2026-08-20' }), closed()], [], cfg, TODAY);
-    expect(m.get('SOBR')).toMatchObject({ losses: 2, lastLossDate: '2026-08-21', until: '2026-08-24' });
+    expect(m.get('SOBR')).toMatchObject({ losses: 2, lastLossDate: '2026-08-21', until: '2026-08-26' });
   });
 
   it('wins and breakeven scratches never count as losses', () => {
@@ -132,5 +136,58 @@ describe('computeSymbolCooldowns', () => {
       closedLiveOption({ status: 'open', exitPrice: null }),
     ];
     expect(computeSymbolCooldowns([closed({ symbol: 'SRAD' })], rows, cfg, TODAY).size).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TRADING days, not calendar days (2026-09-06). The old rule counted calendar
+// days on the stated grounds that a weekend "only stretches" a cooldown. It is
+// the reverse: a weekend CONSUMES the cooldown while no session passes, so the
+// same 3-day rule skipped 3 sessions after a Monday loss and NONE after a
+// Friday loss into a holiday Monday. That was not hypothetical — IOT and ORCL
+// each took their second qualifying loss on Friday 2026-09-04, were cooled to
+// Monday 09-07 (Labor Day), and were eligible again at Tuesday's open.
+// ---------------------------------------------------------------------------
+describe('the cooldown is measured in sessions, so a weekend cannot spend it', () => {
+  it('skips the same number of SESSIONS whatever weekday the loss lands on', () => {
+    // Mon 2026-09-14 .. Fri 09-18, a clean week with no holidays.
+    for (const [wd, loss] of [
+      ['Mon', '2026-09-14'],
+      ['Tue', '2026-09-15'],
+      ['Wed', '2026-09-16'],
+      ['Thu', '2026-09-17'],
+      ['Fri', '2026-09-18'],
+    ] as const) {
+      const until = addSessions(loss, 3);
+      let skipped = 0;
+      for (let d = addDays(loss, 1); d <= until; d = addDays(d, 1)) {
+        const [y, m, dd] = d.split('-').map(Number);
+        const dow = new Date(Date.UTC(y, m - 1, dd)).getUTCDay();
+        if (dow !== 0 && dow !== 6) skipped += 1;
+      }
+      expect(skipped, `a ${wd} loss should still cool 3 sessions`).toBe(3);
+    }
+  });
+
+  it('the live case: a Friday loss into Labor Day still blocks Tuesday', () => {
+    // Was: until 2026-09-07 (Mon, Labor Day), so Tuesday 09-08 was already free
+    // and the cooldown skipped ZERO sessions.
+    const until = addSessions('2026-09-04', 3);
+    expect(until).toBe('2026-09-10'); // Tue 08, Wed 09, Thu 10 are the three
+    expect('2026-09-08' <= until).toBe(true); // Tuesday is cooled
+  });
+
+  it('a holiday inside the window costs the cooldown nothing', () => {
+    // Thanksgiving 2026-11-26 is a full closure. A loss on Wed 11-25 cools
+    // Fri 27 (a session, though an early close), Mon 30, Tue 12-01 — the
+    // holiday and the weekend cost it nothing.
+    expect(addSessions('2026-11-25', 3)).toBe('2026-12-01');
+  });
+
+  it('is bounded, and running out SHORTENS rather than hangs', () => {
+    // A stale holiday table can only lengthen the scan. A gate that blocks
+    // trades must not be able to spin.
+    expect(addSessions('2026-09-04', 0)).toBe('2026-09-04');
+    expect(addSessions('2026-09-04', 500).length).toBe(10);
   });
 });

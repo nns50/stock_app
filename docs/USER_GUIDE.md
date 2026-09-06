@@ -1172,7 +1172,11 @@ equally-weighted cards in the order they happened to be built:
   loop a memory of losing on a name: once a symbol takes the configured number of
   losing live trades (2+) within a rolling window of calendar days, its new live
   entries — stock and options alike — are skipped for the cooldown period after the
-  last loss, journaled once per day (`symbol_cooldown_skipped`) and listed on the
+  last loss. **The cooldown is counted in trading SESSIONS** (fixed 2026-09-06): it used
+  to count calendar days, which meant a weekend spent the cooldown while no session
+  passed — the same 3-day rule skipped 3 sessions after a Monday loss and *none* after a
+  Friday loss into a holiday Monday. Two names were cooled for exactly nothing that way.
+  A weekend or a market holiday now costs the cooldown nothing. It is journaled once per day (`symbol_cooldown_skipped`) and listed on the
   Monitoring card; paper keeps trading the name as the evidence track, and exits are
   never touched. Applying a tune
   also **arms automatic re-anchoring of the four dollar caps** (max order $ and max
