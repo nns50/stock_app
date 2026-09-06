@@ -4,6 +4,7 @@ import { AutotradeConfig } from '../../db/autotradeConfig';
 import { listAutotradeEvents, logAutotradeEvent } from '../../db/autotradeEvents';
 import { realizedPnlOf, lastExitDate } from '../pnl';
 import { etToday } from '../../util/marketDate';
+import { FULL_HOLIDAYS } from '../trading/marketCalendar';
 
 // ---------------------------------------------------------------------------
 // Per-symbol loss cooldown (2026-08-22). The live ledger showed the loop has
@@ -22,9 +23,29 @@ import { etToday } from '../../util/marketDate';
 // The threshold matters — the same ledger shows the counter-case (LVWR lost
 // -0.98R at 12:30 and the same-day re-entry won +1.93R), so ONE loss must
 // never trigger; the config floor keeps the trigger at ≥ 2. Wins and
-// breakeven scratches never count. Calendar days, not trading days —
-// documented, and the difference only stretches a cooldown across a weekend
-// the market wasn't trading anyway.
+// breakeven scratches never count.
+//
+// TRADING days, not calendar days (2026-09-06). It was calendar days, on the
+// stated grounds that "the difference only stretches a cooldown across a
+// weekend the market wasn't trading anyway" — and that is backwards. A weekend
+// does not stretch the cooldown, it CONSUMES it while no session passes, so the
+// same 3-day rule skipped anywhere from 3 sessions to none depending purely on
+// which weekday the last loss landed on:
+//
+//   loss Mon or Tue -> 3 sessions skipped
+//   loss Wed        -> 2
+//   loss Thu or Fri -> 1
+//
+// The live case that surfaced it is the worst one. IOT and ORCL each took their
+// second qualifying loss on Friday 2026-09-04; the cooldown ran to Monday
+// 09-07, which was Labor Day; the next session was Tuesday 09-08. **Zero
+// sessions skipped** — the two most-repeated names in the book, cooled for
+// nothing, eligible again at the next open.
+//
+// Counting sessions makes symbolCooldownDays mean what its name and this
+// header always claimed. The market calendar it needs already exists
+// (services/trading/marketCalendar.ts, 2026-09-05), so a weekend or a holiday
+// now costs the cooldown nothing instead of spending it.
 //
 // LIVE entries only. Paper deliberately keeps trading the cooled name — it
 // stays the always-on sanity track, and its trades are the evidence that the
@@ -48,10 +69,43 @@ export type SymbolCooldownConfig = Pick<
 >;
 
 /** YYYY-MM-DD + n days, in pure date arithmetic (no timezone re-derivation —
- *  the inputs are already ET trading-day labels). */
+ *  the inputs are already ET trading-day labels). Still calendar days: the
+ *  LOOKBACK WINDOW (symbolCooldownWindowDays) is a "how recent is this loss"
+ *  question, where calendar time is the right unit. Only the cooldown's own
+ *  length moved to sessions. */
 export function addDays(etDate: string, n: number): string {
   const [y, m, d] = etDate.split('-').map(Number);
   return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
+}
+
+/** True when this ET date is a day the US equity market actually trades. */
+function isSession(etDate: string): boolean {
+  const [y, m, d] = etDate.split('-').map(Number);
+  const wd = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+  if (wd === 0 || wd === 6) return false;
+  return !FULL_HOLIDAYS.has(etDate);
+}
+
+/**
+ * The ET date `n` TRADING sessions after `etDate` — the last day the cooldown
+ * still bites, so a comparison of `today <= until` skips exactly n sessions
+ * whatever weekend or holiday falls inside it.
+ *
+ * Bounded rather than unbounded: a stale holiday table (see marketCalendar's
+ * CALENDAR_THROUGH) can only ever make this scan longer, and a cooldown is not
+ * worth an infinite loop. 40 calendar days covers any plausible n with room to
+ * spare, and running out returns the last date reached — which shortens the
+ * cooldown, the safe direction for a gate that BLOCKS trades.
+ */
+export function addSessions(etDate: string, n: number): string {
+  if (n <= 0) return etDate;
+  let cursor = etDate;
+  let left = n;
+  for (let i = 0; i < 40 && left > 0; i += 1) {
+    cursor = addDays(cursor, 1);
+    if (isSession(cursor)) left -= 1;
+  }
+  return cursor;
 }
 
 /** {symbol, lossDate} rows from both live books — the same two-source ledger
@@ -97,7 +151,7 @@ export function computeSymbolCooldowns(
   for (const [symbol, dates] of bySymbol) {
     if (dates.length < cfg.symbolCooldownLosses) continue;
     const lastLossDate = dates.reduce((a, b) => (a > b ? a : b));
-    const until = addDays(lastLossDate, cfg.symbolCooldownDays);
+    const until = addSessions(lastLossDate, cfg.symbolCooldownDays);
     if (today < until) out.set(symbol, { symbol, losses: dates.length, lastLossDate, until });
   }
   return out;
