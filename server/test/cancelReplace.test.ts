@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { WebullOpenOrder } from '../src/providers/webull/orders';
-import { safePartialQuantity, verifyLegsGone } from '../src/services/autotrading/cancelReplace';
+import {
+  cancelOrderForLegs,
+  safePartialQuantity,
+  stopWasCancelled,
+  verifyLegsGone,
+} from '../src/services/autotrading/cancelReplace';
 
 const leg = (clientOrderId: string, status = 'OPEN'): WebullOpenOrder => ({
   clientOrderId,
@@ -77,5 +82,61 @@ describe('safePartialQuantity', () => {
 
   it('refuses when flooring would leave nothing to sell', () => {
     expect(safePartialQuantity(15.4, 15)).toBeNull();
+  });
+});
+
+describe('cancelOrderForLegs', () => {
+  const tp = (id: string): WebullOpenOrder => ({ ...leg(id), comboType: 'STOP_PROFIT', orderType: 'LIMIT' });
+  const sl = (id: string): WebullOpenOrder => ({ ...leg(id), comboType: 'STOP_LOSS', orderType: 'STOP_LOSS' });
+  const ids = (legs: WebullOpenOrder[]) => cancelOrderForLegs(legs).map((l) => l.clientOrderId);
+
+  it('cancels the take-profit before the stop', () => {
+    expect(ids([sl('S'), tp('T')])).toEqual(['T', 'S']);
+  });
+
+  it('keeps that order when the broker already listed them that way', () => {
+    expect(ids([tp('T'), sl('S')])).toEqual(['T', 'S']);
+  });
+
+  it('never lets an unreadable leg push the stop off last place', () => {
+    // "I cannot tell what this is" must not outrank "this is the protection".
+    expect(ids([sl('S'), leg('?'), tp('T')])).toEqual(['T', '?', 'S']);
+  });
+
+  it('is stable for legs of the same rank', () => {
+    expect(ids([leg('a'), leg('b'), leg('c')])).toEqual(['a', 'b', 'c']);
+  });
+
+  it("does not mutate the caller's array", () => {
+    const legs = [sl('S'), tp('T')];
+    cancelOrderForLegs(legs);
+    expect(legs.map((l) => l.clientOrderId)).toEqual(['S', 'T']);
+  });
+
+  it('passes a single leg through', () => {
+    expect(ids([sl('S')])).toEqual(['S']);
+  });
+});
+
+describe('stopWasCancelled', () => {
+  const tp = (id: string): WebullOpenOrder => ({ ...leg(id), comboType: 'STOP_PROFIT', orderType: 'LIMIT' });
+  const sl = (id: string): WebullOpenOrder => ({ ...leg(id), comboType: 'STOP_LOSS', orderType: 'STOP_LOSS' });
+
+  it('is false when only the target went', () => {
+    expect(stopWasCancelled([tp('T'), sl('S')], 1)).toBe(false);
+  });
+
+  it('is true once the stop has gone', () => {
+    expect(stopWasCancelled([tp('T'), sl('S')], 2)).toBe(true);
+  });
+
+  it('is false before anything was cancelled', () => {
+    expect(stopWasCancelled([sl('S'), tp('T')], 0)).toBe(false);
+  });
+
+  it('reads the ATTEMPTED order, so a stop-first sequence reports honestly', () => {
+    // The defence the liveExecute branch relies on: if the ordering rule were
+    // ever removed, this must say the protection is gone rather than stay quiet.
+    expect(stopWasCancelled([sl('S'), tp('T')], 1)).toBe(true);
   });
 });

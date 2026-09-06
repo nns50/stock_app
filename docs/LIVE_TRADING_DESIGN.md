@@ -157,6 +157,22 @@ A phase doesn't start until the previous one is merged and you've used it.
 
 - Every guardrail gets a unit test (cap boundaries, kill switch, daily-loss halt,
   idempotency double-submit, fat-finger, naked-short block).
+  - **Fixed (2026-09-06), a half-cancelled bracket could leave the position with no
+    stop.** `cancelReplaceBracket` cancels the resting legs one at a time and returns
+    on the first failure, so a refused second cancel leaves the bracket half gone.
+    Which half survived was decided by the order the broker happened to list the legs
+    in — and one of the two outcomes is a position running on real money with a
+    take-profit and NO STOP, invisible until the next `checkLiveBracketProtection`
+    sweep (which only reports it, once per ET day, and tells a human to re-arm by
+    hand). The cancels are now ordered by `cancelOrderForLegs`: TAKE-PROFIT first,
+    STOP last, with unclassifiable legs sorted between the two so "I cannot read this
+    leg" can never displace the protection from the safest slot. A mid-cancel failure
+    now costs the target and keeps the stop. The journal says which, derived from what
+    was actually cancelled rather than assumed, and reports a lost stop as
+    `live_position_unprotected` (which pages) rather than `live_scale_out_blocked`
+    (which does not). This does not make the cancel succeed; it makes its failure
+    survivable, and it is the blocker that kept `liveScaleOutCancelReplaceEnabled`
+    off.
   - **Fixed (2026-07-09), naked-short fail-open on the human place/replace path.** A
     hardening audit found the `naked_short` (and `position_size`) check read
     `webullAccountState`'s per-**underlying** aggregate, which sums stock AND every
