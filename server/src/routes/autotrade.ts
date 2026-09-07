@@ -411,6 +411,30 @@ autotradeRouter.put(
       if (lo > hi) throw new HttpError(400, `${loName} (${lo}) cannot exceed ${hiName} (${hi}) — ${consequence}`);
     }
 
+    // The daily-goal triple (services/autotrading/dailyTarget.ts) is a third
+    // ordered set, nullable on every side, so it does not fit the numeric
+    // pairs above. Checked on the merged result for the same reason: the
+    // sanitizer sees one field at a time by design (autotradeConfig.ts), so a
+    // partial PUT can invert the levels against the stored value — and an
+    // inverted pair does not fail anywhere. giveBackLevels() reads it as
+    // "guard unconfigured" and the day quietly runs with no give-back
+    // protection while the config reads as if it had one (2026-09-07).
+    const goalTarget = merged('targetDailyGainPct', body.targetDailyGainPct);
+    const goalArm = merged('giveBackArmPct', body.giveBackArmPct);
+    const goalFloor = merged('giveBackFloorPct', body.giveBackFloorPct);
+    if (goalArm !== null && goalFloor !== null && !(goalArm > goalFloor)) {
+      throw new HttpError(
+        400,
+        `giveBackArmPct (${goalArm}) must be above giveBackFloorPct (${goalFloor}) — stored as-is, the give-back guard would silently stay off`,
+      );
+    }
+    if (goalArm !== null && goalTarget !== null && !(goalArm < goalTarget)) {
+      throw new HttpError(
+        400,
+        `giveBackArmPct (${goalArm}) must sit below targetDailyGainPct (${goalTarget}) — the day would bank before the guard could arm`,
+      );
+    }
+
     // Only pass along fields the client actually sent — building
     // { enabled: body.enabled, ... } unconditionally would put an
     // `enabled: undefined` OWN PROPERTY on the patch for any request that

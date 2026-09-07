@@ -1307,6 +1307,86 @@ describe('autotrade config routes (integration)', () => {
     expect(res.status).toBe(400);
   });
 
+  // -------------------------------------------------------------------------
+  // The daily-goal triple (2026-09-07). Guard #2 below builds its key list from
+  // `typeof v === 'number'`, and targetDailyGainPct / giveBackArmPct /
+  // giveBackFloorPct all default to NULL — so the generic sweep has never once
+  // exercised them. They were only ever written by a tune apply. Now that they
+  // are directly editable, pin the round-trip in both directions explicitly.
+  // -------------------------------------------------------------------------
+  it('round-trips each daily-goal field to a number and back to null', async () => {
+    for (const [key, value] of [
+      ['targetDailyGainPct', 2.5],
+      ['giveBackArmPct', 1.5],
+      ['giveBackFloorPct', 0.5],
+    ] as const) {
+      const set = await put('/api/autotrade/config', { [key]: value });
+      expect(set.status, `${key} = ${value}`).toBe(200);
+      expect(((await getJson('/api/autotrade/config')) as Record<string, unknown>)[key]).toBe(value);
+      const clear = await put('/api/autotrade/config', { [key]: null });
+      expect(clear.status, `${key} = null`).toBe(200);
+      expect(((await getJson('/api/autotrade/config')) as Record<string, unknown>)[key]).toBeNull();
+    }
+  });
+
+  it('rejects an inverted give-back pair, even when the two halves arrive in separate PUTs', async () => {
+    // arm 2 / floor 1 is coherent; then a floor ABOVE the stored arm must fail
+    // against the MERGED result, not just against the body — and the stored
+    // values must be exactly what they were before the bad request.
+    expect((await put('/api/autotrade/config', { giveBackArmPct: 2, giveBackFloorPct: 1 })).status).toBe(200);
+    const res = await put('/api/autotrade/config', { giveBackFloorPct: 3 });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(
+      /giveBackArmPct \(2\) must be above giveBackFloorPct \(3\)/,
+    );
+    expect((await getJson('/api/autotrade/config')) as Record<string, unknown>).toMatchObject({
+      giveBackArmPct: 2,
+      giveBackFloorPct: 1,
+    });
+    // Equal levels are inverted too: the guard needs arm strictly above floor.
+    expect((await put('/api/autotrade/config', { giveBackArmPct: 1, giveBackFloorPct: 1 })).status).toBe(400);
+  });
+
+  it('rejects an arm level at or above the goal — the day would bank before the guard could arm', async () => {
+    expect((await put('/api/autotrade/config', { targetDailyGainPct: 3 })).status).toBe(200);
+    const res = await put('/api/autotrade/config', { giveBackArmPct: 3, giveBackFloorPct: 1 });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(/must sit below targetDailyGainPct/);
+    expect((await getJson('/api/autotrade/config')) as Record<string, unknown>).toMatchObject({
+      targetDailyGainPct: 3,
+      giveBackArmPct: null,
+      giveBackFloorPct: null,
+    });
+    // Lowering the goal under a stored arm is the same inversion from the other side.
+    expect((await put('/api/autotrade/config', { giveBackArmPct: 2, giveBackFloorPct: 1 })).status).toBe(200);
+    expect((await put('/api/autotrade/config', { targetDailyGainPct: 1.5 })).status).toBe(400);
+  });
+
+  it('accepts a coherent goal triple in one body, and clearing the whole triple', async () => {
+    const set = await put('/api/autotrade/config', {
+      targetDailyGainPct: 1.2,
+      giveBackArmPct: 0.8,
+      giveBackFloorPct: 0.4,
+    });
+    expect(set.status).toBe(200);
+    expect((await getJson('/api/autotrade/config')) as Record<string, unknown>).toMatchObject({
+      targetDailyGainPct: 1.2,
+      giveBackArmPct: 0.8,
+      giveBackFloorPct: 0.4,
+    });
+    const clear = await put('/api/autotrade/config', {
+      targetDailyGainPct: null,
+      giveBackArmPct: null,
+      giveBackFloorPct: null,
+    });
+    expect(clear.status).toBe(200);
+    expect((await getJson('/api/autotrade/config')) as Record<string, unknown>).toMatchObject({
+      targetDailyGainPct: null,
+      giveBackArmPct: null,
+      giveBackFloorPct: null,
+    });
+  });
+
   it('every numeric field the schema accepts is actually applied by the handler', async () => {
     // The other half of the same failure: a key present in the zod body but
     // missing its `if (body.x !== undefined) patch.x = body.x` line also

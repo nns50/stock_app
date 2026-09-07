@@ -6,6 +6,7 @@ import { useConfirm } from '../components/ConfirmContext';
 import { RefreshBar } from '../components/RefreshBar';
 import { CloseModal } from '../components/PositionForms';
 import { AssignmentRiskBadge } from '../components/AssignmentRiskBadge';
+import { DailyGoalSection } from './DailyGoalSection';
 import { ago, cx, fmtDate, fmtNum, fmtPct, fmtSignedUsd, fmtUsd } from '../lib/format';
 import {
   Badge,
@@ -4108,6 +4109,16 @@ export default function AutoTradePage() {
 
               {config.data && (
                 <TuneFromTargetSection config={config.data} onApply={applyTunePatch} applying={applyingTune} />
+              )}
+
+              {config.data && (
+                <DailyGoalSection
+                  config={config.data}
+                  onSaved={() => {
+                    config.reload();
+                    refreshLiveData();
+                  }}
+                />
               )}
 
               {config.data && <AllSettingsSection config={config.data} />}

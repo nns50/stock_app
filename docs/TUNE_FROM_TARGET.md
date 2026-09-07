@@ -316,6 +316,35 @@ in the first place:
   needs the guard levels set. Skips journal once per symbol per day
   (`finish_line_skipped`).
 
+### Setting the goal by hand — the Daily goal card (2026-09-07)
+
+Until 2026-09-07 the three fields above (`targetDailyGainPct`, `giveBackArmPct`,
+`giveBackFloorPct`) could only be written by **Apply** — which also re-stamps the other
+~35 tuned fields (max trades/day, the conviction floor, every exposure cap, the options
+selection) to the band's values. Moving the goal by a point meant re-applying all of
+that, so in practice the goal was set once and left where ambition put it.
+
+The **Daily goal** card (right below the tune card) edits the three fields on their
+own:
+
+- **Daily gain goal %** — blank disarms the tracker _and_ the guard.
+- **Give-back arm %** and **Give-back floor %** — the guard's two levels. **Stamp
+  levels from goal** fills them at the tune's own 2/3 and 1/3 ratio; you can also type
+  any pair.
+- **Save daily goal** writes exactly these three fields; **Clear all** writes `null`
+  to all three (the same disarm **Reset to moderate** performs, without touching any
+  other setting).
+
+The server validates the **merged** triple and refuses an incoherent one with a 400
+rather than storing it: the arm must be **strictly above** the floor (floor ≥ 0), and
+the arm must sit **below** the goal — otherwise the day would bank before the guard
+could arm. The check runs against the stored values too, so a save that moves only
+one side of a pair cannot invert it against the other. This matters because an
+inverted pair does not fail anywhere at runtime: the tracker simply reads it as
+"guard unconfigured" and the day runs with **no** give-back protection while the config
+reads as if it had one. Guard levels saved without a goal are stored but do nothing
+(the card says so) — the tracker only runs while a goal is set.
+
 > Same framing as everywhere else in this app: the goal is a **discipline
 > mechanism**, not a prediction. No gain is guaranteed — the tracker decides when to
 > *stop*, never whether the market will get you there.

@@ -1495,6 +1495,21 @@ equally-weighted cards in the order they happened to be built:
   derived from the flatten rather than set separately, so the two can never
   disagree, and it disables itself along with the flatten.
 
+- **Daily goal** (2026-09-07, collapsed by default, right below the tune card) — the
+  three fields the tune stamps, editable on their own: **Daily gain goal %**,
+  **Give-back arm %**, **Give-back floor %**. Until now they could only be written by
+  applying a whole tune (which also resets max trades/day, the conviction floor, the
+  exposure caps and the options selection to the band's values), so moving the goal by
+  a point meant re-stamping everything. **Save daily goal** writes exactly the three
+  fields; **Stamp levels from goal** fills the guard levels at the tune's 2/3 and 1/3
+  ratio; **Clear all** writes `null` to all three (disarms the tracker and the guard,
+  like Reset to moderate, without touching anything else). The server validates the
+  **merged** triple — arm strictly above floor (≥ 0), arm below the goal — and answers
+  400 instead of storing an inverted pair, because an inverted pair fails nowhere at
+  runtime: the guard just reads as unconfigured and the day runs unprotected while the
+  config says otherwise. Guard levels without a goal are stored but inert (the card
+  warns). Details in [Tune from target daily gain](TUNE_FROM_TARGET.md) §6a.
+
 - **"Why wasn't this traded today?"** — `GET /api/autotrade/explain/:symbol` answers it for
   any symbol, on demand. The screener journals *some* rejections per symbol (real estate,
   relative-volume pace, volatility, earnings, unknown sector) and says nothing about the

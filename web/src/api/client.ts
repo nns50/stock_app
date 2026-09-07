@@ -493,6 +493,12 @@ export const client = {
     riskProfile?: AutotradeRiskProfile;
     confirmAggressive?: boolean;
     accountEquityUsd?: number | null;
+    /** The daily goal + give-back guard levels (nullable: null disarms). The
+     *  route validates the merged triple (arm > floor >= 0, arm < target) and
+     *  answers 400 rather than storing an inverted pair. */
+    targetDailyGainPct?: number | null;
+    giveBackArmPct?: number | null;
+    giveBackFloorPct?: number | null;
     maxConcurrentPositions?: number;
     riskPerTradePct?: number;
     maxDailyDrawdownPct?: number;
