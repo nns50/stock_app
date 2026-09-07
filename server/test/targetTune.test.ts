@@ -9,12 +9,31 @@ import {
   TuneBasis,
   deriveDollarCaps,
   handEditedDollarCaps,
+  expectedDailyGainPct,
+  riskPerTradeForTarget,
+  realizedBasisAvailability,
+  dailyGoalEvidence,
+  TARGET_OVER_IMPLIED_WARN_RATIO,
 } from '../src/services/autotrading/targetTune';
+import { emptyRealizedEdge, RealizedEdge } from '../src/services/autotrading/dailyTargetSweep';
 // The consumer of the caps a tune stores. Imported here on purpose: the
 // freeze-out this file guards against is a disagreement BETWEEN these two
 // modules, so a test that only ever exercises one of them cannot see it.
 import { decideLiveCapsReanchor } from '../src/services/autotrading/liveCapsReanchor';
 import { defaultAutotradeConfig, AutotradeConfig } from '../src/db/autotradeConfig';
+
+/** A reliable, positive record: avg +0.3R over 30 trades, 9 entries a session
+ *  over 25 sessions. Overridable per case. */
+const realizedFixture = (over: Partial<RealizedEdge> = {}): RealizedEdge => ({
+  ...emptyRealizedEdge(40),
+  avgR: 0.3,
+  rTrades: 30,
+  tradesPerSession: 9,
+  sessions: 25,
+  sessionsWithoutEntries: 0,
+  reliable: true,
+  ...over,
+});
 
 const base = (over: {
   targetDailyGainPct: number;
@@ -25,6 +44,9 @@ const base = (over: {
   /** Dollar caps / anchor, for the hand-edit preservation cases. Defaults leave
    *  the anchor null — not armed, so nothing is treated as hand-edited. */
   config?: Partial<AutotradeConfig>;
+  /** The record. Defaults to NO record (emptyRealizedEdge), which is what the
+   *  pre-2026-09-07 cases below were written against. */
+  realized?: RealizedEdge;
 }) =>
   computeTargetTune({
     equityUsd: over.equityUsd ?? 1000,
@@ -36,6 +58,7 @@ const base = (over: {
       autoTuneExitsEnabled: over.autoTuneExitsEnabled ?? false,
       ...over.config,
     },
+    realized: over.realized ?? emptyRealizedEdge(40),
   });
 
 describe('bandForTarget', () => {
@@ -339,6 +362,7 @@ describe('a tune run under tight funding does not freeze its caps', () => {
 
   const applied = (): AutotradeConfig => {
     const { patch } = computeTargetTune({
+      realized: emptyRealizedEdge(40),
       equityUsd: EQUITY,
       targetDailyGainPct: 3,
       basis: 'expected',
@@ -368,6 +392,7 @@ describe('a tune run under tight funding does not freeze its caps', () => {
 
   it('warns about the funding gap rather than silently shrinking the cap', () => {
     const { patch, warnings } = computeTargetTune({
+      realized: emptyRealizedEdge(40),
       equityUsd: EQUITY,
       targetDailyGainPct: 3,
       basis: 'expected',
@@ -380,6 +405,7 @@ describe('a tune run under tight funding does not freeze its caps', () => {
 
   it('says nothing about funding when the cap fits inside it', () => {
     const { warnings } = computeTargetTune({
+      realized: emptyRealizedEdge(40),
       equityUsd: EQUITY,
       targetDailyGainPct: 3,
       basis: 'expected',
@@ -481,5 +507,139 @@ describe('computeTargetTune — hand-edited dollar caps', () => {
     const cfg = { ...defaultAutotradeConfig(), ...derivedAt(2137), liveMaxOrderUsd: 1600 } as AutotradeConfig;
     expect(handEditedDollarCaps(cfg)).toEqual(['liveMaxOrderUsd']);
     expect(handEditedDollarCaps({ ...cfg, liveMaxOrderUsd: deriveDollarCaps(cfg, 2137).liveMaxOrderUsd })).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The goal against the record (2026-09-07). One identity, two directions, one
+// function each — and the tune must go through the SAME inverse the evidence
+// block goes forward through, or the "expected day" shown beside a target
+// could disagree with the risk the target solved to.
+// ---------------------------------------------------------------------------
+describe('the daily-gain identity', () => {
+  it('round-trips: the risk solved for a target reproduces that target as the expected day', () => {
+    for (const [target, tradesPerDay, edgeR] of [
+      [5, 6, 0.35],
+      [1.5, 9, 0.05],
+      [0.8, 4, 0.2],
+    ]) {
+      const risk = riskPerTradeForTarget(target, tradesPerDay, edgeR);
+      expect(expectedDailyGainPct(tradesPerDay, risk, edgeR)).toBeCloseTo(target, 9);
+    }
+  });
+
+  it('both modelled bases solve risk through riskPerTradeForTarget, not a private copy', () => {
+    const expected = base({ targetDailyGainPct: 5, basis: 'expected' });
+    expect(expected.patch.riskPerTradePct).toBe(
+      Math.round(riskPerTradeForTarget(5, expected.tradesPerDay, ASSUMED_WIN_RATE * 2 - 0.55) * 100) / 100,
+    );
+    const perfect = base({ targetDailyGainPct: 5, basis: 'perfectDay' });
+    expect(perfect.patch.riskPerTradePct).toBe(
+      Math.round(riskPerTradeForTarget(5, perfect.tradesPerDay, 2) * 100) / 100,
+    );
+    expect(expected.tradesPerDay).toBe(6); // the moderate band's cap, at face value
+  });
+});
+
+describe('the realized basis', () => {
+  it('is unavailable without a reliable record, without a positive edge, or without flow — with the reason', () => {
+    expect(realizedBasisAvailability(emptyRealizedEdge(40))).toMatchObject({ available: false });
+    expect(realizedBasisAvailability(emptyRealizedEdge(40)).reason).toMatch(
+      /0 of 20 R-scored closed live trades over 0 of 20 sessions/,
+    );
+    expect(realizedBasisAvailability(realizedFixture({ avgR: 0 })).reason).toMatch(/not positive/);
+    expect(realizedBasisAvailability(realizedFixture({ avgR: -0.1 })).reason).toMatch(/not positive/);
+    expect(realizedBasisAvailability(realizedFixture({ tradesPerSession: 0 })).reason).toMatch(
+      /no entries on a typical session/,
+    );
+    expect(realizedBasisAvailability(realizedFixture())).toEqual({ available: true });
+  });
+
+  it('solves risk from the realized edge and the realized flow, bounded by the band cap', () => {
+    // 3%/day is the conservative band (cap 4 trades/day); the record shows 9
+    // entries a session, so the cap binds: risk = 3 / (4 × 0.3) = 2.5%.
+    const r = base({ targetDailyGainPct: 3, basis: 'realized', realized: realizedFixture() });
+    expect(r.basis).toBe('realized');
+    expect(r.band).toBe('conservative');
+    expect(r.edgeR).toBe(0.3);
+    expect(r.tradesPerDay).toBe(4);
+    expect(r.patch.riskPerTradePct).toBeCloseTo(2.5, 5);
+    // The forward direction at the tuned risk lands back on the target.
+    expect(r.evidence.impliedDailyGainPctAtTunedRisk).toBeCloseTo(3, 1);
+    expect(r.evidence.targetOverImplied).toBe(1);
+  });
+
+  it('is NOT floored: a thin real edge produces the capped-risk warning, not a quietly lifted edge', () => {
+    // avg +0.05R, 9/session, 3% target → 3 / (4 × 0.05) = 15% → capped at 10.
+    const r = base({ targetDailyGainPct: 3, basis: 'realized', realized: realizedFixture({ avgR: 0.05 }) });
+    expect(r.rawRiskPerTradePct).toBe(15);
+    expect(r.patch.riskPerTradePct).toBe(MAX_SUGGESTED_RISK_PER_TRADE_PCT);
+    expect(r.warnings.some((w) => /Capped the suggestion at 10%/.test(w))).toBe(true);
+  });
+
+  it('throws rather than substituting when asked for the realized basis on an unusable record', () => {
+    expect(() => base({ targetDailyGainPct: 3, basis: 'realized' })).toThrow(/realized basis unavailable/);
+  });
+});
+
+describe('the evidence block', () => {
+  it('carries the record beside a modelled basis, in both directions of the identity', () => {
+    const r = base({
+      targetDailyGainPct: 3,
+      basis: 'expected',
+      realized: realizedFixture({ avgR: 0.05 }),
+      config: { riskPerTradePct: 1.25 },
+    });
+    expect(r.evidence).toMatchObject({ avgR: 0.05, rTrades: 30, tradesPerSession: 9, sessions: 25, reliable: true });
+    // At the CURRENT sizing: 9 × 1.25 × 0.05 = 0.56%/day — the spec's hand-computed band.
+    expect(r.evidence.impliedDailyGainPctAtCurrentRisk).toBeCloseTo(0.56, 2);
+    // At the TUNED risk the flow is bounded by the conservative cap of 4:
+    // 4 × risk × 0.05, and the target is that many expected days.
+    const impliedTuned = 4 * r.patch.riskPerTradePct * 0.05;
+    expect(r.evidence.impliedDailyGainPctAtTunedRisk).toBeCloseTo(impliedTuned, 2);
+    expect(r.evidence.targetOverImplied).toBeCloseTo(3 / (Math.round(impliedTuned * 100) / 100), 1);
+    expect(r.evidence.realizedBasis).toEqual({ available: true });
+  });
+
+  it('warns when the target is more than the ratio × the expected day, and not otherwise', () => {
+    const wish = base({ targetDailyGainPct: 3, basis: 'expected', realized: realizedFixture({ avgR: 0.05 }) });
+    expect(wish.evidence.targetOverImplied).toBeGreaterThan(TARGET_OVER_IMPLIED_WARN_RATIO);
+    expect(wish.warnings.some((w) => /will rarely engage/.test(w))).toBe(true);
+    const honest = base({ targetDailyGainPct: 3, basis: 'realized', realized: realizedFixture() });
+    expect(honest.warnings.some((w) => /will rarely engage/.test(w))).toBe(false);
+  });
+
+  it('says so when a reliable record shows no edge at all', () => {
+    const r = base({ targetDailyGainPct: 3, basis: 'expected', realized: realizedFixture({ avgR: -0.02 }) });
+    expect(r.warnings.some((w) => /not positive/.test(w))).toBe(true);
+    expect(r.evidence.realizedBasis.available).toBe(false);
+    // A non-positive edge implies a non-positive day: no ratio is claimed.
+    expect(r.evidence.targetOverImplied).toBeNull();
+  });
+
+  it('stays quiet (no warning, nulls, unavailable) with no record at all', () => {
+    const r = base({ targetDailyGainPct: 3 });
+    expect(r.evidence.impliedDailyGainPctAtCurrentRisk).toBeNull();
+    expect(r.evidence.targetOverImplied).toBeNull();
+    expect(r.evidence.realizedBasis.available).toBe(false);
+    expect(r.warnings.some((w) => /rarely engage|not positive/.test(w))).toBe(false);
+  });
+});
+
+describe('dailyGoalEvidence (the dashboard companion)', () => {
+  it('applies the forward identity at the current sizing and sizes the goal in expected days', () => {
+    const e = dailyGoalEvidence(realizedFixture({ avgR: 0.05 }), 1.25, 3);
+    expect(e.impliedDailyGainPct).toBeCloseTo(0.56, 2);
+    expect(e.targetOverImplied).toBeCloseTo(5.4, 1);
+    expect(e.reliable).toBe(true);
+  });
+
+  it('reports nulls, never zeros, without a record or without a goal', () => {
+    expect(dailyGoalEvidence(emptyRealizedEdge(40), 1.25, 3)).toMatchObject({
+      impliedDailyGainPct: null,
+      targetOverImplied: null,
+    });
+    expect(dailyGoalEvidence(realizedFixture(), 1.25, null).targetOverImplied).toBeNull();
+    expect(dailyGoalEvidence(realizedFixture(), 1.25, null).impliedDailyGainPct).toBeCloseTo(9 * 1.25 * 0.3, 2);
   });
 });

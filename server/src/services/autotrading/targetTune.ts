@@ -1,4 +1,5 @@
 import { AutotradeConfig } from '../../db/autotradeConfig';
+import type { RealizedEdge } from './dailyTargetSweep';
 
 // ---------------------------------------------------------------------------
 // "Tune from target" — a ONE-SHOT preset generator that derives a full
@@ -20,21 +21,30 @@ import { AutotradeConfig } from '../../db/autotradeConfig';
 // is additionally an INPUT to this file's own risk% solve.
 // ---------------------------------------------------------------------------
 
-/** Which sizing assumption maps the target gain % to per-trade risk. Both use
- *  the same formula, `riskPerTradePct = target / (maxTradesPerDay × edgeR)`,
- *  differing only in `edgeR` (expected R per trade):
+/** Which sizing assumption maps the target gain % to per-trade risk. All
+ *  three use the same identity, `riskPerTradePct = target / (tradesPerDay ×
+ *  edgeR)` (riskPerTradeForTarget below), differing in where `edgeR` and
+ *  `tradesPerDay` come from:
  *   - 'expected'   : edgeR = winRate×R − (1−winRate), a fixed 45% win rate at
- *                    the band's reward:risk — sizes so the target is your
- *                    AVERAGE day. More risk per trade.
- *   - 'perfectDay' : edgeR = R — sizes so the target is your BEST-CASE ceiling
- *                    (every trade hits its target). Less risk per trade. */
-export type TuneBasis = 'expected' | 'perfectDay';
+ *                    the band's reward:risk; tradesPerDay = the band's cap —
+ *                    sizes so the target is your ASSUMED average day.
+ *   - 'perfectDay' : edgeR = R; tradesPerDay = the band's cap — sizes so the
+ *                    target is your BEST-CASE ceiling (every trade wins).
+ *   - 'realized'   : edgeR = the loop's realized average R per closed trade;
+ *                    tradesPerDay = its realized median entries per session,
+ *                    bounded by the band's cap (2026-09-07) — sizes so the
+ *                    target is your average day AS THE RECORD SHOWS IT. Only
+ *                    available on a reliable, positive record; see
+ *                    realizedBasisAvailability. */
+export type TuneBasis = 'expected' | 'perfectDay' | 'realized';
 
 /** The fixed win rate the 'expected' basis assumes. Documented and constant so
- *  the suggestion is deterministic and explainable (this app's scoring
- *  invariant) — a later refinement could substitute the user's own realized
- *  win rate from the Journal, but v1 keeps it a stated assumption, not a hidden
- *  data dependency. */
+ *  that suggestion is deterministic and explainable (this app's scoring
+ *  invariant). The refinement this comment used to foresee — substituting the
+ *  loop's own realized edge — exists since 2026-09-07 as the 'realized' basis,
+ *  and every preview now carries the realized figures beside whichever basis
+ *  was asked for (TargetTuneResult.evidence), so the assumption is visible
+ *  next to the record it stands in for. */
 export const ASSUMED_WIN_RATE = 0.45;
 
 /** The tuner never SUGGESTS a per-trade risk above this, however high the
@@ -407,14 +417,128 @@ export function bandForTarget(targetDailyGainPct: number): TuneBand {
   return 'aggressive';
 }
 
+// ---------------------------------------------------------------------------
+// THE identity the goal and the sizing share, in both directions (2026-09-07):
+//
+//     expected day %  =  trades/day × risk % × edgeR
+//
+// The tune solves the inverse — a risk % from a target. The evidence block on
+// every preview and the dashboard's "expected day" solve the forward direction
+// from the REALIZED edge. One function each, both here, so the two can never
+// disagree by construction (CLAUDE.md: when two places derive the same
+// quantity, they must agree by construction). Nothing else may re-derive it.
+// ---------------------------------------------------------------------------
+
+/** Forward: what a day is expected to make at this flow, sizing and edge. */
+export function expectedDailyGainPct(tradesPerDay: number, riskPerTradePct: number, edgeR: number): number {
+  return tradesPerDay * riskPerTradePct * edgeR;
+}
+
+/** Inverse: the per-trade risk % that makes `targetDailyGainPct` the expected
+ *  day at this flow and edge. The caller guards `tradesPerDay × edgeR > 0`. */
+export function riskPerTradeForTarget(targetDailyGainPct: number, tradesPerDay: number, edgeR: number): number {
+  return targetDailyGainPct / (tradesPerDay * edgeR);
+}
+
+/** The same 20 significance.ts / dailyTargetSweep.ts use — spelled once here
+ *  so the availability message and the floor it names cannot drift. */
+const MIN_RELIABLE_EVIDENCE = 20;
+
+/** The realized basis needs a record worth sizing on: enough closed trades AND
+ *  enough sessions, a POSITIVE average R (a non-positive edge supports no
+ *  daily target at all — the fix is on the entry side, not in sizing), and a
+ *  measured flow. Anything else is refused with the reason, never substituted:
+ *  a preview that quietly answered under a different basis than the one asked
+ *  for would be the silent substitution this whole feature exists to end. */
+export function realizedBasisAvailability(
+  realized: RealizedEdge,
+): { available: true; reason?: undefined } | { available: false; reason: string } {
+  if (!realized.reliable) {
+    return {
+      available: false,
+      reason:
+        `The realized basis needs a reliable record: ${realized.rTrades} of ${MIN_RELIABLE_EVIDENCE} R-scored closed ` +
+        `live trades over ${realized.sessions} of ${MIN_RELIABLE_EVIDENCE} sessions so far.`,
+    };
+  }
+  if (realized.avgR === null || !(realized.avgR > 0)) {
+    return {
+      available: false,
+      reason:
+        `Your realized edge over ${realized.rTrades} closed trades is ${realized.avgR ?? 0}R per trade — not positive, so ` +
+        'the record supports no daily target. Sizing cannot fix that; the fix is on the entry side.',
+    };
+  }
+  if (realized.tradesPerSession === null || !(realized.tradesPerSession > 0)) {
+    return {
+      available: false,
+      reason: 'The record shows no entries on a typical session, so there is no trade flow to size a daily target on.',
+    };
+  }
+  return { available: true };
+}
+
+/** The record, beside whichever basis a preview was asked for. Every number a
+ *  reader needs to judge the target against what the loop actually does. */
+export interface TuneEvidence {
+  avgR: number | null;
+  rTrades: number;
+  tradesPerSession: number | null;
+  sessions: number;
+  reliable: boolean;
+  /** expectedDailyGainPct(realized flow, the CURRENT risk %, realized avg R) —
+   *  what a day is expected to make as things stand. Null without a record. */
+  impliedDailyGainPctAtCurrentRisk: number | null;
+  /** The same at the risk % THIS preview solved, with the flow bounded by the
+   *  band's trades/day cap the patch writes. */
+  impliedDailyGainPctAtTunedRisk: number | null;
+  /** target ÷ impliedDailyGainPctAtTunedRisk — how many expected days the goal
+   *  is. Null when the implied day is not positive. */
+  targetOverImplied: number | null;
+  realizedBasis: { available: boolean; reason?: string };
+}
+
+/** Above this multiple of the expected day, the bank line and the guard levels
+ *  stamped from the goal will rarely engage — the preview says so. Two, not
+ *  one: a goal AT the expected day banks roughly every other day, which is a
+ *  stopping rule with teeth; at 2× it is still a good day; past that it is a
+ *  wish. A judgement, stated so it can be argued with. */
+export const TARGET_OVER_IMPLIED_WARN_RATIO = 2;
+
+/** The dashboard's companion to the goal card — the same forward identity at
+ *  the current sizing, with the record's counts, so "goal 3%" is always shown
+ *  next to "expected day ≈ 0.6%". */
+export interface DailyGoalEvidence extends RealizedEdge {
+  impliedDailyGainPct: number | null;
+  targetOverImplied: number | null;
+}
+
+export function dailyGoalEvidence(
+  realized: RealizedEdge,
+  riskPerTradePct: number,
+  targetDailyGainPct: number | null,
+): DailyGoalEvidence {
+  const implied =
+    realized.avgR !== null && realized.tradesPerSession !== null
+      ? round2(expectedDailyGainPct(realized.tradesPerSession, riskPerTradePct, realized.avgR))
+      : null;
+  const ratio =
+    implied !== null && implied > 0 && targetDailyGainPct !== null ? round1(targetDailyGainPct / implied) : null;
+  return { ...realized, impliedDailyGainPct: implied, targetOverImplied: ratio };
+}
+
 /** Expected R per trade under the chosen basis, floored so it can't blow up the
- *  risk% solve. */
-function edgeRFor(basis: TuneBasis, targetRMultiple: number): number {
+ *  risk% solve. The realized basis is NOT floored: its availability check
+ *  already requires a positive edge, and a tiny real edge SHOULD produce the
+ *  "would need ~X% risk, capped" warning rather than be quietly lifted to 0.1R. */
+function edgeRFor(basis: TuneBasis, targetRMultiple: number, realized: RealizedEdge): number {
+  if (basis === 'realized') return realized.avgR ?? MIN_EDGE_R;
   const raw = basis === 'perfectDay' ? targetRMultiple : ASSUMED_WIN_RATE * targetRMultiple - (1 - ASSUMED_WIN_RATE);
   return Math.max(MIN_EDGE_R, raw);
 }
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
+const round1 = (n: number): number => Math.round(n * 10) / 10;
 const clamp = (n: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, n));
 
 /** The exact set of AutotradeConfig keys this tuner is allowed to write —
@@ -655,8 +779,13 @@ export interface TargetTuneResult {
    *  surfaced so the UI can show what the target actually implied when it's
    *  clamped. */
   rawRiskPerTradePct: number;
+  /** The trades/day the risk% solve used — the band's cap, or on the realized
+   *  basis the record's median entries per session bounded by that cap. */
+  tradesPerDay: number;
   patch: TunablePatch;
   warnings: string[];
+  /** The record, whichever basis was asked for (2026-09-07). */
+  evidence: TuneEvidence;
 }
 
 function shapeToPatch(
@@ -777,18 +906,37 @@ export interface ComputeTargetTuneInput {
    *  enforced at decision time by the sizer; here it only tells the operator
    *  the cap they are about to store is above what today can actually fund. */
   buyingPowerUsd?: number;
+  /** The loop's realized edge over its recent sessions (dailyTargetSweepData
+   *  → computeRealizedEdge). REQUIRED, not optional, on purpose: an optional
+   *  input a caller forgets to pass would yield an empty evidence block that
+   *  nothing complains about — the 2026-08-27 "computed and read by nothing"
+   *  pattern. A caller with no record passes emptyRealizedEdge(n). */
+  realized: RealizedEdge;
 }
 
 /** Derive a full tunable patch from equity + a target daily gain % under the
  *  chosen basis. Pure — returns the patch and any warnings; the caller applies
- *  it through the ordinary config PUT. */
+ *  it through the ordinary config PUT. Throws on the realized basis when the
+ *  record cannot support it — the route checks realizedBasisAvailability first
+ *  and answers 400; reaching this throw is a programming error. */
 export function computeTargetTune(input: ComputeTargetTuneInput): TargetTuneResult {
-  const { equityUsd, targetDailyGainPct, basis } = input;
+  const { equityUsd, targetDailyGainPct, basis, realized } = input;
   const band = bandForTarget(targetDailyGainPct);
   const shape = BANDS[band];
-  const edgeR = edgeRFor(basis, shape.targetRMultiple);
+  const availability = realizedBasisAvailability(realized);
+  if (basis === 'realized' && !availability.available) {
+    throw new Error(`realized basis unavailable: ${availability.reason}`);
+  }
+  const edgeR = edgeRFor(basis, shape.targetRMultiple, realized);
+  // The flow the solve assumes. The two modelled bases take the band's cap at
+  // face value; the realized basis takes what the loop has shown it places,
+  // bounded by the cap this very patch writes.
+  const tradesPerDay =
+    basis === 'realized' && realized.tradesPerSession !== null
+      ? Math.min(realized.tradesPerSession, shape.maxTradesPerDay)
+      : shape.maxTradesPerDay;
 
-  const rawRiskPerTradePct = round2(targetDailyGainPct / (shape.maxTradesPerDay * edgeR));
+  const rawRiskPerTradePct = round2(riskPerTradeForTarget(targetDailyGainPct, tradesPerDay, edgeR));
   const riskPerTradePct = clamp(rawRiskPerTradePct, 0.1, MAX_SUGGESTED_RISK_PER_TRADE_PCT);
 
   const patch = shapeToPatch(
@@ -801,6 +949,41 @@ export function computeTargetTune(input: ComputeTargetTuneInput): TargetTuneResu
   );
 
   const warnings: string[] = [];
+
+  // The record, whichever basis was asked for — the forward direction of the
+  // same identity the solve above inverted.
+  const realizedFlowCapped =
+    realized.tradesPerSession !== null ? Math.min(realized.tradesPerSession, shape.maxTradesPerDay) : null;
+  const impliedAtCurrent =
+    realized.avgR !== null && realized.tradesPerSession !== null
+      ? round2(expectedDailyGainPct(realized.tradesPerSession, input.config.riskPerTradePct, realized.avgR))
+      : null;
+  const impliedAtTuned =
+    realized.avgR !== null && realizedFlowCapped !== null
+      ? round2(expectedDailyGainPct(realizedFlowCapped, riskPerTradePct, realized.avgR))
+      : null;
+  const targetOverImplied =
+    impliedAtTuned !== null && impliedAtTuned > 0 ? round1(targetDailyGainPct / impliedAtTuned) : null;
+  const evidence: TuneEvidence = {
+    avgR: realized.avgR,
+    rTrades: realized.rTrades,
+    tradesPerSession: realized.tradesPerSession,
+    sessions: realized.sessions,
+    reliable: realized.reliable,
+    impliedDailyGainPctAtCurrentRisk: impliedAtCurrent,
+    impliedDailyGainPctAtTunedRisk: impliedAtTuned,
+    targetOverImplied,
+    realizedBasis: availability.available ? { available: true } : { available: false, reason: availability.reason },
+  };
+  if (realized.reliable && realized.avgR !== null && !(realized.avgR > 0)) {
+    warnings.push(
+      `Your realized edge over ${realized.rTrades} closed trades is ${realized.avgR}R per trade — not positive. No daily target is supported by the record, and sizing cannot fix that; the fix is on the entry side.`,
+    );
+  } else if (realized.reliable && targetOverImplied !== null && targetOverImplied > TARGET_OVER_IMPLIED_WARN_RATIO) {
+    warnings.push(
+      `This target is ${targetOverImplied}× what your realized edge produces at this sizing (~${impliedAtTuned}%/day from avg R ${realized.avgR} over ${realized.rTrades} trades, ${realized.tradesPerSession} entries/session): the bank line and the give-back levels stamped from it will rarely engage. See the Daily goal card for the level the record supports.`,
+    );
+  }
 
   // Only move what you own. A dollar cap that no longer matches its
   // anchor-derived value was set by a human; carry it through unchanged rather
@@ -849,7 +1032,17 @@ export function computeTargetTune(input: ComputeTargetTuneInput): TargetTuneResu
       `Auto-tune of exit geometry is ON — it moves the stop multiple and the ${patch.targetRMultiple}R target toward what your winning trades actually did. The reward:risk is what this tune solved the ${riskPerTradePct}% risk per trade FROM, so once it shifts, the risk % no longer matches ${targetDailyGainPct}%/day and is not re-derived. Turn it off if you want this tune to stick exactly.`,
     );
   }
-  return { band, basis, targetDailyGainPct, edgeR: round2(edgeR), rawRiskPerTradePct, patch, warnings };
+  return {
+    band,
+    basis,
+    targetDailyGainPct,
+    edgeR: round2(edgeR),
+    tradesPerDay,
+    rawRiskPerTradePct,
+    patch,
+    warnings,
+    evidence,
+  };
 }
 
 /** The moderate baseline, equity-scaled — "reset to moderate for THIS account":

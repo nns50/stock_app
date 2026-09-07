@@ -82,17 +82,33 @@ basis stays a preview-side control (it shapes the sizing, not the goal).
 
 ## 4. Choosing a sizing basis
 
-Both bases use the **same formula** — they differ only in one assumption about how your
-trading day goes:
+All three bases use the **same identity** — they differ only in where the two inputs
+come from:
 
 ```
-riskPerTradePct = targetDailyGainPct ÷ (tradesPerDay × edgeR)
+expected day %  =  tradesPerDay × riskPerTradePct × edgeR        (forward)
+riskPerTradePct =  targetDailyGainPct ÷ (tradesPerDay × edgeR)    (the tune: its inverse)
 ```
 
-| Basis           | `edgeR` is…                              | Meaning                                                        | Sizes… |
-| --------------- | ---------------------------------------- | -------------------------------------------------------------- | ------ |
-| **Expected day** | your _average_ R per trade (`winRate×R − lossRate`, assuming a **45%** win rate at the band's reward:risk) | The target is your **average** day — what you'd make in a typical session | **up** (more risk per trade) |
-| **Perfect day** | the reward multiple `R` itself           | The target is your **best-case ceiling** — only reached if _every_ trade wins | **down** (less risk per trade) |
+In the code both directions are one function each (`expectedDailyGainPct` /
+`riskPerTradeForTarget` in `targetTune.ts`), and everything that shows you an
+"expected day" — the evidence line under every preview, the Monitoring card — goes
+forward through the same identity the tune inverts, so the two can never disagree.
+
+| Basis           | `edgeR` is…                              | `tradesPerDay` is… | Meaning                                                        | Sizes… |
+| --------------- | ---------------------------------------- | ------------------ | -------------------------------------------------------------- | ------ |
+| **Expected day** | an _assumed_ average R per trade (`winRate×R − lossRate`, a **fixed 45%** win rate at the band's reward:risk) | the band's max trades/day | The target is your **average** day — _if_ you win 45% of the time | **up** (more risk per trade) |
+| **Perfect day** | the reward multiple `R` itself           | the band's max trades/day | The target is your **best-case ceiling** — only reached if _every_ trade wins | **down** (less risk per trade) |
+| **Realized** (2026-09-07) | your **realized** average R per closed autotrade trade over the last 40 sessions | your realized **median entries per session**, bounded by the band's cap | The target is your average day **as the record shows it** | whatever the record says — often much less than Expected assumes |
+
+The **Realized** basis is only offered on a record worth sizing on: at least **20**
+R-scored closed live trades over at least **20** sessions, a **positive** average R, and
+some measured trade flow. Otherwise the preview **refuses** it with a 400 naming the
+shortfall ("7 of 20 trades over 3 of 20 sessions"), and the toggle shows the count. It
+refuses rather than quietly answering under another basis: a preview whose basis differs
+from the one you asked for would be exactly the silent substitution this basis exists
+to end. A non-positive realized edge supports **no** daily target at all — sizing cannot
+fix that; the fix is on the entry side.
 
 Because `edgeR` is smaller on the Expected basis (your average trade nets a fraction of
 its target), you have to risk **more** per trade to hit the same daily number. On the
@@ -106,8 +122,21 @@ reward:risk:
 - **Perfect day**: `edgeR = 2` → risk = `5 ÷ (6 × 2)` ≈ **0.4%** per trade.
 
 The toggle is you choosing which assumption to size the account on. `Expected day` is
-the more honest default (it doesn't assume you never lose); `Perfect day` is the more
-conservative sizing for a given target.
+the more honest of the two modelled bases (it doesn't assume you never lose); `Perfect
+day` is the more conservative sizing for a given target; `Realized` is not an assumption
+at all.
+
+### The record beside every preview — the evidence line
+
+Whichever basis you pick, the preview also shows **your record**: realized average R and
+the number of closed trades behind it, the median entries per session and the sessions
+counted, the **expected day at your current risk %** and **at the tuned risk %** (both
+from the forward identity above), and how many of those expected days the target is.
+When the target is more than **2×** the expected day at the tuned sizing, a warning says
+the bank line and the give-back levels stamped from it will rarely engage — the state the
+live book was in when this shipped (a 3% goal against a ≈ 0.6% expected day). When a
+reliable record shows a non-positive edge, the warning says that instead. A thin record
+is shown as thin ("7 of 20 trades, 3 of 20 sessions"), never hidden.
 
 ## 5. How your target maps to every setting
 
@@ -170,8 +199,9 @@ a stance. Every difference shows up in the preview before you apply.
 
 ### The per-trade risk (solved)
 
-`riskPerTradePct` is solved from your target using the band's trades/day and reward
-multiple, then **clamped to a maximum suggestion of 10%** — see
+`riskPerTradePct` is solved from your target through `riskPerTradeForTarget` — the band's
+trades/day and reward multiple on the two modelled bases, your realized flow and edge on
+the Realized basis — then **clamped to a maximum suggestion of 10%** — see
 [§7](#7-reading-the-preview-and-warnings).
 
 ### The settings derived from that risk
@@ -363,6 +393,11 @@ Warnings you may see:
 - **Aggressive sizing.** Any suggested risk ≥ 3% gets a reminder that a losing streak
   compounds fast, and to make sure the drawdown-halt number is one you can stomach.
 - **Auto-tune is on.** A note that auto-tune will re-move the risk % over time.
+- **The target is N× your expected day** (2026-09-07). Your realized edge at the tuned
+  sizing produces a much smaller day than the target — the bank line and the give-back
+  levels stamped from it will rarely engage. Shown past 2×, on a reliable record.
+- **No edge in the record.** A reliable record whose average R is ≤ 0 supports no daily
+  target; the preview says so instead of pretending a sizing exists that reaches one.
 
 ## 8. Caveats — read this
 
@@ -372,8 +407,11 @@ Warnings you may see:
 - **Higher target = bigger swings both ways.** The daily-drawdown halt it sets is the
   amount you're accepting you might lose on a bad day in exchange for a shot at the good
   one. Look at that number before you apply.
-- **The 45% win-rate assumption is fixed**, not read from your history. If your real win
-  rate is lower, the Expected-day sizing is _more_ aggressive than it looks.
+- **The Expected-day basis assumes a 45% win rate**, not your history. If your real win
+  rate is lower, that sizing is _more_ aggressive than it looks — which is what the
+  evidence line under the preview and the **Realized** basis exist to show you. On the
+  live book at the time this shipped the realized edge was ≈ +0.05R per trade against
+  the ≈ 0.35R that assumption implies.
 - **It never enables live trading.** Applying a tune only changes settings; you still
   have to turn live trading on yourself, deliberately, with its own typed confirmation.
 

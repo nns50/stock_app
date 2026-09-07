@@ -57,6 +57,7 @@ import type {
   TunablePatch,
   TuneBand,
   TuneBasis,
+  TuneEvidence,
   WalkForwardResponse,
   WalkForwardWindowResult,
 } from '../api/types';
@@ -1754,9 +1755,43 @@ function MonitoringDashboard({
   const liveOptHaltActive = dash.dailyDrawdownHaltLevel < 0 && dash.liveOptionsDailyPnl <= dash.dailyDrawdownHaltLevel;
 
   const dt = dash.dailyTarget;
+  const ev = dash.dailyGoalEvidence;
+  // The goal against the record (2026-09-07): the same identity the tune
+  // inverts, applied forward at the current sizing — so the goal is never
+  // shown without the day the loop actually produces beside it.
+  const expectedDayLine =
+    ev.rTrades === 0 ? (
+      <>
+        No closed autotrade trades in the last {ev.sessions || ev.lookbackSessions} sessions to say what a normal day
+        is.
+      </>
+    ) : (
+      <>
+        Expected day at current sizing ≈{' '}
+        <span className="tabular-nums text-slate-200">{fmtNum(ev.impliedDailyGainPct)}%</span> (avg R{' '}
+        {ev.avgR !== null && ev.avgR > 0 ? '+' : ''}
+        {fmtNum(ev.avgR)} over {ev.rTrades} trades, {fmtNum(ev.tradesPerSession, 1)} entries/session over {ev.sessions}{' '}
+        sessions{ev.reliable ? '' : ` — thin record, ${ev.rTrades} of 20 trades, ${ev.sessions} of 20 sessions`})
+        {ev.targetOverImplied !== null && (
+          <>
+            ; the goal is{' '}
+            <span className={cx('tabular-nums', ev.targetOverImplied > 2 ? 'text-amber-400' : 'text-slate-200')}>
+              {fmtNum(ev.targetOverImplied, 1)}×
+            </span>{' '}
+            that
+          </>
+        )}
+        .
+      </>
+    );
 
   return (
     <div className="space-y-4">
+      {!dt.active && (
+        <p className="text-xs text-slate-500" data-testid="daily-goal-evidence">
+          <span className="text-slate-400">Daily goal:</span> none set. {expectedDayLine}
+        </p>
+      )}
       {dt.active && (
         <div
           className={`rounded-lg border p-3 ${
@@ -1795,6 +1830,9 @@ function MonitoringDashboard({
                       false,
                     )} halts new live entries for the day.`
                   : '.'}
+          </p>
+          <p className="text-[11px] text-slate-500 mt-1" data-testid="daily-goal-evidence">
+            {expectedDayLine}
           </p>
         </div>
       )}
@@ -2360,6 +2398,59 @@ const BAND_LABEL: Record<TuneBand, string> = {
 };
 
 /**
+ * The record beside the target (2026-09-07): what the loop's realized edge
+ * produces as an expected day — `entries/session × risk % × avg R`, the same
+ * identity the tune inverts to solve risk — at the current sizing and at the
+ * tuned one, and how many of those days the target is. Renders honestly on a
+ * thin record ("n of 20") rather than hiding: the assumption the modelled
+ * bases stand on is only visible when the record sits next to it.
+ */
+export function TuneEvidenceLine({
+  evidence,
+  target,
+  currentRiskPct,
+}: {
+  evidence: TuneEvidence;
+  target: number | undefined;
+  currentRiskPct: number;
+}) {
+  const thin = !evidence.reliable;
+  if (evidence.rTrades === 0) {
+    return (
+      <p className="text-xs text-slate-500" data-testid="tune-evidence">
+        <span className="text-slate-400">Your record:</span> no closed autotrade trades in{' '}
+        {evidence.sessions > 0 ? `the last ${evidence.sessions} sessions` : 'recent sessions'} — every basis above is an
+        assumption until there is one.
+      </p>
+    );
+  }
+  return (
+    <p className="text-xs text-slate-500" data-testid="tune-evidence">
+      <span className="text-slate-400">
+        Your record{thin ? ` (thin — ${evidence.rTrades} of 20 trades, ${evidence.sessions} of 20 sessions)` : ''}:
+      </span>{' '}
+      avg R {evidence.avgR !== null && evidence.avgR > 0 ? '+' : ''}
+      {fmtNum(evidence.avgR)} over {evidence.rTrades} trades, median {fmtNum(evidence.tradesPerSession, 1)}{' '}
+      entries/session over {evidence.sessions} sessions → expected day ≈{' '}
+      <span className="tabular-nums text-slate-300">{fmtNum(evidence.impliedDailyGainPctAtCurrentRisk)}%</span> at your
+      current {fmtNum(currentRiskPct)}% risk, ≈{' '}
+      <span className="tabular-nums text-slate-300">{fmtNum(evidence.impliedDailyGainPctAtTunedRisk)}%</span> at the
+      tuned risk.
+      {evidence.targetOverImplied !== null && target !== undefined && (
+        <>
+          {' '}
+          This {fmtNum(target)}% target is{' '}
+          <span className={cx('tabular-nums', evidence.targetOverImplied > 2 ? 'text-amber-400' : 'text-slate-300')}>
+            {fmtNum(evidence.targetOverImplied, 1)}×
+          </span>{' '}
+          that.
+        </>
+      )}
+    </p>
+  );
+}
+
+/**
  * "Tune from target" — set a target daily gain % and let it derive the whole
  * risk/aggressiveness config from that plus your account equity, under either
  * sizing basis. A preview (every changed field, before -> after) + warnings;
@@ -2534,8 +2625,10 @@ export function TuneFromTargetSection({
               label="Sizing basis"
               hint={
                 basis === 'expected'
-                  ? 'Expected: sizes so the target is your AVERAGE day (~45% win rate). More risk per trade.'
-                  : 'Perfect day: sizes so the target is your BEST-CASE ceiling (every trade wins). Less risk per trade.'
+                  ? 'Expected: sizes so the target is your AVERAGE day (~45% win rate assumed). More risk per trade.'
+                  : basis === 'perfectDay'
+                    ? 'Perfect day: sizes so the target is your BEST-CASE ceiling (every trade wins). Less risk per trade.'
+                    : 'Realized: sizes so the target is your average day AS THE RECORD SHOWS IT — your realized avg R and entries/session, bounded by the band cap.'
               }
             >
               <Segmented
@@ -2544,6 +2637,17 @@ export function TuneFromTargetSection({
                 options={[
                   { value: 'expected', label: 'Expected day' },
                   { value: 'perfectDay', label: 'Perfect day' },
+                  {
+                    value: 'realized',
+                    // The record can only be asked for when it is reliable and
+                    // positive; the server refuses otherwise (400 into the error
+                    // slot below). The label carries the shortfall from the last
+                    // preview's evidence so nobody has to click to find out.
+                    label:
+                      preview && !preview.evidence.realizedBasis.available
+                        ? `Realized · ${preview.evidence.rTrades} of 20`
+                        : 'Realized',
+                  },
                 ]}
               />
             </Field>
@@ -2567,10 +2671,16 @@ export function TuneFromTargetSection({
                   </span>
                 </span>
                 <span className="text-slate-500 text-xs">
-                  edge {fmtNum(preview.edgeR)}R/trade ·{' '}
-                  {preview.basis === 'expected' ? '~45% win assumption' : 'every-trade-wins ceiling'}
+                  edge {fmtNum(preview.edgeR)}R/trade · {fmtNum(preview.tradesPerDay)} trades/day ·{' '}
+                  {preview.basis === 'expected'
+                    ? '~45% win assumption'
+                    : preview.basis === 'perfectDay'
+                      ? 'every-trade-wins ceiling'
+                      : 'your realized record'}
                 </span>
               </div>
+
+              <TuneEvidenceLine evidence={preview.evidence} target={target} currentRiskPct={config.riskPerTradePct} />
 
               {preview.warnings.length > 0 && (
                 <ul className="space-y-1 text-[13px] text-amber-400/90">

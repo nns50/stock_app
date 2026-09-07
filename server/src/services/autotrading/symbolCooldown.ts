@@ -4,7 +4,7 @@ import { AutotradeConfig } from '../../db/autotradeConfig';
 import { listAutotradeEvents, logAutotradeEvent } from '../../db/autotradeEvents';
 import { realizedPnlOf, lastExitDate } from '../pnl';
 import { etToday } from '../../util/marketDate';
-import { FULL_HOLIDAYS } from '../trading/marketCalendar';
+import { isTradingSession } from '../trading/marketCalendar';
 
 // ---------------------------------------------------------------------------
 // Per-symbol loss cooldown (2026-08-22). The live ledger showed the loop has
@@ -78,13 +78,10 @@ export function addDays(etDate: string, n: number): string {
   return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
 }
 
-/** True when this ET date is a day the US equity market actually trades. */
-function isSession(etDate: string): boolean {
-  const [y, m, d] = etDate.split('-').map(Number);
-  const wd = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
-  if (wd === 0 || wd === 6) return false;
-  return !FULL_HOLIDAYS.has(etDate);
-}
+/** One definition of "a session" for the whole app — marketCalendar.ts's
+ *  isTradingSession (moved there 2026-09-07 so the daily goal's session
+ *  arithmetic and this cooldown can never disagree about a holiday). */
+const isSession = isTradingSession;
 
 /**
  * The ET date `n` TRADING sessions after `etDate` — the last day the cooldown

@@ -58,7 +58,8 @@ import {
 import { getProvider } from '../providers';
 import { dispatchNotifications } from '../services/notifier';
 import { suggestLiveCaps } from '../services/autotrading/liveCaps';
-import { computeTargetTune, resetToModerate } from '../services/autotrading/targetTune';
+import { computeTargetTune, realizedBasisAvailability, resetToModerate } from '../services/autotrading/targetTune';
+import { collectBook, DEFAULT_LOOKBACK_SESSIONS, realizedEdgeOf } from '../services/autotrading/dailyTargetSweepData';
 import { listUniverseSymbols } from '../db/universe';
 
 export const autotradeRouter = Router();
@@ -100,7 +101,7 @@ autotradeRouter.get('/live-caps/suggest', (_req, res) => {
  *  same posture as /live-caps/suggest — every derived number scales with it. */
 const tunePreviewBody = z.object({
   targetDailyGainPct: z.number().positive().max(1000),
-  basis: z.enum(['expected', 'perfectDay']),
+  basis: z.enum(['expected', 'perfectDay', 'realized']),
 });
 
 autotradeRouter.post(
@@ -111,11 +112,22 @@ autotradeRouter.post(
     if (config.accountEquityUsd == null) {
       throw new HttpError(400, 'Set account equity before tuning from a target.');
     }
+    // The record, always — every preview carries it beside the basis asked
+    // for. The realized basis itself FAILS CLOSED when the record cannot
+    // support it: a 200 whose basis differs from the one requested would be
+    // the silent substitution this feature exists to end, and a 400 naming the
+    // shortfall is the same posture as the equity-unset refusal above.
+    const realized = realizedEdgeOf(collectBook('live', DEFAULT_LOOKBACK_SESSIONS));
+    if (body.basis === 'realized') {
+      const availability = realizedBasisAvailability(realized);
+      if (!availability.available) throw new HttpError(400, availability.reason);
+    }
     res.json(
       computeTargetTune({
         equityUsd: config.accountEquityUsd,
         targetDailyGainPct: body.targetDailyGainPct,
         basis: body.basis,
+        realized,
         // The whole config: the tuner reads the auto-tune flags to warn about
         // interactions, and the dollar caps + their anchor to tell a hand-set cap
         // from a derived one so it preserves the former.

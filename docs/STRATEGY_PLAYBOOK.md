@@ -213,6 +213,17 @@ _suggestion_ and warns loudly past a survivable per-trade risk, but it won't sto
 hand-entering more. Preview every changed field, and remember the daily-drawdown halt it
 sets is the number you have to be willing to lose on a bad day to have a shot at the good one.
 
+**The record answers back (2026-09-07).** Every tune preview now shows your realized
+record beside the basis you picked — average R per closed autotrade trade, median entries
+per session, and the **expected day** those imply at your current and at the tuned risk
+(`entries/session × risk % × avg R`, the one identity the tune inverts) — and warns when
+the target is more than 2× that day, because a goal set that far above the distribution
+never banks, never arms the give-back guard, and never trims the closing trade: the whole
+day-level protective stack goes inert. A third **Realized** basis sizes from that record
+instead of from a fixed 45% win rate, and is refused (not quietly substituted) until the
+record is reliable. The Monitoring card carries the same expected-day figure next to the
+goal every minute.
+
 **A softer brake than the daily halt.** The daily-drawdown halt is all-or-nothing — full
 size until a hard floor, then nothing. **Equity-curve de-risking** (Config → risk settings,
 off by default) is the graduated version, keyed to your own results rather than the clock:

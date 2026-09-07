@@ -71,10 +71,37 @@ function previewFixture(overrides: Partial<TargetTuneResult> = {}): TargetTuneRe
     basis: 'expected',
     targetDailyGainPct: 5,
     edgeR: 0.35,
+    tradesPerDay: 6,
     rawRiskPerTradePct: 2.38,
     patch,
     warnings: [],
+    evidence: {
+      avgR: null,
+      rTrades: 0,
+      tradesPerSession: null,
+      sessions: 0,
+      reliable: false,
+      impliedDailyGainPctAtCurrentRisk: null,
+      impliedDailyGainPctAtTunedRisk: null,
+      targetOverImplied: null,
+      realizedBasis: { available: false, reason: 'The realized basis needs a reliable record: 0 of 20 …' },
+    },
     ...overrides,
+  };
+}
+
+/** A reliable, thin-edge record: the spec's own numbers. */
+function evidenceFixture(): TargetTuneResult['evidence'] {
+  return {
+    avgR: 0.05,
+    rTrades: 43,
+    tradesPerSession: 9,
+    sessions: 22,
+    reliable: true,
+    impliedDailyGainPctAtCurrentRisk: 0.56,
+    impliedDailyGainPctAtTunedRisk: 0.48,
+    targetOverImplied: 10.4,
+    realizedBasis: { available: true },
   };
 }
 
@@ -218,5 +245,49 @@ describe('TuneFromTargetSection', () => {
     fireEvent.click(resetBtn);
     await waitFor(() => expect(baselineSpy).toHaveBeenCalled());
     await waitFor(() => expect(onApply).toHaveBeenCalledWith(moderatePatch, 'moderate'));
+  });
+
+  // -------------------------------------------------------------------------
+  // The goal against the record (2026-09-07).
+  // -------------------------------------------------------------------------
+  it('renders the evidence line from the preview — the record beside whichever basis was asked for', async () => {
+    vi.spyOn(client, 'tuneFromTargetPreview').mockResolvedValue(previewFixture({ evidence: evidenceFixture() }));
+    renderSection({});
+    expand();
+    const line = await screen.findByTestId('tune-evidence');
+    expect(line).toHaveTextContent(/avg R \+0\.05 over 43 trades/);
+    expect(line).toHaveTextContent(/median 9\.0 entries\/session over 22 sessions/);
+    expect(line).toHaveTextContent(/expected day ≈ 0\.56% at your current 1\.00% risk/);
+    expect(line).toHaveTextContent(/This 5\.00% target is 10\.4× that/);
+  });
+
+  it('labels the realized basis with the shortfall while the record cannot support it', async () => {
+    vi.spyOn(client, 'tuneFromTargetPreview').mockResolvedValue(
+      previewFixture({ evidence: { ...previewFixture().evidence, rTrades: 7 } }),
+    );
+    renderSection({});
+    expand();
+    expect(await screen.findByRole('tab', { name: 'Realized · 7 of 20' })).toBeInTheDocument();
+    expect(screen.getByText(/thin — 7 of 20 trades, 0 of 20 sessions/)).toBeInTheDocument();
+  });
+
+  it('shows the server refusal in the error slot when the realized basis is asked for on a thin record', async () => {
+    const spy = vi
+      .spyOn(client, 'tuneFromTargetPreview')
+      .mockImplementation(({ basis }) =>
+        basis === 'realized'
+          ? Promise.reject(
+              new Error(
+                'The realized basis needs a reliable record: 7 of 20 R-scored closed live trades over 3 of 20 sessions so far.',
+              ),
+            )
+          : Promise.resolve(previewFixture()),
+      );
+    renderSection({});
+    expand();
+    await waitFor(() => expect(spy).toHaveBeenCalledWith({ targetDailyGainPct: 5, basis: 'expected' }));
+    fireEvent.click(screen.getByRole('tab', { name: /Realized/ }));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith({ targetDailyGainPct: 5, basis: 'realized' }));
+    expect(await screen.findByText(/needs a reliable record: 7 of 20/)).toBeInTheDocument();
   });
 });

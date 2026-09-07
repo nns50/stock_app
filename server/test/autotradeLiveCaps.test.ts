@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { suggestLiveCaps } from '../src/services/autotrading/liveCaps';
 import { computeTargetTune, liveOrderCapForTrades } from '../src/services/autotrading/targetTune';
+import { emptyRealizedEdge } from '../src/services/autotrading/dailyTargetSweep';
 import { defaultAutotradeConfig } from '../src/db/autotradeConfig';
 
 describe('suggestLiveCaps', () => {
@@ -49,6 +50,7 @@ describe('suggestLiveCaps agrees with targetTune (2026-07-25)', () => {
   it('matches the order cap an aggressive tune itself derives, for the same equity', () => {
     // The load-bearing property: Suggest must not disagree with the tune.
     const tuned = computeTargetTune({
+      realized: emptyRealizedEdge(40),
       equityUsd: 100_000,
       targetDailyGainPct: 12, // > 8 => aggressive band
       basis: 'expected',
@@ -90,6 +92,7 @@ describe('liveMaxOrdersPerDay vs maxTradesPerDay', () => {
   it('never lets an exit eat the entry budget, on any band', () => {
     for (const target of [1, 3, 5, 8, 12]) {
       const tuned = computeTargetTune({
+        realized: emptyRealizedEdge(40),
         equityUsd: 100_000,
         targetDailyGainPct: target,
         basis: 'expected',
@@ -120,6 +123,7 @@ describe('liveMaxOrdersPerDay vs maxTradesPerDay', () => {
   it('leaves room for entry + partial + close on every band', () => {
     for (const target of [1, 3, 5, 8, 12]) {
       const tuned = computeTargetTune({
+        realized: emptyRealizedEdge(40),
         equityUsd: 100_000,
         targetDailyGainPct: target,
         basis: 'expected',
@@ -141,12 +145,14 @@ describe('liveMaxOrdersPerDay vs maxTradesPerDay', () => {
     // reopen the hole without anything failing loudly.
     const cfg = { ...defaultAutotradeConfig(), autoTuneEnabled: false, autoTuneExitsEnabled: false };
     const withScaleOut = computeTargetTune({
+      realized: emptyRealizedEdge(40),
       equityUsd: 100_000,
       targetDailyGainPct: 3,
       basis: 'expected',
       config: { ...cfg, liveScaleOutEnabled: true },
     });
     const without = computeTargetTune({
+      realized: emptyRealizedEdge(40),
       equityUsd: 100_000,
       targetDailyGainPct: 3,
       basis: 'expected',
