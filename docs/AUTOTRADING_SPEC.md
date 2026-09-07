@@ -6114,3 +6114,59 @@ unrealistic case.
 The **floor** under an auto-tune cut (#47's first half) is unchanged and remains
 an operator decision about real money, not a diff. Nothing here stops
 `riskPerTradePct` reaching 0; it only makes the road back reachable in principle.
+
+## 2026-09-06 — DECISION: no floor under an auto-tune risk cut
+
+**Operator decision. Do not add a floor, and do not let a later review talk
+itself into one.** The same standing-decision framing as the `targetRMultiple`
+hold — recorded here rather than only in a task list so it outlives the session
+that made it.
+
+### The question
+
+Should auto-tune be forbidden from cutting `riskPerTradePct` below some minimum
+(e.g. 0.25%)? At 0 the book opens nothing, and because the walk-forward guard's
+population is *closed trades*, nothing closes either — the evidence it waits for
+can never arrive. That is a trap state, and it happened: risk hit 0 on 08-09 and
+a human moved it on 08-26.
+
+### Why the answer is no
+
+**The harm was never the 0. It was that nothing said so.** Seventeen days of a
+silently switched-off strategy, announced as an ordinary "risk-per-trade
+adjusted" reading `0.24% → 0%`.
+
+PR #520 collapses those seventeen days into a push notification within a minute
+of the tune run, saying in plain words that the book will open nothing and needs
+a manual reset. The alert path is verified — `notification_delivery_failed` has
+never been journalled, across every alert this system has ever sent.
+
+So a floor now buys only the gap between *"you are told within a minute"* and
+*"it never fully stops"*, and pays for it by risking real money at the exact
+moment Kelly's own estimate says the edge is zero or negative. That is a poor
+trade for a condition that has occurred **once in two months**.
+
+The deciding argument is the subtler one: **a floor makes the system look
+healthier without making it healthier.** A book grinding along at 0.25% because
+a floor will not let it stop is still a book with no measured edge. Better that
+the halt be loud and real, and that a human decides whether the strategy should
+resume.
+
+### What would reopen it
+
+Any one of:
+
+- a halt fires and the notification does **not** reach the operator;
+- a halt fires, the notification arrives, and it is not acted on within a day;
+- halts start recurring — say more than once a quarter.
+
+At that point the notification has been shown not to be sufficient, and the
+floor earns its place.
+
+### Also considered and rejected
+
+Applying the same significance test to *decreases*, to make the two directions
+symmetric. That would pin risk wherever it happens to sit whenever the edge is
+unclear — which is most of the time. The safe direction should stay easy to
+take; the asymmetry is only a defect because the *increase* side was
+unreachable, and PR #523 is what addressed that.
