@@ -30,6 +30,7 @@ const realizedFixture = (over: Partial<RealizedEdge> = {}): RealizedEdge => ({
   rTrades: 30,
   tradesPerSession: 9,
   sessions: 25,
+  activeSessions: 25,
   sessionsWithoutEntries: 0,
   reliable: true,
   ...over,
@@ -545,7 +546,7 @@ describe('the realized basis', () => {
   it('is unavailable without a reliable record, without a positive edge, or without flow — with the reason', () => {
     expect(realizedBasisAvailability(emptyRealizedEdge(40))).toMatchObject({ available: false });
     expect(realizedBasisAvailability(emptyRealizedEdge(40)).reason).toMatch(
-      /0 of 20 R-scored closed live trades over 0 of 20 sessions/,
+      /0 of 20 R-scored closed live trades over 0 of 20 active sessions/,
     );
     expect(realizedBasisAvailability(realizedFixture({ avgR: 0 })).reason).toMatch(/not positive/);
     expect(realizedBasisAvailability(realizedFixture({ avgR: -0.1 })).reason).toMatch(/not positive/);
@@ -590,7 +591,14 @@ describe('the evidence block', () => {
       realized: realizedFixture({ avgR: 0.05 }),
       config: { riskPerTradePct: 1.25 },
     });
-    expect(r.evidence).toMatchObject({ avgR: 0.05, rTrades: 30, tradesPerSession: 9, sessions: 25, reliable: true });
+    expect(r.evidence).toMatchObject({
+      avgR: 0.05,
+      rTrades: 30,
+      tradesPerSession: 9,
+      sessions: 25,
+      activeSessions: 25,
+      reliable: true,
+    });
     // At the CURRENT sizing: 9 × 1.25 × 0.05 = 0.56%/day — the spec's hand-computed band.
     expect(r.evidence.impliedDailyGainPctAtCurrentRisk).toBeCloseTo(0.56, 2);
     // At the TUNED risk the flow is bounded by the conservative cap of 4:

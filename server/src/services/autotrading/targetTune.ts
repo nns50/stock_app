@@ -458,7 +458,8 @@ export function realizedBasisAvailability(
       available: false,
       reason:
         `The realized basis needs a reliable record: ${realized.rTrades} of ${MIN_RELIABLE_EVIDENCE} R-scored closed ` +
-        `live trades over ${realized.sessions} of ${MIN_RELIABLE_EVIDENCE} sessions so far.`,
+        `live trades over ${realized.activeSessions} of ${MIN_RELIABLE_EVIDENCE} active sessions so far ` +
+        `(${realized.sessions} in the window).`,
     };
   }
   if (realized.avgR === null || !(realized.avgR > 0)) {
@@ -483,8 +484,11 @@ export function realizedBasisAvailability(
 export interface TuneEvidence {
   avgR: number | null;
   rTrades: number;
+  /** Median entries per ACTIVE session — on the days the book traded. */
   tradesPerSession: number | null;
+  /** Sessions in the window, and the ones the book traded on. */
   sessions: number;
+  activeSessions: number;
   reliable: boolean;
   /** expectedDailyGainPct(realized flow, the CURRENT risk %, realized avg R) —
    *  what a day is expected to make as things stand. Null without a record. */
@@ -969,6 +973,7 @@ export function computeTargetTune(input: ComputeTargetTuneInput): TargetTuneResu
     rTrades: realized.rTrades,
     tradesPerSession: realized.tradesPerSession,
     sessions: realized.sessions,
+    activeSessions: realized.activeSessions,
     reliable: realized.reliable,
     impliedDailyGainPctAtCurrentRisk: impliedAtCurrent,
     impliedDailyGainPctAtTunedRisk: impliedAtTuned,
@@ -981,7 +986,7 @@ export function computeTargetTune(input: ComputeTargetTuneInput): TargetTuneResu
     );
   } else if (realized.reliable && targetOverImplied !== null && targetOverImplied > TARGET_OVER_IMPLIED_WARN_RATIO) {
     warnings.push(
-      `This target is ${targetOverImplied}× what your realized edge produces at this sizing (~${impliedAtTuned}%/day from avg R ${realized.avgR} over ${realized.rTrades} trades, ${realized.tradesPerSession} entries/session): the bank line and the give-back levels stamped from it will rarely engage. See the Daily goal card for the level the record supports.`,
+      `This target is ${targetOverImplied}× what your realized edge produces at this sizing (~${impliedAtTuned}%/day from avg R ${realized.avgR} over ${realized.rTrades} trades, ${realized.tradesPerSession} entries on each of the ${realized.activeSessions} sessions it traded): the bank line and the give-back levels stamped from it will rarely engage. See the Daily goal card for the level the record supports.`,
     );
   }
 

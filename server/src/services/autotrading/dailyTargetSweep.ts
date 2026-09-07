@@ -80,11 +80,17 @@ export interface RealizedEdge {
   avgR: number | null;
   /** Closed trades with a usable R inside the window. */
   rTrades: number;
-  /** Median entries per session over the window (zero-entry sessions
-   *  included — an idle session is still a session); null with no sessions. */
+  /** Median entries per ACTIVE session — the sessions the book actually
+   *  traded on; null when it traded on none. Idle sessions are reported
+   *  beside it, not averaged in: the first production read (2026-09-07) had
+   *  the live book trading on 14 of 40 sessions, and a median over all 40 was
+   *  0 — an "expected day" of 0% that said nothing about the days it trades.
+   *  The goal is a per-day stopping rule, so a day it trades is the unit. */
   tradesPerSession: number | null;
   /** Sessions in the window (the loop's calendar, not calendar days). */
   sessions: number;
+  /** Sessions in the window with at least one entry. */
+  activeSessions: number;
   sessionsWithoutEntries: number;
   /** Trades the collector could not place on the timeline or score in R. */
   droppedTrades: number;
@@ -93,14 +99,15 @@ export interface RealizedEdge {
   /** The window that was asked for — `sessions` can be smaller when the book
    *  is younger than the lookback. */
   lookbackSessions: number;
-  /** rTrades ≥ MIN_RELIABLE_TRADES AND sessions ≥ MIN_RELIABLE_SESSIONS —
-   *  below either floor the numbers are reported but must not be leaned on. */
+  /** rTrades ≥ MIN_RELIABLE_TRADES AND activeSessions ≥ MIN_RELIABLE_SESSIONS
+   *  — below either floor the numbers are reported but must not be leaned on. */
   reliable: boolean;
 }
 
 /** One floor, two units: the same 20 significance.ts and kellySuggestion use
- *  for "enough trades to lean on" is also the number of SESSIONS the daily
- *  axis needs, because a day is the sample unit of everything here. */
+ *  for "enough trades to lean on" is also the number of ACTIVE sessions the
+ *  daily axis needs, because a day the book traded is the sample unit of
+ *  everything here — a day it did not trade is evidence of nothing. */
 export const MIN_RELIABLE_SESSIONS = MIN_RELIABLE_TRADES;
 
 export function emptyRealizedEdge(lookbackSessions: number): RealizedEdge {
@@ -109,6 +116,7 @@ export function emptyRealizedEdge(lookbackSessions: number): RealizedEdge {
     rTrades: 0,
     tradesPerSession: null,
     sessions: 0,
+    activeSessions: 0,
     sessionsWithoutEntries: 0,
     droppedTrades: 0,
     remappedEvents: 0,
@@ -194,11 +202,15 @@ export interface RealizedEdgeInput {
   lookbackSessions: number;
 }
 
+/** A session the book traded on. A session with only an exit (a trade
+ *  entered the day before) is not one: no stopping rule can change it. */
+export const isActiveSession = (p: SessionPath): boolean => p.entries > 0;
+
 /**
  * The realized edge over the window: mean R over the trades that CLOSED inside
- * it, and the median entries per session (idle sessions count as 0 — an
- * idle day pulls the flow figure down, which is the conservative direction
- * for a number the goal is going to be judged against).
+ * it, and the median entries per ACTIVE session. Idle sessions are counted
+ * and shown, never averaged in — see RealizedEdge.tradesPerSession for the
+ * production read that made this the rule.
  *
  * For the journal book this avgR has the same numerator and denominator as
  * computeJournalStats(...).avgR (realizedPnlOf / initialRiskOf per trade), so
@@ -211,18 +223,20 @@ export function computeRealizedEdge(input: RealizedEdgeInput): RealizedEdge {
   const rTrades = exits.length;
   const avgR = rTrades ? round4(exits.reduce((s, e) => s + e.r, 0) / rTrades) : null;
   const sessions = paths.length;
-  const tradesPerSession = median(paths.map((p) => p.entries));
+  const active = paths.filter(isActiveSession);
+  const tradesPerSession = median(active.map((p) => p.entries));
   return {
     avgR,
     rTrades,
     tradesPerSession,
     sessions,
-    sessionsWithoutEntries: paths.filter((p) => p.entries === 0).length,
+    activeSessions: active.length,
+    sessionsWithoutEntries: sessions - active.length,
     droppedTrades: input.droppedTrades,
     remappedEvents,
     eventsOutsideWindow,
     lookbackSessions: input.lookbackSessions,
-    reliable: rTrades >= MIN_RELIABLE_TRADES && sessions >= MIN_RELIABLE_SESSIONS,
+    reliable: rTrades >= MIN_RELIABLE_TRADES && active.length >= MIN_RELIABLE_SESSIONS,
   };
 }
 
@@ -330,17 +344,26 @@ export interface DailyTargetSweepResult {
   storedTargetPct: number | null;
   /** The stored target on the R axis (storedTargetPct / riskPerTradePct). */
   storedTargetR: number | null;
-  /** The baseline every level is measured against: the record as it happened. */
+  /** The baseline every level is measured against: the record as it happened,
+   *  over the ACTIVE sessions. */
   actual: PolicyOutcome;
   levels: SweepLevel[];
-  /** The realized edge's own floors — ≥ 20 R-scored trades AND ≥ 20 sessions.
-   *  Below either the per-level CIs are reported but are noise; forty empty
-   *  sessions would otherwise read as a reliable sweep of nothing. */
+  /** The realized edge's own floors — ≥ 20 R-scored trades AND ≥ 20 active
+   *  sessions. Below either the per-level CIs are reported but are noise;
+   *  forty empty sessions would otherwise read as a reliable sweep of nothing. */
   reliable: boolean;
   tradesUsed: number;
   droppedTrades: number;
   approximatedExits: number;
+  /** The window that was read (oldest first). */
   sessionDates: string[];
+  /** Sessions with at least one entry — the ones every statistic above is
+   *  over. A session with no entries cannot be changed by any stopping rule,
+   *  so it carries no information about one; counting it as a zero-change day
+   *  would only shrink the interval (26 of the live book's 40 sessions were
+   *  idle on the first production read, and did exactly that). */
+  activeSessions: number;
+  idleSessions: number;
 }
 
 /** 0.5R … 6R in half-R steps: a 1.25%-risk book reads this as roughly 0.6% …
@@ -402,7 +425,8 @@ function summarize(
 }
 
 export function runDailyTargetSweep(input: DailyTargetSweepInput): DailyTargetSweepResult {
-  const { paths } = buildSessionPaths(input.trades, input.sessionDates);
+  const all = buildSessionPaths(input.trades, input.sessionDates).paths;
+  const paths = all.filter(isActiveSession);
   const realized = computeRealizedEdge({
     trades: input.trades,
     sessionDates: input.sessionDates,
@@ -450,5 +474,7 @@ export function runDailyTargetSweep(input: DailyTargetSweepInput): DailyTargetSw
     droppedTrades: input.droppedTrades,
     approximatedExits: input.approximatedExits,
     sessionDates: [...input.sessionDates].sort(),
+    activeSessions: paths.length,
+    idleSessions: all.length - paths.length,
   };
 }

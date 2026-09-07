@@ -1103,10 +1103,12 @@ equally-weighted cards in the order they happened to be built:
   rate — more risk per trade), **Perfect day** sizes so it's your _best-case ceiling_
   (every trade wins — less risk per trade), and **Realized** (2026-09-07) sizes from your
   **own record** — realized average R per closed autotrade trade and median entries per
-  session over the last 40 sessions — so the target is your average day _as the record
-  shows it_. Realized is refused (a 400 in the error slot, and the toggle shows the
-  count) until the record is reliable: 20+ R-scored closed live trades over 20+
-  sessions with a positive edge; it never silently answers under another basis.
+  session on the sessions it traded, over the last 40 sessions — so the target is your
+  average day _as the record shows it_. Realized is refused (a 400 in the error slot,
+  and the toggle shows the count) until the record is reliable: 20+ R-scored closed
+  live trades over 20+ **active** sessions (days the book traded — an idle day is
+  evidence of nothing) with a positive edge; it never silently answers under another
+  basis.
   Whichever basis you pick, an **evidence line** under the preview shows your record
   and the **expected day** it implies at your current and at the tuned risk %
   (`entries/session × risk % × avg R` — the same identity the tune inverts), and how
@@ -1530,7 +1532,9 @@ equally-weighted cards in the order they happened to be built:
   the level as a % of equity at full size beside it, and the stored goal highlighted on
   the grid), and reports per level the mean change per session against the record as
   it happened with a bootstrap 95% CI, sessions halted and entries dropped. **Run sweep**
-  fetches it on demand; a thin record (under 20 trades / 20 sessions) is flagged; dropped
+  fetches it on demand; a thin record (under 20 trades / 20 active sessions) is flagged;
+  idle sessions — days with no entries, which no stopping rule can change — are counted
+  and excluded from every statistic rather than averaged in as zero-change days; dropped
   trades and approximated exit moments are counted on screen; **Use this level** fills
   the goal and stamps the guard at 2/3 and 1/3 without saving. It is a counterfactual on
   realized R only — the caveats sit beside the table — and the pre-committed rules for

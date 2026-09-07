@@ -100,11 +100,13 @@ forward through the same identity the tune inverts, so the two can never disagre
 | --------------- | ---------------------------------------- | ------------------ | -------------------------------------------------------------- | ------ |
 | **Expected day** | an _assumed_ average R per trade (`winRate×R − lossRate`, a **fixed 45%** win rate at the band's reward:risk) | the band's max trades/day | The target is your **average** day — _if_ you win 45% of the time | **up** (more risk per trade) |
 | **Perfect day** | the reward multiple `R` itself           | the band's max trades/day | The target is your **best-case ceiling** — only reached if _every_ trade wins | **down** (less risk per trade) |
-| **Realized** (2026-09-07) | your **realized** average R per closed autotrade trade over the last 40 sessions | your realized **median entries per session**, bounded by the band's cap | The target is your average day **as the record shows it** | whatever the record says — often much less than Expected assumes |
+| **Realized** (2026-09-07) | your **realized** average R per closed autotrade trade over the last 40 sessions | your realized **median entries per session on the sessions you traded**, bounded by the band's cap | The target is your average day **as the record shows it** | whatever the record says — often much less than Expected assumes |
 
 The **Realized** basis is only offered on a record worth sizing on: at least **20**
-R-scored closed live trades over at least **20** sessions, a **positive** average R, and
-some measured trade flow. Otherwise the preview **refuses** it with a 400 naming the
+R-scored closed live trades over at least **20 active sessions** (sessions the book
+actually traded on — the first production read found the live book trading on 14 of its
+last 40 sessions, and a median over all 40 was a meaningless 0), a **positive** average
+R, and some measured trade flow. Otherwise the preview **refuses** it with a 400 naming the
 shortfall ("7 of 20 trades over 3 of 20 sessions"), and the toggle shows the count. It
 refuses rather than quietly answering under another basis: a preview whose basis differs
 from the one you asked for would be exactly the silent substitution this basis exists
@@ -130,9 +132,11 @@ at all.
 ### The record beside every preview — the evidence line
 
 Whichever basis you pick, the preview also shows **your record**: realized average R and
-the number of closed trades behind it, the median entries per session and the sessions
-counted, the **expected day at your current risk %** and **at the tuned risk %** (both
-from the forward identity above), and how many of those expected days the target is.
+the number of closed trades behind it, the median entries per session on the sessions
+it traded (and how many of the window's sessions those were), the **expected day at
+your current risk %** and **at the tuned risk %** (both from the forward identity above,
+so "expected day" means a day the book trades), and how many of those expected days the
+target is.
 When the target is more than **2×** the expected day at the tuned sizing, a warning says
 the bank line and the give-back levels stamped from it will rarely engage — the state the
 live book was in when this shipped (a 3% goal against a ≈ 0.6% expected day). When a
@@ -404,9 +408,14 @@ session of a book under a stopping rule at a grid of levels:
   `targetDailyGainPct ÷ riskPerTradePct` and highlighted.
 - **Sessions come from the trading calendar** (the same `isTradingSession` the symbol
   cooldown counts with): a weekend or holiday is never a day; an event dated on one is
-  attached to the previous session; an idle session is a real 0R session. The window is
-  the last _N_ **completed** sessions ending at the book's last exit (default 40, 5–250,
-  a request parameter — a lookback stored in config would be a field read by nothing).
+  attached to the previous session. The window is the last _N_ **completed** sessions
+  ending at the book's last exit (default 40, 5–250, a request parameter — a lookback
+  stored in config would be a field read by nothing). **Only active sessions count** —
+  sessions with at least one entry. An idle session cannot be changed by any stopping
+  rule, so it carries no information about one; counting it as a zero-change day would
+  only shrink the interval. The first production read (2026-09-07) had 26 of the live
+  book's 40 sessions idle, and did exactly that. Idle sessions are reported beside the
+  table and excluded from every statistic in it.
 - **Each trade is an entry moment, an exit moment and a realized R** from the helper its
   book already uses everywhere (`realizedPnlOf ÷ initialRiskOf` for the journal,
   `liveOptionsPnl ÷ riskAmount`, `paperRealizedR`). A trade that cannot be placed or
@@ -455,11 +464,11 @@ data, and treat "no change" as a result.
 
 | # | Trigger | Min sample | Response |
 | --- | --- | --- | --- |
-| D1 | Any read of the sweep | — | **No goal change below 20 sessions** (the `reliable` flag). Report the shape and stop. |
+| D1 | Any read of the sweep | — | **No goal change below 20 active sessions** (the `reliable` flag: 20 R-scored trades AND 20 sessions the book traded on). Report the shape and stop. |
 | D2 | A level's per-session delta CI (rounded, as `checkOosEdgeConfirmation` rounds) **excludes zero** AND its neighbouring levels agree in sign | 20 sessions | Move the stored goal to that level — a **plateau**, never a spike. Stamp the guard at 2/3 and 1/3 unless the give-back column says otherwise. |
 | D3 | A goal change under D2 | — | **At most one goal change per two weeks**, logged below with the sweep's numbers. Two changes make both uninterpretable. |
 | D4 | A single day overshoots the goal by a lot | — | **Never raise the goal because one day overshot.** One day is not a distribution. |
-| D5 | **Bank + trail** beats **Bank** at the stored level with a CI excluding zero, over ≥ 20 sessions, on two consecutive reads a week apart | 20 sessions | That is the trigger to **build** the trail mode (`dailyTargetReachedMode`, Phase 2) — never to hand-simulate it. Until then the column is evidence only. |
+| D5 | **Bank + trail** beats **Bank** at the stored level with a CI excluding zero, over ≥ 20 active sessions, on two consecutive reads a week apart | 20 active sessions | That is the trigger to **build** the trail mode (`dailyTargetReachedMode`, Phase 2) — never to hand-simulate it. Until then the column is evidence only. |
 | D6 | The realized edge reads **≤ 0R** on a reliable record | 20 trades | The record supports **no** goal. Do not lower the goal to "make it reachable" — the fix is on the entry side (`liveMinSignalScore`, the entry-component work), not in the stopping rule. |
 
 ### Goal decision log
@@ -469,7 +478,7 @@ goes here, whether from a rule above or a direct instruction.
 
 | Date | Change | Trigger | Evidence | Expected effect | Outcome |
 | --- | --- | --- | --- | --- | --- |
-| 2026-09-07 | None — the stored values are recorded as the baseline (read them from `GET /api/autotrade/config` at deploy: the live book had run at a **3% / 2% / 1%** goal set from ambition since 2026-08-21) | This section ships | The live record at the time: avg R ≈ +0.05 over ~87 closed trades, ≈ 9 entries/session, 1.25% risk → expected day ≈ 0.5–1.4%; the goal was 3–6× that and `daily_target_reached` had fired only on a spurious tick (2026-08-27) | The first honest read of the sweep on the deployed book. Per D1, no change until 20 reliable sessions are in the window | — |
+| 2026-09-07 | **None.** Baseline recorded from the deployed config: goal **3%**, arm **2%**, floor **1%**, at 1.25% risk on $5,192 equity — set from ambition on 2026-08-21 | First read of the sweep on the deployed book, the day §6b shipped | **Live, last 40 sessions (2026-07-13 … 09-04):** 70 trades scored, 18 dropped (undated / stopless rows from before adoption stamping), avg R **−0.012**, the book traded on **14 of 40** sessions, actual −0.87R total, worst day −3.31R. The stored goal's row (2.4R) banked 2 sessions for +0.05R/session, CI 0.00 … +0.16; every bank level 0.5–3.5R read +0.05 … +0.07 with the CI's low end exactly 0.00; bank + trail ≈ 0 everywhere. **Paper (control):** 83 trades, avg R +0.023, +1.92R total; banking early **costs** it (−0.06 … −0.08R/session at 0.5–1.5R), and bank + trail at 1.5R is **−0.14R, CI −0.31 … −0.01** — the one interval in either book that excludes zero, on the wrong side. The tune's realized basis refused: "not positive" | D2 does not fire (no positive interval excludes zero; the control argues against lowering), D5 does not fire (trailing never beat banking), **D6 fires**: the live edge is ≤ 0 on a reliable trade count, so the record supports no goal — the fix is on the entry side. The goal stays at 3 / 2 / 1, which cost nothing on this record. This read also showed that a median over all 40 sessions reads 0 entries/session when the book is idle on 26 of them: the unit became the **active** session the same day, under which the live book has 14 — below D1's floor, the cleaner statement of the same conclusion | Re-read once 20 active sessions under the 72 conviction floor (armed 2026-09-06) are in the window — nothing from that regime is in this one |
 
 ## 7. Reading the preview and warnings
 

@@ -93,30 +93,23 @@ describe('computeRealizedEdge', () => {
     trade('f', ['2026-09-03', '11:00'], ['2026-09-03', '12:00'], 0),
   ];
 
-  it('averages R over the trades that closed in the window and takes the median flow, idle sessions included', () => {
+  it('averages R over the trades that closed in the window and takes the median flow over ACTIVE sessions', () => {
     const edge = computeRealizedEdge({ trades, sessionDates: WEEK, droppedTrades: 2, lookbackSessions: 40 });
     expect(edge.rTrades).toBe(6);
     expect(edge.avgR).toBeCloseTo((1 - 1 + 0.5 - 0.5 + 2 + 0) / 6, 4);
-    // entries per session: [2, 1, 0, 3, 0, 0] → sorted [0,0,0,1,2,3] → median 0.5
-    expect(edge.tradesPerSession).toBe(0.5);
+    // entries per session: [2, 1, 0, 3, 0, 0] → the three ACTIVE sessions
+    // [2, 1, 3] → median 2. The idle sessions are counted, not averaged in:
+    // the first production read had 26 idle sessions of 40 and a median of 0.
+    expect(edge.tradesPerSession).toBe(2);
     expect(edge.sessions).toBe(6);
+    expect(edge.activeSessions).toBe(3);
     expect(edge.sessionsWithoutEntries).toBe(3);
     expect(edge.droppedTrades).toBe(2);
     expect(edge.lookbackSessions).toBe(40);
     expect(edge.reliable).toBe(false);
   });
 
-  it('is reliable only past BOTH floors — 20 trades and 20 sessions', () => {
-    const many: SweepTrade[] = [];
-    for (let i = 0; i < 25; i += 1) many.push(trade(`t${i}`, ['2026-09-01', '10:00'], ['2026-09-01', '11:00'], 0.1));
-    const fewSessions = computeRealizedEdge({
-      trades: many,
-      sessionDates: WEEK,
-      droppedTrades: 0,
-      lookbackSessions: 40,
-    });
-    expect(fewSessions.rTrades).toBe(25);
-    expect(fewSessions.reliable).toBe(false);
+  it('is reliable only past BOTH floors — 20 trades and 20 ACTIVE sessions', () => {
     // Pad the calendar to 20 sessions by walking forward over real weekdays.
     const sessions = [...WEEK];
     let cursor = new Date(Date.UTC(2026, 8, 8));
@@ -124,16 +117,33 @@ describe('computeRealizedEdge', () => {
       cursor = new Date(cursor.getTime() + 86_400_000);
       if (cursor.getUTCDay() !== 0 && cursor.getUTCDay() !== 6) sessions.push(cursor.toISOString().slice(0, 10));
     }
-    const enough = computeRealizedEdge({
-      trades: many,
+    // 25 trades on ONE session: 20 sessions in the window, but only one the
+    // book traded on — a window is not a record.
+    const oneDay: SweepTrade[] = [];
+    for (let i = 0; i < 25; i += 1) oneDay.push(trade(`t${i}`, ['2026-09-01', '10:00'], ['2026-09-01', '11:00'], 0.1));
+    const oneActive = computeRealizedEdge({
+      trades: oneDay,
       sessionDates: sessions,
       droppedTrades: 0,
       lookbackSessions: 40,
     });
-    expect(enough.sessions).toBe(20);
+    expect(oneActive.sessions).toBe(20);
+    expect(oneActive.activeSessions).toBe(1);
+    expect(oneActive.rTrades).toBe(25);
+    expect(oneActive.reliable).toBe(false);
+    // One trade on each of the 20 sessions: both floors met.
+    const spread: SweepTrade[] = sessions.map((d, i) => trade(`s${i}`, [d, '10:00'], [d, '11:00'], 0.1));
+    const enough = computeRealizedEdge({
+      trades: spread,
+      sessionDates: sessions,
+      droppedTrades: 0,
+      lookbackSessions: 40,
+    });
+    expect(enough.activeSessions).toBe(20);
+    expect(enough.tradesPerSession).toBe(1);
     expect(enough.reliable).toBe(true);
     const fewTrades = computeRealizedEdge({
-      trades: many.slice(0, 19),
+      trades: spread.slice(0, 19),
       sessionDates: sessions,
       droppedTrades: 0,
       lookbackSessions: 40,
@@ -147,8 +157,9 @@ describe('computeRealizedEdge', () => {
     );
     const noTrades = computeRealizedEdge({ trades: [], sessionDates: WEEK, droppedTrades: 0, lookbackSessions: 40 });
     expect(noTrades.avgR).toBeNull();
-    expect(noTrades.tradesPerSession).toBe(0);
+    expect(noTrades.tradesPerSession).toBeNull(); // traded on no session — not "0 a day"
     expect(noTrades.sessions).toBe(6);
+    expect(noTrades.activeSessions).toBe(0);
   });
 });
 
@@ -271,23 +282,27 @@ describe('runDailyTargetSweep', () => {
       ...over,
     });
 
-  it('carries the realized edge, the counts, and the record as it happened', () => {
+  it('carries the realized edge, the counts, and the record as it happened over the ACTIVE sessions', () => {
     const out = run();
     expect(out.book).toBe('live');
     expect(out.tradesUsed).toBe(8);
     expect(out.droppedTrades).toBe(1);
     expect(out.realized.avgR).toBeCloseTo((1.5 + 0.5 - 1 + 2 - 1 - 0.5 + 1 - 2) / 8, 4);
     expect(out.sessionDates).toEqual(WEEK);
-    // Day R: [3, -1.5, 0, -1, 0, 0] → total 0.5, mean 0.08, median 0, worst -1.5.
+    // Three of the six sessions had entries: day R [3, -1.5, -1] → total 0.5,
+    // mean 0.17, median -1, worst -1.5. The three idle sessions are counted and
+    // excluded — no stopping rule can change a day with no entries.
+    expect(out.activeSessions).toBe(3);
+    expect(out.idleSessions).toBe(3);
     expect(out.actual).toMatchObject({
       policy: 'none',
       totalR: 0.5,
-      meanDayR: 0.08,
-      medianDayR: 0,
+      meanDayR: 0.17,
+      medianDayR: -1,
       worstDayR: -1.5,
       delta: null,
     });
-    expect(out.reliable).toBe(false); // 6 of 20 sessions
+    expect(out.reliable).toBe(false); // 3 of 20 active sessions
   });
 
   it('puts the stored target on the grid in R, marks it, and labels every level in % at full size', () => {
@@ -314,20 +329,20 @@ describe('runDailyTargetSweep', () => {
     const bank = one.policies.find((p) => p.policy === 'bank')!;
     // Day 1 under bank@1R is 2.0 (c, d dropped: delta -1). Day 4 reaches
     // exactly 1R on g's exit, so h is dropped and the day is +1 instead of -1
-    // (delta +2). The other days never reach 1R. Deltas per session:
-    // [-1, 0, 0, 2, 0, 0] → mean 0.17; days [2, -1.5, 0, 1, 0, 0] → total 1.5.
+    // (delta +2). Day 2 never reaches 1R. Deltas over the three ACTIVE
+    // sessions: [-1, 0, 2] → mean 0.33; days [2, -1.5, 1] → total 1.5.
     expect(bank.sessionsHalted).toBe(2);
     expect(bank.entriesDropped).toBe(3);
     expect(bank.totalR).toBe(1.5);
-    expect(bank.delta).toMatchObject({ meanR: 0.17, reliable: false });
+    expect(bank.delta).toMatchObject({ meanR: 0.33, reliable: false });
     expect(bank.delta!.ciLowR).toBeLessThanOrEqual(bank.delta!.meanR);
     expect(bank.delta!.ciHighR).toBeGreaterThanOrEqual(bank.delta!.meanR);
     expect(one.policies.map((p) => p.policy)).toEqual(['bank', 'giveBack', 'bankTrail']);
     // giveBack@3R on day 1 fades to 1.0 (day 1: 1.0 vs 3.0 → delta -2); the
     // -1.5 day never arms. Day 4 (g +1, h -2): arm 2 never touched. Deltas
-    // [-2, 0, 0, 0, 0, 0] → mean -0.33.
+    // over the active sessions [-2, 0, 0] → mean -0.67.
     const three = out.levels.find((l) => l.levelR === 3)!;
-    expect(three.policies.find((p) => p.policy === 'giveBack')!.delta!.meanR).toBe(-0.33);
+    expect(three.policies.find((p) => p.policy === 'giveBack')!.delta!.meanR).toBe(-0.67);
   });
 
   it('is deterministic under a seeded rng', () => {

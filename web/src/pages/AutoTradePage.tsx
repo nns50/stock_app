@@ -1770,8 +1770,9 @@ function MonitoringDashboard({
         Expected day at current sizing ≈{' '}
         <span className="tabular-nums text-slate-200">{fmtNum(ev.impliedDailyGainPct)}%</span> (avg R{' '}
         {ev.avgR !== null && ev.avgR > 0 ? '+' : ''}
-        {fmtNum(ev.avgR)} over {ev.rTrades} trades, {fmtNum(ev.tradesPerSession, 1)} entries/session over {ev.sessions}{' '}
-        sessions{ev.reliable ? '' : ` — thin record, ${ev.rTrades} of 20 trades, ${ev.sessions} of 20 sessions`})
+        {fmtNum(ev.avgR)} over {ev.rTrades} trades, {fmtNum(ev.tradesPerSession, 1)} entries/session on the{' '}
+        {ev.activeSessions} of {ev.sessions} sessions it traded
+        {ev.reliable ? '' : ` — thin record, ${ev.rTrades} of 20 trades, ${ev.activeSessions} of 20 active sessions`})
         {ev.targetOverImplied !== null && (
           <>
             ; the goal is{' '}
@@ -2427,11 +2428,12 @@ export function TuneEvidenceLine({
   return (
     <p className="text-xs text-slate-500" data-testid="tune-evidence">
       <span className="text-slate-400">
-        Your record{thin ? ` (thin — ${evidence.rTrades} of 20 trades, ${evidence.sessions} of 20 sessions)` : ''}:
+        Your record
+        {thin ? ` (thin — ${evidence.rTrades} of 20 trades, ${evidence.activeSessions} of 20 active sessions)` : ''}:
       </span>{' '}
       avg R {evidence.avgR !== null && evidence.avgR > 0 ? '+' : ''}
       {fmtNum(evidence.avgR)} over {evidence.rTrades} trades, median {fmtNum(evidence.tradesPerSession, 1)}{' '}
-      entries/session over {evidence.sessions} sessions → expected day ≈{' '}
+      entries/session on the {evidence.activeSessions} of {evidence.sessions} sessions it traded → expected day ≈{' '}
       <span className="tabular-nums text-slate-300">{fmtNum(evidence.impliedDailyGainPctAtCurrentRisk)}%</span> at your
       current {fmtNum(currentRiskPct)}% risk, ≈{' '}
       <span className="tabular-nums text-slate-300">{fmtNum(evidence.impliedDailyGainPctAtTunedRisk)}%</span> at the
