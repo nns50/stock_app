@@ -21,7 +21,10 @@ beforeEach(() => {
       'DELETE FROM autotrade_config; DELETE FROM autotrade_events; ' +
       'DELETE FROM position_exits; DELETE FROM positions; DELETE FROM autotrade_live_orders; ' +
       'DELETE FROM autotrade_live_options_orders; DELETE FROM order_events; DELETE FROM order_intents; ' +
-      'DELETE FROM autotrade_last_tick;',
+      // The live OPTIONS book feeds dailyGoalEvidence (the daily goal gates
+      // both live books), and every file that writes it cleans it before its
+      // own tests, not after — so in a full run its last rows can outlive it.
+      'DELETE FROM autotrade_live_options_positions; DELETE FROM autotrade_last_tick;',
   );
 });
 

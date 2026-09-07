@@ -249,6 +249,7 @@ function dashboardFixture(overrides: Partial<AutotradeDashboard> = {}): Autotrad
       rTrades: 0,
       tradesPerSession: null,
       sessions: 0,
+      activeSessions: 0,
       sessionsWithoutEntries: 0,
       droppedTrades: 0,
       remappedEvents: 0,
@@ -3101,7 +3102,8 @@ describe('AutoTradePage', () => {
             avgR: 0.05,
             rTrades: 43,
             tradesPerSession: 9,
-            sessions: 22,
+            sessions: 40,
+            activeSessions: 22,
             reliable: true,
             impliedDailyGainPct: 0.56,
             targetOverImplied: 5.4,
@@ -3111,7 +3113,9 @@ describe('AutoTradePage', () => {
       renderDashboard();
       const line = await screen.findByTestId('daily-goal-evidence');
       expect(line).toHaveTextContent(/Expected day at current sizing ≈ 0\.56%/);
-      expect(line).toHaveTextContent(/avg R \+0\.05 over 43 trades, 9\.0 entries\/session over 22 sessions/);
+      expect(line).toHaveTextContent(
+        /avg R \+0\.05 over 43 trades, 9\.0 entries\/session on the 22 of 40 sessions it traded/,
+      );
       expect(line).toHaveTextContent(/the goal is 5\.4× that/);
     });
 
@@ -3123,7 +3127,8 @@ describe('AutoTradePage', () => {
             avgR: 0.2,
             rTrades: 7,
             tradesPerSession: 2,
-            sessions: 5,
+            sessions: 9,
+            activeSessions: 5,
             impliedDailyGainPct: 0.4,
           },
         }),
@@ -3132,7 +3137,7 @@ describe('AutoTradePage', () => {
       const line = await screen.findByTestId('daily-goal-evidence');
       expect(line).toHaveTextContent(/Daily goal: none set/);
       expect(line).toHaveTextContent(/Expected day at current sizing ≈ 0\.40%/);
-      expect(line).toHaveTextContent(/thin record, 7 of 20 trades, 5 of 20 sessions/);
+      expect(line).toHaveTextContent(/thin record, 7 of 20 trades, 5 of 20 active sessions/);
     });
 
     it('shows "no candidate checked yet" for correlated exposure before any risk-check has run', async () => {

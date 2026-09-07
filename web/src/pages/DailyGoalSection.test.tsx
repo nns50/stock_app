@@ -127,7 +127,8 @@ describe('DailyGoalSection', () => {
         avgR: 0.05,
         rTrades: 43,
         tradesPerSession: 9,
-        sessions: 22,
+        sessions: 23,
+        activeSessions: 22,
         sessionsWithoutEntries: 1,
         droppedTrades: 2,
         remappedEvents: 0,
@@ -171,6 +172,8 @@ describe('DailyGoalSection', () => {
       droppedTrades: 2,
       approximatedExits: 1,
       sessionDates: ['2026-08-31', '2026-09-01'],
+      activeSessions: 22,
+      idleSessions: 1,
       ...over,
     };
   }
@@ -183,7 +186,8 @@ describe('DailyGoalSection', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Run sweep' }));
     await waitFor(() => expect(spy).toHaveBeenCalledWith({ book: 'paper', sessions: 40 }));
     const table = await screen.findByTestId('daily-goal-sweep');
-    expect(table).toHaveTextContent(/Reliable record: 43 of 20 trades over 22 of 20 sessions/);
+    expect(table).toHaveTextContent(/Reliable record: 43 of 20 trades over 22 of 20 active sessions/);
+    expect(table).toHaveTextContent(/23 in the window, 1 idle and excluded/);
     expect(table).toHaveTextContent(/2 trade\(s\) dropped/);
     expect(table).toHaveTextContent(/1 exit moment\(s\) approximated/);
     const stored = screen.getByTestId('sweep-stored-level');
@@ -213,13 +217,16 @@ describe('DailyGoalSection', () => {
       sweepFixture({
         reliable: false,
         tradesUsed: 7,
-        realized: { ...sweepFixture().realized, rTrades: 7, sessions: 5, reliable: false },
+        activeSessions: 5,
+        realized: { ...sweepFixture().realized, rTrades: 7, sessions: 9, activeSessions: 5, reliable: false },
       }),
     );
     renderSection(configFixture());
     fireEvent.click(screen.getByRole('button', { name: 'Run sweep' }));
     expect(
-      await screen.findByText(/Thin record — read the shape, not the numbers: 7 of 20 trades over 5 of 20 sessions/),
+      await screen.findByText(
+        /Thin record — read the shape, not the numbers: 7 of 20 trades over 5 of 20 active sessions/,
+      ),
     ).toBeInTheDocument();
     vi.spyOn(client, 'dailyTargetSweep').mockRejectedValueOnce(
       new Error('sessions: Number must be greater than or equal to 5'),

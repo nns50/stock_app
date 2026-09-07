@@ -772,8 +772,8 @@ session**, and reports per level the mean change per session against the record 
 happened, with a bootstrap 95% CI. Same reading: a plateau of neighbouring levels that
 agree is evidence, one level that looks great alone is noise — and a stored goal whose
 row shows zero halted sessions is a goal set above the distribution, doing nothing. The
-rules for moving the goal (never below 20 sessions, only to a plateau whose CI excludes
-zero, one change per two weeks, never on one big day) are written down in
+rules for moving the goal (never below 20 active sessions, only to a plateau whose CI
+excludes zero, one change per two weeks, never on one big day) are written down in
 [Tune from target daily gain](TUNE_FROM_TARGET.md) §6b before the data is looked at.
 
 ---

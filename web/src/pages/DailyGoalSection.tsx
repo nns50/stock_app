@@ -252,9 +252,10 @@ export function DailyGoalSection({ config, onSaved }: { config: AutotradeConfig;
                 )}
               >
                 {sweep.reliable ? 'Reliable record: ' : 'Thin record — read the shape, not the numbers: '}
-                {sweep.tradesUsed} of 20 trades over {sweep.realized.sessions} of 20 sessions ({sweep.book} book
-                {sweep.realized.sessionsWithoutEntries > 0
-                  ? `, ${sweep.realized.sessionsWithoutEntries} with no entries`
+                {sweep.tradesUsed} of 20 trades over {sweep.activeSessions} of 20 active sessions ({sweep.book} book,{' '}
+                {sweep.realized.sessions} in the window
+                {sweep.idleSessions > 0
+                  ? `, ${sweep.idleSessions} idle and excluded — no stopping rule can change a day with no entries`
                   : ''}
                 ). Avg R {fmtR(sweep.realized.avgR)}, median {fmtNum(sweep.realized.tradesPerSession, 1)}{' '}
                 entries/session.

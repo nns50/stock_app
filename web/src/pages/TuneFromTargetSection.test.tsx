@@ -80,6 +80,7 @@ function previewFixture(overrides: Partial<TargetTuneResult> = {}): TargetTuneRe
       rTrades: 0,
       tradesPerSession: null,
       sessions: 0,
+      activeSessions: 0,
       reliable: false,
       impliedDailyGainPctAtCurrentRisk: null,
       impliedDailyGainPctAtTunedRisk: null,
@@ -96,7 +97,8 @@ function evidenceFixture(): TargetTuneResult['evidence'] {
     avgR: 0.05,
     rTrades: 43,
     tradesPerSession: 9,
-    sessions: 22,
+    sessions: 40,
+    activeSessions: 22,
     reliable: true,
     impliedDailyGainPctAtCurrentRisk: 0.56,
     impliedDailyGainPctAtTunedRisk: 0.48,
@@ -256,7 +258,7 @@ describe('TuneFromTargetSection', () => {
     expand();
     const line = await screen.findByTestId('tune-evidence');
     expect(line).toHaveTextContent(/avg R \+0\.05 over 43 trades/);
-    expect(line).toHaveTextContent(/median 9\.0 entries\/session over 22 sessions/);
+    expect(line).toHaveTextContent(/median 9\.0 entries\/session on the 22 of 40 sessions it traded/);
     expect(line).toHaveTextContent(/expected day ≈ 0\.56% at your current 1\.00% risk/);
     expect(line).toHaveTextContent(/This 5\.00% target is 10\.4× that/);
   });
@@ -268,7 +270,7 @@ describe('TuneFromTargetSection', () => {
     renderSection({});
     expand();
     expect(await screen.findByRole('tab', { name: 'Realized · 7 of 20' })).toBeInTheDocument();
-    expect(screen.getByText(/thin — 7 of 20 trades, 0 of 20 sessions/)).toBeInTheDocument();
+    expect(screen.getByText(/thin — 7 of 20 trades, 0 of 20 active sessions/)).toBeInTheDocument();
   });
 
   it('shows the server refusal in the error slot when the realized basis is asked for on a thin record', async () => {
@@ -278,7 +280,7 @@ describe('TuneFromTargetSection', () => {
         basis === 'realized'
           ? Promise.reject(
               new Error(
-                'The realized basis needs a reliable record: 7 of 20 R-scored closed live trades over 3 of 20 sessions so far.',
+                'The realized basis needs a reliable record: 7 of 20 R-scored closed live trades over 3 of 20 active sessions so far (12 in the window).',
               ),
             )
           : Promise.resolve(previewFixture()),

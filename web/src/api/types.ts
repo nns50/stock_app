@@ -1740,8 +1740,10 @@ export type TunablePatch = Pick<
 export interface RealizedEdge {
   avgR: number | null;
   rTrades: number;
+  /** Median entries per ACTIVE session — on the days the book traded. */
   tradesPerSession: number | null;
   sessions: number;
+  activeSessions: number;
   sessionsWithoutEntries: number;
   droppedTrades: number;
   remappedEvents: number;
@@ -1757,6 +1759,7 @@ export interface TuneEvidence {
   rTrades: number;
   tradesPerSession: number | null;
   sessions: number;
+  activeSessions: number;
   reliable: boolean;
   impliedDailyGainPctAtCurrentRisk: number | null;
   impliedDailyGainPctAtTunedRisk: number | null;
@@ -1814,6 +1817,9 @@ export interface DailyTargetSweepResult {
   droppedTrades: number;
   approximatedExits: number;
   sessionDates: string[];
+  /** Sessions with entries — every statistic above is over these only. */
+  activeSessions: number;
+  idleSessions: number;
 }
 
 /** The dashboard's goal-vs-record companion — mirrors targetTune.ts's DailyGoalEvidence. */
