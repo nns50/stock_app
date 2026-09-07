@@ -1,4 +1,5 @@
 import type {
+  DailyTargetSweepResult,
   AggregatePnl,
   AutoTuneRiskAdjustmentEfficacy,
   Candle,
@@ -493,6 +494,12 @@ export const client = {
     riskProfile?: AutotradeRiskProfile;
     confirmAggressive?: boolean;
     accountEquityUsd?: number | null;
+    /** The daily goal + give-back guard levels (nullable: null disarms). The
+     *  route validates the merged triple (arm > floor >= 0, arm < target) and
+     *  answers 400 rather than storing an inverted pair. */
+    targetDailyGainPct?: number | null;
+    giveBackArmPct?: number | null;
+    giveBackFloorPct?: number | null;
     maxConcurrentPositions?: number;
     riskPerTradePct?: number;
     maxDailyDrawdownPct?: number;
@@ -645,4 +652,11 @@ export const client = {
   tuneFromTargetPreview: (body: { targetDailyGainPct: number; basis: TuneBasis }) =>
     api<TargetTuneResult>('/autotrade/tune/preview', { method: 'POST', body: JSON.stringify(body) }),
   tuneModerateBaseline: () => api<{ patch: TunablePatch }>('/autotrade/tune/moderate'),
+  dailyTargetSweep: (params: { book: 'live' | 'paper'; sessions?: number }) => {
+    const qs = new URLSearchParams({
+      book: params.book,
+      ...(params.sessions ? { sessions: String(params.sessions) } : {}),
+    });
+    return api<DailyTargetSweepResult>(`/autotrade/daily-target/sweep?${qs.toString()}`);
+  },
 };

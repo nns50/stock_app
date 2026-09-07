@@ -4,6 +4,7 @@ import { defaultAutotradeConfig, setAutotradeConfig } from '../src/db/autotradeC
 import { getDailyBaseline, saveDailyBaseline } from '../src/db/dailyBaseline';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { computeTargetTune, resetToModerate } from '../src/services/autotrading/targetTune';
+import { emptyRealizedEdge } from '../src/services/autotrading/dailyTargetSweep';
 import { applyExternalCashFlow, evaluateDailyTarget, updateDailyTarget } from '../src/services/autotrading/dailyTarget';
 import { etToday } from '../src/util/marketDate';
 
@@ -401,6 +402,7 @@ describe('tune integration', () => {
       targetDailyGainPct: 3,
       basis: 'expected',
       config: { ...defaultAutotradeConfig(), autoTuneEnabled: false, autoTuneExitsEnabled: false },
+      realized: emptyRealizedEdge(40),
     });
     expect(t.patch.targetDailyGainPct).toBe(3);
     // …and stamps the give-back guard at 2/3 and 1/3 of the goal.

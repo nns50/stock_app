@@ -122,7 +122,11 @@ export default function AboutPage() {
           is premium paid while its grade is scored from the <em>underlying's</em> screener total. Finish-line sizing is
           live-only on both instruments, because the daily goal is a percentage of the real account; and because its own
           answer is one of these six, it measures a "full-size win" against the risk % left after the other five, not
-          against the raw configured percentage.
+          against the raw configured percentage. The daily goal those live-only rules serve is itself checked against
+          the record: <span className="tabular-nums">expected day % = entries/session × risk % × avg R</span>, the
+          loop's realized average R and median entries per session over its last 40 sessions at the current risk — the
+          same identity the tune inverts to solve a risk % from a target — and the Auto page shows that expected day
+          beside the goal, with a warning once the goal is more than 2× it.
         </p>
         <p className="mt-2">
           Alongside the grade, every auto-traded entry also records its <em>at-entry context</em>: the{' '}

@@ -213,6 +213,17 @@ _suggestion_ and warns loudly past a survivable per-trade risk, but it won't sto
 hand-entering more. Preview every changed field, and remember the daily-drawdown halt it
 sets is the number you have to be willing to lose on a bad day to have a shot at the good one.
 
+**The record answers back (2026-09-07).** Every tune preview now shows your realized
+record beside the basis you picked — average R per closed autotrade trade, median entries
+per session, and the **expected day** those imply at your current and at the tuned risk
+(`entries/session × risk % × avg R`, the one identity the tune inverts) — and warns when
+the target is more than 2× that day, because a goal set that far above the distribution
+never banks, never arms the give-back guard, and never trims the closing trade: the whole
+day-level protective stack goes inert. A third **Realized** basis sizes from that record
+instead of from a fixed 45% win rate, and is refused (not quietly substituted) until the
+record is reliable. The Monitoring card carries the same expected-day figure next to the
+goal every minute.
+
 **A softer brake than the daily halt.** The daily-drawdown halt is all-or-nothing — full
 size until a hard floor, then nothing. **Equity-curve de-risking** (Config → risk settings,
 off by default) is the graduated version, keyed to your own results rather than the clock:
@@ -753,6 +764,17 @@ Read it as a shape, not a single number:
 Like everything else in this backtest tool, the sweep renders no verdict — it's one
 more piece of evidence to weigh alongside the in-sample/out-of-sample comparison and the
 significance stats above, not a pass/fail gate.
+
+**The same test for the daily goal (2026-09-07).** Auto-Trade's **Daily goal** card has a
+sweep of its own: it replays the loop's last _N_ sessions under each stopping rule
+(bank the day, bank + give-back guard, bank + trail) at a grid of levels in **R per
+session**, and reports per level the mean change per session against the record as it
+happened, with a bootstrap 95% CI. Same reading: a plateau of neighbouring levels that
+agree is evidence, one level that looks great alone is noise — and a stored goal whose
+row shows zero halted sessions is a goal set above the distribution, doing nothing. The
+rules for moving the goal (never below 20 sessions, only to a plateau whose CI excludes
+zero, one change per two weeks, never on one big day) are written down in
+[Tune from target daily gain](TUNE_FROM_TARGET.md) §6b before the data is looked at.
 
 ---
 
@@ -1435,6 +1457,10 @@ Spend 20 minutes every weekend in the **Journal**:
 - [ ] **MAE/MFE** — any stop/target adjustments warranted?
 - [ ] **Daily guardrails** — are your loss limit and trade cap set to numbers you'll
       actually respect?
+- [ ] **Daily goal vs. expected day** — is the Auto page's goal within ~2× the expected
+      day the record implies? Run the Daily goal sweep: does the stored level's row show
+      any halted sessions at all, and does any level's CI exclude zero on a plateau?
+      (Rules D1–D6 in the Tune-from-target guide decide what, if anything, moves.)
 - [ ] **Risk of ruin** — still comfortably low at your current risk %?
 - [ ] **Alpha vs SPY** — beating buy-and-hold?
 - [ ] **Market stress test** — could you stomach the −10% scenario? Trim gross exposure if not.

@@ -101,6 +101,57 @@ export function sessionCloseMinute(now: Date | number = new Date()): number {
   return EARLY_CLOSES.has(etCalendarDate(now)) ? EARLY_CLOSE_MINUTES : 16 * 60;
 }
 
+/** `etDate` + n calendar days, in pure date arithmetic — the inputs are
+ *  already ET date labels, so no timezone re-derivation is wanted here. */
+function shiftDays(etDate: string, n: number): string {
+  const [y, m, d] = etDate.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
+}
+
+/** True when this ET date is a day the US equity market actually trades: a
+ *  weekday that is not a full-day closure. (An early close is still a
+ *  session.) Moved here from symbolCooldown.ts on 2026-09-07 so the daily
+ *  goal's session arithmetic and the cooldown's count the same days. */
+export function isTradingSession(etDate: string): boolean {
+  const [y, m, d] = etDate.split('-').map(Number);
+  const wd = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+  if (wd === 0 || wd === 6) return false;
+  return !FULL_HOLIDAYS.has(etDate);
+}
+
+/** The last trading session strictly BEFORE `etDate`. Bounded like
+ *  symbolCooldown's addSessions: a scan that somehow finds no session in 40
+ *  calendar days returns the date it reached rather than looping forever. */
+export function previousTradingSession(etDate: string): string {
+  let cursor = etDate;
+  for (let i = 0; i < 40; i += 1) {
+    cursor = shiftDays(cursor, -1);
+    if (isTradingSession(cursor)) return cursor;
+  }
+  return cursor;
+}
+
+/**
+ * The `n` most recent trading sessions ending at `lastDate` (inclusive when it
+ * is itself a session), oldest first — the window the daily goal's evidence
+ * and sweep are read over. `notBefore` truncates the walk (the book's first
+ * entry date: sessions before a book existed are not 0R sessions of that
+ * book, they are nothing). Always returns at least the sessions it found,
+ * never pads.
+ */
+export function sessionDatesEndingAt(lastDate: string, n: number, notBefore: string | null = null): string[] {
+  const out: string[] = [];
+  let cursor = isTradingSession(lastDate) ? lastDate : previousTradingSession(lastDate);
+  // Bounded scan: n sessions can span at most ~1.5n calendar days plus
+  // holidays; 2n + 20 leaves room without an unbounded loop on a stale table.
+  for (let i = 0; i < 2 * n + 20 && out.length < n; i += 1) {
+    if (notBefore !== null && cursor < notBefore) break;
+    if (isTradingSession(cursor)) out.push(cursor);
+    cursor = shiftDays(cursor, -1);
+  }
+  return out.reverse();
+}
+
 /**
  * True once the clock has passed CALENDAR_THROUGH, i.e. this table no longer
  * covers today. Deliberately NOT consulted by the functions above: silently

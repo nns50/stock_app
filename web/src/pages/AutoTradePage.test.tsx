@@ -244,6 +244,20 @@ function dashboardFixture(overrides: Partial<AutotradeDashboard> = {}): Autotrad
     riskProfile: 'MODERATE',
     equity: 100_000,
     dailyTarget: { active: false, reached: false, giveBackArmed: false, giveBackHalted: false, entriesHalted: false },
+    dailyGoalEvidence: {
+      avgR: null,
+      rTrades: 0,
+      tradesPerSession: null,
+      sessions: 0,
+      sessionsWithoutEntries: 0,
+      droppedTrades: 0,
+      remappedEvents: 0,
+      eventsOutsideWindow: 0,
+      lookbackSessions: 40,
+      reliable: false,
+      impliedDailyGainPct: null,
+      targetOverImplied: null,
+    },
     methodPerformance: [],
     symbolCooldowns: [],
     lastTick: null,
@@ -3060,6 +3074,65 @@ describe('AutoTradePage', () => {
       vi.spyOn(client, 'autotradeDashboard').mockRejectedValue(new Error('dashboard unavailable'));
       renderDashboard();
       expect(await screen.findByText('dashboard unavailable')).toBeInTheDocument();
+    });
+
+    // The goal against the record (2026-09-07): the expected day at the
+    // current sizing sits beside the goal — or, with no goal set, stands on
+    // its own so there is a number to choose one from.
+    it('shows the expected day from the record beside the daily goal, flagging a goal far above it', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({
+          dailyTarget: {
+            active: true,
+            targetPct: 3,
+            baselineEquityUsd: 10_000,
+            targetEquityUsd: 10_300,
+            currentEquityUsd: 10_050,
+            gainPct: 0.5,
+            reached: false,
+            reachedAt: null,
+            giveBackArmed: false,
+            giveBackHalted: false,
+            giveBackHaltedAt: null,
+            entriesHalted: false,
+          },
+          dailyGoalEvidence: {
+            ...dashboardFixture().dailyGoalEvidence,
+            avgR: 0.05,
+            rTrades: 43,
+            tradesPerSession: 9,
+            sessions: 22,
+            reliable: true,
+            impliedDailyGainPct: 0.56,
+            targetOverImplied: 5.4,
+          },
+        }),
+      );
+      renderDashboard();
+      const line = await screen.findByTestId('daily-goal-evidence');
+      expect(line).toHaveTextContent(/Expected day at current sizing ≈ 0\.56%/);
+      expect(line).toHaveTextContent(/avg R \+0\.05 over 43 trades, 9\.0 entries\/session over 22 sessions/);
+      expect(line).toHaveTextContent(/the goal is 5\.4× that/);
+    });
+
+    it('with no goal set, still shows the expected day (and says the record is thin when it is)', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({
+          dailyGoalEvidence: {
+            ...dashboardFixture().dailyGoalEvidence,
+            avgR: 0.2,
+            rTrades: 7,
+            tradesPerSession: 2,
+            sessions: 5,
+            impliedDailyGainPct: 0.4,
+          },
+        }),
+      );
+      renderDashboard();
+      const line = await screen.findByTestId('daily-goal-evidence');
+      expect(line).toHaveTextContent(/Daily goal: none set/);
+      expect(line).toHaveTextContent(/Expected day at current sizing ≈ 0\.40%/);
+      expect(line).toHaveTextContent(/thin record, 7 of 20 trades, 5 of 20 sessions/);
     });
 
     it('shows "no candidate checked yet" for correlated exposure before any risk-check has run', async () => {

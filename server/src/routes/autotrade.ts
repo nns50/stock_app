@@ -58,7 +58,9 @@ import {
 import { getProvider } from '../providers';
 import { dispatchNotifications } from '../services/notifier';
 import { suggestLiveCaps } from '../services/autotrading/liveCaps';
-import { computeTargetTune, resetToModerate } from '../services/autotrading/targetTune';
+import { computeTargetTune, realizedBasisAvailability, resetToModerate } from '../services/autotrading/targetTune';
+import { collectBook, DEFAULT_LOOKBACK_SESSIONS, realizedEdgeOf } from '../services/autotrading/dailyTargetSweepData';
+import { runDailyTargetSweep } from '../services/autotrading/dailyTargetSweep';
 import { listUniverseSymbols } from '../db/universe';
 
 export const autotradeRouter = Router();
@@ -100,7 +102,7 @@ autotradeRouter.get('/live-caps/suggest', (_req, res) => {
  *  same posture as /live-caps/suggest — every derived number scales with it. */
 const tunePreviewBody = z.object({
   targetDailyGainPct: z.number().positive().max(1000),
-  basis: z.enum(['expected', 'perfectDay']),
+  basis: z.enum(['expected', 'perfectDay', 'realized']),
 });
 
 autotradeRouter.post(
@@ -111,11 +113,22 @@ autotradeRouter.post(
     if (config.accountEquityUsd == null) {
       throw new HttpError(400, 'Set account equity before tuning from a target.');
     }
+    // The record, always — every preview carries it beside the basis asked
+    // for. The realized basis itself FAILS CLOSED when the record cannot
+    // support it: a 200 whose basis differs from the one requested would be
+    // the silent substitution this feature exists to end, and a 400 naming the
+    // shortfall is the same posture as the equity-unset refusal above.
+    const realized = realizedEdgeOf(collectBook('live', DEFAULT_LOOKBACK_SESSIONS));
+    if (body.basis === 'realized') {
+      const availability = realizedBasisAvailability(realized);
+      if (!availability.available) throw new HttpError(400, availability.reason);
+    }
     res.json(
       computeTargetTune({
         equityUsd: config.accountEquityUsd,
         targetDailyGainPct: body.targetDailyGainPct,
         basis: body.basis,
+        realized,
         // The whole config: the tuner reads the auto-tune flags to warn about
         // interactions, and the dollar caps + their anchor to tell a hand-set cap
         // from a derived one so it preserves the former.
@@ -409,6 +422,30 @@ autotradeRouter.put(
     ];
     for (const [loName, lo, hiName, hi, consequence] of orderedPairs) {
       if (lo > hi) throw new HttpError(400, `${loName} (${lo}) cannot exceed ${hiName} (${hi}) — ${consequence}`);
+    }
+
+    // The daily-goal triple (services/autotrading/dailyTarget.ts) is a third
+    // ordered set, nullable on every side, so it does not fit the numeric
+    // pairs above. Checked on the merged result for the same reason: the
+    // sanitizer sees one field at a time by design (autotradeConfig.ts), so a
+    // partial PUT can invert the levels against the stored value — and an
+    // inverted pair does not fail anywhere. giveBackLevels() reads it as
+    // "guard unconfigured" and the day quietly runs with no give-back
+    // protection while the config reads as if it had one (2026-09-07).
+    const goalTarget = merged('targetDailyGainPct', body.targetDailyGainPct);
+    const goalArm = merged('giveBackArmPct', body.giveBackArmPct);
+    const goalFloor = merged('giveBackFloorPct', body.giveBackFloorPct);
+    if (goalArm !== null && goalFloor !== null && !(goalArm > goalFloor)) {
+      throw new HttpError(
+        400,
+        `giveBackArmPct (${goalArm}) must be above giveBackFloorPct (${goalFloor}) — stored as-is, the give-back guard would silently stay off`,
+      );
+    }
+    if (goalArm !== null && goalTarget !== null && !(goalArm < goalTarget)) {
+      throw new HttpError(
+        400,
+        `giveBackArmPct (${goalArm}) must sit below targetDailyGainPct (${goalTarget}) — the day would bank before the guard could arm`,
+      );
     }
 
     // Only pass along fields the client actually sent — building
@@ -779,6 +816,37 @@ autotradeRouter.post(
     res.json({ ok: true, baseline, status: after });
   }),
 );
+
+/** The daily goal against the record (2026-09-07): replay the book's recent
+ *  sessions under each stopping policy at a grid of levels, with a bootstrap
+ *  CI on every level's per-session delta against the record as it happened.
+ *  Pure read of our own tables — no broker, no network — and synchronous:
+ *  2000 resamples × 13 levels × 3 policies over ≤ 250 sessions is the same
+ *  budget significance.ts already claims for a request handler. `book` and
+ *  `sessions` are request parameters on purpose: a lookback stored in config
+ *  would be a field read only by a read-only route. */
+const dailyTargetSweepQuery = z.object({
+  book: z.enum(['live', 'paper']).default('live'),
+  sessions: z.coerce.number().int().min(5).max(250).default(DEFAULT_LOOKBACK_SESSIONS),
+});
+
+autotradeRouter.get('/daily-target/sweep', (req, res) => {
+  const q = parseQuery(dailyTargetSweepQuery, req);
+  const cfg = getAutotradeConfig();
+  const collected = collectBook(q.book, q.sessions);
+  res.json(
+    runDailyTargetSweep({
+      book: collected.book,
+      trades: collected.trades,
+      sessionDates: collected.sessionDates,
+      droppedTrades: collected.droppedTrades,
+      approximatedExits: collected.approximatedExits,
+      lookbackSessions: collected.lookbackSessions,
+      riskPerTradePct: cfg.riskPerTradePct,
+      storedTargetPct: cfg.targetDailyGainPct,
+    }),
+  );
+});
 
 autotradeRouter.post(
   '/sync-equity',

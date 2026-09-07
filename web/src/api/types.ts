@@ -1685,7 +1685,7 @@ export interface SuggestedLiveCaps {
 
 /** Which sizing assumption maps a target daily gain % to per-trade risk —
  *  mirrors server/src/services/autotrading/targetTune.ts. */
-export type TuneBasis = 'expected' | 'perfectDay';
+export type TuneBasis = 'expected' | 'perfectDay' | 'realized';
 export type TuneBand = 'conservative' | 'moderate' | 'aggressive';
 
 /** The subset of AutotradeConfig fields the "tune from target" generator
@@ -1735,14 +1735,91 @@ export type TunablePatch = Pick<
   | 'optionsTakeProfitPct'
 >;
 
+/** The loop's realized edge over its recent sessions — mirrors
+ *  server/src/services/autotrading/dailyTargetSweep.ts's RealizedEdge. */
+export interface RealizedEdge {
+  avgR: number | null;
+  rTrades: number;
+  tradesPerSession: number | null;
+  sessions: number;
+  sessionsWithoutEntries: number;
+  droppedTrades: number;
+  remappedEvents: number;
+  eventsOutsideWindow: number;
+  lookbackSessions: number;
+  reliable: boolean;
+}
+
+/** The record beside whichever basis a preview was asked for — mirrors
+ *  targetTune.ts's TuneEvidence. */
+export interface TuneEvidence {
+  avgR: number | null;
+  rTrades: number;
+  tradesPerSession: number | null;
+  sessions: number;
+  reliable: boolean;
+  impliedDailyGainPctAtCurrentRisk: number | null;
+  impliedDailyGainPctAtTunedRisk: number | null;
+  targetOverImplied: number | null;
+  realizedBasis: { available: boolean; reason?: string };
+}
+
 export interface TargetTuneResult {
   band: TuneBand;
   basis: TuneBasis;
   targetDailyGainPct: number;
   edgeR: number;
+  /** The trades/day the risk solve used (the band's cap, or the realized flow bounded by it). */
+  tradesPerDay: number;
   rawRiskPerTradePct: number;
   patch: TunablePatch;
   warnings: string[];
+  evidence: TuneEvidence;
+}
+
+/** Mirrors dailyTargetSweep.ts: the stopping policies a level is replayed under. */
+export type SweepPolicy = 'none' | 'bank' | 'giveBack' | 'bankTrail';
+
+export interface PolicyOutcome {
+  policy: SweepPolicy;
+  sessionsHalted: number;
+  entriesDropped: number;
+  totalR: number;
+  meanDayR: number | null;
+  medianDayR: number | null;
+  worstDayR: number | null;
+  /** Mean per-session difference against the record as it happened, with its
+   *  bootstrap 95% CI; null for the `none` baseline itself. */
+  delta: { meanR: number; ciLowR: number; ciHighR: number; pValue: number | null; reliable: boolean } | null;
+}
+
+export interface SweepLevel {
+  levelR: number;
+  /** levelR × riskPerTradePct — the level as a % of equity at FULL size. */
+  levelPct: number | null;
+  isStoredTarget: boolean;
+  policies: PolicyOutcome[];
+}
+
+export interface DailyTargetSweepResult {
+  book: 'live' | 'paper';
+  realized: RealizedEdge;
+  riskPerTradePct: number | null;
+  storedTargetPct: number | null;
+  storedTargetR: number | null;
+  actual: PolicyOutcome;
+  levels: SweepLevel[];
+  reliable: boolean;
+  tradesUsed: number;
+  droppedTrades: number;
+  approximatedExits: number;
+  sessionDates: string[];
+}
+
+/** The dashboard's goal-vs-record companion — mirrors targetTune.ts's DailyGoalEvidence. */
+export interface DailyGoalEvidence extends RealizedEdge {
+  impliedDailyGainPct: number | null;
+  targetOverImplied: number | null;
 }
 
 export interface EquitySyncResult {
@@ -2456,6 +2533,9 @@ export interface AutotradeDashboard {
   /** Progress toward the daily-gain goal — day-start account value, the %
    *  target on it, gain so far, and whether the day is banked. */
   dailyTarget: DailyTargetStatus;
+  /** The goal against the record: realized edge over recent sessions and the
+   *  expected day it implies at the current sizing. */
+  dailyGoalEvidence: DailyGoalEvidence;
   /** Per-method recent realized performance + current sizing multiplier. */
   methodPerformance: MethodStats[];
   /** Symbols currently in a loss cooldown — live entries skipped until each

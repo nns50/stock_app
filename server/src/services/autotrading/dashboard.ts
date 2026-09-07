@@ -17,6 +17,8 @@ import { computeExposure, ExposureSlice, ExposureInput } from '../exposure';
 import { daysToExpiration } from '../../options/blackScholes';
 import { listAutotradeEvents } from '../../db/autotradeEvents';
 import { getLastTick, LastTickRecord } from '../../db/autotradeLastTick';
+import { collectBook, DEFAULT_LOOKBACK_SESSIONS, realizedEdgeOf } from './dailyTargetSweepData';
+import { DailyGoalEvidence, dailyGoalEvidence } from './targetTune';
 
 // ---------------------------------------------------------------------------
 // Phase 7 (docs/AUTOTRADING_SPEC.md — MONITORING & KILL SWITCH): a read-only
@@ -86,6 +88,15 @@ export interface AutotradeDashboard {
    *  day is, and whether the day is already banked (new live entries halted).
    *  `active: false` when no target is set or nothing is measurable yet. */
   dailyTarget: DailyTargetStatus;
+
+  /** The goal against the record (2026-09-07): the loop's realized edge over
+   *  its recent sessions (dailyTargetSweep.ts) and the day that edge implies
+   *  at the CURRENT sizing — `expected day % = entries/session × risk % ×
+   *  avg R`, the same identity the tune inverts (targetTune.ts). Always
+   *  present, with a `reliable` flag and every count, so "goal 3%" is never
+   *  shown without "expected day ≈ 0.6%" beside it. No bootstrap on this
+   *  polled path — the sweep route owns the confidence intervals. */
+  dailyGoalEvidence: DailyGoalEvidence;
 
   /** Per-method recent realized performance and the sizing multiplier each
    *  method currently carries (methodSizing.ts) — the "which methods are
@@ -280,6 +291,10 @@ export function getAutotradeDashboard(): AutotradeDashboard {
   // Anything that GATES an order must pass the trading account instead.
   const liveOptionsSnapshot = getLiveOptionsPortfolioSnapshot(null);
   const now = new Date();
+  // One read of each closed list, shared by the method ledger and the goal
+  // evidence — both are per-poll, and both want the same rows.
+  const closedAutotrade = listPositions({ status: 'closed' }).filter((p) => p.tags.includes('autotrade'));
+  const liveOptionsClosed = listLiveOptionsPositions({ status: 'closed' });
 
   return {
     enabled: config.enabled,
@@ -287,11 +302,14 @@ export function getAutotradeDashboard(): AutotradeDashboard {
     riskProfile: config.riskProfile,
     equity: config.accountEquityUsd,
     dailyTarget: evaluateDailyTarget(config, getDailyBaseline()),
-    methodPerformance: computeMethodPerformance(
-      listPositions({ status: 'closed' }).filter((p) => p.tags.includes('autotrade')),
-      config,
-      listLiveOptionsPositions({ status: 'closed' }),
+    dailyGoalEvidence: dailyGoalEvidence(
+      realizedEdgeOf(
+        collectBook('live', DEFAULT_LOOKBACK_SESSIONS, now.getTime(), { closed: closedAutotrade, liveOptionsClosed }),
+      ),
+      config.riskPerTradePct,
+      config.targetDailyGainPct,
     ),
+    methodPerformance: computeMethodPerformance(closedAutotrade, config, liveOptionsClosed),
     symbolCooldowns: [...activeSymbolCooldowns(config).values()].sort((a, b) => a.symbol.localeCompare(b.symbol)),
     lastTick: getLastTick(),
 

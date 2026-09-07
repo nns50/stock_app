@@ -6,6 +6,7 @@ import { openOptionsPaperPosition } from '../src/db/autotradeOptionsPaperPositio
 import { logAutotradeEvent } from '../src/db/autotradeEvents';
 import { saveLastTick } from '../src/db/autotradeLastTick';
 import { getAutotradeDashboard } from '../src/services/autotrading/dashboard';
+import { seedClosedAutotradeSessions } from './helpers/autotradeSessions';
 
 // Unit coverage for the Phase 7 dashboard snapshot (docs/AUTOTRADING_SPEC.md —
 // MONITORING & KILL SWITCH). Every "used vs limit" figure here is meant to be
@@ -409,5 +410,45 @@ describe('getAutotradeDashboard', () => {
       expect(() => getAutotradeDashboard()).not.toThrow();
       expect(getAutotradeDashboard().lastCorrelatedExposureCheck).toBeNull();
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The goal against the record (2026-09-07). The dashboard is where "goal 3%"
+// is read every minute, so the expected day at the current sizing must sit
+// beside it — and it has to be the same identity the tune inverts, applied to
+// the same closed rows the method ledger already reads.
+// ---------------------------------------------------------------------------
+describe('dailyGoalEvidence', () => {
+  it('reports the empty record honestly — nulls and reliable:false, never a fabricated zero', () => {
+    const e = getAutotradeDashboard().dailyGoalEvidence;
+    expect(e.rTrades).toBe(0);
+    expect(e.avgR).toBeNull();
+    expect(e.impliedDailyGainPct).toBeNull();
+    expect(e.targetOverImplied).toBeNull();
+    expect(e.reliable).toBe(false);
+  });
+
+  it('derives the expected day from the closed autotrade rows at the CURRENT risk %, and sizes the goal in it', () => {
+    // Two sessions, three trades: +1R, -0.5R, +0.5R → avg R 1/3; entries per
+    // session [2, 1] → median 1.5. At 2% risk: 1.5 × 2 × (1/3) = 1%/day.
+    seedClosedAutotradeSessions({
+      sessions: {
+        '2026-09-01': [
+          { entryTime: '10:00', r: 1 },
+          { entryTime: '11:00', r: -0.5 },
+        ],
+        '2026-09-02': [{ entryTime: '10:00', r: 0.5 }],
+      },
+    });
+    setAutotradeConfig({ riskPerTradePct: 2, targetDailyGainPct: 3, giveBackArmPct: 2, giveBackFloorPct: 1 });
+    const e = getAutotradeDashboard().dailyGoalEvidence;
+    expect(e.rTrades).toBe(3);
+    expect(e.avgR).toBeCloseTo(1 / 3, 4);
+    expect(e.tradesPerSession).toBe(1.5);
+    expect(e.sessions).toBe(2);
+    expect(e.impliedDailyGainPct).toBeCloseTo(1, 2);
+    expect(e.targetOverImplied).toBe(3);
+    expect(e.reliable).toBe(false); // 3 of 20 trades, 2 of 20 sessions
   });
 });

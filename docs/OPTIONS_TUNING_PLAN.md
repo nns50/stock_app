@@ -213,6 +213,11 @@ did not happen for the purposes of the next analysis.
 
 ## What this plan will not do
 
+> The **daily goal** has its own pre-committed rules and decision log in the same
+> shape as this plan — `docs/TUNE_FROM_TARGET.md` §6b (2026-09-07). The equity-derived
+> caveat in the data-quality notes above is exactly why that sweep runs on R per
+> session rather than on account value.
+
 It will not fit the screen to one memorable trade. The 2026-08-27 SPY entry
 above is the live test of that: a hand-taken index trade made the day's entire
 return while the loop, blocked four separate ways, produced one losing position.

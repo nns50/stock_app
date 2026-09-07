@@ -39,6 +39,7 @@ reconcile, the broker sync, and paper trading all keep running. See
 5. [How your target maps to every setting](#5-how-your-target-maps-to-every-setting)
 6. [What it changes — and what it never touches](#6-what-it-changes--and-what-it-never-touches)
    - [6a. The live daily goal — bank the day](#6a-the-live-daily-goal--bank-the-day)
+   - [6b. The daily goal — what the record says](#6b-the-daily-goal--what-the-record-says)
 7. [Reading the preview and warnings](#7-reading-the-preview-and-warnings)
 8. [Caveats — read this](#8-caveats-read-this)
 9. [A full worked example](#9-a-full-worked-example)
@@ -82,17 +83,33 @@ basis stays a preview-side control (it shapes the sizing, not the goal).
 
 ## 4. Choosing a sizing basis
 
-Both bases use the **same formula** — they differ only in one assumption about how your
-trading day goes:
+All three bases use the **same identity** — they differ only in where the two inputs
+come from:
 
 ```
-riskPerTradePct = targetDailyGainPct ÷ (tradesPerDay × edgeR)
+expected day %  =  tradesPerDay × riskPerTradePct × edgeR        (forward)
+riskPerTradePct =  targetDailyGainPct ÷ (tradesPerDay × edgeR)    (the tune: its inverse)
 ```
 
-| Basis           | `edgeR` is…                              | Meaning                                                        | Sizes… |
-| --------------- | ---------------------------------------- | -------------------------------------------------------------- | ------ |
-| **Expected day** | your _average_ R per trade (`winRate×R − lossRate`, assuming a **45%** win rate at the band's reward:risk) | The target is your **average** day — what you'd make in a typical session | **up** (more risk per trade) |
-| **Perfect day** | the reward multiple `R` itself           | The target is your **best-case ceiling** — only reached if _every_ trade wins | **down** (less risk per trade) |
+In the code both directions are one function each (`expectedDailyGainPct` /
+`riskPerTradeForTarget` in `targetTune.ts`), and everything that shows you an
+"expected day" — the evidence line under every preview, the Monitoring card — goes
+forward through the same identity the tune inverts, so the two can never disagree.
+
+| Basis           | `edgeR` is…                              | `tradesPerDay` is… | Meaning                                                        | Sizes… |
+| --------------- | ---------------------------------------- | ------------------ | -------------------------------------------------------------- | ------ |
+| **Expected day** | an _assumed_ average R per trade (`winRate×R − lossRate`, a **fixed 45%** win rate at the band's reward:risk) | the band's max trades/day | The target is your **average** day — _if_ you win 45% of the time | **up** (more risk per trade) |
+| **Perfect day** | the reward multiple `R` itself           | the band's max trades/day | The target is your **best-case ceiling** — only reached if _every_ trade wins | **down** (less risk per trade) |
+| **Realized** (2026-09-07) | your **realized** average R per closed autotrade trade over the last 40 sessions | your realized **median entries per session**, bounded by the band's cap | The target is your average day **as the record shows it** | whatever the record says — often much less than Expected assumes |
+
+The **Realized** basis is only offered on a record worth sizing on: at least **20**
+R-scored closed live trades over at least **20** sessions, a **positive** average R, and
+some measured trade flow. Otherwise the preview **refuses** it with a 400 naming the
+shortfall ("7 of 20 trades over 3 of 20 sessions"), and the toggle shows the count. It
+refuses rather than quietly answering under another basis: a preview whose basis differs
+from the one you asked for would be exactly the silent substitution this basis exists
+to end. A non-positive realized edge supports **no** daily target at all — sizing cannot
+fix that; the fix is on the entry side.
 
 Because `edgeR` is smaller on the Expected basis (your average trade nets a fraction of
 its target), you have to risk **more** per trade to hit the same daily number. On the
@@ -106,8 +123,21 @@ reward:risk:
 - **Perfect day**: `edgeR = 2` → risk = `5 ÷ (6 × 2)` ≈ **0.4%** per trade.
 
 The toggle is you choosing which assumption to size the account on. `Expected day` is
-the more honest default (it doesn't assume you never lose); `Perfect day` is the more
-conservative sizing for a given target.
+the more honest of the two modelled bases (it doesn't assume you never lose); `Perfect
+day` is the more conservative sizing for a given target; `Realized` is not an assumption
+at all.
+
+### The record beside every preview — the evidence line
+
+Whichever basis you pick, the preview also shows **your record**: realized average R and
+the number of closed trades behind it, the median entries per session and the sessions
+counted, the **expected day at your current risk %** and **at the tuned risk %** (both
+from the forward identity above), and how many of those expected days the target is.
+When the target is more than **2×** the expected day at the tuned sizing, a warning says
+the bank line and the give-back levels stamped from it will rarely engage — the state the
+live book was in when this shipped (a 3% goal against a ≈ 0.6% expected day). When a
+reliable record shows a non-positive edge, the warning says that instead. A thin record
+is shown as thin ("7 of 20 trades, 3 of 20 sessions"), never hidden.
 
 ## 5. How your target maps to every setting
 
@@ -170,8 +200,9 @@ a stance. Every difference shows up in the preview before you apply.
 
 ### The per-trade risk (solved)
 
-`riskPerTradePct` is solved from your target using the band's trades/day and reward
-multiple, then **clamped to a maximum suggestion of 10%** — see
+`riskPerTradePct` is solved from your target through `riskPerTradeForTarget` — the band's
+trades/day and reward multiple on the two modelled bases, your realized flow and edge on
+the Realized basis — then **clamped to a maximum suggestion of 10%** — see
 [§7](#7-reading-the-preview-and-warnings).
 
 ### The settings derived from that risk
@@ -316,9 +347,129 @@ in the first place:
   needs the guard levels set. Skips journal once per symbol per day
   (`finish_line_skipped`).
 
+### Setting the goal by hand — the Daily goal card (2026-09-07)
+
+Until 2026-09-07 the three fields above (`targetDailyGainPct`, `giveBackArmPct`,
+`giveBackFloorPct`) could only be written by **Apply** — which also re-stamps the other
+~35 tuned fields (max trades/day, the conviction floor, every exposure cap, the options
+selection) to the band's values. Moving the goal by a point meant re-applying all of
+that, so in practice the goal was set once and left where ambition put it.
+
+The **Daily goal** card (right below the tune card) edits the three fields on their
+own:
+
+- **Daily gain goal %** — blank disarms the tracker _and_ the guard.
+- **Give-back arm %** and **Give-back floor %** — the guard's two levels. **Stamp
+  levels from goal** fills them at the tune's own 2/3 and 1/3 ratio; you can also type
+  any pair.
+- **Save daily goal** writes exactly these three fields; **Clear all** writes `null`
+  to all three (the same disarm **Reset to moderate** performs, without touching any
+  other setting).
+
+The server validates the **merged** triple and refuses an incoherent one with a 400
+rather than storing it: the arm must be **strictly above** the floor (floor ≥ 0), and
+the arm must sit **below** the goal — otherwise the day would bank before the guard
+could arm. The check runs against the stored values too, so a save that moves only
+one side of a pair cannot invert it against the other. This matters because an
+inverted pair does not fail anywhere at runtime: the tracker simply reads it as
+"guard unconfigured" and the day runs with **no** give-back protection while the config
+reads as if it had one. Guard levels saved without a goal are stored but do nothing
+(the card says so) — the tracker only runs while a goal is set.
+
 > Same framing as everywhere else in this app: the goal is a **discipline
 > mechanism**, not a prediction. No gain is guaranteed — the tracker decides when to
 > *stop*, never whether the market will get you there.
+
+## 6b. The daily goal — what the record says
+
+Everything in §6a is a **stopping rule on a level**, and until 2026-09-07 the level came
+from ambition. The live book's realized edge at the time was ≈ +0.05R per trade at ≈ 9
+entries a session and 1.25% risk — an expected day of roughly **0.5–1.4%** — against a
+stored **3%** goal with its 2%/1% guard levels. Set that far above the distribution of
+days the loop actually produces, the goal never banked, the guard never armed, the
+finish-line trim never trimmed: the whole day-level protective stack was inert. That is
+the same finding `docs/AUTOTRADING_SPEC.md` records at trade level on 2026-09-03 ("the
+protective stack sat above the distribution"), one level up — and the remedy is the
+same: a counterfactual over the realized record, not a guess.
+
+### The sweep
+
+The **Daily goal** card's **What the record says** panel replays each recent trading
+session of a book under a stopping rule at a grid of levels:
+
+- **Axis: R per session.** A strategy fact (position-derived series carry no deposits,
+  withdrawals or manual trading — the tuning plan's data-quality rule) and the unit the
+  auto-tune guard already judges in. Each level is also shown as **% of equity at full
+  size** (`level × riskPerTradePct`), and the stored goal is put on the grid at
+  `targetDailyGainPct ÷ riskPerTradePct` and highlighted.
+- **Sessions come from the trading calendar** (the same `isTradingSession` the symbol
+  cooldown counts with): a weekend or holiday is never a day; an event dated on one is
+  attached to the previous session; an idle session is a real 0R session. The window is
+  the last _N_ **completed** sessions ending at the book's last exit (default 40, 5–250,
+  a request parameter — a lookback stored in config would be a field read by nothing).
+- **Each trade is an entry moment, an exit moment and a realized R** from the helper its
+  book already uses everywhere (`realizedPnlOf ÷ initialRiskOf` for the journal,
+  `liveOptionsPnl ÷ riskAmount`, `paperRealizedR`). A trade that cannot be placed or
+  scored — undated, no initial stop, no exit — is **dropped and counted**, never guessed.
+- **Three policies**, per level, against the record as it happened (`none`):
+
+  | Policy | Rule |
+  | --- | --- |
+  | **Bank the day** | halt new entries once cumulative R reaches the level (sticky, like production) |
+  | **Bank + give-back guard** | today's stack: bank, plus the guard armed at 2/3 of the level and firing at a fade to 1/3 of it — only on an armed, not-yet-banked day |
+  | **Bank + trail** _(not built)_ | keep entering **past** the level; halt only once the day fades back below it (guard as above). Measured here so it is built only if the record says so — rule D5 |
+
+  A trade **entered after** the halt is dropped — none of its later events count. A trade
+  already open at the halt runs to its **real** exit (the loop never closes on a bank;
+  only new risk stops).
+- **Per level and policy:** sessions halted, entries dropped, total / mean / median /
+  worst day R, and the **mean per-session delta against the record** with a bootstrap
+  95% confidence interval and a sign-flip p-value (the same `computeSignificanceStats`
+  the backtest's significance panel uses, fed the per-session differences). `reliable`
+  is the realized edge's own floors: **20 R-scored trades and 20 sessions** — forty
+  empty sessions must not read as a reliable sweep of nothing.
+- **Use this level** fills the goal at the level's % and stamps the guard at 2/3 and
+  1/3 of it into the fields above. It **does not save** — a human presses Save.
+
+### What is deliberately not modelled
+
+Say it beside the table, not only here:
+
+- **The unrealized intraday path.** Production banks on synced net liquidation
+  _including_ open P&L and manual trades; the replay sees realized R only, so it touches
+  every line **later** than the real day would — a lower bound on how often the stack
+  engages.
+- The two-tick confirmation and the cash-flow re-basing.
+- The six sizing multipliers and probation — the % column assumes full-size trades; the
+  R axis is the truth.
+- Finish-line sizing, the armed-day score bar and the day-protective stop — the replay
+  keeps or drops whole trades, it never resizes or re-stops them.
+- Options R is premium-based; a partial exit's slice lands at the final exit; a
+  journal exit's moment is the reconcile wall clock (at most a tick late, approximated
+  to the close of its date when the two disagree — counted).
+
+### Pre-committed decision rules — when the stored goal moves
+
+Same posture as `docs/OPTIONS_TUNING_PLAN.md`: decide the rules **before** seeing the
+data, and treat "no change" as a result.
+
+| # | Trigger | Min sample | Response |
+| --- | --- | --- | --- |
+| D1 | Any read of the sweep | — | **No goal change below 20 sessions** (the `reliable` flag). Report the shape and stop. |
+| D2 | A level's per-session delta CI (rounded, as `checkOosEdgeConfirmation` rounds) **excludes zero** AND its neighbouring levels agree in sign | 20 sessions | Move the stored goal to that level — a **plateau**, never a spike. Stamp the guard at 2/3 and 1/3 unless the give-back column says otherwise. |
+| D3 | A goal change under D2 | — | **At most one goal change per two weeks**, logged below with the sweep's numbers. Two changes make both uninterpretable. |
+| D4 | A single day overshoots the goal by a lot | — | **Never raise the goal because one day overshot.** One day is not a distribution. |
+| D5 | **Bank + trail** beats **Bank** at the stored level with a CI excluding zero, over ≥ 20 sessions, on two consecutive reads a week apart | 20 sessions | That is the trigger to **build** the trail mode (`dailyTargetReachedMode`, Phase 2) — never to hand-simulate it. Until then the column is evidence only. |
+| D6 | The realized edge reads **≤ 0R** on a reliable record | 20 trades | The record supports **no** goal. Do not lower the goal to "make it reachable" — the fix is on the entry side (`liveMinSignalScore`, the entry-component work), not in the stopping rule. |
+
+### Goal decision log
+
+Append-only. Every change to `targetDailyGainPct` / `giveBackArmPct` / `giveBackFloorPct`
+goes here, whether from a rule above or a direct instruction.
+
+| Date | Change | Trigger | Evidence | Expected effect | Outcome |
+| --- | --- | --- | --- | --- | --- |
+| 2026-09-07 | None — the stored values are recorded as the baseline (read them from `GET /api/autotrade/config` at deploy: the live book had run at a **3% / 2% / 1%** goal set from ambition since 2026-08-21) | This section ships | The live record at the time: avg R ≈ +0.05 over ~87 closed trades, ≈ 9 entries/session, 1.25% risk → expected day ≈ 0.5–1.4%; the goal was 3–6× that and `daily_target_reached` had fired only on a spurious tick (2026-08-27) | The first honest read of the sweep on the deployed book. Per D1, no change until 20 reliable sessions are in the window | — |
 
 ## 7. Reading the preview and warnings
 
@@ -334,6 +485,11 @@ Warnings you may see:
 - **Aggressive sizing.** Any suggested risk ≥ 3% gets a reminder that a losing streak
   compounds fast, and to make sure the drawdown-halt number is one you can stomach.
 - **Auto-tune is on.** A note that auto-tune will re-move the risk % over time.
+- **The target is N× your expected day** (2026-09-07). Your realized edge at the tuned
+  sizing produces a much smaller day than the target — the bank line and the give-back
+  levels stamped from it will rarely engage. Shown past 2×, on a reliable record.
+- **No edge in the record.** A reliable record whose average R is ≤ 0 supports no daily
+  target; the preview says so instead of pretending a sizing exists that reaches one.
 
 ## 8. Caveats — read this
 
@@ -343,8 +499,11 @@ Warnings you may see:
 - **Higher target = bigger swings both ways.** The daily-drawdown halt it sets is the
   amount you're accepting you might lose on a bad day in exchange for a shot at the good
   one. Look at that number before you apply.
-- **The 45% win-rate assumption is fixed**, not read from your history. If your real win
-  rate is lower, the Expected-day sizing is _more_ aggressive than it looks.
+- **The Expected-day basis assumes a 45% win rate**, not your history. If your real win
+  rate is lower, that sizing is _more_ aggressive than it looks — which is what the
+  evidence line under the preview and the **Realized** basis exist to show you. On the
+  live book at the time this shipped the realized edge was ≈ +0.05R per trade against
+  the ≈ 0.35R that assumption implies.
 - **It never enables live trading.** Applying a tune only changes settings; you still
   have to turn live trading on yourself, deliberately, with its own typed confirmation.
 

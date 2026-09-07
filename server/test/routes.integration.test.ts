@@ -16,6 +16,7 @@ import { openOptionsPaperPosition } from '../src/db/autotradeOptionsPaperPositio
 import { createLiveOptionsPosition } from '../src/db/autotradeLiveOptionsPositions';
 import { saveLastTick } from '../src/db/autotradeLastTick';
 import { getProvider } from '../src/providers';
+import { seedClosedAutotradeSessions, weekdaysEndingAt } from './helpers/autotradeSessions';
 
 // End-to-end tests through the real Express app → routers → services → SQLite
 // (a throwaway DB; see vitest.config.ts). Catches route wiring, validation, and
@@ -1307,6 +1308,86 @@ describe('autotrade config routes (integration)', () => {
     expect(res.status).toBe(400);
   });
 
+  // -------------------------------------------------------------------------
+  // The daily-goal triple (2026-09-07). Guard #2 below builds its key list from
+  // `typeof v === 'number'`, and targetDailyGainPct / giveBackArmPct /
+  // giveBackFloorPct all default to NULL — so the generic sweep has never once
+  // exercised them. They were only ever written by a tune apply. Now that they
+  // are directly editable, pin the round-trip in both directions explicitly.
+  // -------------------------------------------------------------------------
+  it('round-trips each daily-goal field to a number and back to null', async () => {
+    for (const [key, value] of [
+      ['targetDailyGainPct', 2.5],
+      ['giveBackArmPct', 1.5],
+      ['giveBackFloorPct', 0.5],
+    ] as const) {
+      const set = await put('/api/autotrade/config', { [key]: value });
+      expect(set.status, `${key} = ${value}`).toBe(200);
+      expect(((await getJson('/api/autotrade/config')) as Record<string, unknown>)[key]).toBe(value);
+      const clear = await put('/api/autotrade/config', { [key]: null });
+      expect(clear.status, `${key} = null`).toBe(200);
+      expect(((await getJson('/api/autotrade/config')) as Record<string, unknown>)[key]).toBeNull();
+    }
+  });
+
+  it('rejects an inverted give-back pair, even when the two halves arrive in separate PUTs', async () => {
+    // arm 2 / floor 1 is coherent; then a floor ABOVE the stored arm must fail
+    // against the MERGED result, not just against the body — and the stored
+    // values must be exactly what they were before the bad request.
+    expect((await put('/api/autotrade/config', { giveBackArmPct: 2, giveBackFloorPct: 1 })).status).toBe(200);
+    const res = await put('/api/autotrade/config', { giveBackFloorPct: 3 });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(
+      /giveBackArmPct \(2\) must be above giveBackFloorPct \(3\)/,
+    );
+    expect((await getJson('/api/autotrade/config')) as Record<string, unknown>).toMatchObject({
+      giveBackArmPct: 2,
+      giveBackFloorPct: 1,
+    });
+    // Equal levels are inverted too: the guard needs arm strictly above floor.
+    expect((await put('/api/autotrade/config', { giveBackArmPct: 1, giveBackFloorPct: 1 })).status).toBe(400);
+  });
+
+  it('rejects an arm level at or above the goal — the day would bank before the guard could arm', async () => {
+    expect((await put('/api/autotrade/config', { targetDailyGainPct: 3 })).status).toBe(200);
+    const res = await put('/api/autotrade/config', { giveBackArmPct: 3, giveBackFloorPct: 1 });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(/must sit below targetDailyGainPct/);
+    expect((await getJson('/api/autotrade/config')) as Record<string, unknown>).toMatchObject({
+      targetDailyGainPct: 3,
+      giveBackArmPct: null,
+      giveBackFloorPct: null,
+    });
+    // Lowering the goal under a stored arm is the same inversion from the other side.
+    expect((await put('/api/autotrade/config', { giveBackArmPct: 2, giveBackFloorPct: 1 })).status).toBe(200);
+    expect((await put('/api/autotrade/config', { targetDailyGainPct: 1.5 })).status).toBe(400);
+  });
+
+  it('accepts a coherent goal triple in one body, and clearing the whole triple', async () => {
+    const set = await put('/api/autotrade/config', {
+      targetDailyGainPct: 1.2,
+      giveBackArmPct: 0.8,
+      giveBackFloorPct: 0.4,
+    });
+    expect(set.status).toBe(200);
+    expect((await getJson('/api/autotrade/config')) as Record<string, unknown>).toMatchObject({
+      targetDailyGainPct: 1.2,
+      giveBackArmPct: 0.8,
+      giveBackFloorPct: 0.4,
+    });
+    const clear = await put('/api/autotrade/config', {
+      targetDailyGainPct: null,
+      giveBackArmPct: null,
+      giveBackFloorPct: null,
+    });
+    expect(clear.status).toBe(200);
+    expect((await getJson('/api/autotrade/config')) as Record<string, unknown>).toMatchObject({
+      targetDailyGainPct: null,
+      giveBackArmPct: null,
+      giveBackFloorPct: null,
+    });
+  });
+
   it('every numeric field the schema accepts is actually applied by the handler', async () => {
     // The other half of the same failure: a key present in the zod body but
     // missing its `if (body.x !== undefined) patch.x = body.x` line also
@@ -1745,6 +1826,65 @@ describe('autotrade config routes (integration)', () => {
         const res = await put('/api/autotrade/config', { ...patch, confirmAggressive: true });
         expect(res.status, `target ${targetDailyGainPct}% patch should be accepted`).toBe(200);
       }
+    });
+
+    // -----------------------------------------------------------------------
+    // The goal against the record (2026-09-07). Consumer-side assertions on
+    // purpose: the evidence a preview carries must be the SAME avg R the
+    // Journal's stats show for the same rows, and the realized basis must
+    // refuse loudly rather than answer under a basis nobody asked for.
+    // -----------------------------------------------------------------------
+    it('POST /tune/preview with the realized basis fails closed (400) on a thin record, naming the shortfall', async () => {
+      await put('/api/autotrade/config', { accountEquityUsd: 1000 });
+      const res = await post('/api/autotrade/tune/preview', { targetDailyGainPct: 2, basis: 'realized' });
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: string }).error).toMatch(/0 of 20 R-scored closed live trades/);
+      // The other two bases still answer, and carry the (unavailable) record beside them.
+      const out = (await (
+        await post('/api/autotrade/tune/preview', { targetDailyGainPct: 2, basis: 'expected' })
+      ).json()) as {
+        basis: string;
+        evidence: { rTrades: number; realizedBasis: { available: boolean; reason?: string } };
+      };
+      expect(out.basis).toBe('expected');
+      expect(out.evidence.rTrades).toBe(0);
+      expect(out.evidence.realizedBasis.available).toBe(false);
+      expect(out.evidence.realizedBasis.reason).toMatch(/0 of 20/);
+    });
+
+    it('carries the same avg R the journal stats show, and answers the realized basis once the record is reliable', async () => {
+      await put('/api/autotrade/config', { accountEquityUsd: 10_000, riskPerTradePct: 1 });
+      // 22 sessions, one +0.4R trade each, ending on a Friday already in the
+      // record (the window ends at the last COMPLETED session, so a date the
+      // clock has not reached yet would fall outside it).
+      const dates = weekdaysEndingAt('2026-09-04', 22);
+      seedClosedAutotradeSessions({
+        sessions: Object.fromEntries(dates.map((d) => [d, [{ entryTime: '10:00', r: 0.4 }]])),
+      });
+      const stats = (await getJson('/api/journal/stats')) as { avgR: number; rTrades: number };
+      const out = (await (
+        await post('/api/autotrade/tune/preview', { targetDailyGainPct: 0.5, basis: 'realized' })
+      ).json()) as {
+        basis: string;
+        tradesPerDay: number;
+        patch: { riskPerTradePct: number };
+        evidence: {
+          avgR: number;
+          rTrades: number;
+          tradesPerSession: number;
+          reliable: boolean;
+          targetOverImplied: number;
+        };
+      };
+      expect(out.basis).toBe('realized');
+      expect(out.evidence.rTrades).toBe(stats.rTrades);
+      expect(out.evidence.avgR).toBeCloseTo(stats.avgR, 2);
+      expect(out.evidence.reliable).toBe(true);
+      expect(out.evidence.tradesPerSession).toBe(1);
+      // 0.5%/day at 1 entry/session and +0.4R → 1.25% risk, and the goal is exactly one expected day.
+      expect(out.tradesPerDay).toBe(1);
+      expect(out.patch.riskPerTradePct).toBeCloseTo(1.25, 2);
+      expect(out.evidence.targetOverImplied).toBe(1);
     });
 
     it('GET /tune/moderate returns the equity-scaled moderate baseline', async () => {
@@ -2998,6 +3138,90 @@ describe('autotrade monitoring dashboard + kill switch routes (integration)', ()
     };
     expect(rows.events).toEqual([]);
     expect(rows.actionsNeverSeen).toEqual(['live_stop_adjusted']);
+  });
+
+  it('GET /dashboard shows the expected day beside the goal, and the number MOVES when a trade closes', async () => {
+    const putCfg = (body: unknown) =>
+      fetch(`${base}/api/autotrade/config`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    await putCfg({ accountEquityUsd: 10_000, riskPerTradePct: 2, targetDailyGainPct: 3 });
+    const evidence = async () =>
+      (
+        (await getJson('/api/autotrade/dashboard')) as {
+          dailyGoalEvidence: { rTrades: number; impliedDailyGainPct: number | null; targetOverImplied: number | null };
+        }
+      ).dailyGoalEvidence;
+    const before = await evidence();
+    expect(before.rTrades).toBe(0);
+    expect(before.impliedDailyGainPct).toBeNull();
+    // One +1R trade on one session: 1 entry/session × 2% × 1R = 2%/day; the 3% goal is 1.5 of those.
+    seedClosedAutotradeSessions({ sessions: { '2026-09-01': [{ entryTime: '10:00', r: 1 }] } });
+    const after = await evidence();
+    expect(after.rTrades).toBe(1);
+    expect(after.impliedDailyGainPct).toBeCloseTo(2, 2);
+    expect(after.targetOverImplied).toBe(1.5);
+  });
+
+  it('GET /daily-target/sweep answers the empty book honestly, and the stored goal lands on the grid once there is a record', async () => {
+    const putCfg = (body: unknown) =>
+      fetch(`${base}/api/autotrade/config`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    await putCfg({ accountEquityUsd: 10_000, riskPerTradePct: 1.25, targetDailyGainPct: 3 });
+    type Sweep = {
+      book: string;
+      tradesUsed: number;
+      droppedTrades: number;
+      reliable: boolean;
+      storedTargetR: number | null;
+      levels: {
+        levelR: number;
+        levelPct: number | null;
+        isStoredTarget: boolean;
+        policies: { policy: string; delta: { meanR: number } | null }[];
+      }[];
+      actual: { policy: string; totalR: number };
+      realized: { rTrades: number; sessions: number };
+      sessionDates: string[];
+    };
+    const empty = (await getJson('/api/autotrade/daily-target/sweep')) as Sweep;
+    expect(empty.book).toBe('live');
+    expect(empty.tradesUsed).toBe(0);
+    expect(empty.droppedTrades).toBe(0);
+    expect(empty.reliable).toBe(false);
+    expect(empty.levels.length).toBeGreaterThan(0);
+    expect(empty.levels.every((l) => l.policies.length === 3)).toBe(true);
+    expect(empty.storedTargetR).toBe(2.4);
+
+    // 25 sessions of one +0.4R trade each: the goal (2.4R) is never reached, so
+    // every policy leaves the record untouched — deltas of exactly zero.
+    const dates = weekdaysEndingAt('2026-09-04', 25);
+    seedClosedAutotradeSessions({
+      sessions: Object.fromEntries(dates.map((d) => [d, [{ entryTime: '10:00', r: 0.4 }]])),
+    });
+    const full = (await getJson('/api/autotrade/daily-target/sweep?sessions=40')) as Sweep;
+    expect(full.tradesUsed).toBe(dates.length);
+    expect(full.realized.sessions).toBe(dates.length);
+    expect(full.reliable).toBe(true);
+    expect(full.actual.totalR).toBeCloseTo(0.4 * dates.length, 1);
+    const stored = full.levels.find((l) => l.isStoredTarget)!;
+    expect(stored).toMatchObject({ levelR: 2.4, levelPct: 3 });
+    expect(stored.policies.every((p) => p.delta !== null && p.delta.meanR === 0)).toBe(true);
+    // A level every day clears, banked at the first exit: nothing to drop, delta still zero.
+    const low = full.levels.find((l) => l.levelR === 0.5)!;
+    expect(low.policies.find((p) => p.policy === 'bank')!.delta!.meanR).toBe(0);
+
+    // The paper book is its own read; the sessions bound is enforced loudly.
+    const paper = (await getJson('/api/autotrade/daily-target/sweep?book=paper')) as Sweep;
+    expect(paper.book).toBe('paper');
+    expect(paper.tradesUsed).toBe(0);
+    expect((await fetch(`${base}/api/autotrade/daily-target/sweep?book=x`)).status).toBe(400);
+    expect((await fetch(`${base}/api/autotrade/daily-target/sweep?sessions=0`)).status).toBe(400);
   });
 
   it('POST /daily-target/reset clears the sticky halt flags, and can re-base the day', async () => {

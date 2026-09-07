@@ -1101,7 +1101,17 @@ equally-weighted cards in the order they happened to be built:
   account equity. A **sizing basis** toggle decides how the target maps to per-trade
   risk: **Expected day** sizes so the target is your _average_ outcome (assumes ~45% win
   rate — more risk per trade), **Perfect day** sizes so it's your _best-case ceiling_
-  (every trade wins — less risk per trade). Higher targets loosen everything, not just
+  (every trade wins — less risk per trade), and **Realized** (2026-09-07) sizes from your
+  **own record** — realized average R per closed autotrade trade and median entries per
+  session over the last 40 sessions — so the target is your average day _as the record
+  shows it_. Realized is refused (a 400 in the error slot, and the toggle shows the
+  count) until the record is reliable: 20+ R-scored closed live trades over 20+
+  sessions with a positive edge; it never silently answers under another basis.
+  Whichever basis you pick, an **evidence line** under the preview shows your record
+  and the **expected day** it implies at your current and at the tuned risk %
+  (`entries/session × risk % × avg R` — the same identity the tune inverts), and how
+  many of those days the target is; past 2× a warning says the bank line and give-back
+  levels stamped from it will rarely engage. Higher targets loosen everything, not just
   position size: the tool picks an aggressiveness band (conservative / moderate /
   aggressive) from the target and sets exposure caps, screening filters (relative
   volume, share price, average volume, and the conviction-score floor), options
@@ -1126,7 +1136,12 @@ equally-weighted cards in the order they happened to be built:
   `dayStart × (1 + target%)` it **banks the day** — one `daily_target_reached` entry in
   Recent activity, new live entries and scale-ins halted until the next trading day
   (sticky even if equity slips back), while exits, reconcile, the broker sync, and
-  paper all keep running. The Monitoring card shows the goal line and progress. It
+  paper all keep running. The Monitoring card shows the goal line and progress, and —
+  since 2026-09-07 — the **expected day at current sizing** beside it (from the same
+  realized record the tune's evidence line reads, with its counts and a "thin record"
+  note under 20 trades / 20 sessions), so a 3% goal is never shown without the ≈ 0.6%
+  day the loop actually produces next to it; with no goal set the line still shows the
+  expected day, for choosing one. It
   never sizes UP to chase a shortfall — behind the target, sizing stays exactly what
   the tune calibrated. **Reset to moderate** (or clearing the field) disarms it.
   Since 2026-08-27 a **deposit or withdrawal no longer counts as gain**: the goal is a
@@ -1494,6 +1509,34 @@ equally-weighted cards in the order they happened to be built:
   concurrency slot and one of the day's trades on a coin flip. The cutoff is
   derived from the flatten rather than set separately, so the two can never
   disagree, and it disables itself along with the flatten.
+
+- **Daily goal** (2026-09-07, collapsed by default, right below the tune card) — the
+  three fields the tune stamps, editable on their own: **Daily gain goal %**,
+  **Give-back arm %**, **Give-back floor %**. Until now they could only be written by
+  applying a whole tune (which also resets max trades/day, the conviction floor, the
+  exposure caps and the options selection to the band's values), so moving the goal by
+  a point meant re-stamping everything. **Save daily goal** writes exactly the three
+  fields; **Stamp levels from goal** fills the guard levels at the tune's 2/3 and 1/3
+  ratio; **Clear all** writes `null` to all three (disarms the tracker and the guard,
+  like Reset to moderate, without touching anything else). The server validates the
+  **merged** triple — arm strictly above floor (≥ 0), arm below the goal — and answers
+  400 instead of storing an inverted pair, because an inverted pair fails nowhere at
+  runtime: the guard just reads as unconfigured and the day runs unprotected while the
+  config says otherwise. Guard levels without a goal are stored but inert (the card
+  warns). Below the fields, **What the record says** (2026-09-07) replays the last _N_
+  completed sessions of the **Live** book (journal + live options) or the **Paper**
+  control group under three stopping rules — bank the day, bank + give-back guard, and
+  bank + trail (measured, not built) — at a grid of levels in **R per session** (with
+  the level as a % of equity at full size beside it, and the stored goal highlighted on
+  the grid), and reports per level the mean change per session against the record as
+  it happened with a bootstrap 95% CI, sessions halted and entries dropped. **Run sweep**
+  fetches it on demand; a thin record (under 20 trades / 20 sessions) is flagged; dropped
+  trades and approximated exit moments are counted on screen; **Use this level** fills
+  the goal and stamps the guard at 2/3 and 1/3 without saving. It is a counterfactual on
+  realized R only — the caveats sit beside the table — and the pre-committed rules for
+  acting on it (no change below 20 sessions, move only to a plateau whose CI excludes
+  zero, one change per two weeks, never raise on one big day, build the trail mode only
+  if the record says so) are in [Tune from target daily gain](TUNE_FROM_TARGET.md) §6b.
 
 - **"Why wasn't this traded today?"** — `GET /api/autotrade/explain/:symbol` answers it for
   any symbol, on demand. The screener journals *some* rejections per symbol (real estate,

@@ -53,6 +53,10 @@ header if it's collapsed). Top to bottom, you'll find:
   **correlation lookback (days)** and **correlation threshold (|r|)** — they define
   *how* two tickers count as "correlated" for that cap, rather than adding a new cap
   of their own.
+- A **Daily goal** card (2026-09-07, right below **Tune from target daily gain**)
+  holding the three day-level stopping rules the tune otherwise stamps: **daily gain
+  goal %**, **give-back arm %**, **give-back floor %**. Covered at the end of
+  [§4](#4-every-setting-one-at-a-time).
 
 Each of the ten numeric settings (max concurrent positions, the seven risk fields,
 and the two correlation-methodology fields) has its own input box and its own
@@ -297,6 +301,36 @@ else.
 > time from the order that opened the position, so the cap binds and the tile is
 > live. Paper trading was never affected. Positions opened before this date keep
 > their missing stamp and stay uncounted.
+
+### Daily gain goal (%), give-back arm (%) & give-back floor (%)
+
+**Three stopping rules on the day's gain, not on its losses.** They live on the
+**Daily goal** card rather than among the risk-check fields because they never block
+a single trade on its own merits — they end the day's _entries_ once the account has
+done well enough, or protect a good morning from being traded back to flat. Every
+other setting in this guide reacts to losses; these three react to gains.
+
+- **Daily gain goal (%)** — once today's synced account value is up this % on the
+  day's starting value, the day is **banked**: no new live entries or scale-ins until
+  the next session (exits, the broker sync and paper all keep running). Sticky — a
+  later fade does not un-bank it.
+- **Give-back arm (%)** — once the day has been up this much, the guard **arms**
+  (silently; the Monitoring card shows it).
+- **Give-back floor (%)** — if an _armed_ day then fades back to this level, new live
+  entries halt for the rest of the day, exactly like a banked day.
+
+*Example:* $100,000 account, goal 3% / arm 2% / floor 1%. The account reaches
+**$103,000** → banked. Or it reaches $102,000 (armed) and slides back to **$101,000**
+→ halted, keeping most of the morning. Below +2% nothing arms, so ordinary chop
+never locks the day out.
+
+Blank = off, for all three; the guard needs the goal set to run at all. A save is
+refused (400) if the arm is not strictly above the floor, or not below the goal —
+an inverted pair does not fail at runtime, it just quietly disables the guard, which
+is worse than an error. **Applying a tune** overwrites all three (arm at 2/3 of the
+goal, floor at 1/3); **Reset to moderate** or **Clear all** blanks them. The full
+mechanics, including how deposits are kept out of the gain and the finish-line
+companions, are in [Tune from target daily gain](./TUNE_FROM_TARGET.md) §6a.
 
 ## 5. Worked example: why "raise the position cap" didn't fix it
 

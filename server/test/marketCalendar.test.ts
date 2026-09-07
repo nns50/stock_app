@@ -7,7 +7,10 @@ import {
   etCalendarDate,
   isCalendarStale,
   isMarketHoliday,
+  isTradingSession,
+  previousTradingSession,
   sessionCloseMinute,
+  sessionDatesEndingAt,
 } from '../src/services/trading/marketCalendar';
 import { isUsEquityMarketOpen } from '../src/services/trading/marketHours';
 import { minutesUntilClose, evaluateEndOfDayFlatten } from '../src/services/autotrading/endOfDayFlatten';
@@ -240,5 +243,38 @@ describe('sessionMinutesBetween', () => {
   it('still contributes nothing for weekends and after-hours', () => {
     expect(sessionMinutesBetween(at('2026-09-05T10:00:00-04:00'), at('2026-09-06T10:00:00-04:00'))).toBe(0);
     expect(sessionMinutesBetween(at('2026-09-08T16:30:00-04:00'), at('2026-09-08T18:00:00-04:00'))).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Session arithmetic (2026-09-07) — the daily goal's evidence and sweep are
+// read over SESSIONS, and one definition of "a session" now serves both them
+// and the symbol cooldown, so a holiday can never be a day for one and not
+// the other.
+// ---------------------------------------------------------------------------
+describe('isTradingSession / previousTradingSession / sessionDatesEndingAt', () => {
+  it('a session is a weekday that is not a full closure — an early close still counts', () => {
+    expect(isTradingSession('2026-09-04')).toBe(true); // Friday
+    expect(isTradingSession('2026-09-05')).toBe(false); // Saturday
+    expect(isTradingSession('2026-09-07')).toBe(false); // Labor Day
+    expect(isTradingSession('2026-11-27')).toBe(true); // the day after Thanksgiving: 13:00 close, still a session
+    expect(isTradingSession('2026-11-26')).toBe(false); // Thanksgiving
+  });
+
+  it('walks back over weekends and holidays to the previous session', () => {
+    expect(previousTradingSession('2026-09-08')).toBe('2026-09-04'); // Tuesday after Labor Day → Friday
+    expect(previousTradingSession('2026-09-07')).toBe('2026-09-04');
+    expect(previousTradingSession('2026-09-02')).toBe('2026-09-01');
+  });
+
+  it('lists the n most recent sessions ending at a date, oldest first, skipping the holiday and the weekend', () => {
+    expect(sessionDatesEndingAt('2026-09-08', 3)).toEqual(['2026-09-03', '2026-09-04', '2026-09-08']);
+    // A non-session end date rolls back to the session before it.
+    expect(sessionDatesEndingAt('2026-09-06', 2)).toEqual(['2026-09-03', '2026-09-04']);
+  });
+
+  it('truncates at `notBefore` rather than counting sessions from before a book existed', () => {
+    expect(sessionDatesEndingAt('2026-09-08', 10, '2026-09-03')).toEqual(['2026-09-03', '2026-09-04', '2026-09-08']);
+    expect(sessionDatesEndingAt('2026-09-08', 10, '2026-09-09')).toEqual([]);
   });
 });

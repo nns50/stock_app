@@ -121,7 +121,8 @@ npm run seed       # 5 closed + 2 open trades, 7 watchlist symbols (idempotent)
   worked examples for each.
 - **[Tune from target daily gain](docs/TUNE_FROM_TARGET.md)** — how to set up the whole
   Auto-Trade risk config at once from a target daily gain % + your equity, with the
-  Expected/Perfect-day basis explained and worked examples.
+  Expected/Perfect-day/Realized bases explained, the evidence line that shows the day
+  your record actually produces, the Daily goal card, and worked examples.
 - **[Short-dated options spec](docs/SHORT_DATED_OPTIONS_SPEC.md)** — why 0–2 DTE
   contracts need their own six-rule exit ladder (a %-of-premium stop on a 0DTE
   measures decay, not the thesis), and every modelled number the ladder came from.

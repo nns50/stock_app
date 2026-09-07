@@ -9,6 +9,7 @@ import {
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { db } from '../src/db';
 import { computeTargetTune, sizerFloorUsd } from '../src/services/autotrading/targetTune';
+import { emptyRealizedEdge } from '../src/services/autotrading/dailyTargetSweep';
 import {
   REANCHOR_THRESHOLD_PCT,
   decideLiveCapsReanchor,
@@ -40,6 +41,7 @@ describe('deriveDollarCaps', () => {
     (target) => {
       const equity = 6917.07;
       const tune = computeTargetTune({
+        realized: emptyRealizedEdge(40),
         equityUsd: equity,
         targetDailyGainPct: target,
         basis: 'expected',
@@ -67,6 +69,7 @@ describe('deriveDollarCaps', () => {
     for (const target of [1, 3, 5, 8, 10, 12]) {
       const equity = 6917.07;
       const tune = computeTargetTune({
+        realized: emptyRealizedEdge(40),
         equityUsd: equity,
         targetDailyGainPct: target,
         basis: 'expected',
