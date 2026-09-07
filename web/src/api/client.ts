@@ -1,4 +1,5 @@
 import type {
+  DailyTargetSweepResult,
   AggregatePnl,
   AutoTuneRiskAdjustmentEfficacy,
   Candle,
@@ -651,4 +652,11 @@ export const client = {
   tuneFromTargetPreview: (body: { targetDailyGainPct: number; basis: TuneBasis }) =>
     api<TargetTuneResult>('/autotrade/tune/preview', { method: 'POST', body: JSON.stringify(body) }),
   tuneModerateBaseline: () => api<{ patch: TunablePatch }>('/autotrade/tune/moderate'),
+  dailyTargetSweep: (params: { book: 'live' | 'paper'; sessions?: number }) => {
+    const qs = new URLSearchParams({
+      book: params.book,
+      ...(params.sessions ? { sessions: String(params.sessions) } : {}),
+    });
+    return api<DailyTargetSweepResult>(`/autotrade/daily-target/sweep?${qs.toString()}`);
+  },
 };

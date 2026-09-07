@@ -1777,6 +1777,45 @@ export interface TargetTuneResult {
   evidence: TuneEvidence;
 }
 
+/** Mirrors dailyTargetSweep.ts: the stopping policies a level is replayed under. */
+export type SweepPolicy = 'none' | 'bank' | 'giveBack' | 'bankTrail';
+
+export interface PolicyOutcome {
+  policy: SweepPolicy;
+  sessionsHalted: number;
+  entriesDropped: number;
+  totalR: number;
+  meanDayR: number | null;
+  medianDayR: number | null;
+  worstDayR: number | null;
+  /** Mean per-session difference against the record as it happened, with its
+   *  bootstrap 95% CI; null for the `none` baseline itself. */
+  delta: { meanR: number; ciLowR: number; ciHighR: number; pValue: number | null; reliable: boolean } | null;
+}
+
+export interface SweepLevel {
+  levelR: number;
+  /** levelR × riskPerTradePct — the level as a % of equity at FULL size. */
+  levelPct: number | null;
+  isStoredTarget: boolean;
+  policies: PolicyOutcome[];
+}
+
+export interface DailyTargetSweepResult {
+  book: 'live' | 'paper';
+  realized: RealizedEdge;
+  riskPerTradePct: number | null;
+  storedTargetPct: number | null;
+  storedTargetR: number | null;
+  actual: PolicyOutcome;
+  levels: SweepLevel[];
+  reliable: boolean;
+  tradesUsed: number;
+  droppedTrades: number;
+  approximatedExits: number;
+  sessionDates: string[];
+}
+
 /** The dashboard's goal-vs-record companion — mirrors targetTune.ts's DailyGoalEvidence. */
 export interface DailyGoalEvidence extends RealizedEdge {
   impliedDailyGainPct: number | null;

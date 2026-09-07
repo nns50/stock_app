@@ -1854,8 +1854,10 @@ describe('autotrade config routes (integration)', () => {
 
     it('carries the same avg R the journal stats show, and answers the realized basis once the record is reliable', async () => {
       await put('/api/autotrade/config', { accountEquityUsd: 10_000, riskPerTradePct: 1 });
-      // 22 sessions, one +0.4R trade each, ending on a known Tuesday.
-      const dates = weekdaysEndingAt('2026-09-08', 22).filter((d) => d !== '2026-09-07');
+      // 22 sessions, one +0.4R trade each, ending on a Friday already in the
+      // record (the window ends at the last COMPLETED session, so a date the
+      // clock has not reached yet would fall outside it).
+      const dates = weekdaysEndingAt('2026-09-04', 22);
       seedClosedAutotradeSessions({
         sessions: Object.fromEntries(dates.map((d) => [d, [{ entryTime: '10:00', r: 0.4 }]])),
       });
@@ -3161,6 +3163,65 @@ describe('autotrade monitoring dashboard + kill switch routes (integration)', ()
     expect(after.rTrades).toBe(1);
     expect(after.impliedDailyGainPct).toBeCloseTo(2, 2);
     expect(after.targetOverImplied).toBe(1.5);
+  });
+
+  it('GET /daily-target/sweep answers the empty book honestly, and the stored goal lands on the grid once there is a record', async () => {
+    const putCfg = (body: unknown) =>
+      fetch(`${base}/api/autotrade/config`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    await putCfg({ accountEquityUsd: 10_000, riskPerTradePct: 1.25, targetDailyGainPct: 3 });
+    type Sweep = {
+      book: string;
+      tradesUsed: number;
+      droppedTrades: number;
+      reliable: boolean;
+      storedTargetR: number | null;
+      levels: {
+        levelR: number;
+        levelPct: number | null;
+        isStoredTarget: boolean;
+        policies: { policy: string; delta: { meanR: number } | null }[];
+      }[];
+      actual: { policy: string; totalR: number };
+      realized: { rTrades: number; sessions: number };
+      sessionDates: string[];
+    };
+    const empty = (await getJson('/api/autotrade/daily-target/sweep')) as Sweep;
+    expect(empty.book).toBe('live');
+    expect(empty.tradesUsed).toBe(0);
+    expect(empty.droppedTrades).toBe(0);
+    expect(empty.reliable).toBe(false);
+    expect(empty.levels.length).toBeGreaterThan(0);
+    expect(empty.levels.every((l) => l.policies.length === 3)).toBe(true);
+    expect(empty.storedTargetR).toBe(2.4);
+
+    // 25 sessions of one +0.4R trade each: the goal (2.4R) is never reached, so
+    // every policy leaves the record untouched — deltas of exactly zero.
+    const dates = weekdaysEndingAt('2026-09-04', 25);
+    seedClosedAutotradeSessions({
+      sessions: Object.fromEntries(dates.map((d) => [d, [{ entryTime: '10:00', r: 0.4 }]])),
+    });
+    const full = (await getJson('/api/autotrade/daily-target/sweep?sessions=40')) as Sweep;
+    expect(full.tradesUsed).toBe(dates.length);
+    expect(full.realized.sessions).toBe(dates.length);
+    expect(full.reliable).toBe(true);
+    expect(full.actual.totalR).toBeCloseTo(0.4 * dates.length, 1);
+    const stored = full.levels.find((l) => l.isStoredTarget)!;
+    expect(stored).toMatchObject({ levelR: 2.4, levelPct: 3 });
+    expect(stored.policies.every((p) => p.delta !== null && p.delta.meanR === 0)).toBe(true);
+    // A level every day clears, banked at the first exit: nothing to drop, delta still zero.
+    const low = full.levels.find((l) => l.levelR === 0.5)!;
+    expect(low.policies.find((p) => p.policy === 'bank')!.delta!.meanR).toBe(0);
+
+    // The paper book is its own read; the sessions bound is enforced loudly.
+    const paper = (await getJson('/api/autotrade/daily-target/sweep?book=paper')) as Sweep;
+    expect(paper.book).toBe('paper');
+    expect(paper.tradesUsed).toBe(0);
+    expect((await fetch(`${base}/api/autotrade/daily-target/sweep?book=x`)).status).toBe(400);
+    expect((await fetch(`${base}/api/autotrade/daily-target/sweep?sessions=0`)).status).toBe(400);
   });
 
   it('POST /daily-target/reset clears the sticky halt flags, and can re-base the day', async () => {

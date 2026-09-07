@@ -60,6 +60,7 @@ import { dispatchNotifications } from '../services/notifier';
 import { suggestLiveCaps } from '../services/autotrading/liveCaps';
 import { computeTargetTune, realizedBasisAvailability, resetToModerate } from '../services/autotrading/targetTune';
 import { collectBook, DEFAULT_LOOKBACK_SESSIONS, realizedEdgeOf } from '../services/autotrading/dailyTargetSweepData';
+import { runDailyTargetSweep } from '../services/autotrading/dailyTargetSweep';
 import { listUniverseSymbols } from '../db/universe';
 
 export const autotradeRouter = Router();
@@ -815,6 +816,37 @@ autotradeRouter.post(
     res.json({ ok: true, baseline, status: after });
   }),
 );
+
+/** The daily goal against the record (2026-09-07): replay the book's recent
+ *  sessions under each stopping policy at a grid of levels, with a bootstrap
+ *  CI on every level's per-session delta against the record as it happened.
+ *  Pure read of our own tables — no broker, no network — and synchronous:
+ *  2000 resamples × 13 levels × 3 policies over ≤ 250 sessions is the same
+ *  budget significance.ts already claims for a request handler. `book` and
+ *  `sessions` are request parameters on purpose: a lookback stored in config
+ *  would be a field read only by a read-only route. */
+const dailyTargetSweepQuery = z.object({
+  book: z.enum(['live', 'paper']).default('live'),
+  sessions: z.coerce.number().int().min(5).max(250).default(DEFAULT_LOOKBACK_SESSIONS),
+});
+
+autotradeRouter.get('/daily-target/sweep', (req, res) => {
+  const q = parseQuery(dailyTargetSweepQuery, req);
+  const cfg = getAutotradeConfig();
+  const collected = collectBook(q.book, q.sessions);
+  res.json(
+    runDailyTargetSweep({
+      book: collected.book,
+      trades: collected.trades,
+      sessionDates: collected.sessionDates,
+      droppedTrades: collected.droppedTrades,
+      approximatedExits: collected.approximatedExits,
+      lookbackSessions: collected.lookbackSessions,
+      riskPerTradePct: cfg.riskPerTradePct,
+      storedTargetPct: cfg.targetDailyGainPct,
+    }),
+  );
+});
 
 autotradeRouter.post(
   '/sync-equity',

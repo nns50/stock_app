@@ -1,5 +1,6 @@
-import { MIN_RELIABLE_TRADES } from './significance';
+import { computeSignificanceStats, MIN_RELIABLE_TRADES } from './significance';
 import { etToday } from '../../util/marketDate';
+import { isTradingSession } from '../trading/marketCalendar';
 
 // ---------------------------------------------------------------------------
 // The daily goal, read off the record (2026-09-07).
@@ -65,9 +66,10 @@ export interface SessionPathsResult {
   /** Events dated on a non-session (a weekend expiry sweep, a holiday
    *  reconcile) that were attached to the previous session instead. */
   remappedEvents: number;
-  /** Events dated before the first session in the window — an entry from an
-   *  earlier day whose exit landed inside it, or an exit that predates the
-   *  window entirely. Dropped, and counted so a shrunken sample is visible. */
+  /** Events dated outside the window — before its first session (an entry
+   *  from an earlier day whose exit landed inside it) or on a SESSION after
+   *  its last (today's still-open day, or a narrower lookback). Dropped, and
+   *  counted so a shrunken sample is visible. */
   eventsOutsideWindow: number;
 }
 
@@ -116,6 +118,7 @@ export function emptyRealizedEdge(lookbackSessions: number): RealizedEdge {
   };
 }
 
+const round2 = (n: number): number => Math.round(n * 100) / 100;
 const round4 = (n: number): number => Math.round(n * 10000) / 10000;
 
 function median(xs: number[]): number | null {
@@ -155,7 +158,13 @@ export function buildSessionPaths(trades: SweepTrade[], sessionDates: string[]):
     const date = etToday(event.at);
     let i = index.get(date);
     if (i === undefined) {
-      // Not a session: the previous session in the window, if there is one.
+      // A non-session date (weekend, holiday) belongs to the previous session
+      // in the window. A SESSION that is simply not in the window — after its
+      // last day, or before its first — is outside it, not the last day's.
+      if (isTradingSession(date) || ordered.length === 0 || date < ordered[0]) {
+        eventsOutsideWindow += 1;
+        return;
+      }
       let j = ordered.length - 1;
       while (j >= 0 && ordered[j] > date) j -= 1;
       if (j < 0) {
@@ -214,5 +223,232 @@ export function computeRealizedEdge(input: RealizedEdgeInput): RealizedEdge {
     eventsOutsideWindow,
     lookbackSessions: input.lookbackSessions,
     reliable: rTrades >= MIN_RELIABLE_TRADES && sessions >= MIN_RELIABLE_SESSIONS,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The sweep: replay every session under a stopping policy at a grid of levels
+// and read off, per level, what the day-level rules would have done to the
+// record. Counterfactual, not a fit — it drops or keeps whole trades, never
+// resizes or re-stops them, and it sees realized R only (production banks on
+// net liquidation INCLUDING unrealized P&L, so it touches every line earlier
+// than this replay does — the replay is a LOWER bound on how often the stack
+// engages).
+// ---------------------------------------------------------------------------
+
+/** The stopping rules a level can be replayed under:
+ *   none      — the record as it happened (the baseline every delta is against)
+ *   bank      — halt new entries once cumulative R reaches the level (sticky)
+ *   giveBack  — the production stack: bank, plus the give-back guard armed at
+ *               2/3 of the level and firing at a fade to 1/3 of it
+ *   bankTrail — the Phase-2 candidate: keep entering PAST the level, halt only
+ *               once the day fades back below it (guard as in giveBack) */
+export type SweepPolicy = 'none' | 'bank' | 'giveBack' | 'bankTrail';
+export const SWEEP_POLICIES: readonly SweepPolicy[] = ['none', 'bank', 'giveBack', 'bankTrail'];
+
+/** The tune's own stamping ratio for the guard, on the R axis. */
+export function guardLevelsForR(levelR: number): { armR: number; floorR: number } {
+  return { armR: (levelR * 2) / 3, floorR: levelR / 3 };
+}
+
+export interface SessionOutcome {
+  dayR: number;
+  halted: boolean;
+  entries: number;
+  entriesDropped: number;
+}
+
+/**
+ * One session under one policy at one level, in R. A trade ENTERED after the
+ * halt is dropped — none of its later events count. A trade already open at
+ * the halt runs to its real exit (the loop never closes on a bank; only new
+ * risk stops). `reached` is sticky, as in production.
+ */
+export function simulateSession(path: SessionPath, policy: SweepPolicy, levelR: number): SessionOutcome {
+  const { armR, floorR } = guardLevelsForR(levelR);
+  let cum = 0;
+  let reached = false;
+  let armed = false;
+  let halted = false;
+  let entriesDropped = 0;
+  const dropped = new Set<string>();
+  for (const ev of path.events) {
+    if (ev.kind === 'entry') {
+      if (halted) {
+        dropped.add(ev.tradeId);
+        entriesDropped += 1;
+      }
+      continue;
+    }
+    if (dropped.has(ev.tradeId)) continue;
+    cum += ev.r;
+    if (policy === 'none') continue;
+    if (cum >= levelR) reached = true;
+    if (policy === 'bank') {
+      if (reached) halted = true;
+    } else if (policy === 'giveBack') {
+      if (cum >= armR) armed = true;
+      if (reached) halted = true;
+      else if (armed && cum <= floorR) halted = true;
+    } else {
+      // bankTrail
+      if (cum >= armR) armed = true;
+      if (reached && cum < levelR) halted = true;
+      else if (armed && !reached && cum <= floorR) halted = true;
+    }
+  }
+  return { dayR: cum, halted, entries: path.entries, entriesDropped };
+}
+
+export interface PolicyOutcome {
+  policy: SweepPolicy;
+  sessionsHalted: number;
+  entriesDropped: number;
+  totalR: number;
+  meanDayR: number | null;
+  medianDayR: number | null;
+  worstDayR: number | null;
+  /** Mean per-session difference against `none`, with its bootstrap 95% CI
+   *  and sign-flip p-value (significance.ts). Null for `none` itself. */
+  delta: { meanR: number; ciLowR: number; ciHighR: number; pValue: number | null; reliable: boolean } | null;
+}
+
+export interface SweepLevel {
+  levelR: number;
+  /** levelR × riskPerTradePct — the level as a % of equity AT FULL SIZE.
+   *  Overstates a day whose trades were cut by step-down, the regime cut or
+   *  probation; the R axis is the truth. Null without a risk %. */
+  levelPct: number | null;
+  isStoredTarget: boolean;
+  policies: PolicyOutcome[];
+}
+
+export interface DailyTargetSweepResult {
+  book: string;
+  realized: RealizedEdge;
+  riskPerTradePct: number | null;
+  storedTargetPct: number | null;
+  /** The stored target on the R axis (storedTargetPct / riskPerTradePct). */
+  storedTargetR: number | null;
+  /** The baseline every level is measured against: the record as it happened. */
+  actual: PolicyOutcome;
+  levels: SweepLevel[];
+  /** The realized edge's own floors — ≥ 20 R-scored trades AND ≥ 20 sessions.
+   *  Below either the per-level CIs are reported but are noise; forty empty
+   *  sessions would otherwise read as a reliable sweep of nothing. */
+  reliable: boolean;
+  tradesUsed: number;
+  droppedTrades: number;
+  approximatedExits: number;
+  sessionDates: string[];
+}
+
+/** 0.5R … 6R in half-R steps: a 1.25%-risk book reads this as roughly 0.6% …
+ *  7.5% of equity, which brackets every goal anyone has set on it. */
+export const SWEEP_GRID_R: readonly number[] = Array.from({ length: 12 }, (_, i) => (i + 1) * 0.5);
+
+export interface DailyTargetSweepInput {
+  book: string;
+  trades: SweepTrade[];
+  sessionDates: string[];
+  droppedTrades: number;
+  approximatedExits: number;
+  lookbackSessions: number;
+  riskPerTradePct: number | null;
+  storedTargetPct: number | null;
+  rng?: () => number;
+  resamples?: number;
+}
+
+function summarize(
+  policy: SweepPolicy,
+  outcomes: SessionOutcome[],
+  baseline: number[] | null,
+  opts: { rng?: () => number; resamples?: number },
+): PolicyOutcome {
+  const days = outcomes.map((o) => o.dayR);
+  const sorted = [...days].sort((a, b) => a - b);
+  const total = days.reduce((s, d) => s + d, 0);
+  let delta: PolicyOutcome['delta'] = null;
+  if (baseline !== null) {
+    const stats = computeSignificanceStats(
+      days.map((d, i) => ({ pnl: d - baseline[i] })),
+      { rng: opts.rng, resamples: opts.resamples },
+    );
+    delta = {
+      meanR: stats.expectancy ?? 0,
+      ciLowR: stats.ciLow ?? 0,
+      ciHighR: stats.ciHigh ?? 0,
+      pValue: stats.pValue,
+      reliable: stats.reliable,
+    };
+  }
+  return {
+    policy,
+    sessionsHalted: outcomes.filter((o) => o.halted).length,
+    entriesDropped: outcomes.reduce((s, o) => s + o.entriesDropped, 0),
+    totalR: round2(total),
+    meanDayR: days.length ? round2(total / days.length) : null,
+    medianDayR: days.length
+      ? round2(
+          sorted.length % 2
+            ? sorted[(sorted.length - 1) / 2]
+            : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2,
+        )
+      : null,
+    worstDayR: days.length ? round2(sorted[0]) : null,
+    delta,
+  };
+}
+
+export function runDailyTargetSweep(input: DailyTargetSweepInput): DailyTargetSweepResult {
+  const { paths } = buildSessionPaths(input.trades, input.sessionDates);
+  const realized = computeRealizedEdge({
+    trades: input.trades,
+    sessionDates: input.sessionDates,
+    droppedTrades: input.droppedTrades,
+    lookbackSessions: input.lookbackSessions,
+  });
+  const opts = { rng: input.rng, resamples: input.resamples };
+  const actualOutcomes = paths.map((p) => simulateSession(p, 'none', Number.POSITIVE_INFINITY));
+  const actualDays = actualOutcomes.map((o) => o.dayR);
+  const actual = summarize('none', actualOutcomes, null, opts);
+
+  const risk = input.riskPerTradePct !== null && input.riskPerTradePct > 0 ? input.riskPerTradePct : null;
+  const storedTargetR =
+    risk !== null && input.storedTargetPct !== null && input.storedTargetPct > 0
+      ? round2(input.storedTargetPct / risk)
+      : null;
+  const grid = [...SWEEP_GRID_R];
+  if (storedTargetR !== null && !grid.some((g) => Math.abs(g - storedTargetR) < 1e-9)) grid.push(storedTargetR);
+  grid.sort((a, b) => a - b);
+
+  const levels: SweepLevel[] = grid.map((levelR) => ({
+    levelR,
+    levelPct: risk !== null ? round2(levelR * risk) : null,
+    isStoredTarget: storedTargetR !== null && Math.abs(levelR - storedTargetR) < 1e-9,
+    policies: SWEEP_POLICIES.filter((p) => p !== 'none').map((policy) =>
+      summarize(
+        policy,
+        paths.map((p) => simulateSession(p, policy, levelR)),
+        actualDays,
+        opts,
+      ),
+    ),
+  }));
+
+  return {
+    book: input.book,
+    realized,
+    riskPerTradePct: risk,
+    storedTargetPct: input.storedTargetPct,
+    storedTargetR,
+    actual,
+    levels,
+    reliable: realized.reliable,
+    tradesUsed: realized.rTrades,
+    droppedTrades: input.droppedTrades,
+    approximatedExits: input.approximatedExits,
+    sessionDates: [...input.sessionDates].sort(),
   };
 }

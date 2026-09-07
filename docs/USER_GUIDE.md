@@ -1523,7 +1523,20 @@ equally-weighted cards in the order they happened to be built:
   400 instead of storing an inverted pair, because an inverted pair fails nowhere at
   runtime: the guard just reads as unconfigured and the day runs unprotected while the
   config says otherwise. Guard levels without a goal are stored but inert (the card
-  warns). Details in [Tune from target daily gain](TUNE_FROM_TARGET.md) §6a.
+  warns). Below the fields, **What the record says** (2026-09-07) replays the last _N_
+  completed sessions of the **Live** book (journal + live options) or the **Paper**
+  control group under three stopping rules — bank the day, bank + give-back guard, and
+  bank + trail (measured, not built) — at a grid of levels in **R per session** (with
+  the level as a % of equity at full size beside it, and the stored goal highlighted on
+  the grid), and reports per level the mean change per session against the record as
+  it happened with a bootstrap 95% CI, sessions halted and entries dropped. **Run sweep**
+  fetches it on demand; a thin record (under 20 trades / 20 sessions) is flagged; dropped
+  trades and approximated exit moments are counted on screen; **Use this level** fills
+  the goal and stamps the guard at 2/3 and 1/3 without saving. It is a counterfactual on
+  realized R only — the caveats sit beside the table — and the pre-committed rules for
+  acting on it (no change below 20 sessions, move only to a plateau whose CI excludes
+  zero, one change per two weeks, never raise on one big day, build the trail mode only
+  if the record says so) are in [Tune from target daily gain](TUNE_FROM_TARGET.md) §6b.
 
 - **"Why wasn't this traded today?"** — `GET /api/autotrade/explain/:symbol` answers it for
   any symbol, on demand. The screener journals *some* rejections per symbol (real estate,

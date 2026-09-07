@@ -765,6 +765,17 @@ Like everything else in this backtest tool, the sweep renders no verdict — it'
 more piece of evidence to weigh alongside the in-sample/out-of-sample comparison and the
 significance stats above, not a pass/fail gate.
 
+**The same test for the daily goal (2026-09-07).** Auto-Trade's **Daily goal** card has a
+sweep of its own: it replays the loop's last _N_ sessions under each stopping rule
+(bank the day, bank + give-back guard, bank + trail) at a grid of levels in **R per
+session**, and reports per level the mean change per session against the record as it
+happened, with a bootstrap 95% CI. Same reading: a plateau of neighbouring levels that
+agree is evidence, one level that looks great alone is noise — and a stored goal whose
+row shows zero halted sessions is a goal set above the distribution, doing nothing. The
+rules for moving the goal (never below 20 sessions, only to a plateau whose CI excludes
+zero, one change per two weeks, never on one big day) are written down in
+[Tune from target daily gain](TUNE_FROM_TARGET.md) §6b before the data is looked at.
+
 ---
 
 ## Tuning stops & targets with MAE/MFE
@@ -1446,6 +1457,10 @@ Spend 20 minutes every weekend in the **Journal**:
 - [ ] **MAE/MFE** — any stop/target adjustments warranted?
 - [ ] **Daily guardrails** — are your loss limit and trade cap set to numbers you'll
       actually respect?
+- [ ] **Daily goal vs. expected day** — is the Auto page's goal within ~2× the expected
+      day the record implies? Run the Daily goal sweep: does the stored level's row show
+      any halted sessions at all, and does any level's CI exclude zero on a plateau?
+      (Rules D1–D6 in the Tune-from-target guide decide what, if anything, moves.)
 - [ ] **Risk of ruin** — still comfortably low at your current risk %?
 - [ ] **Alpha vs SPY** — beating buy-and-hold?
 - [ ] **Market stress test** — could you stomach the −10% scenario? Trim gross exposure if not.

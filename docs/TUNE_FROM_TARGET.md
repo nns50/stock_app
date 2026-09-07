@@ -39,6 +39,7 @@ reconcile, the broker sync, and paper trading all keep running. See
 5. [How your target maps to every setting](#5-how-your-target-maps-to-every-setting)
 6. [What it changes — and what it never touches](#6-what-it-changes--and-what-it-never-touches)
    - [6a. The live daily goal — bank the day](#6a-the-live-daily-goal--bank-the-day)
+   - [6b. The daily goal — what the record says](#6b-the-daily-goal--what-the-record-says)
 7. [Reading the preview and warnings](#7-reading-the-preview-and-warnings)
 8. [Caveats — read this](#8-caveats-read-this)
 9. [A full worked example](#9-a-full-worked-example)
@@ -378,6 +379,97 @@ reads as if it had one. Guard levels saved without a goal are stored but do noth
 > Same framing as everywhere else in this app: the goal is a **discipline
 > mechanism**, not a prediction. No gain is guaranteed — the tracker decides when to
 > *stop*, never whether the market will get you there.
+
+## 6b. The daily goal — what the record says
+
+Everything in §6a is a **stopping rule on a level**, and until 2026-09-07 the level came
+from ambition. The live book's realized edge at the time was ≈ +0.05R per trade at ≈ 9
+entries a session and 1.25% risk — an expected day of roughly **0.5–1.4%** — against a
+stored **3%** goal with its 2%/1% guard levels. Set that far above the distribution of
+days the loop actually produces, the goal never banked, the guard never armed, the
+finish-line trim never trimmed: the whole day-level protective stack was inert. That is
+the same finding `docs/AUTOTRADING_SPEC.md` records at trade level on 2026-09-03 ("the
+protective stack sat above the distribution"), one level up — and the remedy is the
+same: a counterfactual over the realized record, not a guess.
+
+### The sweep
+
+The **Daily goal** card's **What the record says** panel replays each recent trading
+session of a book under a stopping rule at a grid of levels:
+
+- **Axis: R per session.** A strategy fact (position-derived series carry no deposits,
+  withdrawals or manual trading — the tuning plan's data-quality rule) and the unit the
+  auto-tune guard already judges in. Each level is also shown as **% of equity at full
+  size** (`level × riskPerTradePct`), and the stored goal is put on the grid at
+  `targetDailyGainPct ÷ riskPerTradePct` and highlighted.
+- **Sessions come from the trading calendar** (the same `isTradingSession` the symbol
+  cooldown counts with): a weekend or holiday is never a day; an event dated on one is
+  attached to the previous session; an idle session is a real 0R session. The window is
+  the last _N_ **completed** sessions ending at the book's last exit (default 40, 5–250,
+  a request parameter — a lookback stored in config would be a field read by nothing).
+- **Each trade is an entry moment, an exit moment and a realized R** from the helper its
+  book already uses everywhere (`realizedPnlOf ÷ initialRiskOf` for the journal,
+  `liveOptionsPnl ÷ riskAmount`, `paperRealizedR`). A trade that cannot be placed or
+  scored — undated, no initial stop, no exit — is **dropped and counted**, never guessed.
+- **Three policies**, per level, against the record as it happened (`none`):
+
+  | Policy | Rule |
+  | --- | --- |
+  | **Bank the day** | halt new entries once cumulative R reaches the level (sticky, like production) |
+  | **Bank + give-back guard** | today's stack: bank, plus the guard armed at 2/3 of the level and firing at a fade to 1/3 of it — only on an armed, not-yet-banked day |
+  | **Bank + trail** _(not built)_ | keep entering **past** the level; halt only once the day fades back below it (guard as above). Measured here so it is built only if the record says so — rule D5 |
+
+  A trade **entered after** the halt is dropped — none of its later events count. A trade
+  already open at the halt runs to its **real** exit (the loop never closes on a bank;
+  only new risk stops).
+- **Per level and policy:** sessions halted, entries dropped, total / mean / median /
+  worst day R, and the **mean per-session delta against the record** with a bootstrap
+  95% confidence interval and a sign-flip p-value (the same `computeSignificanceStats`
+  the backtest's significance panel uses, fed the per-session differences). `reliable`
+  is the realized edge's own floors: **20 R-scored trades and 20 sessions** — forty
+  empty sessions must not read as a reliable sweep of nothing.
+- **Use this level** fills the goal at the level's % and stamps the guard at 2/3 and
+  1/3 of it into the fields above. It **does not save** — a human presses Save.
+
+### What is deliberately not modelled
+
+Say it beside the table, not only here:
+
+- **The unrealized intraday path.** Production banks on synced net liquidation
+  _including_ open P&L and manual trades; the replay sees realized R only, so it touches
+  every line **later** than the real day would — a lower bound on how often the stack
+  engages.
+- The two-tick confirmation and the cash-flow re-basing.
+- The six sizing multipliers and probation — the % column assumes full-size trades; the
+  R axis is the truth.
+- Finish-line sizing, the armed-day score bar and the day-protective stop — the replay
+  keeps or drops whole trades, it never resizes or re-stops them.
+- Options R is premium-based; a partial exit's slice lands at the final exit; a
+  journal exit's moment is the reconcile wall clock (at most a tick late, approximated
+  to the close of its date when the two disagree — counted).
+
+### Pre-committed decision rules — when the stored goal moves
+
+Same posture as `docs/OPTIONS_TUNING_PLAN.md`: decide the rules **before** seeing the
+data, and treat "no change" as a result.
+
+| # | Trigger | Min sample | Response |
+| --- | --- | --- | --- |
+| D1 | Any read of the sweep | — | **No goal change below 20 sessions** (the `reliable` flag). Report the shape and stop. |
+| D2 | A level's per-session delta CI (rounded, as `checkOosEdgeConfirmation` rounds) **excludes zero** AND its neighbouring levels agree in sign | 20 sessions | Move the stored goal to that level — a **plateau**, never a spike. Stamp the guard at 2/3 and 1/3 unless the give-back column says otherwise. |
+| D3 | A goal change under D2 | — | **At most one goal change per two weeks**, logged below with the sweep's numbers. Two changes make both uninterpretable. |
+| D4 | A single day overshoots the goal by a lot | — | **Never raise the goal because one day overshot.** One day is not a distribution. |
+| D5 | **Bank + trail** beats **Bank** at the stored level with a CI excluding zero, over ≥ 20 sessions, on two consecutive reads a week apart | 20 sessions | That is the trigger to **build** the trail mode (`dailyTargetReachedMode`, Phase 2) — never to hand-simulate it. Until then the column is evidence only. |
+| D6 | The realized edge reads **≤ 0R** on a reliable record | 20 trades | The record supports **no** goal. Do not lower the goal to "make it reachable" — the fix is on the entry side (`liveMinSignalScore`, the entry-component work), not in the stopping rule. |
+
+### Goal decision log
+
+Append-only. Every change to `targetDailyGainPct` / `giveBackArmPct` / `giveBackFloorPct`
+goes here, whether from a rule above or a direct instruction.
+
+| Date | Change | Trigger | Evidence | Expected effect | Outcome |
+| --- | --- | --- | --- | --- | --- |
+| 2026-09-07 | None — the stored values are recorded as the baseline (read them from `GET /api/autotrade/config` at deploy: the live book had run at a **3% / 2% / 1%** goal set from ambition since 2026-08-21) | This section ships | The live record at the time: avg R ≈ +0.05 over ~87 closed trades, ≈ 9 entries/session, 1.25% risk → expected day ≈ 0.5–1.4%; the goal was 3–6× that and `daily_target_reached` had fired only on a spurious tick (2026-08-27) | The first honest read of the sweep on the deployed book. Per D1, no change until 20 reliable sessions are in the window | — |
 
 ## 7. Reading the preview and warnings
 
