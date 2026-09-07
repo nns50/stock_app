@@ -11,3 +11,5 @@
 *.log
 coverage
 fly.toml
+# The Python trainer is a developer tool; the image ships only its exported artifact (server/data).
+ml

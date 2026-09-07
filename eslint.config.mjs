@@ -6,6 +6,9 @@ import prettier from 'eslint-config-prettier';
 export default tseslint.config(
   {
     ignores: [
+      // The Python trainer under ml/ (retraining only) — its virtualenv vendors third-party JS
+      // (scikit-learn ships an estimator.js) that is not ours to lint.
+      'ml/**',
       '**/dist/**',
       '**/node_modules/**',
       '**/coverage/**',

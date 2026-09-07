@@ -84,6 +84,8 @@ registering it in `server/src/providers/index.ts`; nothing else changes.
 
 - Node.js ≥ 20 (developed on 22)
 - npm ≥ 10
+- Python ≥ 3.11 — **only** to retrain the market-regime model under `ml/`; the running app
+  needs no Python (see [Market regime model](docs/MARKET_REGIME_MODEL.md))
 
 ## Quick start
 
@@ -130,6 +132,10 @@ npm run seed       # 5 closed + 2 open trades, 7 watchlist symbols (idempotent)
   read turns into parameter changes: layered diagnosis (funnel → signal → ladder),
   pre-committed decision rules with minimum sample sizes, a one-change-per-week
   budget, and the decision log.
+- **[Market regime model](docs/MARKET_REGIME_MODEL.md)** — the Gaussian HMM behind the
+  ML regime reading: the FRED data and its lag, the three features, the labeling rule, the
+  walk-forward out-of-sample evidence, parity between the Python trainer and the TypeScript
+  filter, what it does not do, and how to retrain it.
 - In-app **About** page — the live, authoritative description of the scoring formulas
   and glossary.
 
@@ -247,6 +253,9 @@ npm run capture:broker # dump raw Webull field shapes (read-only; see below)
 npm run backfill:exits # correct estimated exit prices from real fills (dry run; see below)
 npm run check:journal  # audit the trade journal for rows that are already wrong (report only)
 npm run research       # scripted walk-forward sweep over the backtest API (needs a running server; see below)
+npm run regime:train   # retrain the market-regime HMM → server/data/regimeModel.json (Python; see below)
+npm run regime:evaluate # walk-forward out-of-sample evaluation → server/data/regimeHistory.json + ml/reports/
+npm run regime:predict # print today's regime reading from the shipped model
 ```
 
 CI runs lint, format-check, typecheck, tests, and build on every PR. Typecheck
@@ -285,6 +294,27 @@ them explicitly over a handful of liquid names (they share one cache).
 Read `docs/STRATEGY_PLAYBOOK.md`'s backtest-reality sections before acting on a
 winner — the engine models zero slippage/commissions, and a sweep is many looks at
 one history.
+
+### `regime:train` / `regime:evaluate` / `regime:predict` — the market-regime model
+
+The Gaussian HMM behind the ML regime reading is trained **offline** in Python and shipped as
+`server/data/regimeModel.json`; the server infers from that file in TypeScript and needs no
+Python at all. Retraining (quarterly, or when the drift flag persists) needs a virtualenv
+with the pinned libraries:
+
+```bash
+python3 -m venv ml/.venv && . ml/.venv/bin/activate
+pip install -r ml/requirements.txt
+python -m pytest ml/tests -q                       # the trainer's own tests
+npm run regime:train    -- --version 2026.12.1     # artifact + parity fixture + ml/reports/regime-<date>.md
+npm run regime:evaluate -- --version 2026.12.1     # walk-forward path + ml/reports/regime-eval-<date>.md
+npm run regime:predict                             # today's reading as JSON
+npm test -w server -- regimeModelParity            # the TypeScript port agrees with what was just written
+```
+
+Read the reports against the enabling rules before committing a retrain; the
+[model card](docs/MARKET_REGIME_MODEL.md) has the rules, the data's publication lag, and what
+the model does not do. FRED is fetched keylessly and cached under `ml/data/cache/` (gitignored).
 
 ### `check:journal` — auditing the journal for rows that are already wrong
 

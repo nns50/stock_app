@@ -1,0 +1,17 @@
+{
+  "version": "2026.09.1",
+  "from": "2019-10-01",
+  "to": "2026-09-03",
+  "sessions": 1741,
+  "refits": 28,
+  "switchesPerYear": 7.526708788052843,
+  "meanDwellSessions": 32.84905660377358,
+  "heldBelowThresholdShare": 0.006318207926479035,
+  "driftShare": 0.09190120620333142,
+  "episodes": [
+    ["COVID crash", "2020-02-24 \u2192 2020-04-30", "100.0% high_vol_bearish", "\u2265 50%", "pass"],
+    ["2022 bear market", "2022-01-03 \u2192 2022-10-12", "66.8% high_vol_bearish", "\u2265 50%", "pass"],
+    ["Aug-2024 vol spike", "2024-08-05", "not reached", "within 2 sessions", "FAIL"],
+    ["Apr-2025 tariff shock", "2025-04-08", "high_vol_bearish on 2025-04-08", "within 2 sessions", "pass"]
+  ]
+}

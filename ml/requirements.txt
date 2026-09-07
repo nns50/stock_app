@@ -1,0 +1,9 @@
+# Retraining-only dependencies (the runtime is Node; see docs/MARKET_REGIME_MODEL.md).
+# Pinned to the versions the shipped artifact was trained with — a retrain on
+# other versions is fine, but say so in the decision log (the artifact records
+# them under training.*Version).
+numpy==2.4.6
+pandas==3.0.5
+scikit-learn==1.9.0
+hmmlearn==0.3.3
+pytest==9.1.1
