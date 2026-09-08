@@ -109,11 +109,12 @@ export default function AboutPage() {
           exposure past the aggregate-risk cap; paper and live are scored on separate books.
         </p>
         <p className="mt-2">
-          There are <strong className="text-slate-200">six</strong> such factors, and the risk actually used is
-          risk-per-trade <span className="tabular-nums">×</span> all six — they compound rather than the tightest one
+          There are <strong className="text-slate-200">seven</strong> such factors, and the risk actually used is
+          risk-per-trade <span className="tabular-nums">×</span> all seven — they compound rather than the tightest one
           winning, so two reasons to size down both apply. In order: the{' '}
           <strong className="text-slate-200">consecutive-loss step-down</strong>, the{' '}
-          <strong className="text-slate-200">high-market-ATR regime cut</strong>,{' '}
+          <strong className="text-slate-200">high-market-ATR regime cut</strong>, the{' '}
+          <strong className="text-slate-200">same-day re-entry cut</strong>,{' '}
           <strong className="text-slate-200">equity-curve de-risking</strong>, the{' '}
           <strong className="text-slate-200">grade expectancy</strong> multiplier above, the{' '}
           <strong className="text-slate-200">method lean</strong> (the same idea per trade method rather than per
@@ -121,12 +122,25 @@ export default function AboutPage() {
           decision — options positions apply neither equity-curve de-risking nor grade expectancy, since an option's R
           is premium paid while its grade is scored from the <em>underlying's</em> screener total. Finish-line sizing is
           live-only on both instruments, because the daily goal is a percentage of the real account; and because its own
-          answer is one of these six, it measures a "full-size win" against the risk % left after the other five, not
+          answer is one of these seven, it measures a "full-size win" against the risk % left after the other six, not
           against the raw configured percentage. The daily goal those live-only rules serve is itself checked against
           the record: <span className="tabular-nums">expected day % = entries/session × risk % × avg R</span>, the
           loop's realized average R and median entries per session over its last 40 sessions at the current risk — the
           same identity the tune inverts to solve a risk % from a target — and the Auto page shows that expected day
           beside the goal, with a warning once the goal is more than 2× it.
+        </p>
+        <p className="mt-2">
+          The <strong className="text-slate-200">same-day re-entry cut</strong> trims the size of an entry into a name
+          the live loop already closed a trade in <em>today</em>. It is measured, not assumed: over 89 closed live
+          trades, first entries in a name averaged <span className="tabular-nums">+$7.12</span> and repeats{' '}
+          <span className="tabular-nums">-$3.67</span>. It is a trim rather than a block because only the direction of
+          that gap is robust — 86% of the repeat deficit came from a single trade, and dropping the worst trade from
+          each side leaves repeats at <span className="tabular-nums">-$0.55</span> apiece. It counts positions closed
+          today, not exit rows, so a scaled-out trade is one repeat and not two; it uses the Eastern trading date, so
+          yesterday's close never suppresses this morning's first entry; and the cut is the same whether it is the
+          second attempt in a name or the fourth. It applies to the <strong className="text-slate-200">live</strong>{' '}
+          equity book only — paper takes every signal at full size so it stays a clean control arm for re-measuring
+          this. It ships at <span className="tabular-nums">0%</span> (off); you choose the percentage on the Auto page.
         </p>
         <p className="mt-2">
           Alongside the grade, every auto-traded entry also records its <em>at-entry context</em>: the{' '}

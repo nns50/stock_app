@@ -172,6 +172,8 @@ async function openAgedLivePosition(ageDays: number) {
     marketAtrPct: null,
     regimeAtrThresholdPct: 3,
     regimeSizeCutPct: 0,
+    priorSameDayExits: 0,
+    repeatEntrySizeCutPct: 0,
   });
   await attemptLiveEntry(signal(), okResult, 'MODERATE', cfg);
   const entryIntentId = listIntents()[0].id;

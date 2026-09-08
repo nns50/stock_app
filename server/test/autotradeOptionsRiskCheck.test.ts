@@ -101,6 +101,8 @@ function baseCtx(overrides: Partial<RiskCheckContext> = {}): RiskCheckContext {
     marketAtrPct: null,
     regimeAtrThresholdPct: 3,
     regimeSizeCutPct: 0,
+    priorSameDayExits: 0,
+    repeatEntrySizeCutPct: 0,
     ...overrides,
   };
 }

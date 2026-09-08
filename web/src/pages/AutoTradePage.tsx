@@ -2833,6 +2833,7 @@ export default function AutoTradePage() {
   const [maxTradesPerDayDraft, setMaxTradesPerDayDraft] = useState<number | undefined>();
   const [regimeAtrThresholdPctDraft, setRegimeAtrThresholdPctDraft] = useState<number | undefined>();
   const [regimeSizeCutPctDraft, setRegimeSizeCutPctDraft] = useState<number | undefined>();
+  const [repeatEntrySizeCutPctDraft, setRepeatEntrySizeCutPctDraft] = useState<number | undefined>();
   const [equityCurveDeriskEnabled, setEquityCurveDeriskEnabled] = useState(false);
   const [equityCurveLookbackDaysDraft, setEquityCurveLookbackDaysDraft] = useState<number | undefined>();
   const [equityCurveDeriskCutPctDraft, setEquityCurveDeriskCutPctDraft] = useState<number | undefined>();
@@ -2967,6 +2968,7 @@ export default function AutoTradePage() {
     sync('maxTradesPerDay', setMaxTradesPerDayDraft);
     sync('regimeAtrThresholdPct', setRegimeAtrThresholdPctDraft);
     sync('regimeSizeCutPct', setRegimeSizeCutPctDraft);
+    sync('repeatEntrySizeCutPct', setRepeatEntrySizeCutPctDraft);
     sync('equityCurveDeriskEnabled', setEquityCurveDeriskEnabled);
     sync('equityCurveLookbackDays', setEquityCurveLookbackDaysDraft);
     sync('equityCurveDeriskCutPct', setEquityCurveDeriskCutPctDraft);
@@ -3075,6 +3077,7 @@ export default function AutoTradePage() {
     maxTradesPerDay?: number;
     regimeAtrThresholdPct?: number;
     regimeSizeCutPct?: number;
+    repeatEntrySizeCutPct?: number;
     equityCurveDeriskEnabled?: boolean;
     equityCurveLookbackDays?: number;
     equityCurveDeriskCutPct?: number;
@@ -4579,6 +4582,7 @@ export default function AutoTradePage() {
                       <NumberInput
                         value={regimeSizeCutPctDraft}
                         onChange={setRegimeSizeCutPctDraft}
+                        ariaLabel="Regime size cut (%)"
                         min={0}
                         max={100}
                         step={1}
@@ -4595,6 +4599,38 @@ export default function AutoTradePage() {
                           regimeSizeCutPctDraft < 0 ||
                           regimeSizeCutPctDraft > 100 ||
                           regimeSizeCutPctDraft === config.data?.regimeSizeCutPct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Same-day re-entry size cut (%)"
+                    hint="% cut to risk-per-trade when this name already closed a trade today, LIVE only. 0 disables it (default). Measured over 89 closed live trades: first entries averaged +$7.12, repeats -$3.67 — but 86% of that deficit is a single trade, so this trims repeats rather than blocking them. Paper deliberately ignores it and stays the control arm."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={repeatEntrySizeCutPctDraft}
+                        onChange={setRepeatEntrySizeCutPctDraft}
+                        ariaLabel="Same-day re-entry size cut (%)"
+                        min={0}
+                        max={100}
+                        step={1}
+                        placeholder="0 (no cut)"
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save same-day re-entry size cut"
+                        onClick={() =>
+                          repeatEntrySizeCutPctDraft != null &&
+                          saveConfig({ repeatEntrySizeCutPct: repeatEntrySizeCutPctDraft })
+                        }
+                        disabled={
+                          repeatEntrySizeCutPctDraft == null ||
+                          repeatEntrySizeCutPctDraft < 0 ||
+                          repeatEntrySizeCutPctDraft > 100 ||
+                          repeatEntrySizeCutPctDraft === config.data?.repeatEntrySizeCutPct
                         }
                       >
                         Save

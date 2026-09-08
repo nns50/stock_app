@@ -78,7 +78,8 @@ import {
 import { fetchTodaySessionContext } from './vwap';
 import { evaluateEntryExtension, REFERENCE_MAX_PCT_OF_RANGE, REFERENCE_MAX_VWAP_EXT_PCT } from './entryExtension';
 import { detectLevels } from '../../indicators/levels';
-import { reentryCooldownFor } from './reentryCooldown';
+import { reentryCooldownFor, sameDaySymbolExits } from './reentryCooldown';
+import { etToday } from '../../util/marketDate';
 import { atr } from '../../indicators/indicators';
 import { planAroundLevels } from './levelPlan';
 import { applyExternalCashFlow, evaluateDailyTarget } from './dailyTarget';
@@ -1112,8 +1113,16 @@ export async function runLiveExecution(
   const cooldowns = activeSymbolCooldowns(cfg);
   // Autotrade's OWN closed positions only — a human's manual trade in the same
   // name is not the loop's thesis and must not gate it.
+  // Loaded for the cooldown OR the same-day re-entry size cut — tying the read
+  // to one feature's setting is how the other silently sees an empty list.
   const closedAutotradeForReentry =
-    cfg.symbolReentryCooldownMinutes > 0 ? listPositions({ status: 'closed' }).filter(isAutotradePosition) : [];
+    cfg.symbolReentryCooldownMinutes > 0 || cfg.repeatEntrySizeCutPct > 0
+      ? listPositions({ status: 'closed' }).filter(isAutotradePosition)
+      : [];
+  // LIVE rows only for the repeat cut: paper is the control arm this finding
+  // will be re-measured against, so its trades must not size the live book.
+  const closedLiveForRepeat = closedAutotradeForReentry.filter((p) => p.tags.includes('live'));
+  const etDayForRepeat = etToday();
   // The finish-line trim is derived PER SIGNAL, below — not once per batch. It
   // has to reason about the risk % this particular entry will actually take,
   // and two of the factors that set it (grade expectancy, method lean) are
@@ -1339,6 +1348,10 @@ export async function runLiveExecution(
         })
       ] ?? 1;
     const methodMultiplier = snapshot.methodMultipliers[methodOfEquitySignal(signal.side)] ?? 1;
+    // Derived ONCE. The finish-line pre-factor and the risk check must reason
+    // about the same count of prior same-day exits — two calls that agree today
+    // is exactly what CLAUDE.md's "agree by construction" rule is about.
+    const priorSameDayExits = sameDaySymbolExits(signal.symbol, closedLiveForRepeat, etDayForRepeat);
     // The finish-line trim, from every OTHER factor this entry will be sized
     // by. It is one of six multipliers in the same product, so comparing the
     // gap to the bank line against a payoff derived from the raw
@@ -1357,6 +1370,8 @@ export async function runLiveExecution(
           marketAtrPct,
           regimeAtrThresholdPct: cfg.regimeAtrThresholdPct,
           regimeSizeCutPct: cfg.regimeSizeCutPct,
+          priorSameDayExits,
+          repeatEntrySizeCutPct: cfg.repeatEntrySizeCutPct,
           equityCurveDerisk: cutFactor(snapshot.equityCurveDeriskActive, cfg.equityCurveDeriskCutPct),
           expectancy: expectancyMultiplier,
           method: methodMultiplier,
@@ -1365,6 +1380,8 @@ export async function runLiveExecution(
       rewardMultiple: cfg.targetRMultiple,
     });
     const ctx: RiskCheckContext = {
+      priorSameDayExits,
+      repeatEntrySizeCutPct: cfg.repeatEntrySizeCutPct,
       equity,
       dailyPnl,
       tradesToday,

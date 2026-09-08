@@ -1244,7 +1244,20 @@ equally-weighted cards in the order they happened to be built:
   leaving it untouched changes nothing regardless of the threshold's own value; setting
   the **threshold** itself to 0 likewise disables the cut entirely. **Live
   and paper only — no backtest equivalent**, same as max market ATR itself; watch
-  **Recent activity**'s risk-check entries to see it fire). Finally, **equity-curve
+  **Recent activity**'s risk-check entries to see it fire). Next, **same-day re-entry
+  size cut (%)** (2026-09-08, off by default) trims an entry into a name the loop
+  already closed a trade in _that Eastern trading day_. It is measured rather than
+  assumed: over 89 closed live trades, first entries in a name averaged +$7.12 and
+  repeats -$3.67. It trims rather than blocks because only the direction of that gap
+  is robust — 86% of the repeat deficit came from one trade, and dropping the worst
+  trade from each side leaves repeats at -$0.55 apiece. It counts positions closed
+  today rather than exit rows, so a scaled-out trade is one repeat and not two; the
+  cut is the same for a second attempt in a name as for a fourth; and yesterday's
+  close never suppresses this morning's first entry. **Live equity only** — the paper
+  book takes every signal at full size on purpose, so it stays a clean control arm to
+  re-measure this against. Its `repeat_entry_sizing` line appears in every
+  risk-check's own entry under **Recent activity**, and it never calls a 0% cut
+  "active". Finally, **equity-curve
   de-risking** (2026-07-24, off by default) is the same idea keyed to your _own_
   results instead of the market: when the strategy's cumulative closed-P&L curve —
   tracked separately for paper and live — is below its **equity-curve lookback

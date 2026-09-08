@@ -212,6 +212,10 @@ export function evaluateOptionsRiskCheck(signal: OptionsTradeSignal, ctx: RiskCh
       marketAtrPct: ctx.marketAtrPct,
       regimeAtrThresholdPct: ctx.regimeAtrThresholdPct,
       regimeSizeCutPct: ctx.regimeSizeCutPct,
+      // Options opt out: the repeat finding was measured on 89 closed EQUITY
+      // trades and says nothing about a premium book.
+      priorSameDayExits: 0,
+      repeatEntrySizeCutPct: 0,
       // Equity-only, as the blocked() path a few lines up already states.
       equityCurveDerisk: NEUTRAL,
       // Off by decision, not by omission — see the block above.
@@ -468,6 +472,9 @@ export async function runOptionsRiskCheck(
       sectorOf,
     );
     const ctx: RiskCheckContext = {
+      // Options opt out — the finding was measured on 89 closed EQUITY trades.
+      priorSameDayExits: 0,
+      repeatEntrySizeCutPct: 0,
       equity: snapshot.equity ?? 0,
       dailyPnl: snapshot.dailyPnl,
       tradesToday: snapshot.tradesToday,

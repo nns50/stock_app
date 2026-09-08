@@ -77,3 +77,26 @@ export function reentryCooldownFor(
   if (minutesSince >= cooldownMinutes) return null;
   return { symbol, lastExitAt, minutesSince, cooldownMinutes };
 }
+
+/**
+ * How many positions in this symbol ALREADY concluded today, for this book.
+ *
+ * Feeds the same-day re-entry size cut (`repeatEntrySizeCutPct`). Counts
+ * POSITIONS, not exit rows: a scaled-out trade books a partial and a final exit
+ * on the same day, and counting rows would score that single trade as two
+ * repeats and cut the next entry twice as hard for no reason.
+ *
+ * Matches on the ET exit DATE rather than a rolling 24h window, deliberately.
+ * The finding is about re-entering a name inside the same SESSION — an
+ * overnight gap resets the thesis, and a wall-clock window would keep yesterday
+ * afternoon's exit suppressing this morning's first entry.
+ */
+export function sameDaySymbolExits(symbol: string, closedPositions: Position[], etDay: string): number {
+  const want = symbol.trim().toUpperCase();
+  let n = 0;
+  for (const p of closedPositions) {
+    if (p.symbol.trim().toUpperCase() !== want) continue;
+    if (p.exits.some((x) => x.exitDate === etDay)) n += 1;
+  }
+  return n;
+}

@@ -1455,6 +1455,9 @@ export interface AutotradeConfig {
   // --- Regime-aware sizing (live + paper only; 0 disables) ---
   regimeAtrThresholdPct: number;
   regimeSizeCutPct: number;
+  /** % cut to risk-per-trade when this name already closed a trade today, LIVE
+   *  only. 0 disables it (default). Paper opts out to stay the control arm. */
+  repeatEntrySizeCutPct: number;
   equityCurveDeriskEnabled: boolean;
   equityCurveLookbackDays: number;
   equityCurveDeriskCutPct: number;
