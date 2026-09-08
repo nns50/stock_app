@@ -6,6 +6,10 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 // arithmetic — the one thing standing between this route and a naked short —
 // is actually driven.
 vi.mock('../src/providers/webull/accountState', () => ({ webullAccountState: vi.fn() }));
+vi.mock('../src/providers/webull/positions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/providers/webull/positions')>()),
+  previewWebullPositions: vi.fn(),
+}));
 vi.mock('../src/providers/webull/orders', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/providers/webull/orders')>()),
   webullPlaceStandaloneBracket: vi.fn(),
@@ -21,11 +25,13 @@ import { setAutotradeConfig } from '../src/db/autotradeConfig';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { webullAccountState } from '../src/providers/webull/accountState';
 import { listWebullOpenOrders, webullCancelOrder, webullPlaceStandaloneBracket } from '../src/providers/webull/orders';
+import { previewWebullPositions } from '../src/providers/webull/positions';
 
 const mockAccount = vi.mocked(webullAccountState);
 const mockPlace = vi.mocked(webullPlaceStandaloneBracket);
 const mockOpen = vi.mocked(listWebullOpenOrders);
 const mockCancel = vi.mocked(webullCancelOrder);
+const mockHoldings = vi.mocked(previewWebullPositions);
 
 let base = '';
 beforeAll(async () => {
@@ -244,5 +250,92 @@ describe('POST /api/autotrade/live/cancel-order', () => {
     expect(
       listAutotradeEvents({ stage: 'execution', actions: ['live_order_cancel_by_hand_failed'], limit: 10 }),
     ).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /live/holdings — the read that did not exist.
+//
+// Three times in one session the question "does the broker still hold this?"
+// had to be inferred from a side effect, once by sending a deliberately
+// oversized protective order purely so its own guard would refuse it and name
+// the held quantity. A read dressed as a write.
+// ---------------------------------------------------------------------------
+describe('GET /api/autotrade/live/holdings', () => {
+  const preview = (over: Partial<Awaited<ReturnType<typeof previewWebullPositions>>> = {}) =>
+    ({
+      ok: true,
+      accountId: 'ACC1',
+      positions: [],
+      unmapped: 0,
+      unmappedOptions: 0,
+      unmappedSample: [],
+      unmappedSymbols: [],
+      ...over,
+    }) as Awaited<ReturnType<typeof previewWebullPositions>>;
+  const stock = (symbol: string, quantity: number, side: 'long' | 'short' = 'long') =>
+    ({ assetType: 'stock', symbol, side, quantity, entryPrice: 1, entryDate: null }) as never;
+
+  it('rolls equity rows up per symbol', async () => {
+    mockHoldings.mockResolvedValue(
+      preview({ positions: [stock('NOK', 80), stock('SMCI', 47), stock('NOK', 20)] as never[] }),
+    );
+    const r = await fetch(`${base}/api/autotrade/live/holdings`);
+    expect(r.status).toBe(200);
+    const b = (await r.json()) as { holdings: { symbol: string; quantity: number }[] };
+    expect(b.holdings).toEqual([
+      { symbol: 'NOK', quantity: 100 },
+      { symbol: 'SMCI', quantity: 47 },
+    ]);
+  });
+
+  it('answers a single symbol, which is the question it exists for', async () => {
+    mockHoldings.mockResolvedValue(preview({ positions: [stock('SMCI', 47)] as never[] }));
+    const r = await fetch(`${base}/api/autotrade/live/holdings?symbol=nok`);
+    const b = (await r.json()) as { symbol: string; quantity: number; known: boolean };
+    // Flat, positively — which is what the NOK incident needed and could not get.
+    expect(b).toMatchObject({ symbol: 'NOK', quantity: 0, known: true });
+  });
+
+  it('signs a SHORT negative rather than reporting it as held long', async () => {
+    mockHoldings.mockResolvedValue(preview({ positions: [stock('NOK', 50, 'short')] as never[] }));
+    const b = (await (await fetch(`${base}/api/autotrade/live/holdings?symbol=NOK`)).json()) as { quantity: number };
+    expect(b.quantity).toBe(-50);
+  });
+
+  it('marks an UNMAPPABLE symbol as known:false — held, quantity unknown, NOT zero', async () => {
+    // The false negative this endpoint must never produce. A row the mapper
+    // cannot parse still proves the broker holds something in that symbol; the
+    // close-detector already freezes on exactly this signal.
+    mockHoldings.mockResolvedValue(preview({ positions: [], unmapped: 1, unmappedSymbols: ['NOK'] }));
+    const b = (await (await fetch(`${base}/api/autotrade/live/holdings?symbol=NOK`)).json()) as {
+      quantity: number;
+      known: boolean;
+    };
+    expect(b.known).toBe(false);
+    expect(b.quantity).toBe(0); // present, but the caller must not trust it
+  });
+
+  it('lists unknown symbols separately in the full read', async () => {
+    mockHoldings.mockResolvedValue(preview({ positions: [stock('SMCI', 47)] as never[], unmappedSymbols: ['nok'] }));
+    const b = (await (await fetch(`${base}/api/autotrade/live/holdings`)).json()) as { unknownSymbols: string[] };
+    expect(b.unknownSymbols).toEqual(['NOK']);
+  });
+
+  it('excludes OPTION rows from the share roll-up', async () => {
+    // An option row's quantity is contracts on one contract. Summing it beside
+    // share counts produces a number that means nothing.
+    mockHoldings.mockResolvedValue(
+      preview({
+        positions: [stock('SMCI', 47), { assetType: 'option', symbol: 'SMCI', side: 'long', quantity: 3 } as never],
+      }),
+    );
+    const b = (await (await fetch(`${base}/api/autotrade/live/holdings?symbol=SMCI`)).json()) as { quantity: number };
+    expect(b.quantity).toBe(47);
+  });
+
+  it('fails closed when the broker cannot be read', async () => {
+    mockHoldings.mockResolvedValue(preview({ ok: false, error: 'boom' }));
+    expect((await fetch(`${base}/api/autotrade/live/holdings`)).status).toBe(502);
   });
 });

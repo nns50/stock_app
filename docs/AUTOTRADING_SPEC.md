@@ -6415,3 +6415,52 @@ that occurs every single time a stop does its job. Left alone it would page on
 every stop fill from here on, and an alarm that cries wolf on healthy positions
 trains you to ignore the one case it exists for — the same reasoning already
 written into this function for account scoping and for parse misses.
+
+---
+
+## 2026-09-08 — a read-only way to ask what the broker holds
+
+There wasn't one. The question came up three times in a single session and every
+time the answer had to be inferred from a side effect:
+
+| Incident | How the held quantity was actually obtained |
+|---|---|
+| SMCI mid-adoption | read off a `position_reconcile_skipped` detail |
+| FCX bracket probe | the broker's own rejection string |
+| NOK scale-out remainder | a deliberately oversized protective order, sent so its own guard would refuse it and name the count |
+
+That last one is the tell. It is a **read dressed as a write** — an order
+placement endpoint invoked with a quantity chosen to be refused — and it was
+blocked by a permission classifier, correctly. Nothing about the shape of that
+request says "I only want to look".
+
+`GET /api/autotrade/live/holdings` is the read. It calls
+`previewWebullPositions`, which fetches `/openapi/assets/positions` and maps it
+without writing anything, and rolls the equity rows up per symbol.
+`?symbol=NOK` answers the single-symbol question directly, which is the form
+every one of the three incidents actually needed.
+
+### The one thing it must never get wrong
+
+A broker row the mapper cannot parse **still proves the account holds something
+in that symbol**. Reporting such a symbol as quantity 0 would be exactly the
+false negative this endpoint exists to prevent — and it is the same trap the
+close-detector already guards with its `unmappedSymbols` freeze list, where an
+unparseable row must never be read as evidence of a sale.
+
+So unmapped symbols are surfaced separately (`unknownSymbols`), and the
+single-symbol form returns `known: false` alongside the zero. Callers must read
+that as *held, quantity unknown* — never as flat. An unreadable broker is a 502,
+not an empty list, for the same reason.
+
+Option rows are excluded from the share roll-up: an option row's quantity is
+contracts on one specific contract, and summing it beside share counts produces
+a number that means nothing.
+
+### Why it matters beyond convenience
+
+Zero resting exit legs looks identical whether a stop was never accepted or has
+just **filled**. The held quantity is the only thing that separates them — the
+same distinction that made the naked-position alarm page on a stop that was in
+the act of working, earlier the same day. Until this endpoint existed, the only
+component that could ask the question directly was the alarm itself.
