@@ -1814,7 +1814,8 @@ function MonitoringDashboard({
             ) : null}
           </div>
           <p className="text-xs text-slate-300">
-            {fmtPct(dt.gainPct ?? 0, 2)} of the {fmtPct(dt.targetPct ?? 0, 1, false)} goal — day started at{' '}
+            {fmtPct(dt.gainPct ?? 0, 2)} of the{' '}
+            {fmtPct(dt.targetPct ?? 0, dt.goalScale != null && dt.goalScale < 1 ? 2 : 1, false)} goal — day started at{' '}
             {fmtUsd(dt.baselineEquityUsd ?? 0)}, banks at {fmtUsd(dt.targetEquityUsd ?? 0)}
             {dt.reached
               ? '. New live entries are halted until the next trading day; exits and paper keep running.'
@@ -1832,6 +1833,18 @@ function MonitoringDashboard({
                     )} halts new live entries for the day.`
                   : '.'}
           </p>
+          {dt.goalScale != null && dt.goalScale < 1 && (
+            <p className="text-[11px] text-amber-300/90 mt-1" data-testid="daily-goal-scale">
+              Today's goal is scaled: {fmtPct(dt.targetPct ?? 0, 2, false)} ={' '}
+              {fmtPct(dt.configuredTargetPct ?? 0, 1, false)} × {dt.goalScale.toFixed(2)}, the same factor the regime
+              cut sizes entries by, so the goal is held constant in R
+              {dt.giveBackArmPct != null && dt.giveBackFloorPct != null
+                ? ` (arm ${fmtPct(dt.giveBackArmPct, 2, false)}, floor ${fmtPct(dt.giveBackFloorPct, 2, false)})`
+                : ''}
+              {dt.goalScaleReason ? ` — ${dt.goalScaleReason}` : ''}
+              {dt.giveBackArmed || dt.reached ? '. Locked for the day.' : '.'}
+            </p>
+          )}
           <p className="text-[11px] text-slate-500 mt-1" data-testid="daily-goal-evidence">
             {expectedDayLine}
           </p>

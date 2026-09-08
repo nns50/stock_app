@@ -200,6 +200,8 @@ and `server/test/regimeModelParity.test.ts` holds the port to it (section 8).
   (`regimeTargets.ts`) brings `targetRMultiple` and `optionsTakeProfitPct` in by
   `mlRegimeTargetTightenPct` at entry — the options exit rules read the regime STAMPED on
   the position, never today's — stamping the applied factor as `regime_target_factor`. The
+  day's goal, arm and floor scale by the size cut's factor (`dailyTarget.ts`, goal held
+  constant in R; `docs/TUNE_FROM_TARGET.md` §6c). The
   sticky switch's threshold comes from `mlRegimeSwitchThreshold` on every classification,
   overlay on or off. Everything else is display; the enabling rules are in
   `docs/AUTOTRADING_SPEC.md`.

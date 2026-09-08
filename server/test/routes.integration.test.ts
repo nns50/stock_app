@@ -7,6 +7,7 @@ import { addExclusion } from '../src/db/autotradeExclusions';
 import { config } from '../src/config';
 import { MlRegimeReading, resetMlRegimeCache } from '../src/services/mlRegime';
 import { saveMlRegimeReading } from '../src/db/mlRegimeReadings';
+import { saveDailyBaseline, setDailyGoalScale } from '../src/db/dailyBaseline';
 import { totp } from '../src/services/totp';
 import { resetLoginThrottle } from '../src/services/auth';
 import { setSetting } from '../src/db/settings';
@@ -3520,5 +3521,59 @@ describe('the ML regime overlay (integration, 2026-09-08)', () => {
     const stale = await check();
     expect(stale.sizing.suggestedQuantity).toBe(200);
     expect(regimeRule(stale).detail).toMatch(/ML regime unknown/);
+  });
+});
+
+describe('the daily goal held constant in R (integration, 2026-09-08)', () => {
+  afterEach(async () => {
+    db.exec('DELETE FROM autotrade_daily_baseline');
+    await put('/api/autotrade/config', { targetDailyGainPct: null, giveBackArmPct: null, giveBackFloorPct: null });
+  });
+  const put = (path: string, body: unknown) =>
+    fetch(`${base}${path}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  it('the dashboard reports the SCALED goal, arm and floor beside the configured goal and the scale', async () => {
+    expect(
+      (
+        await put('/api/autotrade/config', {
+          accountEquityUsd: 10_100,
+          targetDailyGainPct: 3,
+          giveBackArmPct: 2,
+          giveBackFloorPct: 1,
+        })
+      ).status,
+    ).toBe(200);
+    saveDailyBaseline(etToday(), 10_000);
+    expect(setDailyGoalScale(0.65, 'ML regime High Volatility/Bearish (35% cut)')).toBe(true);
+    const dash = (await getJson('/api/autotrade/dashboard')) as {
+      dailyTarget: {
+        targetPct: number;
+        configuredTargetPct: number;
+        goalScale: number;
+        goalScaleReason?: string;
+        giveBackArmPct: number;
+        giveBackFloorPct: number;
+        targetEquityUsd: number;
+      };
+    };
+    expect(dash.dailyTarget).toMatchObject({
+      targetPct: 1.95,
+      configuredTargetPct: 3,
+      goalScale: 0.65,
+      goalScaleReason: 'ML regime High Volatility/Bearish (35% cut)',
+      giveBackArmPct: 1.3,
+      giveBackFloorPct: 0.65,
+      targetEquityUsd: 10_195,
+    });
+    // The stored goal itself never moved.
+    expect((await getJson('/api/autotrade/config')) as Record<string, unknown>).toMatchObject({
+      targetDailyGainPct: 3,
+      giveBackArmPct: 2,
+      giveBackFloorPct: 1,
+    });
   });
 });

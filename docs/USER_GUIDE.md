@@ -1280,9 +1280,14 @@ equally-weighted cards in the order they happened to be built:
   60% take-profit 42% — the finish-line trim reasons about the tightened payoff, and the
   options exit rules read the regime stamped on the position at entry, so a High-Vol
   entry keeps its tighter target through a calm afternoon and a calm-tape entry is never
-  tightened by a later switch. It does not change the daily goal. Leave the overlay off
-  until the enabling rules in the model card are met; the plain-English walkthrough
-  with worked numbers is [AUTOTRADE_RISK_SETTINGS.md](AUTOTRADE_RISK_SETTINGS.md)
+  tightened by a later switch. The **daily gain goal** follows the size cut, not the
+  tighten: on a day the regime cut fires, the goal, the give-back arm and the floor are
+  all scaled by the same factor entries were cut by (3 / 2 / 1 reads 1.95 / 1.3 / 0.65
+  at a 35% cut), so the goal is held constant in R — the goal card shows both numbers
+  and the reason, `daily_goal_scaled` journals each change, and the scale locks once the
+  guard arms or the day banks ([TUNE_FROM_TARGET.md](TUNE_FROM_TARGET.md) §6c). Leave
+  the overlay off until the enabling rules in the model card are met; the plain-English
+  walkthrough with worked numbers is [AUTOTRADE_RISK_SETTINGS.md](AUTOTRADE_RISK_SETTINGS.md)
   §"Regime size cut — three triggers, one cut". Finally, **equity-curve
   de-risking** (2026-07-24, off by default) is the same idea keyed to your _own_
   results instead of the market: when the strategy's cumulative closed-P&L curve —

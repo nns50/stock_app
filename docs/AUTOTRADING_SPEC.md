@@ -6341,3 +6341,45 @@ ships on is the walk-forward grid's tighten cell (0 / 15 / 30), by the written r
 counterfactual ledger's pre-committed reading after 30 tightened trades decides whether it
 stays: an optimistic full-target counterfactual that beats realized R with a CI excluding zero
 sets the tighten to 0 for that regime and re-runs the grid.
+
+## 2026-09-08 — the daily goal follows the regime cut: held constant in R
+
+**What shipped.** The baseline row (`autotrade_daily_baseline`) carries a nullable
+`goal_scale` and `goal_scale_reason`. Once per in-session tick the loop hands
+`updateDailyGoalScale()` the SAME `regimeTriggers` result the executors size by — one factor,
+one derivation — and the row takes its factor while the day has no gain to protect;
+`setDailyGoalScale` writes only `WHERE give_back_armed_at IS NULL AND reached_at IS NULL`, so
+the line freezes the moment the guard arms or the day banks (derived from the two sticky
+timestamps the row already has, no third flag). `evaluateDailyTarget` applies the scale before
+anything else: `targetPct`, the arm and the floor are the EFFECTIVE numbers, with
+`configuredTargetPct` and `goalScale` beside them, so every consumer — the entry gates, the
+finish line, the score gate, the dashboard and the goal card — reads the scaled goal without
+knowing it was scaled. The one consumer that did not read the status, `stopAdjust.ts`'s
+day-protective stop, read `cfg.giveBackFloorPct` raw; it reads the status's floor now, so the
+guard and the protective stop use one floor by construction rather than by coincidence. A
+skip (cut 100) does not scale the goal: nothing opens, and a day with no entries must not bank
+at +0%. `daily_goal_scaled` journals each change; `daily_target_reached`,
+`daily_give_back_halted` and the pending-confirmation event carry the scale.
+
+**Why in R.** `expected day % = entries/session × risk % × avg R`, and the tune solved the risk %
+from it for a calm day. Cut every entry by _f_ and a fixed % goal becomes _1/f_ harder in R,
+reachable only through more entries — in the one regime where more entries is the wrong
+answer — while the bank line and the arm come later or never. Scaling the triple by the same
+_f_ keeps the identity on both kinds of day (`entries × (risk × f) × avg R = f × goal`) and
+every mechanism's meaning at the scaled line. The tighten does not scale the goal (it changes
+the R distribution, which the grid measures); the tune, the goal evidence, the preview and the
+sweep are scale-invariant; `targetDailyGainPct` never moves.
+
+**The ordering it needed.** The regime inputs (SPY ATR, the range nowcast, the triggers and
+the shock journal) now run right after the session and macro checks, before the screen, so the
+goal is scaled before this tick's entry gates read it; they used to run after the screen. Same
+tick, seconds earlier, no extra provider call: the ATR read is the one the volatility filter
+already made, and out of session the tick still returns before it.
+
+### What this does NOT do
+
+- It does not move the stored goal, arm or floor, and it does not scale anything when the
+  overlay is off (the factor is 1 and the row stays NULL — byte-identical to before).
+- It does not follow a reading after the guard has armed or the day has banked.
+- It does not scale for the tighten, or for a skip.
+- Paper has no goal; nothing here touches the paper book.

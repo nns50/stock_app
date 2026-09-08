@@ -480,6 +480,43 @@ goes here, whether from a rule above or a direct instruction.
 | --- | --- | --- | --- | --- | --- |
 | 2026-09-07 | **None.** Baseline recorded from the deployed config: goal **3%**, arm **2%**, floor **1%**, at 1.25% risk on $5,192 equity — set from ambition on 2026-08-21 | First read of the sweep on the deployed book, the day §6b shipped | **Live, last 40 sessions (2026-07-13 … 09-04):** 70 trades scored, 18 dropped (undated / stopless rows from before adoption stamping), avg R **−0.012**, the book traded on **14 of 40** sessions, actual −0.87R total, worst day −3.31R. The stored goal's row (2.4R) banked 2 sessions for +0.05R/session, CI 0.00 … +0.16; every bank level 0.5–3.5R read +0.05 … +0.07 with the CI's low end exactly 0.00; bank + trail ≈ 0 everywhere. **Paper (control):** 83 trades, avg R +0.023, +1.92R total; banking early **costs** it (−0.06 … −0.08R/session at 0.5–1.5R), and bank + trail at 1.5R is **−0.14R, CI −0.31 … −0.01** — the one interval in either book that excludes zero, on the wrong side. The tune's realized basis refused: "not positive" | D2 does not fire (no positive interval excludes zero; the control argues against lowering), D5 does not fire (trailing never beat banking), **D6 fires**: the live edge is ≤ 0 on a reliable trade count, so the record supports no goal — the fix is on the entry side. The goal stays at 3 / 2 / 1, which cost nothing on this record. This read also showed that a median over all 40 sessions reads 0 entries/session when the book is idle on 26 of them: the unit became the **active** session the same day, under which the live book has 14 — below D1's floor, the cleaner statement of the same conclusion | Re-read once 20 active sessions under the 72 conviction floor (armed 2026-09-06) are in the window — nothing from that regime is in this one |
 
+## 6c. When the regime overlay fires — the goal is held constant in R
+
+The goal is `expected day % = entries/session × risk % × avg R`, and the tune solved
+`riskPerTradePct` from it for a calm day. On a day the regime cut fires (the ML regime
+overlay reading High Volatility/Bearish, a shock day, or SPY ATR above its threshold —
+`docs/AUTOTRADE_RISK_SETTINGS.md`, "Regime size cut"), every new entry's risk is cut by a
+factor _f_ (0.65 at the default 35% cut). A % goal left where it was would then be _1/f_
+harder **in R** — reachable only through more entries, in the one regime where more entries
+is the wrong answer — and the bank line and the guard's arm would come later or never.
+
+So the day's **goal, arm and floor are all scaled by that same _f_**, from the same
+`regimeTriggers` call the sizer uses (the loop derives the factor once per tick and hands it
+to both): 3 / 2 / 1 reads **1.95 / 1.3 / 0.65** at a 35% cut. The identity holds on both
+kinds of day — `entries × (risk × f) × avg R = f × goal` — so every mechanism keeps its
+meaning at the scaled line: bank-the-day banks there, the finish line trims toward it, the
+give-back guard protects the scaled floor, and the day-protective stop protects that same
+floor (it reads the day's status now, not the raw config value). The goal card shows both
+numbers ("1.95% = 3% × 0.65") and the trigger behind them; `daily_goal_scaled` journals each
+change; `daily_target_reached` and `daily_give_back_halted` carry the scale.
+
+**What freezes, and when.** The scale follows the reading per in-session tick — a mid-morning
+data update or a regime switch before the day has a gain to protect is harmless and keeps the
+goal consistent with the cut on every entry — until the guard **arms** or the day **banks**.
+From then on the row is locked (the goal card says so): the bank line and the floor must not
+move under a gain that has already touched them, and a switch changes tomorrow's goal, not
+today's. The freeze is derived from the two sticky timestamps the baseline row already
+carries, not a third flag.
+
+**What is deliberately unchanged.** The target tighten does **not** scale the goal: it changes
+the R distribution (smaller wins, more of them), which the walk-forward grid measures rather
+than assumes. A skip (a cut of 100%) opens nothing, so it does not scale the goal either — a
+day with no entries must not bank at +0%. The tune, the goal evidence, the `/tune/preview`
+identity and the sweep are scale-invariant (they work in R or in ratios of configured
+numbers), and `targetDailyGainPct` itself never moves — the scale lives on the day's baseline
+row and clears on the day roll. Paper has no goal. The overlay ships off, so an untouched
+config reads exactly as before.
+
 ## 7. Reading the preview and warnings
 
 The header line shows the **band**, the solved **risk / trade** (amber when it's ≥ 3%),

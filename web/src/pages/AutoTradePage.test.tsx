@@ -3159,6 +3159,89 @@ describe('AutoTradePage', () => {
       expect(await screen.findByText('dashboard unavailable')).toBeInTheDocument();
     });
 
+    // The goal held constant in R (2026-09-08): a scaled day shows the
+    // effective goal, what it was scaled from, and locks once the guard arms.
+    it('shows a regime-scaled goal with its factor and reason, and says when it is locked', async () => {
+      const scaled = {
+        active: true,
+        targetPct: 1.95,
+        configuredTargetPct: 3,
+        goalScale: 0.65,
+        goalScaleReason: 'ML regime High Volatility/Bearish (35% cut; ATR trigger inactive at 0.9%)',
+        baselineEquityUsd: 10_000,
+        targetEquityUsd: 10_195,
+        currentEquityUsd: 10_050,
+        gainPct: 0.5,
+        reached: false,
+        reachedAt: null,
+        giveBackArmed: false,
+        giveBackHalted: false,
+        giveBackArmPct: 1.3,
+        giveBackFloorPct: 0.65,
+        giveBackHaltedAt: null,
+        entriesHalted: false,
+      };
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(dashboardFixture({ dailyTarget: scaled }));
+      renderDashboard();
+      const line = await screen.findByTestId('daily-goal-scale');
+      expect(line).toHaveTextContent(/1\.95% = 3\.0% × 0\.65/);
+      expect(line).toHaveTextContent(/arm 1\.30%, floor 0\.65%/);
+      expect(line).toHaveTextContent(/ML regime High Volatility\/Bearish/);
+      expect(line).not.toHaveTextContent(/Locked for the day/);
+      expect(screen.getByText(/of the 1\.95% goal/)).toBeInTheDocument();
+    });
+
+    it('marks a scaled goal locked once the guard has armed', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({
+          dailyTarget: {
+            active: true,
+            targetPct: 1.95,
+            configuredTargetPct: 3,
+            goalScale: 0.65,
+            baselineEquityUsd: 10_000,
+            targetEquityUsd: 10_195,
+            currentEquityUsd: 10_140,
+            gainPct: 1.4,
+            reached: false,
+            reachedAt: null,
+            giveBackArmed: true,
+            giveBackHalted: false,
+            giveBackHaltedAt: null,
+            entriesHalted: false,
+          },
+        }),
+      );
+      renderDashboard();
+      expect(await screen.findByTestId('daily-goal-scale')).toHaveTextContent(/Locked for the day/);
+    });
+
+    it('shows no scale line on an unscaled day', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({
+          dailyTarget: {
+            active: true,
+            targetPct: 3,
+            configuredTargetPct: 3,
+            goalScale: 1,
+            baselineEquityUsd: 10_000,
+            targetEquityUsd: 10_300,
+            currentEquityUsd: 10_050,
+            gainPct: 0.5,
+            reached: false,
+            reachedAt: null,
+            giveBackArmed: false,
+            giveBackHalted: false,
+            giveBackHaltedAt: null,
+            entriesHalted: false,
+          },
+        }),
+      );
+      renderDashboard();
+      await screen.findByTestId('daily-goal-evidence');
+      expect(screen.queryByTestId('daily-goal-scale')).not.toBeInTheDocument();
+    });
+
     // The goal against the record (2026-09-07): the expected day at the
     // current sizing sits beside the goal — or, with no goal set, stands on
     // its own so there is a number to choose one from.

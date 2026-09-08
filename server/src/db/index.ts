@@ -478,7 +478,14 @@ CREATE TABLE IF NOT EXISTS autotrade_daily_baseline (
   -- first seen met, cleared the moment it is not; only a reach still standing
   -- on the NEXT tick banks. Persisted alongside the other per-day flags for
   -- the same reason they are: a mid-day restart must not lose the day's state.
-  reach_candidate_at   INTEGER         -- epoch ms the target was first SEEN met, or NULL
+  reach_candidate_at   INTEGER,        -- epoch ms the target was first SEEN met, or NULL
+  -- The regime overlay's goal scale (2026-09-08, dailyTarget.ts): the SAME factor the
+  -- sizer cut this tick's entries by, so the day's % goal, arm and floor follow it and
+  -- the goal is held constant in R. Tracked per in-session tick until the guard arms or
+  -- the day banks, then frozen (setDailyGoalScale's WHERE). NULL reads as 1 = unscaled;
+  -- both clear on the day roll.
+  goal_scale           REAL,
+  goal_scale_reason    TEXT
 );
 
 CREATE TABLE IF NOT EXISTS autotrade_exclusions (
@@ -1266,6 +1273,13 @@ function migrate(): void {
   const dbCols = db.prepare('PRAGMA table_info(autotrade_daily_baseline)').all() as { name: string }[];
   if (!dbCols.some((c) => c.name === 'reach_candidate_at')) {
     db.exec('ALTER TABLE autotrade_daily_baseline ADD COLUMN reach_candidate_at INTEGER');
+  }
+  // The regime overlay's goal scale (2026-09-08) — nullable, NULL reads as 1.
+  if (!dbCols.some((c) => c.name === 'goal_scale')) {
+    db.exec('ALTER TABLE autotrade_daily_baseline ADD COLUMN goal_scale REAL');
+  }
+  if (!dbCols.some((c) => c.name === 'goal_scale_reason')) {
+    db.exec('ALTER TABLE autotrade_daily_baseline ADD COLUMN goal_scale_reason TEXT');
   }
   if (!hasOpp('underlying_at_entry')) {
     db.exec('ALTER TABLE autotrade_options_paper_positions ADD COLUMN underlying_at_entry REAL');

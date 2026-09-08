@@ -40,7 +40,7 @@ import {
 } from './liveOptionsExecute';
 import { maybeAlertLiveOrderFailures, maybeAlertLiveAmbiguity } from './liveFailureAlert';
 import { reanchorLiveCapsIfDrifted } from './liveCapsReanchor';
-import { DailyTargetStatus, updateDailyTarget } from './dailyTarget';
+import { DailyTargetStatus, updateDailyGoalScale, updateDailyTarget } from './dailyTarget';
 import { hasExpiredLiveOptions, sweepExpiredLiveOptions } from './liveOptionsExpiry';
 import { maybeAlertDailyDrawdownHalt } from './dailyHaltAlert';
 import { maybeAutoTune } from './autoTune';
@@ -597,6 +597,71 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       return summary;
     }
 
+    const volCfg: VolatilityFilterConfig = {
+      maxTickerAtrPct: config.maxTickerAtrPct,
+      maxMarketAtrPct: config.maxMarketAtrPct,
+      marketProxySymbol: 'SPY',
+    };
+    const marketAtrPct = await getMarketAtrPct(volCfg.marketProxySymbol);
+    // THE tick's regime, derived ONCE (2026-09-08; effectiveRisk.ts's header).
+    // The ML reading's regime when known and fresh (null otherwise — never a
+    // guess), SPY's range so far today for the shock nowcast (fetched only when
+    // the nowcast is on, so an untouched config makes no extra quote call),
+    // and the one effective regime regimeTriggers derives from them. Every
+    // executor gets all three: the two inputs feed its risk check, which calls
+    // regimeTriggers again from the SAME inputs for the sizing line, and the
+    // effective regime is what it stamps on what it opens — so a shock day is
+    // cut AND stamped High Vol, or neither, never one without the other.
+    const mlRegime = actionableRegime(mlRegimeReading);
+    const todayRangePct =
+      config.mlRegimeEnabled && config.regimeShockRangeRatio > 0
+        ? await getMarketRangePct(volCfg.marketProxySymbol)
+        : null;
+    const triggers = regimeTriggers({
+      marketAtrPct,
+      regimeAtrThresholdPct: config.regimeAtrThresholdPct,
+      regimeSizeCutPct: config.regimeSizeCutPct,
+      mlRegime,
+      mlRegimeEnabled: config.mlRegimeEnabled,
+      mlRegimeSizeCutPct: config.mlRegimeSizeCutPct,
+      todayRangePct,
+      regimeShockRangeRatio: config.regimeShockRangeRatio,
+    });
+    const tickRegime: TickRegime = { mlRegime, todayRangePct, effectiveRegime: triggers.effectiveRegime };
+    if (triggers.shock) {
+      const today = etToday();
+      if (today !== lastShockJournalDay) {
+        lastShockJournalDay = today;
+        logAutotradeEvent({
+          stage: 'execution',
+          action: MARKET_SHOCK_ACTION,
+          detail: {
+            date: today,
+            rangePct: todayRangePct,
+            marketAtrPct,
+            ratio: config.regimeShockRangeRatio,
+            modelRegime: mlRegime ?? 'unknown',
+            cutPct: triggers.cutPct,
+            note: `${volCfg.marketProxySymbol}'s range so far today reached the shock ratio × its ATR — this tick sizes and stamps as High Volatility/Bearish; compare with the model's next-session label (docs/MARKET_REGIME_MODEL.md)`,
+          },
+          riskProfile: config.riskProfile,
+        });
+      }
+    }
+
+    // The goal follows the sizer (2026-09-08; dailyTarget.ts's header and
+    // docs/TUNE_FROM_TARGET.md §6c): the SAME factor the entries below will be
+    // cut by scales the day's % goal, arm and floor, so the goal is held
+    // constant in R — tracked per tick until the guard arms or the day banks,
+    // then frozen. Same regimeTriggers call, same inputs, so the goal and the
+    // sizer cannot disagree about the factor. The day is re-measured on a
+    // change so this tick's entry gates already read the scaled goal.
+    try {
+      if (updateDailyGoalScale(triggers).changed) dailyTarget = updateDailyTarget();
+    } catch (e) {
+      journalStageFailure('daily-goal scale', e);
+    }
+
     // Market regime read (best-effort, cached ~1h in marketRegime.ts): used
     // two ways. (1) Regime-conditional weights (2026-07-24, default off):
     // when enabled, this tick scores with the regime's weight preset instead
@@ -710,60 +775,8 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       }
     }
 
-    const volCfg: VolatilityFilterConfig = {
-      maxTickerAtrPct: config.maxTickerAtrPct,
-      maxMarketAtrPct: config.maxMarketAtrPct,
-      marketProxySymbol: 'SPY',
-    };
-    const marketAtrPct = await getMarketAtrPct(volCfg.marketProxySymbol);
     const passedVolatility = filterByVolatility(screenResult.candidates, marketAtrPct, volCfg);
     summary.candidatesPassedVolatility = passedVolatility.length;
-
-    // THE tick's regime, derived ONCE (2026-09-08; effectiveRisk.ts's header).
-    // The ML reading's regime when known and fresh (null otherwise — never a
-    // guess), SPY's range so far today for the shock nowcast (fetched only when
-    // the nowcast is on, so an untouched config makes no extra quote call),
-    // and the one effective regime regimeTriggers derives from them. Every
-    // executor gets all three: the two inputs feed its risk check, which calls
-    // regimeTriggers again from the SAME inputs for the sizing line, and the
-    // effective regime is what it stamps on what it opens — so a shock day is
-    // cut AND stamped High Vol, or neither, never one without the other.
-    const mlRegime = actionableRegime(mlRegimeReading);
-    const todayRangePct =
-      config.mlRegimeEnabled && config.regimeShockRangeRatio > 0
-        ? await getMarketRangePct(volCfg.marketProxySymbol)
-        : null;
-    const triggers = regimeTriggers({
-      marketAtrPct,
-      regimeAtrThresholdPct: config.regimeAtrThresholdPct,
-      regimeSizeCutPct: config.regimeSizeCutPct,
-      mlRegime,
-      mlRegimeEnabled: config.mlRegimeEnabled,
-      mlRegimeSizeCutPct: config.mlRegimeSizeCutPct,
-      todayRangePct,
-      regimeShockRangeRatio: config.regimeShockRangeRatio,
-    });
-    const tickRegime: TickRegime = { mlRegime, todayRangePct, effectiveRegime: triggers.effectiveRegime };
-    if (triggers.shock) {
-      const today = etToday();
-      if (today !== lastShockJournalDay) {
-        lastShockJournalDay = today;
-        logAutotradeEvent({
-          stage: 'execution',
-          action: MARKET_SHOCK_ACTION,
-          detail: {
-            date: today,
-            rangePct: todayRangePct,
-            marketAtrPct,
-            ratio: config.regimeShockRangeRatio,
-            modelRegime: mlRegime ?? 'unknown',
-            cutPct: triggers.cutPct,
-            note: `${volCfg.marketProxySymbol}'s range so far today reached the shock ratio × its ATR — this tick sizes and stamps as High Volatility/Bearish; compare with the model's next-session label (docs/MARKET_REGIME_MODEL.md)`,
-          },
-          riskProfile: config.riskProfile,
-        });
-      }
-    }
 
     // Correlation-aware selection (2026-07-24, default off): re-rank the
     // score-sorted survivors so that among mutually-correlated names the

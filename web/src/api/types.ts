@@ -2579,7 +2579,14 @@ export interface MethodStats {
 export interface DailyTargetStatus {
   active: boolean;
   inactiveReason?: string;
+  /** The EFFECTIVE goal % for the day — configuredTargetPct × goalScale. */
   targetPct?: number;
+  /** The configured goal % (targetDailyGainPct) before any regime scale. */
+  configuredTargetPct?: number;
+  /** The regime overlay's scale on the goal, arm and floor today (1 = unscaled)
+   *  — the same factor the sizer cut entries by (2026-09-08). */
+  goalScale?: number;
+  goalScaleReason?: string;
   baselineEquityUsd?: number;
   targetEquityUsd?: number;
   currentEquityUsd?: number;

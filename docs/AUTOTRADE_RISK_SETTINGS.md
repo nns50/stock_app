@@ -263,7 +263,9 @@ the factor is stamped on every position (`regimeTargetFactor`, 1 when untightene
 the counterfactual ledger can measure what the full target would have done. A tighten
 of 90 or more is clamped to a 0.1× target. It does **not** change the daily goal — a
 tighter target changes the shape of the R distribution (smaller wins, more of them),
-which the walk-forward grid measures rather than assumes.
+which the walk-forward grid measures rather than assumes. The *size cut* does: the day's
+goal, arm and floor scale by the cut's factor so the goal stays constant in R (see the
+daily-goal section below and [TUNE_FROM_TARGET.md](./TUNE_FROM_TARGET.md) §6c).
 
 *Example:* $100 stock, $95 stop, 2R target → a $110 target normally. Overlay on, reading
 High Volatility/Bearish, tighten 30 → the bracket's target is **$107** (1.4 × $5 above
@@ -419,6 +421,13 @@ other setting in this guide reacts to losses; these three react to gains.
 **$103,000** → banked. Or it reaches $102,000 (armed) and slides back to **$101,000**
 → halted, keeping most of the morning. Below +2% nothing arms, so ordinary chop
 never locks the day out.
+
+*On a regime day* (2026-09-08, the ML regime overlay's size cut firing — [§4](#regime-size-cut--three-triggers-one-cut)),
+all three are scaled by the same factor entries were cut by, so the goal is held constant
+in R: at the default 35% cut, 3 / 2 / 1 reads **1.95 / 1.3 / 0.65** for the day. The goal
+card shows both numbers and why; the scale locks once the guard arms or the day banks,
+and clears on the next day. The stored goal never moves. Details in
+[Tune from target daily gain](./TUNE_FROM_TARGET.md) §6c.
 
 Blank = off, for all three; the guard needs the goal set to run at all. A save is
 refused (400) if the arm is not strictly above the floor, or not below the goal —

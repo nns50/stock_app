@@ -377,6 +377,10 @@ describe('one derivation of the regime', () => {
     expect(body).toMatch(/effectiveRegime: triggers\.effectiveRegime/);
     expect(body.match(/effectiveRegime:/g)).toHaveLength(1);
     expect(body.match(/\n\s+tickRegime,\n/g)).toHaveLength(4);
+    // The day's goal scale is fed by the SAME call (2026-09-08) — never a second
+    // derivation of the factor beside it.
+    expect(body).toMatch(/updateDailyGoalScale\(triggers\)/);
+    expect(body.match(/regimeTriggers\(/g)).toHaveLength(1);
   });
 
   it.each(['execute.ts', 'optionsExecute.ts', 'liveExecute.ts', 'liveOptionsExecute.ts'])(

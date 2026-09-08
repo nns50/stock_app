@@ -158,6 +158,28 @@ describe('the finish-line trim reasons about the risk the trade will really take
     expect(at(1.4).factor).toBeGreaterThan(at(2).factor);
   });
 
+  it('a regime day — scaled goal, cut risk, tightened reward — leaves the trim off where the raw numbers would fire it (2026-09-08)', () => {
+    // Raw: 1.25% risk ($64.51), 2R pays $129.03 against an $80 gap -> trims to 0.62.
+    // Regime day at a 35% cut and a 30% tighten: 0.8125% risk ($41.93), 1.4R pays
+    // $58.70 -- under the same $80 gap, so there is nothing to trim.
+    const gap = (riskPerTradePct: number, rewardMultiple: number) =>
+      computeFinishLineFactor({
+        enabled: true,
+        dailyTarget: {
+          ...tracking(0),
+          baselineEquityUsd: EQUITY,
+          targetEquityUsd: EQUITY + 80,
+          currentEquityUsd: EQUITY,
+        },
+        equity: EQUITY,
+        riskPerTradePct,
+        rewardMultiple,
+      });
+    expect(gap(1.25, 2).factor).toBeCloseTo(0.62, 2);
+    expect(gap(1.25 * 0.65, 2 * 0.7)).toMatchObject({ factor: 1 });
+    expect(gap(1.25 * 0.65, 2 * 0.7).detail).toMatch(/inactive/);
+  });
+
   it('stays INACTIVE when a step-down already put the real payoff below the gap', () => {
     // Full size: risk $64.51, a 2R win pays $129.03 -- under the $80 gap it
     // would trim. Step-down halves it to a $64.51 payoff, which no longer
