@@ -1527,6 +1527,7 @@ export interface AutotradeConfig {
   mlRegimeSwitchThreshold: number;
   regimeShockRangeRatio: number;
   mlRegimeTargetTightenPct: number;
+  mlRegimeHighVolMinSignalScore: number;
   equityCurveDeriskEnabled: boolean;
   equityCurveLookbackDays: number;
   equityCurveDeriskCutPct: number;

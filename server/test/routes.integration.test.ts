@@ -3406,6 +3406,7 @@ describe('the ML regime overlay (integration, 2026-09-08)', () => {
     mlRegimeSwitchThreshold: 0.6,
     regimeShockRangeRatio: 0,
     mlRegimeTargetTightenPct: 30,
+    mlRegimeHighVolMinSignalScore: 0,
     regimeAtrThresholdPct: 3,
   };
   afterEach(async () => {
@@ -3421,6 +3422,7 @@ describe('the ML regime overlay (integration, 2026-09-08)', () => {
       mlRegimeSwitchThreshold: 0.7,
       regimeShockRangeRatio: 1.5,
       mlRegimeTargetTightenPct: 15,
+      mlRegimeHighVolMinSignalScore: 78,
     };
     expect((await put('/api/autotrade/config', patch)).status).toBe(200);
     expect((await getJson('/api/autotrade/config')) as Record<string, unknown>).toMatchObject(patch);
@@ -3429,6 +3431,7 @@ describe('the ML regime overlay (integration, 2026-09-08)', () => {
     expect((await put('/api/autotrade/config', { regimeShockRangeRatio: 11 })).status).toBe(400);
     expect((await put('/api/autotrade/config', { mlRegimeSizeCutPct: 101 })).status).toBe(400);
     expect((await put('/api/autotrade/config', { mlRegimeTargetTightenPct: 101 })).status).toBe(400);
+    expect((await put('/api/autotrade/config', { mlRegimeHighVolMinSignalScore: 101 })).status).toBe(400);
     expect((await getJson('/api/autotrade/config')) as Record<string, unknown>).toMatchObject(patch);
   });
 

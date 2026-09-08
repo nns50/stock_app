@@ -190,6 +190,7 @@ const configBody = z.object({
   mlRegimeSwitchThreshold: z.number().min(0).max(1).optional(),
   regimeShockRangeRatio: z.number().min(0).max(10).optional(),
   mlRegimeTargetTightenPct: z.number().min(0).max(100).optional(),
+  mlRegimeHighVolMinSignalScore: z.number().min(0).max(100).optional(),
   equityCurveDeriskEnabled: z.boolean().optional(),
   equityCurveLookbackDays: z.number().int().min(1).optional(),
   equityCurveDeriskCutPct: z.number().min(0).max(100).optional(),
@@ -484,6 +485,8 @@ autotradeRouter.put(
     if (body.mlRegimeSwitchThreshold !== undefined) patch.mlRegimeSwitchThreshold = body.mlRegimeSwitchThreshold;
     if (body.regimeShockRangeRatio !== undefined) patch.regimeShockRangeRatio = body.regimeShockRangeRatio;
     if (body.mlRegimeTargetTightenPct !== undefined) patch.mlRegimeTargetTightenPct = body.mlRegimeTargetTightenPct;
+    if (body.mlRegimeHighVolMinSignalScore !== undefined)
+      patch.mlRegimeHighVolMinSignalScore = body.mlRegimeHighVolMinSignalScore;
     if (body.equityCurveDeriskEnabled !== undefined) patch.equityCurveDeriskEnabled = body.equityCurveDeriskEnabled;
     if (body.equityCurveLookbackDays !== undefined) patch.equityCurveLookbackDays = body.equityCurveLookbackDays;
     if (body.equityCurveDeriskCutPct !== undefined) patch.equityCurveDeriskCutPct = body.equityCurveDeriskCutPct;

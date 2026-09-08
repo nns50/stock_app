@@ -200,6 +200,16 @@ export interface AutotradeConfig {
    *  tighten of 90+ is clamped to a 0.1× target. Needs mlRegimeEnabled.
    *  LIVE + PAPER. Does NOT scale the daily goal — that is the size cut's job. */
   mlRegimeTargetTightenPct: number;
+  /** HIGH-VOL CONVICTION BAR (services/autotrading/entryScoreGate.ts): the
+   *  minimum signal score a new LIVE EQUITY entry must clear while the
+   *  effective regime is High Volatility/Bearish — a third source in the one
+   *  live score gate beside the everyday floor and the armed-day ramp, the
+   *  strictest binding. The bar rises where the size falls: across 57 closed
+   *  live trades every dollar came from scores 76–94, and the same score
+   *  carries less edge in a High-Vol tape. LIVE ONLY, like liveMinSignalScore
+   *  and for the same reason — paper keeps screening at minSignalScore and
+   *  stays the control group. 0 = off (default). Needs mlRegimeEnabled. */
+  mlRegimeHighVolMinSignalScore: number;
   /** Equity-curve de-risking (2026-07-24, services/autotrading/equityCurveDerisk.ts):
    *  a SOFTER, graduated companion to the binary `maxDailyDrawdownPct` halt.
    *  When on, and the strategy's OWN realized equity curve (cumulative closed
@@ -1119,6 +1129,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     mlRegimeSwitchThreshold: 0.6,
     regimeShockRangeRatio: 0,
     mlRegimeTargetTightenPct: 30,
+    mlRegimeHighVolMinSignalScore: 0,
     equityCurveDeriskEnabled: false,
     equityCurveLookbackDays: 10,
     equityCurveDeriskCutPct: 50,
@@ -1364,6 +1375,7 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     mlRegimeSwitchThreshold: unitInterval(input.mlRegimeSwitchThreshold, d.mlRegimeSwitchThreshold),
     regimeShockRangeRatio: rangeRatio(input.regimeShockRangeRatio, d.regimeShockRangeRatio),
     mlRegimeTargetTightenPct: pct(input.mlRegimeTargetTightenPct, d.mlRegimeTargetTightenPct),
+    mlRegimeHighVolMinSignalScore: pct(input.mlRegimeHighVolMinSignalScore, d.mlRegimeHighVolMinSignalScore),
     equityCurveDeriskEnabled:
       typeof input.equityCurveDeriskEnabled === 'boolean' ? input.equityCurveDeriskEnabled : d.equityCurveDeriskEnabled,
     equityCurveLookbackDays: posIntMin1(input.equityCurveLookbackDays, d.equityCurveLookbackDays),

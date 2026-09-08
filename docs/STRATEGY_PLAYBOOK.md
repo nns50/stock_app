@@ -479,8 +479,13 @@ average rather than more 3% days; if anything it makes a 3% session rarer, becau
 need a fat tail and this trims the number of shots. It ships at **0 (off)** and is set
 deliberately, never by a default.
 
-On an armed day the finish-line ramp raises the bar further; the two compose, and whichever
-is stricter at that moment is the one that decides.
+On an armed day the finish-line ramp raises the bar further, and with the ML regime overlay
+on, the **High-Vol conviction bar** raises it again while the effective regime is High
+Volatility/Bearish — the bar rises where the size falls, because the same score carries less
+edge in a High-Vol tape and a slot spent on a 74 there is a slot the next 82 cannot have. The
+three compose, and whichever is strictest at that moment is the one that decides. The bar
+ships at 0 (off) and gets its number from the walk-forward grid's second stage (off / 72 /
+76 on regime days), never from taste.
 
 One mechanical thing worth knowing, because it decides whether an exit is placeable at
 all: **an option under $3 of premium can only be priced in nickels.** Webull rejects

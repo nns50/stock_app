@@ -32,6 +32,7 @@ import { setTradingConfig } from '../src/db/trading';
 import { saveDailyBaseline } from '../src/db/dailyBaseline';
 import { config } from '../src/config';
 import { runLiveExecution } from '../src/services/autotrading/liveExecute';
+import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { etToday } from '../src/util/marketDate';
 import { evaluateEntryCutoff } from '../src/services/autotrading/endOfDayFlatten';
 
@@ -188,6 +189,68 @@ describe('cannot be decided by what time the suite runs', () => {
     // And the sanity check that the moment is genuinely hostile: with the value
     // this file used to inherit, it DOES block.
     expect(evaluateEntryCutoff({ ...cfgFields, endOfDayFlattenMinutes: 5 }, oneMinuteToClose).blocked).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The High-Vol conviction bar (2026-09-08), asserted at the consumer: the live
+// executor hands liveEntryScoreGate the tick's effective regime, and a signal
+// that clears the everyday floor is refused by the bar in High Vol — before
+// the risk check ever runs — while paper is untouched (entryScoreGate.test.ts
+// pins that separately).
+// ---------------------------------------------------------------------------
+describe('the High-Vol conviction bar reaches the live executor', () => {
+  const highVol = {
+    mlRegime: 'high_vol_bearish' as const,
+    todayRangePct: null,
+    effectiveRegime: 'high_vol_bearish' as const,
+  };
+  const calm = { mlRegime: 'sideways' as const, todayRangePct: null, effectiveRegime: 'sideways' as const };
+  const scored = (score: number) => ({ signal: { ...signal(), score } });
+
+  it('refuses a 75 that clears the 72 floor when the bar is 78 and the tick is High Vol, and journals why', async () => {
+    db.exec('DELETE FROM autotrade_events');
+    setAutotradeConfig({
+      ...cfgFields,
+      ...STEP_DOWN_OFF,
+      liveMinSignalScore: 72,
+      mlRegimeEnabled: true,
+      mlRegimeHighVolMinSignalScore: 78,
+    });
+    const outcomes = await runLiveExecution([scored(75)], null, undefined, null, highVol);
+    expect(outcomes[0]).toMatchObject({ ok: false });
+    expect(outcomes[0].reason).toMatch(/Below the High-Vol conviction bar/);
+    expect(seenContexts).toHaveLength(0);
+    const skips = listAutotradeEvents({ symbol: 'ZFLW' }).filter((e) => e.action === 'regime_score_floor_skipped');
+    expect(skips).toHaveLength(1);
+    expect(JSON.parse(skips[0].detail!)).toMatchObject({ score: 75, bar: 78, source: 'high_vol_regime' });
+  });
+
+  it('takes an 80 in High Vol, and takes the 75 on a calm tick — the bar is the only difference', async () => {
+    setAutotradeConfig({
+      ...cfgFields,
+      ...STEP_DOWN_OFF,
+      liveMinSignalScore: 72,
+      mlRegimeEnabled: true,
+      mlRegimeHighVolMinSignalScore: 78,
+    });
+    await runLiveExecution([scored(80)], null, undefined, null, highVol);
+    expect(seenContexts.length).toBeGreaterThan(0);
+    seenContexts.length = 0;
+    await runLiveExecution([scored(75)], null, undefined, null, calm);
+    expect(seenContexts.length).toBeGreaterThan(0);
+  });
+
+  it('is inert with the overlay off, whatever the tick reads', async () => {
+    setAutotradeConfig({
+      ...cfgFields,
+      ...STEP_DOWN_OFF,
+      liveMinSignalScore: 72,
+      mlRegimeEnabled: false,
+      mlRegimeHighVolMinSignalScore: 78,
+    });
+    await runLiveExecution([scored(75)], null, undefined, null, highVol);
+    expect(seenContexts.length).toBeGreaterThan(0);
   });
 });
 

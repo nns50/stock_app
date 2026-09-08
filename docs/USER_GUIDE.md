@@ -1198,9 +1198,14 @@ equally-weighted cards in the order they happened to be built:
   minimum on purpose — that one gates signal generation for **both** books, so
   raising it would starve the paper track the strategy is measured against. Paper
   keeps taking every signal; live takes only what clears the floor, which keeps the
-  comparison honest. The two bars compose, and whichever is stricter at that moment
-  decides; a refusal is journaled as `live_score_floor_skipped` or
-  `finish_line_skipped` depending on which one bit.
+  comparison honest. A third bar, the **High-Vol conviction bar**
+  (`mlRegimeHighVolMinSignalScore`, 2026-09-08, 0 = off, needs the ML regime overlay),
+  raises the floor while the tick's effective regime is High Volatility/Bearish — the bar
+  rises where the size falls, because the same score carries less edge in a High-Vol
+  tape (every live dollar so far came from scores 76–94); live only, like the floor.
+  The three bars compose, and whichever is strictest at that moment decides; a
+  refusal is journaled as `live_score_floor_skipped`, `finish_line_skipped` or
+  `regime_score_floor_skipped` depending on which one bit.
   Separately, a **symbol loss cooldown** (also 2026-08-22, off by default) gives the
   loop a memory of losing on a name: once a symbol takes the configured number of
   losing live trades (2+) within a rolling window of calendar days, its new live

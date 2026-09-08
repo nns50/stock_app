@@ -1225,19 +1225,27 @@ export async function runLiveExecution(
       outcomes.push({ symbol, ok: false, reason });
       continue;
     }
-    // ONE conviction gate, composing the everyday live floor with the
-    // armed-day ramp — whichever bar is stricter right now decides, and the
-    // gate says which, so a refusal stays attributable. See entryScoreGate.ts
-    // for the 57-trade evidence behind the everyday floor.
-    const scoreGate = liveEntryScoreGate(candidateSignal.score, dailyTarget, cfg);
+    // ONE conviction gate, composing the everyday live floor, the armed-day
+    // ramp and the High-Vol bar (from this tick's effective regime — the same
+    // one that cut the size and tightened the target) — whichever bar is
+    // strictest right now decides, and the gate says which, so a refusal stays
+    // attributable. See entryScoreGate.ts for the 57-trade evidence behind
+    // the everyday floor.
+    const scoreGate = liveEntryScoreGate(candidateSignal.score, dailyTarget, cfg, regime.effectiveRegime);
     if (scoreGate.skip) {
       journalEntrySkipOncePerDay(symbol, scoreGate.action ?? 'live_score_floor_skipped', {
         score: candidateSignal.score,
         bar: scoreGate.bar,
         source: scoreGate.source,
+        effectiveRegime: regime.effectiveRegime,
         reason: scoreGate.detail,
       });
-      const label = scoreGate.source === 'armed_day' ? 'Armed-day selectivity' : 'Below the live conviction floor';
+      const label =
+        scoreGate.source === 'armed_day'
+          ? 'Armed-day selectivity'
+          : scoreGate.source === 'high_vol_regime'
+            ? 'Below the High-Vol conviction bar'
+            : 'Below the live conviction floor';
       outcomes.push({ symbol, ok: false, reason: `${label}: ${scoreGate.detail}` });
       continue;
     }

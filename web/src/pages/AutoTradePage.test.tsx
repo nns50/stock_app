@@ -125,6 +125,7 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     mlRegimeSwitchThreshold: 0.6,
     regimeShockRangeRatio: 0,
     mlRegimeTargetTightenPct: 30,
+    mlRegimeHighVolMinSignalScore: 0,
     equityCurveDeriskEnabled: false,
     equityCurveLookbackDays: 10,
     equityCurveDeriskCutPct: 50,
@@ -545,6 +546,21 @@ describe('AutoTradePage', () => {
 
     await waitFor(() =>
       expect(setConfig).toHaveBeenCalledWith({ regimeShockRangeRatio: 1.5, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new High-Vol conviction bar', async () => {
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.change(screen.getByPlaceholderText('0 (no bar)'), { target: { value: '78' } });
+    const saveButton = screen.getByRole('button', { name: 'Save High-Vol conviction bar' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ mlRegimeHighVolMinSignalScore: 78, confirmAggressive: undefined }),
     );
   });
 

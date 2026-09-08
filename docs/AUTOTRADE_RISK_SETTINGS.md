@@ -89,6 +89,7 @@ and the two correlation-methodology fields) has its own input box and its own
 | **ML regime switch threshold** | How sure must the model be before the reading changes regime? | 0.6 | probability (0–1) |
 | **Shock day range ratio (× ATR)** | How many normal days of range, so far today, make a shock day? | 0 (off) | multiple of SPY ATR |
 | **ML regime target tighten (%)** | How much closer is the profit target while the regime is High Volatility/Bearish? | 30% | % tighter |
+| **High-Vol conviction bar** | What signal score must a live entry clear while the regime is High Volatility/Bearish? | 0 (off) | score (0–100) |
 
 Every default in the first ten rows matches the app's original `MODERATE` preset, so if
 you've never touched these fields, nothing about how the loop behaves has changed —
@@ -272,6 +273,21 @@ High Volatility/Bearish, tighten 30 → the bracket's target is **$107** (1.4 ×
 the entry). An options position opened that morning at $3.00 premium with a 60%
 take-profit closes at **$4.26** (+42%) instead of $4.80 (+60%); the same position opened
 on a Sideways morning keeps $4.80 whatever today reads.
+
+**High-Vol conviction bar** (default 0 = off) is the overlay's third act, and the one that
+trades *fewer* rather than *smaller*: while the effective regime is High Volatility/Bearish,
+a new **live equity** entry must clear this signal score. The bar rises where the size
+falls — across the 57 closed live trades that carry a score, every dollar came from scores
+76–94, and the same score carries less edge in a High-Vol tape; a slot spent on a 74 there
+is a slot the next 82 cannot have. It is a third source in the one live score gate beside
+the live conviction floor and the armed-day bar: the strictest binds, and a skip is
+journaled as `regime_score_floor_skipped` with the bar and the regime. Live only, exactly
+like the live conviction floor and for the same reason — paper keeps screening at the
+screen minimum and stays the control group. The number comes from the walk-forward grid's
+second stage (off / 72 / 76 on regime days), not from taste.
+
+*Example:* floor 72, High-Vol bar 78. A 75-score signal is taken on a Sideways morning and
+refused on a High-Vol one (journaled once for the day); an 80 is taken on both.
 
 Everything here is **live + paper**, like the ATR trigger; the backtest engines carry
 the overlay inert until the parity change wires it. The whole group ships **off**: do

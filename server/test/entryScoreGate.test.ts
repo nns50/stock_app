@@ -25,6 +25,8 @@ const target = (over: Partial<DailyTargetStatus> = {}): DailyTargetStatus =>
 const cfg = (over: Partial<EntryScoreGateConfig> = {}): EntryScoreGateConfig => ({
   liveMinSignalScore: 72,
   finishLineMinSignalScore: 0,
+  mlRegimeEnabled: false,
+  mlRegimeHighVolMinSignalScore: 0,
   ...over,
 });
 
@@ -103,6 +105,76 @@ describe('the two bars compose — the stricter one binds', () => {
 });
 
 // ---------------------------------------------------------------------------
+// The High-Vol conviction bar (2026-09-08): a third source, composed the same
+// way. Floor 72 / High-Vol bar 78 / armed-day bar 80 in every combination —
+// the strictest wins and `source` names it.
+// ---------------------------------------------------------------------------
+describe('the High-Vol conviction bar composes as the third source', () => {
+  const on = cfg({ mlRegimeEnabled: true, mlRegimeHighVolMinSignalScore: 78 });
+
+  it('binds above the floor in High Vol: 75 passes the floor and is refused by the bar, 78 passes', () => {
+    const g = liveEntryScoreGate(75, target(), on, 'high_vol_bearish');
+    expect(g).toMatchObject({ skip: true, bar: 78, source: 'high_vol_regime', action: 'regime_score_floor_skipped' });
+    expect(g.detail).toMatch(/below the High Volatility\/Bearish conviction bar 78 \(everyday floor 72\)/);
+    expect(liveEntryScoreGate(78, target(), on, 'high_vol_bearish')).toMatchObject({
+      skip: false,
+      bar: 78,
+      source: 'high_vol_regime',
+    });
+  });
+
+  it('is 0 when the overlay is off, the regime is not High Vol, the field is 0, or no regime was handed in', () => {
+    for (const [c, regime] of [
+      [cfg({ mlRegimeEnabled: false, mlRegimeHighVolMinSignalScore: 78 }), 'high_vol_bearish'],
+      [on, 'sideways'],
+      [on, 'low_vol_bullish'],
+      [on, 'unknown'],
+      [on, null],
+      [on, undefined],
+      [cfg({ mlRegimeEnabled: true, mlRegimeHighVolMinSignalScore: 0 }), 'high_vol_bearish'],
+    ] as const) {
+      const g = liveEntryScoreGate(75, target(), c, regime);
+      expect(g.skip, `${JSON.stringify(c)} ${String(regime)}`).toBe(false);
+      expect(g.source).toBe('live_floor');
+      expect(g.bar).toBe(72);
+    }
+  });
+
+  it('a bar at or below the everyday floor changes nothing — the floor keeps its action', () => {
+    const low = cfg({ mlRegimeEnabled: true, mlRegimeHighVolMinSignalScore: 70 });
+    expect(liveEntryScoreGate(71, target(), low, 'high_vol_bearish')).toMatchObject({
+      skip: true,
+      bar: 72,
+      source: 'live_floor',
+      action: 'live_score_floor_skipped',
+    });
+    const tie = cfg({ mlRegimeEnabled: true, mlRegimeHighVolMinSignalScore: 72 });
+    expect(liveEntryScoreGate(71, target(), tie, 'high_vol_bearish').source).toBe('live_floor');
+  });
+
+  it('the armed-day bar still wins when it is the strictest, keeping its journal action', () => {
+    const armed = cfg({ mlRegimeEnabled: true, mlRegimeHighVolMinSignalScore: 78, finishLineMinSignalScore: 80 });
+    const g = liveEntryScoreGate(79, target({ giveBackArmed: true }), armed, 'high_vol_bearish');
+    expect(g).toMatchObject({ skip: true, bar: 80, source: 'armed_day', action: 'finish_line_skipped' });
+    // Unarmed, the High-Vol bar is the strictest in force.
+    expect(liveEntryScoreGate(79, target(), armed, 'high_vol_bearish')).toMatchObject({ skip: false, bar: 78 });
+    // Armed but with a LOWER armed bar, the High-Vol bar binds.
+    const lowArmed = cfg({ mlRegimeEnabled: true, mlRegimeHighVolMinSignalScore: 78, finishLineMinSignalScore: 75 });
+    expect(liveEntryScoreGate(76, target({ giveBackArmed: true }), lowArmed, 'high_vol_bearish')).toMatchObject({
+      skip: true,
+      bar: 78,
+      source: 'high_vol_regime',
+    });
+  });
+
+  it('with no everyday floor, the High-Vol bar stands alone', () => {
+    const alone = cfg({ liveMinSignalScore: 0, mlRegimeEnabled: true, mlRegimeHighVolMinSignalScore: 78 });
+    expect(liveEntryScoreGate(70, target(), alone, 'high_vol_bearish')).toMatchObject({ skip: true, bar: 78 });
+    expect(liveEntryScoreGate(70, target(), alone, 'sideways')).toMatchObject({ skip: false, source: 'none' });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Assert at the CONSUMER. The pure function proves nothing about whether the
 // live entry path calls it — the exact gap that let a finish-line trim size
 // against the wrong risk % for weeks with 137 green tests.
@@ -130,6 +202,10 @@ describe('the live entry path routes through this gate and nothing else', () => 
 
   it('journals the gate’s own action rather than a hardcoded one', () => {
     expect(code()).toMatch(/scoreGate\.action/);
+  });
+
+  it('hands the gate the tick’s EFFECTIVE regime — the one that cut the size — never a second reading', () => {
+    expect(code()).toMatch(/liveEntryScoreGate\(candidateSignal\.score, dailyTarget, cfg, regime\.effectiveRegime\)/);
   });
 
   it('is live-only — the paper path must keep taking these signals', () => {

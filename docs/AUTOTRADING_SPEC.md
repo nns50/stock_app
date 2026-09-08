@@ -6383,3 +6383,36 @@ already made, and out of session the tick still returns before it.
 - It does not follow a reading after the guard has armed or the day has banked.
 - It does not scale for the tighten, or for a skip.
 - Paper has no goal; nothing here touches the paper book.
+
+## 2026-09-08 — the High-Vol conviction bar, built and left OFF
+
+**What shipped.** `mlRegimeHighVolMinSignalScore` (0 = off, `NEVER_TUNED`) is a third source in
+the one live score gate (`entryScoreGate.ts`): while the overlay is on and the tick's EFFECTIVE
+regime — the same `regimeTriggers` derivation that cut the size and tightened the target — is
+High Volatility/Bearish, a new live equity entry must clear it. Composed exactly as the
+armed-day ramp already is: the strictest bar binds, `source` names it, and a skip journals
+`regime_score_floor_skipped` through the once-per-day throttle. Ties go to the rule whose
+journal action already has a history (armed day, then the everyday floor), so the tuning
+plan's counts keep their meaning. `liveExecute.ts` hands the gate `regime.effectiveRegime`;
+the source scan pins it. Live only, like `liveMinSignalScore` and for the same reason: paper
+keeps screening at `minSignalScore` and stays the control group. The live options book has its
+own conviction path (`optionsDecide.ts`) and is left alone.
+
+**Why the bar rises where the size falls.** Across the 57 closed live trades that carry a score
+every dollar came from scores 76–94 (+0.501R; the two thirds below lost $247 between them),
+and the fitted live floor is the lever with the most evidence behind it. The same score
+carries less edge in a High-Vol tape — a long-biased breakout edge weakens exactly there — and
+a slot spent on a 74 in that regime is a slot the next 82 cannot have. Trading fewer names is
+the complement of trading smaller; the walk-forward grid's second stage (off / 72 / 76 on
+regime days, at the chosen cut/tighten cell) is what decides whether the bar earns its place.
+
+### What this does NOT do
+
+- It does not gate paper, options, or any entry outside a High-Vol effective regime.
+- It does not replace the everyday floor or the armed-day ramp: it composes with them.
+- It does not fire with the overlay off, on an unknown reading, or at 0.
+
+### Enabling rules
+
+The overlay's rules apply; the bar's number is the grid's stage-2 cell, set only after stage 1
+has picked the cut/tighten cell, and reviewed with the cut on every retrain.

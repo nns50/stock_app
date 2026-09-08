@@ -40,12 +40,17 @@
 // shipped at 72 — twenty of them were driving fixtures scored in the sixties.
 // It is set explicitly and recorded, like every other live-money number here.
 //
-// TWO BARS, ONE DECISION. finishLineScoreGate already raises the bar on a day
-// the give-back guard has armed. Two independent gates would be two places
-// deriving "the minimum score for a live entry" — the shape CLAUDE.md's
-// agree-by-construction rule exists to prevent. So they compose here instead:
-// the STRICTER bar binds, and `source` names which one it was, so a skip is
-// still attributable to the rule that caused it.
+// THREE BARS, ONE DECISION. finishLineScoreGate already raises the bar on a day
+// the give-back guard has armed, and the ML regime overlay (2026-09-08) raises
+// it again while the effective regime is High Volatility/Bearish — the bar
+// rises where the size falls, because the same score carries less edge in a
+// High-Vol tape (mlRegimeHighVolMinSignalScore, 0 = off). Three independent
+// gates would be three places deriving "the minimum score for a live entry" —
+// the shape CLAUDE.md's agree-by-construction rule exists to prevent. So they
+// compose here instead: the STRICTEST bar binds, and `source` names which one
+// it was, so a skip is still attributable to the rule that caused it. Ties go
+// to the rule whose journal action already has a history (armed day, then the
+// everyday floor), so the counts in the tuning plan keep their meaning.
 // ---------------------------------------------------------------------------
 
 import { AutotradeConfig } from '../../db/autotradeConfig';
@@ -53,7 +58,7 @@ import { DailyTargetStatus } from './dailyTarget';
 import { finishLineScoreGate } from './finishLine';
 
 /** Which rule produced the binding bar. */
-export type ScoreBarSource = 'none' | 'live_floor' | 'armed_day';
+export type ScoreBarSource = 'none' | 'live_floor' | 'armed_day' | 'high_vol_regime';
 
 export interface EntryScoreGate {
   skip: boolean;
@@ -65,31 +70,51 @@ export interface EntryScoreGate {
    *  The armed-day case keeps its ORIGINAL action so the tuning plan's
    *  existing count of finish_line_skipped stays comparable across the
    *  change. */
-  action: 'live_score_floor_skipped' | 'finish_line_skipped' | null;
+  action: 'live_score_floor_skipped' | 'finish_line_skipped' | 'regime_score_floor_skipped' | null;
 }
 
-export type EntryScoreGateConfig = Pick<AutotradeConfig, 'liveMinSignalScore' | 'finishLineMinSignalScore'>;
+export type EntryScoreGateConfig = Pick<
+  AutotradeConfig,
+  'liveMinSignalScore' | 'finishLineMinSignalScore' | 'mlRegimeEnabled' | 'mlRegimeHighVolMinSignalScore'
+>;
+
+/** The High-Vol bar in force for a tick: the configured bar while the overlay
+ *  is on and the tick's EFFECTIVE regime (effectiveRisk.ts's regimeTriggers —
+ *  the model's reading, or a shock day) is High Volatility/Bearish; 0 otherwise. */
+export function highVolScoreBar(
+  cfg: Pick<AutotradeConfig, 'mlRegimeEnabled' | 'mlRegimeHighVolMinSignalScore'>,
+  effectiveRegime: string | null | undefined,
+): number {
+  return cfg.mlRegimeEnabled && effectiveRegime === 'high_vol_bearish' && cfg.mlRegimeHighVolMinSignalScore > 0
+    ? cfg.mlRegimeHighVolMinSignalScore
+    : 0;
+}
 
 /**
  * May this live equity signal open a position, on conviction grounds?
  *
- * The everyday floor and the armed-day ramp are both "minimum score for a live
- * entry", so whichever is STRICTER right now is the one that decides. A skip
- * reports the bar it failed and names the rule, because a refusal nobody can
- * attribute is a refusal nobody can count.
+ * The everyday floor, the armed-day ramp and the High-Vol bar are all
+ * "minimum score for a live entry", so whichever is STRICTEST right now is the
+ * one that decides. A skip reports the bar it failed and names the rule,
+ * because a refusal nobody can attribute is a refusal nobody can count.
+ * `effectiveRegime` is the tick's (loop.ts's one derivation); a caller with
+ * no tick behind it leaves it out and gets no High-Vol bar.
  */
 export function liveEntryScoreGate(
   score: number,
   dailyTarget: DailyTargetStatus,
   cfg: EntryScoreGateConfig,
+  effectiveRegime: string | null | undefined = undefined,
 ): EntryScoreGate {
   const armed = finishLineScoreGate(score, dailyTarget, cfg);
   const armedBar = armed.detail === 'inactive' ? 0 : cfg.finishLineMinSignalScore;
   const floor = cfg.liveMinSignalScore > 0 ? cfg.liveMinSignalScore : 0;
+  const regimeBar = highVolScoreBar(cfg, effectiveRegime);
+  const everyday = Math.max(floor, regimeBar);
 
   // The armed-day rule wins ties so its existing journal action, and the
   // history already recorded under it, keep their meaning.
-  if (armedBar >= floor && armedBar > 0) {
+  if (armedBar >= everyday && armedBar > 0) {
     return {
       skip: armed.skip,
       bar: armedBar,
@@ -98,7 +123,30 @@ export function liveEntryScoreGate(
       action: armed.skip ? 'finish_line_skipped' : null,
     };
   }
-  if (floor <= 0) return { skip: false, bar: 0, source: 'none', detail: 'inactive', action: null };
+  if (everyday <= 0) return { skip: false, bar: 0, source: 'none', detail: 'inactive', action: null };
+  // The High-Vol bar binds only when it is STRICTLY above the everyday floor —
+  // a tie keeps reporting under the floor's action, for the same reason.
+  if (regimeBar > floor) {
+    if (score >= regimeBar) {
+      return {
+        skip: false,
+        bar: regimeBar,
+        source: 'high_vol_regime',
+        detail: `passed — score ${score} ≥ the High Volatility/Bearish bar ${regimeBar}`,
+        action: null,
+      };
+    }
+    return {
+      skip: true,
+      bar: regimeBar,
+      source: 'high_vol_regime',
+      detail:
+        `score ${score} below the High Volatility/Bearish conviction bar ${regimeBar}` +
+        `${floor > 0 ? ` (everyday floor ${floor})` : ''} — the same score carries less edge in a High-Vol tape; ` +
+        `the paper book still takes this signal, so the counterfactual stays measurable`,
+      action: 'regime_score_floor_skipped',
+    };
+  }
   if (score >= floor) {
     return {
       skip: false,

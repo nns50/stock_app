@@ -2863,6 +2863,7 @@ export default function AutoTradePage() {
   const [mlRegimeSwitchThresholdDraft, setMlRegimeSwitchThresholdDraft] = useState<number | undefined>();
   const [regimeShockRangeRatioDraft, setRegimeShockRangeRatioDraft] = useState<number | undefined>();
   const [mlRegimeTargetTightenPctDraft, setMlRegimeTargetTightenPctDraft] = useState<number | undefined>();
+  const [mlRegimeHighVolMinSignalScoreDraft, setMlRegimeHighVolMinSignalScoreDraft] = useState<number | undefined>();
   const [equityCurveDeriskEnabled, setEquityCurveDeriskEnabled] = useState(false);
   const [equityCurveLookbackDaysDraft, setEquityCurveLookbackDaysDraft] = useState<number | undefined>();
   const [equityCurveDeriskCutPctDraft, setEquityCurveDeriskCutPctDraft] = useState<number | undefined>();
@@ -3002,6 +3003,7 @@ export default function AutoTradePage() {
     sync('mlRegimeSwitchThreshold', setMlRegimeSwitchThresholdDraft);
     sync('regimeShockRangeRatio', setRegimeShockRangeRatioDraft);
     sync('mlRegimeTargetTightenPct', setMlRegimeTargetTightenPctDraft);
+    sync('mlRegimeHighVolMinSignalScore', setMlRegimeHighVolMinSignalScoreDraft);
     sync('equityCurveDeriskEnabled', setEquityCurveDeriskEnabled);
     sync('equityCurveLookbackDays', setEquityCurveLookbackDaysDraft);
     sync('equityCurveDeriskCutPct', setEquityCurveDeriskCutPctDraft);
@@ -3115,6 +3117,7 @@ export default function AutoTradePage() {
     mlRegimeSwitchThreshold?: number;
     regimeShockRangeRatio?: number;
     mlRegimeTargetTightenPct?: number;
+    mlRegimeHighVolMinSignalScore?: number;
     equityCurveDeriskEnabled?: boolean;
     equityCurveLookbackDays?: number;
     equityCurveDeriskCutPct?: number;
@@ -4774,6 +4777,37 @@ export default function AutoTradePage() {
                           mlRegimeTargetTightenPctDraft < 0 ||
                           mlRegimeTargetTightenPctDraft > 100 ||
                           mlRegimeTargetTightenPctDraft === config.data?.mlRegimeTargetTightenPct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="High-Vol conviction bar"
+                    hint="Minimum signal score a new LIVE EQUITY entry must clear while the effective regime is High Volatility/Bearish — the bar rises where the size falls, because the same score carries less edge in a High-Vol tape (every live dollar so far came from scores 76–94). A third source in the one live score gate beside the live conviction floor and the armed-day bar; the strictest binds and a skip journals regime_score_floor_skipped. Live only — paper keeps screening at the screen minimum and stays the control group. 0 = off. Needs ML regime overlay on."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={mlRegimeHighVolMinSignalScoreDraft}
+                        onChange={setMlRegimeHighVolMinSignalScoreDraft}
+                        min={0}
+                        max={100}
+                        step={1}
+                        placeholder="0 (no bar)"
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save High-Vol conviction bar"
+                        onClick={() =>
+                          mlRegimeHighVolMinSignalScoreDraft != null &&
+                          saveConfig({ mlRegimeHighVolMinSignalScore: mlRegimeHighVolMinSignalScoreDraft })
+                        }
+                        disabled={
+                          mlRegimeHighVolMinSignalScoreDraft == null ||
+                          mlRegimeHighVolMinSignalScoreDraft < 0 ||
+                          mlRegimeHighVolMinSignalScoreDraft > 100 ||
+                          mlRegimeHighVolMinSignalScoreDraft === config.data?.mlRegimeHighVolMinSignalScore
                         }
                       >
                         Save

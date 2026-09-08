@@ -283,8 +283,12 @@ export default function AboutPage() {
           42%), the finish-line trim reasons about that same tightened payoff, and the options exit rules read the
           regime stamped on the position rather than today’s — so a High-Vol entry keeps its tighter target through a
           calm afternoon and a calm-tape entry is never tightened later. The applied factor is stamped on every
-          position. Nothing else acts on the reading. The model card (docs/MARKET_REGIME_MODEL.md) has the data, the
-          validation, the enabling rules and what it does not do.
+          position. With a <strong className="text-slate-200">High-Vol conviction bar</strong> set (0 = off), a new live
+          equity entry must also clear that signal score while the effective regime is High Volatility/Bearish — the bar
+          rises where the size falls, a third source in the one live score gate beside the live conviction floor and the
+          armed-day bar, the strictest binding; paper keeps screening at the screen minimum. Nothing else acts on the
+          reading. The model card (docs/MARKET_REGIME_MODEL.md) has the data, the validation, the enabling rules and
+          what it does not do.
         </p>
       </Section>
 

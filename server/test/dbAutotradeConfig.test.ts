@@ -630,6 +630,14 @@ describe('autotrade config persistence', () => {
       expect(d.mlRegimeTargetTightenPct).toBe(30);
     });
 
+    it('the High-Vol conviction bar ships at 0 (off), round-trips and clamps to [0, 100]', () => {
+      expect(defaultAutotradeConfig().mlRegimeHighVolMinSignalScore).toBe(0);
+      expect(setAutotradeConfig({ mlRegimeHighVolMinSignalScore: 78 }).mlRegimeHighVolMinSignalScore).toBe(78);
+      expect(getAutotradeConfig().mlRegimeHighVolMinSignalScore).toBe(78);
+      expect(setAutotradeConfig({ mlRegimeHighVolMinSignalScore: 150 }).mlRegimeHighVolMinSignalScore).toBe(100);
+      expect(setAutotradeConfig({ mlRegimeHighVolMinSignalScore: -1 }).mlRegimeHighVolMinSignalScore).toBe(0);
+    });
+
     it('the target tighten round-trips and clamps to [0, 100]', () => {
       expect(setAutotradeConfig({ mlRegimeTargetTightenPct: 15 }).mlRegimeTargetTightenPct).toBe(15);
       expect(getAutotradeConfig().mlRegimeTargetTightenPct).toBe(15);
