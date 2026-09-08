@@ -9,6 +9,8 @@ vi.mock('../src/providers/webull/accountState', () => ({ webullAccountState: vi.
 vi.mock('../src/providers/webull/orders', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/providers/webull/orders')>()),
   webullPlaceStandaloneBracket: vi.fn(),
+  listWebullOpenOrders: vi.fn(),
+  webullCancelOrder: vi.fn(),
 }));
 
 import type { AddressInfo } from 'node:net';
@@ -18,10 +20,12 @@ import { config } from '../src/config';
 import { setAutotradeConfig } from '../src/db/autotradeConfig';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { webullAccountState } from '../src/providers/webull/accountState';
-import { webullPlaceStandaloneBracket } from '../src/providers/webull/orders';
+import { listWebullOpenOrders, webullCancelOrder, webullPlaceStandaloneBracket } from '../src/providers/webull/orders';
 
 const mockAccount = vi.mocked(webullAccountState);
 const mockPlace = vi.mocked(webullPlaceStandaloneBracket);
+const mockOpen = vi.mocked(listWebullOpenOrders);
+const mockCancel = vi.mocked(webullCancelOrder);
 
 let base = '';
 beforeAll(async () => {
@@ -56,6 +60,15 @@ beforeEach(() => {
   mockPlace.mockResolvedValue({ ok: true, clientComboOrderId: 'COMBO-TEST' } as Awaited<
     ReturnType<typeof webullPlaceStandaloneBracket>
   >);
+  mockCancel.mockResolvedValue({ ok: true } as Awaited<ReturnType<typeof webullCancelOrder>>);
+  mockOpen.mockResolvedValue({
+    ok: true,
+    orders: [
+      { clientOrderId: 'a', comboOrderId: 'GRP-1', symbol: 'FCX', side: 'sell', status: 'OPEN' },
+      { clientOrderId: 'b', comboOrderId: 'GRP-1', symbol: 'FCX', side: 'sell', status: 'OPEN' },
+      { clientOrderId: 'c', comboOrderId: 'GRP-2', symbol: 'FCX', side: 'sell', status: 'OPEN' },
+    ],
+  } as Awaited<ReturnType<typeof listWebullOpenOrders>>);
 });
 
 describe('POST /api/autotrade/live/standalone-bracket', () => {
@@ -109,5 +122,71 @@ describe('POST /api/autotrade/live/standalone-bracket', () => {
     expect(((await r.json()) as { ok: boolean }).ok).toBe(false);
     const failed = listAutotradeEvents({ stage: 'execution', actions: ['live_bracket_rearm_failed'], limit: 20 })[0];
     expect(JSON.parse(failed?.detail ?? '{}')).toMatchObject({ error: 'rejected by broker' });
+  });
+});
+
+describe('GET /api/autotrade/live/open-orders', () => {
+  it('counts DISTINCT combo groups — the question the endpoint exists for', async () => {
+    const r = await fetch(`${base}/api/autotrade/live/open-orders`);
+    expect(r.status).toBe(200);
+    const b = (await r.json()) as { count: number; comboGroups: { comboOrderId: string; legs: number }[] };
+    expect(b.count).toBe(3);
+    expect(b.comboGroups).toEqual([
+      { comboOrderId: 'GRP-1', legs: 2 },
+      { comboOrderId: 'GRP-2', legs: 1 },
+    ]);
+  });
+
+  it('fails closed when the broker cannot be read', async () => {
+    mockOpen.mockResolvedValue({ ok: false, orders: [], error: 'boom' } as Awaited<
+      ReturnType<typeof listWebullOpenOrders>
+    >);
+    const r = await fetch(`${base}/api/autotrade/live/open-orders`);
+    expect(r.status).toBe(502);
+  });
+});
+
+describe('POST /api/autotrade/live/cancel-order', () => {
+  const post = (body: unknown) =>
+    fetch(`${base}/api/autotrade/live/cancel-order`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  it('requires the confirmation to repeat the client order id exactly', async () => {
+    // A symbol-shaped confirmation would let a slip cancel the wrong leg of the
+    // right stock, which is how a stop gets pulled by accident.
+    const r = await post({ clientOrderId: 'LEG-1', confirmation: 'FCX' });
+    expect(r.status).toBe(400);
+    expect(mockCancel).not.toHaveBeenCalled();
+  });
+
+  it('cancels and journals, naming the naked-position risk', async () => {
+    const r = await post({ clientOrderId: 'LEG-1', confirmation: 'LEG-1' });
+    expect(r.status).toBe(200);
+    expect(mockCancel).toHaveBeenCalledWith('ACC1', 'LEG-1');
+    const ev = listAutotradeEvents({ stage: 'execution', actions: ['live_order_cancelled_by_hand'], limit: 10 })[0];
+    expect(JSON.parse(ev?.detail ?? '{}')).toMatchObject({ clientOrderId: 'LEG-1' });
+    expect(String(ev?.detail)).toMatch(/now unprotected/);
+  });
+
+  it('works even when placement is disabled — cancelling is the safe direction', async () => {
+    config.trading.placeEnabled = false;
+    const r = await post({ clientOrderId: 'LEG-1', confirmation: 'LEG-1' });
+    expect(r.status).toBe(200);
+    expect(mockCancel).toHaveBeenCalled();
+  });
+
+  it('reports a refused cancel rather than throwing', async () => {
+    mockCancel.mockResolvedValue({ ok: false, error: 'already filled' } as Awaited<
+      ReturnType<typeof webullCancelOrder>
+    >);
+    const r = await post({ clientOrderId: 'LEG-1', confirmation: 'LEG-1' });
+    expect(r.status).toBe(200);
+    expect(((await r.json()) as { ok: boolean }).ok).toBe(false);
+    expect(
+      listAutotradeEvents({ stage: 'execution', actions: ['live_order_cancel_by_hand_failed'], limit: 10 }),
+    ).toHaveLength(1);
   });
 });
