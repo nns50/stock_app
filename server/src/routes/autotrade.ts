@@ -62,7 +62,7 @@ import { computeTargetTune, realizedBasisAvailability, resetToModerate } from '.
 import { collectBook, DEFAULT_LOOKBACK_SESSIONS, realizedEdgeOf } from '../services/autotrading/dailyTargetSweepData';
 import { runDailyTargetSweep } from '../services/autotrading/dailyTargetSweep';
 import { listUniverseSymbols } from '../db/universe';
-import { webullPlaceStandaloneBracket } from '../providers/webull/orders';
+import { listWebullOpenOrders, webullCancelOrder, webullPlaceStandaloneBracket } from '../providers/webull/orders';
 import { webullAccountState } from '../providers/webull/accountState';
 import { config } from '../config';
 
@@ -2275,5 +2275,87 @@ autotradeRouter.post(
     // to answer questions the docs cannot, and a summarized response would lose
     // the combo ids that answer them.
     res.json({ heldAtBroker: held, ...placed });
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// See and cancel what is actually resting at the broker (2026-09-08).
+//
+// The other half of the standalone-bracket route above. Two gaps it closes:
+//
+//  1. When the naked-position alarm says "check the broker", there was nothing
+//     in this app to check it WITH — you had to open Webull. GET open-orders is
+//     that read, returning the mapped legs with their comboOrderId so a
+//     protective group can be told apart from a stray order.
+//  2. A bracket you can place but not cancel is half a tool. The standalone
+//     route could arm protection and nothing here could take it back.
+//
+// CANCELLING IS NOT GATED ON placeEnabled, deliberately. Placement is the
+// direction that adds risk; cancelling is the direction that removes an order,
+// and an operator who has just killed placement is exactly the operator who
+// most needs to pull a resting order. Gating it behind the same switch would
+// disarm the brake along with the accelerator.
+//
+// BUT IT CAN LEAVE A POSITION NAKED. Cancelling a STOP_LOSS leg removes the
+// protection on live shares — the state checkLiveBracketProtection alarms on.
+// So it takes the client order id as its own typed confirmation (no fat-finger
+// path from a symbol name to a specific leg) and journals every attempt.
+// ---------------------------------------------------------------------------
+autotradeRouter.get(
+  '/live/open-orders',
+  asyncHandler(async (_req, res) => {
+    const cfg = getAutotradeConfig();
+    const accountId = cfg.liveAccountId;
+    if (!accountId) throw new HttpError(400, 'No live account is configured.');
+    const open = await listWebullOpenOrders(accountId);
+    if (!open.ok) throw new HttpError(502, `Could not read open orders: ${open.error ?? 'unknown'}`);
+    // Grouped by comboOrderId as well as listed flat: "how many distinct combo
+    // groups rest on this symbol" is the question this endpoint exists to
+    // answer, and counting it here beats every caller re-deriving it.
+    const byCombo = new Map<string, number>();
+    for (const o of open.orders) {
+      const key = o.comboOrderId ?? '(none)';
+      byCombo.set(key, (byCombo.get(key) ?? 0) + 1);
+    }
+    res.json({
+      count: open.orders.length,
+      comboGroups: [...byCombo].map(([comboOrderId, legs]) => ({ comboOrderId, legs })),
+      orders: open.orders,
+    });
+  }),
+);
+
+const cancelOrderBody = z.object({
+  clientOrderId: z.string().min(1).max(64),
+  /** The client order id again. Not the symbol: a symbol would let a slip cancel
+   *  the wrong leg of the right stock, which is how a stop gets pulled by
+   *  accident. */
+  confirmation: z.string().min(1).max(64),
+});
+
+autotradeRouter.post(
+  '/live/cancel-order',
+  asyncHandler(async (req, res) => {
+    const body = parseBody(cancelOrderBody, req);
+    if (body.confirmation.trim() !== body.clientOrderId.trim()) {
+      throw new HttpError(400, 'Confirmation must repeat the clientOrderId exactly.');
+    }
+    const cfg = getAutotradeConfig();
+    const accountId = cfg.liveAccountId;
+    if (!accountId) throw new HttpError(400, 'No live account is configured.');
+    const result = await webullCancelOrder(accountId, body.clientOrderId.trim());
+    logAutotradeEvent({
+      stage: 'execution',
+      action: result.ok ? 'live_order_cancelled_by_hand' : 'live_order_cancel_by_hand_failed',
+      detail: {
+        clientOrderId: body.clientOrderId.trim(),
+        error: result.ok ? null : (result.error ?? null),
+        note: result.ok
+          ? 'Cancelled through the manual route. If this was a STOP_LOSS leg the position is now unprotected.'
+          : null,
+      },
+      riskProfile: cfg.riskProfile,
+    });
+    res.json(result);
   }),
 );
