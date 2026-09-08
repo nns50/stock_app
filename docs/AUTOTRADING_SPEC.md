@@ -6362,3 +6362,56 @@ Three candidate paths, and the probe removed one of them:
 No config was changed. The test order was refused, so nothing rested in the
 book and there was nothing to cancel; FCX finished the probe with its original
 three legs and its protection intact.
+
+---
+
+## 2026-09-08 — the naked-position alarm was paging on stops that had just filled
+
+`checkLiveBracketProtection` asked one question: is there a resting exit-side
+order on this symbol? A `no` was treated as "unprotected, wake someone".
+
+But a bracket whose stop has just **filled** answers `no` too. The two states
+are identical from the open-orders book, and the alarm could not tell them
+apart. On 09-08 it paged on SMCI:
+
+```
+13:52:45  live_position_unprotected — "the broker shows no resting sell order on
+          SMCI — its stop may never have been accepted, or was cancelled. Check
+          the broker and re-arm protection by hand."  restingExitLegs 0
+13:52:53  position_reconcile_skipped — bracket_leg_reconcile_pending, brokerQty 0
+13:54     exit recorded: exitReason 'stop', 52 @ 40.77
+```
+
+Nothing was ever unprotected. The stop was in the act of working, and the
+reconcile knew it eight seconds later — `brokerQty 0` is the position being
+**gone**, not naked.
+
+### The fix
+
+The alarm now reads the held quantity before it pages, and only on the branch
+that is about to page — every position that still has its stop returns earlier,
+so this costs one account read per position genuinely at risk, not one per
+position per tick.
+
+| Broker says held | Verdict |
+|---|---|
+| 0 | closed, not unprotected. Skipped, and the reconcile will book it. |
+| more than 0 | real. Pages, and the detail names the confirmed count. |
+| read failed | still pages — fail-loud is right for a protection alarm — but the message says the held count is **unconfirmed** rather than claiming it. |
+
+A partial fill lands in the second row correctly: the shares that remain
+genuinely have no stop under them.
+
+### Why it was worth fixing on one instance
+
+Seven `live_position_unprotected` rows exist in the whole journal. Exactly
+**one** is a confirmed false page — today's SMCI, followed by a `stop` exit the
+same day. The other six exited with no recorded reason, so they cannot be
+classified either way and no rate should be claimed from them.
+
+The argument is not the count. It is that **this is the alarm that pages**, its
+text tells the operator to go re-arm protection by hand, and it fires on a state
+that occurs every single time a stop does its job. Left alone it would page on
+every stop fill from here on, and an alarm that cries wolf on healthy positions
+trains you to ignore the one case it exists for — the same reasoning already
+written into this function for account scoping and for parse misses.

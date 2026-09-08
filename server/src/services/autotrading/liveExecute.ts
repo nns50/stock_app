@@ -2508,6 +2508,10 @@ export interface BracketProtectionOutcome {
   protectedAtBroker: boolean;
   /** Set when the scan couldn't answer — neither protected nor unprotected. */
   unknown?: string;
+  /** Shares the BROKER says are held, read only when the scan is about to call
+   *  a position naked. null when the read failed. Zero means the position is
+   *  gone — its stop filled — which is not the same thing as unprotected. */
+  heldAtBroker?: number | null;
 }
 
 /**
@@ -2640,7 +2644,38 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
       });
       continue;
     }
-    outcomes.push({ positionId: pos.id, symbol, protectedAtBroker: false });
+    // NO RESTING STOP IS NOT THE SAME AS NAKED (2026-09-08).
+    //
+    // A bracket whose stop has just FILLED looks identical to one whose stop was
+    // never accepted: both show zero resting exit legs. On 09-08 this alarm
+    // paged on SMCI at 13:52:45 — "check the broker and re-arm protection by
+    // hand" — and that position's stop was booked 75 seconds later at 40.77.
+    // Nothing was ever unprotected; the stop was in the act of working.
+    //
+    // The distinguishing signal is the HELD QUANTITY, and the reconcile already
+    // had it eight seconds later (position_reconcile_skipped, brokerQty 0).
+    // Zero held means the position is gone and the reconcile will close it;
+    // more than zero with no resting stop is the real thing worth waking
+    // someone for. A partial fill lands in the second case correctly — the
+    // shares that remain genuinely have no stop under them.
+    //
+    // Read LAZILY, on this branch only. Every position that still has its stop
+    // has already returned above, so this costs one account read per position
+    // actually about to page, not one per position per tick.
+    const held = await webullAccountState(accountId, symbol);
+    const heldQty = held.ok ? (held.state?.currentPositionQty ?? null) : null;
+    if (heldQty === 0) {
+      // Not naked — closed, and awaiting the reconcile. Say so and page nobody.
+      outcomes.push({
+        positionId: pos.id,
+        symbol,
+        protectedAtBroker: false,
+        heldAtBroker: 0,
+        unknown: `no resting stop on ${symbol}, and the broker holds 0 — the position is closed, not unprotected`,
+      });
+      continue;
+    }
+    outcomes.push({ positionId: pos.id, symbol, protectedAtBroker: false, heldAtBroker: heldQty });
     // Once per position per ET day: this condition persists until a human acts,
     // so journaling every tick would bury it, and journaling once ever would let
     // it go quiet while the position is still naked.
@@ -2654,14 +2689,22 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
           quantity: pos.remainingQuantity,
           recordedStop: pos.stopPrice,
           restingExitLegs: restingLegs.length,
+          // null means the account read FAILED, so this is paging without
+          // having confirmed the shares are still held. Fail-loud is the right
+          // direction for a protection alarm, but the reader must be able to
+          // tell that case from a confirmed naked position.
+          heldAtBroker: heldQty,
           reason:
-            restingLegs.length === 0
+            (restingLegs.length === 0
               ? 'This position was opened with a bracket, but the broker shows no resting ' +
-                `${exitSide} order on ${symbol} — its stop may never have been accepted, or was cancelled. ` +
-                'Check the broker and re-arm protection by hand.'
+                `${exitSide} order on ${symbol} — its stop may never have been accepted, or was cancelled. `
               : `This position's TAKE-PROFIT leg is still resting on ${symbol}, but its STOP is not. ` +
-                'The position is running with no downside protection while looking like it has a bracket. ' +
-                'Check the broker and re-arm the stop by hand.',
+                'The position is running with no downside protection while looking like it has a bracket. ') +
+            (heldQty === null
+              ? 'The account read FAILED, so it is NOT confirmed that these shares are still held — ' +
+                'a stop that has just filled looks the same from here. Check the broker before acting.'
+              : `The broker confirms ${heldQty} share(s) still held, so this is real. ` +
+                'Check the broker and re-arm protection by hand.'),
         },
         riskProfile: getLiveEntryOrderForPosition(pos.id)?.riskProfile ?? cfg.riskProfile,
       });
