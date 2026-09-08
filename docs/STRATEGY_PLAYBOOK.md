@@ -948,6 +948,24 @@ Two lessons, both general:
   scale-out's every dollar was missing. Before judging a feature, confirm the evidence
   can see it.
 
+**A fix you have not watched the broker accept is not a fix.** The same scale-out
+supplied a third failure mode on 2026-09-08, and it is the most expensive of the
+three because it cost four sessions of false confidence. The trigger worked and the
+accounting was repaired; the *order* was still being refused. A change went in on
+09-04 to send both bracket legs in one replace request, on a correct diagnosis of why
+single-leg requests were refused. The journal since: 46 more refusals across four
+symbols, the broker's message unchanged word for word, and fills still at zero. The
+unit tests were green the whole time, and they always would have been — they assert
+what the request *looks like*, and the open question was what the broker *does with
+it*. Only the live account could answer that, and nothing asked it.
+
+The operating rule: **when a change is supposed to move a number you can see, go and
+look at that number, on a date after the deploy.** Not the test that passes, not the
+code that reads correctly — the count. "Scale-out fills" sat at zero for four days
+underneath a code comment asserting the problem was solved. A mechanism that has never
+once executed has no measured value, however well its logic reads, and it must not be
+counted on in sizing or in a plan until the broker has been seen to accept it.
+
 ---
 
 ## Reducing slippage with execution quality

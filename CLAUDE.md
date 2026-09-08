@@ -51,6 +51,19 @@ Guidelines:
   tests — the build config alone still owns src's stricter node16 rules). If you add a
   fixture, give it every field; reach for `as never` only when you genuinely mean
   "this call is not what's under test".
+- **Test FILE ORDER is pinned by `server/vitest.config.ts`, and it has to be.**
+  Vitest's default sequencer is not deterministic: with a warm results cache it runs
+  failed files first, then slowest first, falling back to largest-file-first only on a
+  cold cache. So the order tracked the previous run's timings, and one red run
+  reordered the next. Since `setAutotradeConfig` is a PARTIAL patch over one config row
+  every test file shares, a reordering silently changes what a test runs against — that
+  is half of task #46's "2 in 6 runs, unattributed" (the other half was a stale
+  database, see `test/dbFile.ts`). A path-sorting sequencer now fixes the order. It does
+  NOT remove the coupling; it removes the ghost, so a config leak now fails identically
+  on every run and can be bisected. **A test file that patches shared config should
+  spread `defaultAutotradeConfig()` first** — pinning fields one at a time only ever
+  fixes the field that happened to bite. And never write a comment claiming some file
+  "always runs first"; three such comments were wrong.
 - Demo data: `npm run seed` (idempotent; `--force` to add anyway).
 - Run locally: `npm run dev` → API `:3001` + web `:5173`.
 

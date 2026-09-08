@@ -62,7 +62,12 @@ import { computeTargetTune, realizedBasisAvailability, resetToModerate } from '.
 import { collectBook, DEFAULT_LOOKBACK_SESSIONS, realizedEdgeOf } from '../services/autotrading/dailyTargetSweepData';
 import { runDailyTargetSweep } from '../services/autotrading/dailyTargetSweep';
 import { listUniverseSymbols } from '../db/universe';
-import { listWebullOpenOrders, webullCancelOrder, webullPlaceStandaloneBracket } from '../providers/webull/orders';
+import {
+  committedProtectiveQuantity,
+  listWebullOpenOrders,
+  webullCancelOrder,
+  webullPlaceStandaloneBracket,
+} from '../providers/webull/orders';
 import { webullAccountState } from '../providers/webull/accountState';
 import { config } from '../config';
 
@@ -2239,6 +2244,34 @@ autotradeRouter.post(
       throw new HttpError(
         400,
         `Refusing to protect ${body.quantity} ${symbol} against ${held} held — a protective sell larger than the position is a short, not protection.`,
+      );
+    }
+
+    // HELD IS NOT THE BROKER'S BOUND. Shipped 2026-09-08 with the check above
+    // and only that; the first real call — 1 share of FCX against 38 held —
+    // was refused as a position reversal, because a full-size bracket was
+    // already resting and the broker counts held MINUS committed. This guard
+    // says so before the order leaves, with both numbers named, instead of
+    // handing back a broker string that sounds like the position is wrong.
+    // committedProtectiveQuantity carries the measurement and the two counting
+    // rules it implies.
+    const book = await listWebullOpenOrders(accountId);
+    if (!book.ok) throw new HttpError(502, `Could not read resting orders: ${book.error ?? 'unknown'}`);
+    // 'sell' because this route arms protection over a LONG — the intent below
+    // is side 'buy' with openClose 'close', whose legs rest on the sell side.
+    const committed = committedProtectiveQuantity(book.orders, symbol, 'sell');
+    if (committed === null) {
+      throw new HttpError(
+        502,
+        `A resting ${symbol} order carries no quantity, so the protected size cannot be computed. Refusing rather than guessing it low.`,
+      );
+    }
+    const available = held - committed;
+    if (body.quantity > available) {
+      throw new HttpError(
+        400,
+        `Refusing to protect ${body.quantity} ${symbol}: ${held} held, ${committed} already committed to resting exits, ` +
+          `so ${available} can be protected. The broker refuses the rest as a position reversal — cancel a resting leg first.`,
       );
     }
 

@@ -94,6 +94,62 @@ describe('POST /api/autotrade/live/standalone-bracket', () => {
     expect(mockPlace).toHaveBeenCalledTimes(1);
   });
 
+  // The guard the FIRST real call to this route walked straight into. It
+  // shipped checking `quantity > held` and nothing else; the broker refused a
+  // 1-share bracket on FCX against 38 held, because a full-size bracket was
+  // already resting and it counts held MINUS committed.
+  describe('the resting book, not just the holding', () => {
+    it('refuses when resting exits already spoken for the whole holding', async () => {
+      mockOpen.mockResolvedValue({
+        ok: true,
+        orders: [
+          { clientOrderId: 'x', comboOrderId: 'G1', symbol: 'SMCI', side: 'sell', status: 'SUBMITTED', quantity: 52 },
+          { clientOrderId: 'y', comboOrderId: 'G1', symbol: 'SMCI', side: 'sell', status: 'SUBMITTED', quantity: 52 },
+        ],
+      } as Awaited<ReturnType<typeof listWebullOpenOrders>>);
+      const r = await post(ok); // 1 share, 52 held
+      expect(r.status).toBe(400);
+      const { error } = (await r.json()) as { error: string };
+      // The OCO pair counts ONCE. If this said 104 the arithmetic would be wrong
+      // in the direction that reports the account as already short.
+      expect(error).toMatch(/52 held, 52 already committed/);
+      expect(error).toMatch(/so 0 can be protected/);
+      expect(mockPlace).not.toHaveBeenCalled();
+    });
+
+    it('allows exactly the UNCOMMITTED remainder, and refuses one more', async () => {
+      mockOpen.mockResolvedValue({
+        ok: true,
+        orders: [
+          { clientOrderId: 'x', comboOrderId: 'G1', symbol: 'SMCI', side: 'sell', status: 'SUBMITTED', quantity: 20 },
+          { clientOrderId: 'y', comboOrderId: 'G1', symbol: 'SMCI', side: 'sell', status: 'SUBMITTED', quantity: 20 },
+        ],
+      } as Awaited<ReturnType<typeof listWebullOpenOrders>>);
+      expect((await post({ ...ok, quantity: 32 })).status).toBe(200); // 52 - 20
+      expect((await post({ ...ok, quantity: 33 })).status).toBe(400);
+      expect(mockPlace).toHaveBeenCalledTimes(1);
+    });
+
+    it('fails closed when the resting book cannot be read at all', async () => {
+      mockOpen.mockResolvedValue({ ok: false, orders: [], error: 'boom' } as Awaited<
+        ReturnType<typeof listWebullOpenOrders>
+      >);
+      expect((await post(ok)).status).toBe(502);
+      expect(mockPlace).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when a resting leg carries no quantity', async () => {
+      mockOpen.mockResolvedValue({
+        ok: true,
+        orders: [{ clientOrderId: 'x', comboOrderId: 'G1', symbol: 'SMCI', side: 'sell', status: 'SUBMITTED' }],
+      } as Awaited<ReturnType<typeof listWebullOpenOrders>>);
+      const r = await post(ok);
+      expect(r.status).toBe(502);
+      expect(((await r.json()) as { error: string }).error).toMatch(/cannot be computed/);
+      expect(mockPlace).not.toHaveBeenCalled();
+    });
+  });
+
   it('places a no-MASTER bracket on the CLOSING side and returns the raw payload', async () => {
     const r = await post(ok);
     expect(r.status).toBe(200);
