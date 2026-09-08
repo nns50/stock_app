@@ -244,8 +244,8 @@ function dashboardFixture(overrides: Partial<AutotradeDashboard> = {}): Autotrad
     riskProfile: 'MODERATE',
     equity: 100_000,
     dailyTarget: { active: false, reached: false, giveBackArmed: false, giveBackHalted: false, entriesHalted: false },
+    mlRegime: null,
     dailyGoalEvidence: {
-      mlRegime: null,
       avgR: null,
       rTrades: 0,
       tradesPerSession: null,
@@ -3706,6 +3706,7 @@ describe('AutoTradePage', () => {
         entryScore: null,
         entryComponents: null,
         marketRegime: null,
+        mlRegime: null,
         marketAtrPct: null,
         entryVwap: null,
         createdAt: Date.now(),

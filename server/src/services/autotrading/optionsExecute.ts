@@ -246,6 +246,8 @@ export async function attemptOptionsPaperEntry(
    *  regime label + market ATR% the loop read this cycle. Both nullable. */
   marketRegime: string | null = null,
   marketAtrPct: number | null = null,
+  /** The ML regime label at entry (2026-09-08); null when unknown or stale. */
+  mlRegime: string | null = null,
 ): Promise<OptionsExecutionOutcome> {
   if (!riskResult.ok) return { symbol: signal.symbol, ok: false, reason: 'Risk check did not pass' };
   if (hasOpenOptionsPaperPosition(signal.symbol)) {
@@ -297,6 +299,7 @@ export async function attemptOptionsPaperEntry(
         ivRank: signal.ivRank,
         marketRegime,
         marketAtrPct,
+        mlRegime,
         underlyingAtEntry: signal.underlyingPrice,
       });
     } catch (err) {
@@ -359,6 +362,7 @@ export async function attemptOptionsPaperEntry(
       ivRank: signal.ivRank,
       marketRegime,
       marketAtrPct,
+      mlRegime,
       underlyingAtEntry: signal.underlyingPrice,
     });
   } catch (err) {
@@ -471,6 +475,8 @@ export async function runOptionsPaperExecution(
   /** Market regime label the loop read this cycle (2026-07-26) — stamped on
    *  each opened position as at-entry context, never used for sizing here. */
   marketRegime: string | null = null,
+  /** The ML regime label the loop read this tick (2026-09-08); null when unknown or stale. */
+  mlRegime: string | null = null,
 ): Promise<OptionsExecutionOutcome[]> {
   const config = getAutotradeConfig();
   const equity = config.accountEquityUsd ?? 0;
@@ -636,6 +642,7 @@ export async function runOptionsPaperExecution(
       grade,
       marketRegime,
       marketAtrPct,
+      mlRegime,
     );
     outcomes.push(outcome);
     if (outcome.ok && outcome.position) {

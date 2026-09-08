@@ -705,6 +705,9 @@ export async function attemptLiveEntry(
    *  callers (e.g. tests) that don't have them. */
   marketRegime: string | null = null,
   marketAtrPct: number | null = null,
+  /** The ML regime label at entry (2026-09-08), recorded on the order row and
+   *  carried to the position at materialization; null when unknown or stale. */
+  mlRegime: string | null = null,
 ): Promise<LiveExecutionOutcome> {
   const symbol = signal.symbol.toUpperCase();
   // The deploy-level master gate, checked FIRST — mirrors placeOrder.ts's own
@@ -857,6 +860,7 @@ export async function attemptLiveEntry(
     entryComponents: signal.components ?? null,
     marketRegime,
     marketAtrPct,
+    mlRegime,
     entryVwap,
     // The combo group id this client minted for the bracket. Stored on BOTH
     // paths below — including the ambiguous one, where the order may well have
@@ -970,6 +974,8 @@ export async function runLiveExecution(
    *  the entry order row and carried to the position at materialization as
    *  at-entry context; never used for sizing here. */
   marketRegime: string | null = null,
+  /** The ML regime label the loop read this tick (2026-09-08); null when unknown or stale. */
+  mlRegime: string | null = null,
 ): Promise<LiveExecutionOutcome[]> {
   const cfg = getAutotradeConfig();
   const equity = cfg.accountEquityUsd ?? 0;
@@ -1459,7 +1465,15 @@ export async function runLiveExecution(
     // than throwing (the broker client never throws), so this is a backstop.
     let outcome: LiveExecutionOutcome;
     try {
-      outcome = await attemptLiveEntry(signal, result, freshCfg.riskProfile, freshCfg, marketRegime, marketAtrPct);
+      outcome = await attemptLiveEntry(
+        signal,
+        result,
+        freshCfg.riskProfile,
+        freshCfg,
+        marketRegime,
+        marketAtrPct,
+        mlRegime,
+      );
     } catch (err) {
       const reason = `Unexpected error placing order: ${(err as Error).message}`;
       logAutotradeEvent({ symbol, stage: 'execution', action: 'live_entry_failed', detail: { reason } });
@@ -1995,6 +2009,7 @@ function materializeEntryFill(
         entryComponents: adopted.entryComponents ?? meta?.entryComponents ?? null,
         marketRegime: adopted.marketRegime ?? meta?.marketRegime ?? null,
         marketAtrPct: adopted.marketAtrPct ?? meta?.marketAtrPct ?? null,
+        mlRegime: adopted.mlRegime ?? meta?.mlRegime ?? null,
         entryVwap: adopted.entryVwap ?? meta?.entryVwap ?? null,
         ...(entryStamp ?? {}),
       });
@@ -2044,6 +2059,7 @@ function materializeEntryFill(
     entryComponents: orderMeta?.entryComponents ?? null,
     marketRegime: orderMeta?.marketRegime ?? null,
     marketAtrPct: orderMeta?.marketAtrPct ?? null,
+    mlRegime: orderMeta?.mlRegime ?? null,
     entryVwap: orderMeta?.entryVwap ?? null,
     sourceIntentId: intent.id,
     accountId,

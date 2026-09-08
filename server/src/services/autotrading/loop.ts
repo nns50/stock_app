@@ -600,6 +600,12 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     // and never blocks the tick.
     const regimeLabel: 'risk-on' | 'neutral' | 'risk-off' | null =
       (await computeMarketRegime().catch(() => null))?.label ?? null;
+    // The ML regime label stamped on every position opened this tick
+    // (2026-09-08): the HMM reading's regime when it is known and fresh, else
+    // null — a stale or unknown reading stamps nothing, never a guess. Pure
+    // at-entry context here; nothing sizes or gates on it yet.
+    const mlRegimeLabel: string | null =
+      mlRegimeReading && !mlRegimeReading.stale && mlRegimeReading.regime !== 'unknown' ? mlRegimeReading.regime : null;
     if (config.regimeAdaptiveWeightsEnabled && regimeLabel) {
       logAutotradeEvent({
         stage: 'screen',
@@ -827,6 +833,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
         seed,
         marketAtrPct,
         regimeLabel,
+        mlRegimeLabel,
       );
       summary.entriesOpened = outcomes.filter((o) => o.ok).length;
 
@@ -834,6 +841,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
         optionsDecision.signals.map((signal) => ({ signal })),
         marketAtrPct,
         regimeLabel,
+        mlRegimeLabel,
       );
       summary.optionsEntriesOpened = optionsOutcomes.filter((o) => o.ok).length;
     }
@@ -847,6 +855,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
         // direction; this closes the one-way gap.
         liveOptionsSeedForEquity(getLiveOptionsPortfolioSnapshot(getAutotradeConfig().liveAccountId ?? null)),
         regimeLabel,
+        mlRegimeLabel,
       );
       summary.liveEntriesOpened = liveOutcomes.filter((o) => o.ok).length;
     }
@@ -855,6 +864,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
         optionsDecision.signals.map((signal) => ({ signal })),
         marketAtrPct,
         regimeLabel,
+        mlRegimeLabel,
       );
       summary.liveOptionsEntriesOpened = liveOptionsOutcomes.filter((o) => o.ok).length;
     }

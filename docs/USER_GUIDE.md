@@ -790,14 +790,16 @@ trades.
   context*: the screener's **raw 0–100 score** (not just the A/B/C grade), the
   **market regime** label that cycle (risk-on / neutral / risk-off; best-effort — blank
   if the read failed, never guessed), the **market ATR%** reading, and, for options,
-  the **IV rank** the decision gated on. Live-placed positions also get a real
+  the **IV rank** the decision gated on. Since 2026-09-08 every entry also carries the
+  **ML regime** label the HMM read that day (`mlRegime`; blank when the reading was unknown
+  or stale, never guessed). Live-placed positions also get a real
   **entry time** (ET), so from now on the bot's trades appear in the entry-session
   breakdown above — they previously carried no time at all and were silently absent
   from it. Live bracket exits record an **exit reason** (`stop` / `target` /
   `time_exit`) on the exit itself, so you can see *which exit mechanism* is making or
   losing the money instead of inferring it from prices. All of it is capture-only —
   nothing about entries, sizing, or exits changes — and it flows through the CSV/JSON
-  export (new `entryTime`, `entryScore`, `marketRegime`, `marketAtrPct`, and
+  export (new `entryTime`, `entryScore`, `marketRegime`, `mlRegime`, `marketAtrPct`, and
   `lastExitReason` columns) so a month of trades can be sliced by score band, regime,
   and session offline. Since 2026-08-22 live equity entries also stamp the day's
   **session VWAP at entry** (`entryVwap`, in the export too) — capture-only, like the

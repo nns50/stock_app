@@ -161,6 +161,7 @@ CREATE TABLE IF NOT EXISTS autotrade_paper_positions (
   -- best-effort), simply has no context rather than an invented one.
   entry_score   REAL,
   market_regime TEXT,                 -- 'risk-on' | 'neutral' | 'risk-off'
+  ml_regime TEXT,     -- ML regime label at entry (2026-09-08): 'high_vol_bearish' | 'low_vol_bullish' | 'sideways'; null = unknown/stale/not read
   market_atr_pct REAL,
   -- Realized P&L already BANKED by partial exits on this row (2026-09-05).
   -- partialClosePaperPosition reduces quantity in place, so the row's own
@@ -273,6 +274,7 @@ CREATE TABLE IF NOT EXISTS ${name} (
   -- nothing else recorded the day's regime at all.
   entry_score REAL,
   market_regime TEXT,                  -- 'risk-on' | 'neutral' | 'risk-off'
+  ml_regime TEXT,     -- ML regime label at entry (2026-09-08): 'high_vol_bearish' | 'low_vol_bullish' | 'sideways'; null = unknown/stale/not read
   market_atr_pct REAL,
   -- Session VWAP at entry (2026-08-22) — an OBSERVER, stamped like the trio
   -- above so realized outcomes can later be split by VWAP alignment BEFORE
@@ -301,7 +303,7 @@ CREATE TABLE IF NOT EXISTS ${name} (
 const POSITIONS_COLS =
   'id, asset_type, symbol, side, quantity, entry_price, entry_date, entry_time, fees, option_type, ' +
   'strike, expiration, multiplier, status, tags, grade, notes, checklist, stop_price, target_price, ' +
-  'source_intent_id, account_id, entry_score, market_regime, market_atr_pct, entry_vwap, ' +
+  'source_intent_id, account_id, entry_score, market_regime, ml_regime, market_atr_pct, entry_vwap, ' +
   'initial_stop_price, best_price_since_entry, created_at, updated_at';
 
 const SCHEMA = `
@@ -659,6 +661,7 @@ CREATE TABLE IF NOT EXISTS autotrade_options_paper_positions (
   entry_score            REAL,
   iv_rank                REAL,                 -- IV rank (0-100) at decision time
   market_regime          TEXT,                 -- 'risk-on' | 'neutral' | 'risk-off'
+  ml_regime          TEXT,     -- ML regime label at entry (2026-09-08): 'high_vol_bearish' | 'low_vol_bullish' | 'sideways'; null = unknown/stale/not read
   market_atr_pct         REAL,
   -- Short-dated options (2026-08-27, docs/SHORT_DATED_OPTIONS_SPEC.md) — the
   -- paper counterpart of autotrade_live_options_positions.underlying_at_entry,
@@ -727,6 +730,7 @@ CREATE TABLE IF NOT EXISTS autotrade_live_orders (
   -- at materialization exactly like grade above. null for exit/legacy rows.
   entry_score   REAL,
   market_regime TEXT,                 -- 'risk-on' | 'neutral' | 'risk-off'
+  ml_regime TEXT,     -- ML regime label at entry (2026-09-08): 'high_vol_bearish' | 'low_vol_bullish' | 'sideways'; null = unknown/stale/not read
   market_atr_pct REAL,
   entry_vwap    REAL,                 -- session VWAP at placement (2026-08-22 observer) — see positions.entry_vwap
   created_at    INTEGER NOT NULL
@@ -774,6 +778,7 @@ CREATE TABLE IF NOT EXISTS autotrade_live_options_positions (
   entry_score            REAL,
   iv_rank                REAL,                 -- IV rank (0-100) at decision time
   market_regime          TEXT,                 -- 'risk-on' | 'neutral' | 'risk-off'
+  ml_regime          TEXT,     -- ML regime label at entry (2026-09-08): 'high_vol_bearish' | 'low_vol_bullish' | 'sideways'; null = unknown/stale/not read
   market_atr_pct         REAL,
   -- Short-dated options (2026-08-26, docs/SHORT_DATED_OPTIONS_SPEC.md).
   -- underlying_at_entry is the reference a stop on the UNDERLYING measures
@@ -825,6 +830,7 @@ CREATE TABLE IF NOT EXISTS autotrade_live_options_orders (
   entry_score   REAL,
   iv_rank       REAL,
   market_regime TEXT,                 -- 'risk-on' | 'neutral' | 'risk-off'
+  ml_regime TEXT,     -- ML regime label at entry (2026-09-08): 'high_vol_bearish' | 'low_vol_bullish' | 'sideways'; null = unknown/stale/not read
   market_atr_pct REAL,
   created_at    INTEGER NOT NULL
 );
@@ -1085,6 +1091,8 @@ function migrate(): void {
   // so every pre-existing row simply has no context rather than a guessed one.
   if (!has('entry_score')) db.exec('ALTER TABLE positions ADD COLUMN entry_score REAL');
   if (!has('market_regime')) db.exec('ALTER TABLE positions ADD COLUMN market_regime TEXT');
+  // The ML regime label at entry (2026-09-08) — same nullable, never-guessed posture.
+  if (!has('ml_regime')) db.exec('ALTER TABLE positions ADD COLUMN ml_regime TEXT');
   if (!has('market_atr_pct')) db.exec('ALTER TABLE positions ADD COLUMN market_atr_pct REAL');
 
   // position_exits gained the same provenance link, for exit-side slippage.
@@ -1174,6 +1182,9 @@ function migrate(): void {
   if (!hasApp('market_regime')) {
     db.exec('ALTER TABLE autotrade_paper_positions ADD COLUMN market_regime TEXT');
   }
+  if (!hasApp('ml_regime')) {
+    db.exec('ALTER TABLE autotrade_paper_positions ADD COLUMN ml_regime TEXT');
+  }
   if (!hasApp('market_atr_pct')) {
     db.exec('ALTER TABLE autotrade_paper_positions ADD COLUMN market_atr_pct REAL');
   }
@@ -1258,6 +1269,9 @@ function migrate(): void {
   if (!hasOpp('market_regime')) {
     db.exec('ALTER TABLE autotrade_options_paper_positions ADD COLUMN market_regime TEXT');
   }
+  if (!hasOpp('ml_regime')) {
+    db.exec('ALTER TABLE autotrade_options_paper_positions ADD COLUMN ml_regime TEXT');
+  }
   if (!hasOpp('market_atr_pct')) {
     db.exec('ALTER TABLE autotrade_options_paper_positions ADD COLUMN market_atr_pct REAL');
   }
@@ -1275,6 +1289,7 @@ function migrate(): void {
   if (!hasAlop('entry_score')) db.exec('ALTER TABLE autotrade_live_options_positions ADD COLUMN entry_score REAL');
   if (!hasAlop('iv_rank')) db.exec('ALTER TABLE autotrade_live_options_positions ADD COLUMN iv_rank REAL');
   if (!hasAlop('market_regime')) db.exec('ALTER TABLE autotrade_live_options_positions ADD COLUMN market_regime TEXT');
+  if (!hasAlop('ml_regime')) db.exec('ALTER TABLE autotrade_live_options_positions ADD COLUMN ml_regime TEXT');
   if (!hasAlop('market_atr_pct')) {
     db.exec('ALTER TABLE autotrade_live_options_positions ADD COLUMN market_atr_pct REAL');
   }
@@ -1306,6 +1321,7 @@ function migrate(): void {
   if (!hasAlo('entry_score')) db.exec('ALTER TABLE autotrade_live_options_orders ADD COLUMN entry_score REAL');
   if (!hasAlo('iv_rank')) db.exec('ALTER TABLE autotrade_live_options_orders ADD COLUMN iv_rank REAL');
   if (!hasAlo('market_regime')) db.exec('ALTER TABLE autotrade_live_options_orders ADD COLUMN market_regime TEXT');
+  if (!hasAlo('ml_regime')) db.exec('ALTER TABLE autotrade_live_options_orders ADD COLUMN ml_regime TEXT');
   if (!hasAlo('market_atr_pct')) db.exec('ALTER TABLE autotrade_live_options_orders ADD COLUMN market_atr_pct REAL');
 
   // autotrade_live_orders gained a role split (max-hold-days force-close):
@@ -1331,6 +1347,9 @@ function migrate(): void {
   }
   if (!aloEquityCols.some((c) => c.name === 'market_regime')) {
     db.exec('ALTER TABLE autotrade_live_orders ADD COLUMN market_regime TEXT');
+  }
+  if (!aloEquityCols.some((c) => c.name === 'ml_regime')) {
+    db.exec('ALTER TABLE autotrade_live_orders ADD COLUMN ml_regime TEXT');
   }
   if (!aloEquityCols.some((c) => c.name === 'market_atr_pct')) {
     db.exec('ALTER TABLE autotrade_live_orders ADD COLUMN market_atr_pct REAL');
@@ -1725,7 +1744,7 @@ export function rebuildAutotradeLiveOrdersTable(database: Database.Database): vo
   );
   const cols = (
     'intent_id, symbol, role, stop_price, target_price, risk_amount, risk_profile, position_id, ' +
-    'account_id, addon_of_position_id, grade, entry_score, market_regime, market_atr_pct, entry_vwap, created_at'
+    'account_id, addon_of_position_id, grade, entry_score, market_regime, ml_regime, market_atr_pct, entry_vwap, created_at'
   )
     .split(', ')
     .filter((c) => present.has(c))
@@ -1748,6 +1767,7 @@ export function rebuildAutotradeLiveOrdersTable(database: Database.Database): vo
       grade         TEXT,
       entry_score   REAL,
       market_regime TEXT,
+      ml_regime TEXT,
       market_atr_pct REAL,
       entry_vwap    REAL,
       created_at    INTEGER NOT NULL
@@ -1790,7 +1810,7 @@ export function rebuildAutotradeLiveOptionsOrdersTable(database: Database.Databa
   const cols = (
     'intent_id, symbol, role, kind, side, contract_symbol, strike, short_contract_symbol, short_strike, ' +
     'expiration, risk_amount, risk_profile, position_id, exit_reason, account_id, grade, entry_score, ' +
-    'iv_rank, market_regime, market_atr_pct, created_at'
+    'iv_rank, market_regime, ml_regime, market_atr_pct, created_at'
   )
     .split(', ')
     .filter((c) => present.has(c))
@@ -1819,6 +1839,7 @@ export function rebuildAutotradeLiveOptionsOrdersTable(database: Database.Databa
       entry_score   REAL,
       iv_rank       REAL,
       market_regime TEXT,
+      ml_regime TEXT,
       market_atr_pct REAL,
       created_at    INTEGER NOT NULL
     );
@@ -1857,7 +1878,7 @@ export function rebuildAutotradeLiveOptionsPositionsTable(database: Database.Dat
     'id, symbol, side, kind, contract_symbol, strike, short_contract_symbol, short_strike, expiration, ' +
     'quantity, entry_price, short_entry_price, entry_at, risk_amount, risk_profile, rationale, status, ' +
     'exit_price, short_exit_price, exit_at, exit_reason, account_id, grade, entry_score, iv_rank, ' +
-    'market_regime, market_atr_pct, underlying_at_entry, peak_premium, created_at, updated_at'
+    'market_regime, ml_regime, market_atr_pct, underlying_at_entry, peak_premium, created_at, updated_at'
   )
     .split(', ')
     .filter((c) => present.has(c))
@@ -1893,6 +1914,7 @@ export function rebuildAutotradeLiveOptionsPositionsTable(database: Database.Dat
       entry_score            REAL,
       iv_rank                REAL,
       market_regime          TEXT,
+      ml_regime          TEXT,
       market_atr_pct         REAL,
       created_at             INTEGER NOT NULL,
       updated_at             INTEGER NOT NULL

@@ -257,3 +257,14 @@ describe('autotradeLiveOptionsOrders', () => {
     });
   });
 });
+
+describe('the ML regime label at entry (2026-09-08)', () => {
+  it('is recorded on the entry order row and null when not given', () => {
+    const stamped = newIntentId('ml-regime-stamped');
+    recordLiveOptionsEntryOrder(entryInput(stamped, { mlRegime: 'sideways' }));
+    expect(getLiveOptionsOrder(stamped)?.mlRegime).toBe('sideways');
+    const bare = newIntentId('ml-regime-bare');
+    recordLiveOptionsEntryOrder(entryInput(bare));
+    expect(getLiveOptionsOrder(bare)?.mlRegime).toBeNull();
+  });
+});

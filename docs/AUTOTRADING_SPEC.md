@@ -6219,3 +6219,20 @@ reported; the earlier rule refused a valid 2020-04 refit.
    sessions (same `asOf`, same probabilities to 1e-6).
 4. Revert to OFF after 5 stale sessions in a row; retrain quarterly (`training.retrainBy`)
    and re-run rule 1.
+
+## 2026-09-08 — the ML regime label is stamped at entry
+
+Every position the loop opens now carries the HMM reading's regime as at-entry context, the
+way the 2026-07-26 trio (raw score, market-regime label, market ATR%) already does: a
+nullable `ml_regime` column on `positions`, `autotrade_paper_positions`,
+`autotrade_options_paper_positions`, `autotrade_live_options_positions` and the two live
+**order** tables — the order row is where a live position's context lives until the fill
+materializes it, so the column has to exist there or the position would never get it. The
+loop hands each executor the label once per tick; the journal export gains `mlRegime`.
+
+**NULL means unknown, stale, or not read — never a guess.** The label is stamped only from a
+reading that is known and fresh; a stale morning, a missing model, or a source switched off
+stamps nothing. Capture-only: nothing about entries, sizing or exits changes. It exists so
+realized results can be sliced by the regime they were entered under before anything is
+allowed to act on that regime, and so the later options-exit tighten can read the regime a
+position was *opened* under rather than today's.

@@ -63,6 +63,9 @@ export interface PositionInput {
   entryComponents?: Record<string, number> | null;
   /** 'risk-on' | 'neutral' | 'risk-off' — the market regime label at entry. */
   marketRegime?: string | null;
+  /** ML regime label at entry (2026-09-08): 'high_vol_bearish' | 'low_vol_bullish' |
+   *  'sideways', or null when the reading was unknown or stale — never a guess. */
+  mlRegime?: string | null;
   /** Market (SPY) ATR% the loop read the cycle this entry was placed. */
   marketAtrPct?: number | null;
   /** Session VWAP at placement (2026-08-22 observer) — see the DDL comment. */
@@ -125,6 +128,7 @@ export interface Position {
   entryScore: number | null;
   entryComponents: Record<string, number> | null;
   marketRegime: string | null;
+  mlRegime: string | null;
   marketAtrPct: number | null;
   entryVwap: number | null;
   /** Stop price as it stood at OPEN — the frozen denominator every R-multiple
@@ -168,6 +172,7 @@ interface PositionRow {
   entry_score: number | null;
   entry_components: string | null;
   market_regime: string | null;
+  ml_regime: string | null;
   market_atr_pct: number | null;
   entry_vwap: number | null;
   initial_stop_price: number | null;
@@ -264,6 +269,7 @@ function mapPosition(row: PositionRow, exits?: PositionExit[]): Position {
     // field, and a bad row must never make a position unreadable.
     entryComponents: parseComponents(row.entry_components),
     marketRegime: row.market_regime ?? null,
+    mlRegime: row.ml_regime ?? null,
     marketAtrPct: row.market_atr_pct ?? null,
     entryVwap: row.entry_vwap ?? null,
     initialStopPrice: row.initial_stop_price ?? null,
@@ -363,9 +369,9 @@ export function createPosition(input: PositionInput): Position {
         (asset_type, symbol, side, quantity, entry_price, entry_date, entry_time, fees,
          option_type, strike, expiration, multiplier, status, tags, grade, notes, checklist,
          stop_price, target_price, source_intent_id, account_id,
-         entry_score, entry_components, market_regime, market_atr_pct, entry_vwap,
+         entry_score, entry_components, market_regime, ml_regime, market_atr_pct, entry_vwap,
          initial_stop_price, best_price_since_entry, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     )
     .run(
       input.assetType,
@@ -391,6 +397,7 @@ export function createPosition(input: PositionInput): Position {
       input.entryScore ?? null,
       input.entryComponents ? JSON.stringify(input.entryComponents) : null,
       input.marketRegime ?? null,
+      input.mlRegime ?? null,
       input.marketAtrPct ?? null,
       input.entryVwap ?? null,
       // Seeded here rather than asked of every caller: the snapshot is only
@@ -427,6 +434,9 @@ export interface PositionPatch {
   entryScore?: number | null;
   entryComponents?: Record<string, number> | null;
   marketRegime?: string | null;
+  /** ML regime label at entry (2026-09-08): 'high_vol_bearish' | 'low_vol_bullish' |
+   *  'sideways', or null when the reading was unknown or stale — never a guess. */
+  mlRegime?: string | null;
   marketAtrPct?: number | null;
   entryVwap?: number | null;
 }
@@ -508,6 +518,7 @@ export function updatePosition(id: number, patch: PositionPatch): Position | und
   if (patch.entryComponents !== undefined)
     set('entry_components', patch.entryComponents ? JSON.stringify(patch.entryComponents) : null);
   if (patch.marketRegime !== undefined) set('market_regime', patch.marketRegime);
+  if (patch.mlRegime !== undefined) set('ml_regime', patch.mlRegime);
   if (patch.marketAtrPct !== undefined) set('market_atr_pct', patch.marketAtrPct);
   if (patch.entryVwap !== undefined) set('entry_vwap', patch.entryVwap);
   if (fields.length === 0) return existing;
@@ -649,6 +660,9 @@ export interface ImportablePosition {
   accountId?: string | null;
   entryScore?: number | null;
   marketRegime?: string | null;
+  /** ML regime label at entry (2026-09-08): 'high_vol_bearish' | 'low_vol_bullish' |
+   *  'sideways', or null when the reading was unknown or stale — never a guess. */
+  mlRegime?: string | null;
   marketAtrPct?: number | null;
   entryVwap?: number | null;
   createdAt?: number;
@@ -672,8 +686,8 @@ export function importPositions(positions: ImportablePosition[], mode: 'merge' |
        (asset_type, symbol, side, quantity, entry_price, entry_date, entry_time, fees,
         option_type, strike, expiration, multiplier, status, tags, grade, notes, checklist,
         stop_price, target_price, source_intent_id, account_id,
-        entry_score, market_regime, market_atr_pct, entry_vwap, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        entry_score, market_regime, ml_regime, market_atr_pct, entry_vwap, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   );
   const insertExit = db.prepare(
     `INSERT INTO position_exits (position_id, quantity, exit_price, exit_date, fees, notes, source_intent_id, exit_reason, created_at)
@@ -709,6 +723,7 @@ export function importPositions(positions: ImportablePosition[], mode: 'merge' |
         p.accountId ?? null,
         p.entryScore ?? null,
         p.marketRegime ?? null,
+        p.mlRegime ?? null,
         p.marketAtrPct ?? null,
         p.entryVwap ?? null,
         p.createdAt ?? now,

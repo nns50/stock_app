@@ -479,6 +479,9 @@ export async function attemptLiveOptionsEntry(
    *  direct callers (e.g. tests). */
   marketRegime: string | null = null,
   marketAtrPct: number | null = null,
+  /** The ML regime label at entry (2026-09-08), recorded on the entry order row
+   *  and carried to the position at materialization; null when unknown or stale. */
+  mlRegime: string | null = null,
 ): Promise<LiveOptionsExecutionOutcome> {
   const symbol = signal.symbol.toUpperCase();
   if (!config.trading.placeEnabled) {
@@ -559,6 +562,7 @@ export async function attemptLiveOptionsEntry(
     ivRank: signal.ivRank,
     marketRegime,
     marketAtrPct,
+    mlRegime,
     underlyingAtEntry: signal.underlyingPrice,
   };
 
@@ -821,6 +825,8 @@ export async function runLiveOptionsExecution(
    *  the entry order row and carried to the position at materialization as
    *  at-entry context; never used for sizing here. */
   marketRegime: string | null = null,
+  /** The ML regime label the loop read this tick (2026-09-08); null when unknown or stale. */
+  mlRegime: string | null = null,
 ): Promise<LiveOptionsExecutionOutcome[]> {
   const cfg = getAutotradeConfig();
   const equity = cfg.accountEquityUsd ?? 0;
@@ -1077,6 +1083,7 @@ export async function runLiveOptionsExecution(
         freshCfg,
         marketRegime,
         marketAtrPct,
+        mlRegime,
       );
     } catch (err) {
       const reason = `Unexpected error placing order: ${(err as Error).message}`;
@@ -2025,6 +2032,7 @@ function materializeOptionsEntryFill(
     ivRank: meta.ivRank,
     marketRegime: meta.marketRegime,
     marketAtrPct: meta.marketAtrPct,
+    mlRegime: meta.mlRegime,
     underlyingAtEntry: meta.underlyingAtEntry,
   });
   setLiveOptionsOrderPositionId(intent.id, position.id);

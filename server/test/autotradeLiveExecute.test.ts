@@ -2128,7 +2128,7 @@ describe('reconcileLiveOrders', () => {
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
     });
-    await attemptLiveEntry(signal(), okResult, 'MODERATE', cfg, 'risk-off', 2.5);
+    await attemptLiveEntry(signal(), okResult, 'MODERATE', cfg, 'risk-off', 2.5, 'sideways');
     const intentId = listIntents()[0].id;
 
     mockOrderStatus.mockResolvedValue({
@@ -2159,6 +2159,10 @@ describe('reconcileLiveOrders', () => {
     expect(positions[0].entryScore).toBe(70);
     expect(positions[0].marketRegime).toBe('risk-off');
     expect(positions[0].marketAtrPct).toBe(2.5);
+    // The ML regime label (2026-09-08): recorded on the order row, carried to
+    // the materialized position by the same path.
+    expect(getLiveOrder(intentId)?.mlRegime).toBe('sideways');
+    expect(positions[0].mlRegime).toBe('sideways');
     expect(positions[0].entryTime).toMatch(/^\d{2}:\d{2}$/);
   });
 

@@ -48,6 +48,7 @@ const POSITION_COLUMNS = [
   'entryScore',
   'entryComponents',
   'marketRegime',
+  'mlRegime',
   'marketAtrPct',
   'entryVwap',
   'tags',
@@ -86,6 +87,7 @@ function positionRow(p: Position): unknown[] {
     // without a second export shape.
     p.entryComponents ? JSON.stringify(p.entryComponents) : '',
     p.marketRegime ?? '',
+    p.mlRegime ?? '',
     p.marketAtrPct ?? '',
     p.entryVwap ?? '',
     p.tags.join('|'),

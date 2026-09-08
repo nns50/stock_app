@@ -91,6 +91,7 @@ function positionFixture(overrides: Partial<Position> = {}): Position {
     entryScore: null,
     entryComponents: null,
     marketRegime: null,
+    mlRegime: null,
     marketAtrPct: null,
     entryVwap: null,
     createdAt: 0,

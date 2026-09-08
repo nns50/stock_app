@@ -134,10 +134,12 @@ export default function AboutPage() {
           <strong className="text-slate-200">market regime</strong> label at entry (risk-on / neutral / risk-off, from
           the same gauge the Today page shows — best-effort, blank if the read failed), the{' '}
           <strong className="text-slate-200">market ATR%</strong> reading that cycle, the entry’s ET wall-clock time,
-          and — for options — the <strong className="text-slate-200">IV rank</strong> the decision gated on. Live
-          bracket exits additionally record <em>why</em> they closed (stop / target / time-exit). None of it changes any
-          decision; it exists so realized results can later be sliced by score band, regime, session, and exit mechanism
-          instead of guessed at.
+          for options the <strong className="text-slate-200">IV rank</strong> the decision gated on, and — since
+          2026-09-08 — the <strong className="text-slate-200">ML regime</strong> label the HMM read that day (High
+          Volatility/Bearish, Low Volatility/Bullish or Sideways; blank when the reading was unknown or stale, never
+          guessed). Live bracket exits additionally record <em>why</em> they closed (stop / target / time-exit). None of
+          it changes any decision; it exists so realized results can later be sliced by score band, regime, session, and
+          exit mechanism instead of guessed at.
         </p>
         <div className="mt-2 overflow-x-auto">
           <table className="w-full text-sm">

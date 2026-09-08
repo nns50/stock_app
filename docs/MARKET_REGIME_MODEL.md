@@ -5,8 +5,10 @@ the **reading** now runs in the app (section 5a): `GET /api/market/regime-ml`, t
 (HMM)" block of the Today page's Market regime tile, the loop's once-per-tick read mirrored on
 each tick summary and the Auto-Trade page's _Last cycle_ card, and the journal actions
 `ml_regime_read`, `ml_regime_changed`, `ml_regime_drift`, `ml_regime_fetch_failed` and
-`ml_regime_override`. **Nothing acts on the reading yet** — the at-entry stamp, the sizing
-overlay and the target tighten are later, separately gated changes (see
+`ml_regime_override`. Every position the loop opens — paper and live, stocks and options —
+also carries the label as at-entry context (`ml_regime`, in the journal export as `mlRegime`;
+null when the reading was unknown or stale). **Nothing sizes or gates on the reading yet** —
+the sizing overlay and the target tighten are later, separately gated changes (see
 `docs/AUTOTRADING_SPEC.md` as they land).
 
 Decision-support only, not financial advice — the same framing as the About page. A regime

@@ -345,6 +345,10 @@ export interface Position {
    *  positions opened before 2026-09-02, and on manually logged trades. */
   entryComponents: Record<string, number> | null;
   marketRegime: string | null;
+  /** The ML regime label at entry (2026-09-08): 'high_vol_bearish' |
+   *  'low_vol_bullish' | 'sideways'; null when the reading was unknown or
+   *  stale, and on rows that predate it. */
+  mlRegime: string | null;
   marketAtrPct: number | null;
   /** Session VWAP at entry (2026-08-22 observer) — evidence for a possible
    *  future VWAP-alignment filter; null when unmeasured. */

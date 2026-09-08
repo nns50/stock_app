@@ -160,3 +160,12 @@ describe('price-based exit reasons (2026-07-26)', () => {
     });
   });
 });
+
+describe('the ML regime label at entry (2026-09-08)', () => {
+  it('round-trips and is null when not given', () => {
+    expect(createLiveOptionsPosition(input({ symbol: 'LOPML', mlRegime: 'high_vol_bearish' })).mlRegime).toBe(
+      'high_vol_bearish',
+    );
+    expect(createLiveOptionsPosition(input({ symbol: 'LOPMN' })).mlRegime).toBeNull();
+  });
+});

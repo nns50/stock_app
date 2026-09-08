@@ -130,3 +130,10 @@ describe('at-entry context (2026-07-26)', () => {
     expect(pos.marketAtrPct).toBeNull();
   });
 });
+
+describe('the ML regime label at entry (2026-09-08)', () => {
+  it('round-trips and is null when not given', () => {
+    expect(openPaperPosition(input({ symbol: 'PPML', mlRegime: 'low_vol_bullish' })).mlRegime).toBe('low_vol_bullish');
+    expect(openPaperPosition(input({ symbol: 'PPMN' })).mlRegime).toBeNull();
+  });
+});

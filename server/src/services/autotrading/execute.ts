@@ -96,6 +96,9 @@ export async function attemptPaperEntry(
    *  a failed best-effort regime read stamps nothing, never a guess. */
   marketRegime: string | null = null,
   marketAtrPct: number | null = null,
+  /** The ML regime label at entry (2026-09-08) — the HMM reading's regime when
+   *  known and fresh, else null. Stamped, never used for sizing here. */
+  mlRegime: string | null = null,
 ): Promise<ExecutionOutcome> {
   if (!riskResult.ok) return { symbol: signal.symbol, ok: false, reason: 'Risk check did not pass' };
   if (hasOpenPaperPosition(signal.symbol)) {
@@ -156,6 +159,7 @@ export async function attemptPaperEntry(
       entryComponents: signal.components ?? null,
       marketRegime,
       marketAtrPct,
+      mlRegime,
     });
   } catch (err) {
     // A single candidate's persistence failure must not abort the rest of
@@ -338,6 +342,9 @@ export async function runPaperExecution(
    *  each opened position as at-entry context, never used for sizing here.
    *  Defaults to null for callers without one. */
   marketRegime: string | null = null,
+  /** The ML regime label the loop read this tick (2026-09-08), stamped on each
+   *  opened position beside marketRegime; null when unknown or stale. */
+  mlRegime: string | null = null,
 ): Promise<ExecutionOutcome[]> {
   const config = getAutotradeConfig();
   const equity = config.accountEquityUsd ?? 0;
@@ -452,7 +459,15 @@ export async function runPaperExecution(
       aMinScore: config.convictionGradeAMinScore,
       bMinScore: config.convictionGradeBMinScore,
     });
-    const outcome = await attemptPaperEntry(signal, result, config.riskProfile, grade, marketRegime, marketAtrPct);
+    const outcome = await attemptPaperEntry(
+      signal,
+      result,
+      config.riskProfile,
+      grade,
+      marketRegime,
+      marketAtrPct,
+      mlRegime,
+    );
     outcomes.push(outcome);
     if (outcome.ok && outcome.position) {
       runningRisk += result.approvedRiskAmount;

@@ -205,3 +205,21 @@ describe('entry_components — the per-component breakdown, through the real DB'
     expect(read!.symbol).toBe('BADJSON');
   });
 });
+
+describe('the ML regime label at entry (2026-09-08)', () => {
+  it('round-trips through createPosition/getPosition and is null when not given', () => {
+    const stamped = createPosition({
+      assetType: 'stock',
+      symbol: 'MLR',
+      side: 'long',
+      quantity: 100,
+      entryPrice: 10,
+      entryDate: '2026-09-08',
+      fees: 0,
+      mlRegime: 'high_vol_bearish',
+    });
+    expect(stamped.mlRegime).toBe('high_vol_bearish');
+    expect(getPosition(stamped.id)?.mlRegime).toBe('high_vol_bearish');
+    expect(makePosition('MLN').mlRegime).toBeNull();
+  });
+});
