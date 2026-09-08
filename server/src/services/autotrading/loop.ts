@@ -3,6 +3,7 @@ import { getAutotradeConfig, AutotradeConfig } from '../../db/autotradeConfig';
 import { saveLastTick } from '../../db/autotradeLastTick';
 import { MlRegimeTickSummary, actionableRegime, getMarketRegime, summarizeMlRegime } from '../mlRegime';
 import { TickRegime, regimeTriggers } from './effectiveRisk';
+import { regimeAdjustedTargets } from './regimeTargets';
 import { getTradingConfig } from '../../db/trading';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { runAutotradeScreen, ScreenCandidate } from './screen';
@@ -787,10 +788,14 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     }
     const selectedCandidates = selection.ordered;
 
+    // The target is the EFFECTIVE multiple: the config's targetRMultiple,
+    // tightened by the ML regime overlay under this tick's effective regime
+    // (regimeTargets.ts — the same helper the finish line and the options
+    // exits read). decide.ts stamps it on every signal as rMultiple.
     const decision = runAutotradeDecision(selectedCandidates, {
       stopAtrMultiple: config.stopAtrMultiple,
       maxStopDistancePct: config.maxStopDistancePct,
-      targetRMultiple: config.targetRMultiple,
+      targetRMultiple: regimeAdjustedTargets(config, tickRegime.effectiveRegime).targetRMultiple,
     });
     summary.signalsGenerated = decision.signals.length;
 

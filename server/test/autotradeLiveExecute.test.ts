@@ -2153,7 +2153,7 @@ describe('reconcileLiveOrders', () => {
       todayRangePct: null,
       regimeShockRangeRatio: 0,
     });
-    await attemptLiveEntry(signal(), okResult, 'MODERATE', cfg, 'risk-off', 2.5, 'sideways');
+    await attemptLiveEntry(signal(), okResult, 'MODERATE', cfg, 'risk-off', 2.5, 'sideways', 0.7);
     const intentId = listIntents()[0].id;
 
     mockOrderStatus.mockResolvedValue({
@@ -2188,6 +2188,9 @@ describe('reconcileLiveOrders', () => {
     // the materialized position by the same path.
     expect(getLiveOrder(intentId)?.mlRegime).toBe('sideways');
     expect(positions[0].mlRegime).toBe('sideways');
+    // The target tighten factor (2026-09-08) rides the same order row → position path.
+    expect(getLiveOrder(intentId)?.regimeTargetFactor).toBe(0.7);
+    expect(positions[0].regimeTargetFactor).toBe(0.7);
     expect(positions[0].entryTime).toMatch(/^\d{2}:\d{2}$/);
   });
 

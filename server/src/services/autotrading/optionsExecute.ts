@@ -3,6 +3,7 @@ import { convictionGrade } from './decide';
 import { OptionsTradeSignal } from './optionsDecide';
 import { evaluateOptionsRiskCheck, OptionsRiskCheckResult, optionsPositionNotionalUsd } from './optionsRiskCheck';
 import { NO_TICK_REGIME, TickRegime, regimeStamp } from './effectiveRisk';
+import { regimeAdjustedTargets, withRegimeAdjustedTargets } from './regimeTargets';
 import { journalMethodMultipliers, methodOfOptionsSignal } from './methodSizing';
 import { correlatedNotional, sectorNotional, buildSectorOf, RiskCheckContext } from './riskCheck';
 import { getPaperPortfolioSnapshot, PaperPortfolioSeed } from './execute';
@@ -249,6 +250,9 @@ export async function attemptOptionsPaperEntry(
   marketAtrPct: number | null = null,
   /** The ML regime label at entry (2026-09-08); null when unknown or stale. */
   mlRegime: string | null = null,
+  /** The target tighten factor the exit rules will apply to this position
+   *  (regimeTargets.ts): 1 when untightened; null for a direct caller. */
+  regimeTargetFactor: number | null = null,
 ): Promise<OptionsExecutionOutcome> {
   if (!riskResult.ok) return { symbol: signal.symbol, ok: false, reason: 'Risk check did not pass' };
   if (hasOpenOptionsPaperPosition(signal.symbol)) {
@@ -301,6 +305,7 @@ export async function attemptOptionsPaperEntry(
         marketRegime,
         marketAtrPct,
         mlRegime,
+        regimeTargetFactor,
         underlyingAtEntry: signal.underlyingPrice,
       });
     } catch (err) {
@@ -364,6 +369,7 @@ export async function attemptOptionsPaperEntry(
       marketRegime,
       marketAtrPct,
       mlRegime,
+      regimeTargetFactor,
       underlyingAtEntry: signal.underlyingPrice,
     });
   } catch (err) {
@@ -651,6 +657,7 @@ export async function runOptionsPaperExecution(
       marketRegime,
       marketAtrPct,
       regimeStamp(regime),
+      regimeAdjustedTargets(config, regime.effectiveRegime).factor,
     );
     outcomes.push(outcome);
     if (outcome.ok && outcome.position) {
@@ -755,6 +762,12 @@ export async function checkOptionsPaperExits(): Promise<OptionsExitCheckOutcome[
       : pos.kind === 'debit_spread'
         ? marks.exitPrice - (marks.shortExitPrice ?? 0)
         : marks.exitPrice;
+    // The take-profit this position exits on is the one tightened by the ML
+    // regime overlay for the regime STAMPED on it at entry (regimeTargets.ts)
+    // — the same rule the live book applies, so a High-Vol entry keeps its
+    // tighter target and a calm-tape entry is never tightened later. Both the
+    // ladder and the %-of-premium rule below read this copy.
+    const exitCfg = withRegimeAdjustedTargets(cfg, pos.mlRegime);
 
     // --- SHORT-DATED ladder (docs/SHORT_DATED_OPTIONS_SPEC.md) ------------
     // Ahead of the DTE/stop/take-profit rules below, because on a 0-2 DTE
@@ -782,7 +795,7 @@ export async function checkOptionsPaperExits(): Promise<OptionsExitCheckOutcome[
         },
         currentBasis,
         underlying,
-        cfg,
+        exitCfg,
         Date.now(),
       );
       if (sd.peakPremium !== null && sd.peakPremium !== pos.bestBasisSinceEntry) {
@@ -869,7 +882,7 @@ export async function checkOptionsPaperExits(): Promise<OptionsExitCheckOutcome[
       {
         timeExitDaysBeforeExpiry: timeExitDaysFor(cfg),
         stopLossPct,
-        takeProfitPct: cfg.shortDatedOptionsEnabled ? undefined : cfg.optionsTakeProfitPct || undefined,
+        takeProfitPct: cfg.shortDatedOptionsEnabled ? undefined : exitCfg.optionsTakeProfitPct || undefined,
       },
     );
     if (!ev.triggered) {

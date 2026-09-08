@@ -621,12 +621,21 @@ describe('autotrade config persistence', () => {
   });
 
   describe('the ML regime overlay (2026-09-08)', () => {
-    it('ships off, with the 35% cut, the 0.6 switch and the nowcast off', () => {
+    it('ships off, with the 35% cut, the 0.6 switch, the nowcast off and a 30% target tighten', () => {
       const d = defaultAutotradeConfig();
       expect(d.mlRegimeEnabled).toBe(false);
       expect(d.mlRegimeSizeCutPct).toBe(35);
       expect(d.mlRegimeSwitchThreshold).toBe(0.6);
       expect(d.regimeShockRangeRatio).toBe(0);
+      expect(d.mlRegimeTargetTightenPct).toBe(30);
+    });
+
+    it('the target tighten round-trips and clamps to [0, 100]', () => {
+      expect(setAutotradeConfig({ mlRegimeTargetTightenPct: 15 }).mlRegimeTargetTightenPct).toBe(15);
+      expect(getAutotradeConfig().mlRegimeTargetTightenPct).toBe(15);
+      expect(setAutotradeConfig({ mlRegimeTargetTightenPct: 150 }).mlRegimeTargetTightenPct).toBe(100);
+      expect(setAutotradeConfig({ mlRegimeTargetTightenPct: -1 }).mlRegimeTargetTightenPct).toBe(0);
+      expect(setAutotradeConfig({ mlRegimeTargetTightenPct: 'x' as never }).mlRegimeTargetTightenPct).toBe(30);
     });
 
     it('persists a patch and round-trips', () => {

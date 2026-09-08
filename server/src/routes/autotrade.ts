@@ -25,6 +25,8 @@ import { DecisionConfig, runAutotradeDecision } from '../services/autotrading/de
 import { OptionsDecisionConfig, runOptionsDecision } from '../services/autotrading/optionsDecide';
 import { runAutotradeRiskCheck } from '../services/autotrading/riskCheck';
 import { runOptionsRiskCheck } from '../services/autotrading/optionsRiskCheck';
+import { regimeAdjustedTargets } from '../services/autotrading/regimeTargets';
+import { actionableRegime, peekMarketRegime } from '../services/mlRegime';
 import { ScreenerConfig } from '../indicators/screener';
 import { computeMarketRegime, RegimeLabel } from '../services/marketRegime';
 import { resolveScoringWeights } from '../services/autotrading/regimeWeights';
@@ -187,6 +189,7 @@ const configBody = z.object({
   mlRegimeSizeCutPct: z.number().min(0).max(100).optional(),
   mlRegimeSwitchThreshold: z.number().min(0).max(1).optional(),
   regimeShockRangeRatio: z.number().min(0).max(10).optional(),
+  mlRegimeTargetTightenPct: z.number().min(0).max(100).optional(),
   equityCurveDeriskEnabled: z.boolean().optional(),
   equityCurveLookbackDays: z.number().int().min(1).optional(),
   equityCurveDeriskCutPct: z.number().min(0).max(100).optional(),
@@ -480,6 +483,7 @@ autotradeRouter.put(
     if (body.mlRegimeSizeCutPct !== undefined) patch.mlRegimeSizeCutPct = body.mlRegimeSizeCutPct;
     if (body.mlRegimeSwitchThreshold !== undefined) patch.mlRegimeSwitchThreshold = body.mlRegimeSwitchThreshold;
     if (body.regimeShockRangeRatio !== undefined) patch.regimeShockRangeRatio = body.regimeShockRangeRatio;
+    if (body.mlRegimeTargetTightenPct !== undefined) patch.mlRegimeTargetTightenPct = body.mlRegimeTargetTightenPct;
     if (body.equityCurveDeriskEnabled !== undefined) patch.equityCurveDeriskEnabled = body.equityCurveDeriskEnabled;
     if (body.equityCurveLookbackDays !== undefined) patch.equityCurveLookbackDays = body.equityCurveLookbackDays;
     if (body.equityCurveDeriskCutPct !== undefined) patch.equityCurveDeriskCutPct = body.equityCurveDeriskCutPct;
@@ -970,9 +974,17 @@ async function currentRegimeLabel(config: AutotradeConfig): Promise<RegimeLabel 
   return (await computeMarketRegime().catch(() => null))?.label ?? null;
 }
 
-/** Same reasoning as screenerConfigOverride, for stopAtrMultiple/targetRMultiple. */
+/** Same reasoning as screenerConfigOverride, for stopAtrMultiple/targetRMultiple.
+ *  The target is the EFFECTIVE one — tightened by the ML regime overlay under
+ *  today's persisted reading (a peek, never a fetch), as the loop's own decide
+ *  is. The preview reads the model's label only; the loop's shock nowcast is
+ *  intraday and has no persisted reading to peek at. */
 function decisionConfigOverride(config: AutotradeConfig, requested?: Partial<DecisionConfig>): Partial<DecisionConfig> {
-  return { stopAtrMultiple: config.stopAtrMultiple, targetRMultiple: config.targetRMultiple, ...requested };
+  return {
+    stopAtrMultiple: config.stopAtrMultiple,
+    targetRMultiple: regimeAdjustedTargets(config, actionableRegime(peekMarketRegime())).targetRMultiple,
+    ...requested,
+  };
 }
 
 const screenBody = z.object({

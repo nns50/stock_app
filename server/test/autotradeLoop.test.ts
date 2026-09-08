@@ -1095,6 +1095,70 @@ describe('runAutotradeLoopTick', () => {
     expect(mockExecute).toHaveBeenLastCalledWith([{ signal: signal('AAPL') }], emptySeed, 1, 'neutral', noRegime);
   });
 
+  it('hands decide the regime-tightened target under a fresh High-Vol reading with the overlay on, and the full one otherwise (2026-09-08)', async () => {
+    setAutotradeConfig({ mlRegimeEnabled: true, mlRegimeTargetTightenPct: 30, targetRMultiple: 2 });
+    const reading: MlRegimeReading = {
+      regime: 'high_vol_bearish',
+      label: 'High Volatility/Bearish',
+      candidate: 'high_vol_bearish',
+      probabilities: { high_vol_bearish: 0.91, low_vol_bullish: 0.02, sideways: 0.07 },
+      predictedNext: null,
+      asOf: '2026-09-03',
+      etDate: '2026-09-04',
+      features: null,
+      source: 'fred',
+      stale: false,
+      drift: false,
+      driftScore: -2,
+      driftP5: -4.7,
+      modelVersion: 'test',
+      switched: false,
+      heldBelowThreshold: false,
+      threshold: 0.6,
+      previous: null,
+      rows: 250,
+      logLikelihood: -70,
+      computedAt: 0,
+    };
+    mockScreen.mockResolvedValue({
+      generatedAt: Date.now(),
+      candidates: [candidate('AAPL', 2)],
+      excluded: [],
+      skipped: [],
+      errors: [],
+      rejected: [],
+      relVolMedian: null,
+      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
+    });
+    mockDecide.mockReturnValue({ signals: [], skipped: [] });
+    mockExecute.mockResolvedValue([]);
+
+    mockGetMarketRegime.mockResolvedValueOnce(reading);
+    await runAutotradeLoopTick();
+    expect(mockDecide).toHaveBeenLastCalledWith(expect.anything(), {
+      stopAtrMultiple: 1.5,
+      maxStopDistancePct: 0,
+      targetRMultiple: 1.4,
+    });
+
+    // Stale → unknown → the full target.
+    mockGetMarketRegime.mockResolvedValueOnce({
+      ...reading,
+      regime: 'unknown',
+      label: 'Unknown',
+      stale: true,
+      reason: 'stale',
+    });
+    await runAutotradeLoopTick();
+    expect(mockDecide).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ targetRMultiple: 2 }));
+
+    // Overlay off → the full target, whatever the model reads.
+    setAutotradeConfig({ mlRegimeEnabled: false });
+    mockGetMarketRegime.mockResolvedValueOnce(reading);
+    await runAutotradeLoopTick();
+    expect(mockDecide).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ targetRMultiple: 2 }));
+  });
+
   it('a regime read that throws is journaled as a stage failure and the tick carries null', async () => {
     setAutotradeConfig({ enabled: false, liveTradingEnabled: false });
     mockGetMarketRegime.mockRejectedValueOnce(new Error('FRED is down'));

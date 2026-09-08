@@ -516,6 +516,7 @@ export const client = {
     mlRegimeSizeCutPct?: number;
     mlRegimeSwitchThreshold?: number;
     regimeShockRangeRatio?: number;
+    mlRegimeTargetTightenPct?: number;
     tradeDirection?: AutotradeTradeDirectionMode;
     minRelVol?: number;
     requireWeeklyTrendAlignment?: boolean;

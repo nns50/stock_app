@@ -54,6 +54,7 @@ export interface OpenPaperPositionInput {
   /** ML regime label at entry (2026-09-08): 'high_vol_bearish' | 'low_vol_bullish' |
    *  'sideways', or null when the reading was unknown or stale — never a guess. */
   mlRegime?: string | null;
+  regimeTargetFactor?: number | null;
   /** Market (SPY) ATR% the loop read the cycle this entry was placed, or null. */
   marketAtrPct?: number | null;
 }
@@ -103,6 +104,7 @@ export interface PaperPosition {
   entryComponents: Record<string, number> | null;
   marketRegime: string | null;
   mlRegime: string | null;
+  regimeTargetFactor: number | null;
   marketAtrPct: number | null;
   createdAt: number;
   updatedAt: number;
@@ -141,6 +143,7 @@ interface Row {
   entry_components: string | null;
   market_regime: string | null;
   ml_regime: string | null;
+  regime_target_factor: number | null;
   market_atr_pct: number | null;
   created_at: number;
   updated_at: number;
@@ -182,6 +185,7 @@ function map(r: Row): PaperPosition {
     })(),
     marketRegime: r.market_regime ?? null,
     mlRegime: r.ml_regime ?? null,
+    regimeTargetFactor: r.regime_target_factor ?? null,
     marketAtrPct: r.market_atr_pct ?? null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -199,8 +203,8 @@ export function openPaperPosition(input: OpenPaperPositionInput): PaperPosition 
       `INSERT INTO autotrade_paper_positions
          (symbol, side, quantity, entry_price, entry_at, stop_price, target_price,
           risk_amount, risk_profile, rationale, status, initial_stop_price,
-          best_price_since_entry, grade, entry_score, entry_components, market_regime, ml_regime, market_atr_pct, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          best_price_since_entry, grade, entry_score, entry_components, market_regime, ml_regime, regime_target_factor, market_atr_pct, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       input.symbol.toUpperCase(),
@@ -220,6 +224,7 @@ export function openPaperPosition(input: OpenPaperPositionInput): PaperPosition 
       input.entryComponents ? JSON.stringify(input.entryComponents) : null,
       input.marketRegime ?? null,
       input.mlRegime ?? null,
+      input.regimeTargetFactor ?? null,
       input.marketAtrPct ?? null,
       now,
       now,

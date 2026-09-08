@@ -57,6 +57,7 @@ export interface LiveOptionsOrderMeta {
   ivRank: number | null;
   marketRegime: string | null;
   mlRegime: string | null;
+  regimeTargetFactor: number | null;
   marketAtrPct: number | null;
   /** Underlying price at entry — see recordLiveOptionsEntryOrder. Null on an
    *  exit row and on any row predating the column. */
@@ -85,6 +86,7 @@ interface Row {
   iv_rank: number | null;
   market_regime: string | null;
   ml_regime: string | null;
+  regime_target_factor: number | null;
   market_atr_pct: number | null;
   underlying_at_entry: number | null;
   created_at: number;
@@ -112,6 +114,7 @@ function mapRow(r: Row): LiveOptionsOrderMeta {
     ivRank: r.iv_rank ?? null,
     marketRegime: r.market_regime ?? null,
     mlRegime: r.ml_regime ?? null,
+    regimeTargetFactor: r.regime_target_factor ?? null,
     marketAtrPct: r.market_atr_pct ?? null,
     underlyingAtEntry: r.underlying_at_entry ?? null,
     createdAt: r.created_at,
@@ -143,6 +146,7 @@ export function recordLiveOptionsEntryOrder(input: {
   /** ML regime label at entry (2026-09-08): 'high_vol_bearish' | 'low_vol_bullish' |
    *  'sideways', or null when the reading was unknown or stale — never a guess. */
   mlRegime?: string | null;
+  regimeTargetFactor?: number | null;
   marketAtrPct?: number | null;
   /** The underlying's price when this entry was decided — the reference an
    *  underlying-based stop measures against once the position materializes.
@@ -155,8 +159,8 @@ export function recordLiveOptionsEntryOrder(input: {
     `INSERT INTO autotrade_live_options_orders
        (intent_id, symbol, role, kind, side, contract_symbol, strike, short_contract_symbol, short_strike,
         expiration, risk_amount, risk_profile, position_id, account_id,
-        grade, entry_score, iv_rank, market_regime, ml_regime, market_atr_pct, underlying_at_entry, created_at)
-     VALUES (?, ?, 'entry', ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        grade, entry_score, iv_rank, market_regime, ml_regime, regime_target_factor, market_atr_pct, underlying_at_entry, created_at)
+     VALUES (?, ?, 'entry', ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     input.intentId,
     input.symbol.toUpperCase(),
@@ -175,6 +179,7 @@ export function recordLiveOptionsEntryOrder(input: {
     input.ivRank ?? null,
     input.marketRegime ?? null,
     input.mlRegime ?? null,
+    input.regimeTargetFactor ?? null,
     input.marketAtrPct ?? null,
     input.underlyingAtEntry ?? null,
     now,

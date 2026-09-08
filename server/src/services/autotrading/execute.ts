@@ -9,6 +9,7 @@ import {
   RiskCheckResult,
 } from './riskCheck';
 import { NO_TICK_REGIME, TickRegime, regimeStamp } from './effectiveRisk';
+import { regimeAdjustedTargets } from './regimeTargets';
 import { computeStreaksAndDrawdown } from '../pnl';
 import { listAutotradeEvents, logAutotradeEvent } from '../../db/autotradeEvents';
 import {
@@ -100,6 +101,9 @@ export async function attemptPaperEntry(
   /** The ML regime label at entry (2026-09-08) — the HMM reading's regime when
    *  known and fresh, else null. Stamped, never used for sizing here. */
   mlRegime: string | null = null,
+  /** The target tighten factor applied to this entry's target (regimeTargets.ts):
+   *  1 when untightened; null for a caller with no tick behind it. */
+  regimeTargetFactor: number | null = null,
 ): Promise<ExecutionOutcome> {
   if (!riskResult.ok) return { symbol: signal.symbol, ok: false, reason: 'Risk check did not pass' };
   if (hasOpenPaperPosition(signal.symbol)) {
@@ -161,6 +165,7 @@ export async function attemptPaperEntry(
       marketRegime,
       marketAtrPct,
       mlRegime,
+      regimeTargetFactor,
     });
   } catch (err) {
     // A single candidate's persistence failure must not abort the rest of
@@ -475,6 +480,9 @@ export async function runPaperExecution(
       marketRegime,
       marketAtrPct,
       regimeStamp(regime),
+      // The factor decide.ts's target was tightened by this tick — stamped so
+      // the counterfactual ledger can read what the full target would have done.
+      regimeAdjustedTargets(config, regime.effectiveRegime).factor,
     );
     outcomes.push(outcome);
     if (outcome.ok && outcome.position) {

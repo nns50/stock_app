@@ -63,6 +63,13 @@ describe('generateSignal', () => {
     expect(signal!.rMultiple).toBe(2);
   });
 
+  it('builds the target from the EFFECTIVE multiple it is handed — a regime-tightened 1.4R lands at 1.4× the stop (2026-09-08)', () => {
+    const signal = generateSignal(candidate({ direction: 'long' }), { stopAtrMultiple: 1.5, targetRMultiple: 1.4 });
+    expect(signal!.stop).toBe(94);
+    expect(signal!.target).toBeCloseTo(100 + 6 * 1.4, 10); // 108.4, not 112
+    expect(signal!.rMultiple).toBe(1.4);
+  });
+
   it('mirrors the math for a short — direction comes from the candidate, not cfg', () => {
     const signal = generateSignal(candidate({ direction: 'short' }), { stopAtrMultiple: 1.5, targetRMultiple: 2 });
     expect(signal).not.toBeNull();

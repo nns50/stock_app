@@ -349,6 +349,9 @@ export interface Position {
    *  'low_vol_bullish' | 'sideways'; null when the reading was unknown or
    *  stale, and on rows that predate it. */
   mlRegime: string | null;
+  /** The ML regime target-tighten factor applied at entry (2026-09-08): 1 when
+   *  untightened, 0.7 at a 30% tighten; null on rows that predate it. */
+  regimeTargetFactor: number | null;
   marketAtrPct: number | null;
   /** Session VWAP at entry (2026-08-22 observer) — evidence for a possible
    *  future VWAP-alignment filter; null when unmeasured. */
@@ -1523,6 +1526,7 @@ export interface AutotradeConfig {
   mlRegimeSizeCutPct: number;
   mlRegimeSwitchThreshold: number;
   regimeShockRangeRatio: number;
+  mlRegimeTargetTightenPct: number;
   equityCurveDeriskEnabled: boolean;
   equityCurveLookbackDays: number;
   equityCurveDeriskCutPct: number;

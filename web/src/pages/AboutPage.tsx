@@ -140,9 +140,10 @@ export default function AboutPage() {
           for options the <strong className="text-slate-200">IV rank</strong> the decision gated on, and — since
           2026-09-08 — the <strong className="text-slate-200">ML regime</strong> label the HMM read that day (High
           Volatility/Bearish, Low Volatility/Bullish or Sideways; blank when the reading was unknown or stale, never
-          guessed). Live bracket exits additionally record <em>why</em> they closed (stop / target / time-exit). None of
-          it changes any decision; it exists so realized results can later be sliced by score band, regime, session, and
-          exit mechanism instead of guessed at.
+          guessed) and the <strong className="text-slate-200">regime target factor</strong> its target was built with (1
+          when untightened). Live bracket exits additionally record <em>why</em> they closed (stop / target /
+          time-exit). None of it changes any decision; it exists so realized results can later be sliced by score band,
+          regime, session, and exit mechanism instead of guessed at.
         </p>
         <div className="mt-2 overflow-x-auto">
           <table className="w-full text-sm">
@@ -271,9 +272,15 @@ export default function AboutPage() {
           <strong className="text-slate-200">ML regime overlay</strong> on (off by default) the sizing regime cut above
           reads it: new positions size down by the ML regime size cut while the reading is High Volatility/Bearish, and
           an intraday <strong className="text-slate-200">shock day</strong> (SPY’s range so far today at or above a set
-          multiple of its ATR) is treated the same way on the spot; a stale or unknown reading never cuts. Nothing else
-          acts on it. The model card (docs/MARKET_REGIME_MODEL.md) has the data, the validation, the enabling rules and
-          what it does not do.
+          multiple of its ATR) is treated the same way on the spot; a stale or unknown reading never cuts. The same
+          switch <strong className="text-slate-200">tightens the profit target</strong> in that regime by the ML regime
+          target tighten % (default 30): the equity target R-multiple and the options take-profit % are both multiplied
+          by <span className="tabular-nums">1 − tighten/100</span> at entry (a 2R target becomes 1.4R, a 60% take-profit
+          42%), the finish-line trim reasons about that same tightened payoff, and the options exit rules read the
+          regime stamped on the position rather than today’s — so a High-Vol entry keeps its tighter target through a
+          calm afternoon and a calm-tape entry is never tightened later. The applied factor is stamped on every
+          position. Nothing else acts on the reading. The model card (docs/MARKET_REGIME_MODEL.md) has the data, the
+          validation, the enabling rules and what it does not do.
         </p>
       </Section>
 

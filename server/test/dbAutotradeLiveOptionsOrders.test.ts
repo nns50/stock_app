@@ -267,4 +267,13 @@ describe('the ML regime label at entry (2026-09-08)', () => {
     recordLiveOptionsEntryOrder(entryInput(bare));
     expect(getLiveOptionsOrder(bare)?.mlRegime).toBeNull();
   });
+
+  it('records the regime target factor the same way (2026-09-08)', () => {
+    const stamped = newIntentId('target-factor-stamped');
+    recordLiveOptionsEntryOrder(entryInput(stamped, { regimeTargetFactor: 0.7 }));
+    expect(getLiveOptionsOrder(stamped)?.regimeTargetFactor).toBe(0.7);
+    const bare = newIntentId('target-factor-bare');
+    recordLiveOptionsEntryOrder(entryInput(bare));
+    expect(getLiveOptionsOrder(bare)?.regimeTargetFactor).toBeNull();
+  });
 });

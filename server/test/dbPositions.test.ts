@@ -222,4 +222,20 @@ describe('the ML regime label at entry (2026-09-08)', () => {
     expect(getPosition(stamped.id)?.mlRegime).toBe('high_vol_bearish');
     expect(makePosition('MLN').mlRegime).toBeNull();
   });
+
+  it('carries the regime target factor the same way (2026-09-08)', () => {
+    const stamped = createPosition({
+      assetType: 'stock',
+      symbol: 'RTF',
+      side: 'long',
+      quantity: 100,
+      entryPrice: 10,
+      entryDate: '2026-09-08',
+      fees: 0,
+      regimeTargetFactor: 0.7,
+    });
+    expect(stamped.regimeTargetFactor).toBe(0.7);
+    expect(getPosition(stamped.id)?.regimeTargetFactor).toBe(0.7);
+    expect(makePosition('RTN').regimeTargetFactor).toBeNull();
+  });
 });

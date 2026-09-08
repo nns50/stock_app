@@ -138,6 +138,26 @@ describe('the finish-line trim reasons about the risk the trade will really take
       rewardMultiple: 2,
     });
 
+  it('a regime-tightened 1.4R target trims LESS than the 2R one for the same gap — the trim must see the effective target (2026-09-08)', () => {
+    const at = (rewardMultiple: number) =>
+      computeFinishLineFactor({
+        enabled: true,
+        dailyTarget: {
+          ...tracking(0),
+          baselineEquityUsd: EQUITY,
+          targetEquityUsd: EQUITY + 80,
+          currentEquityUsd: EQUITY,
+        },
+        equity: EQUITY,
+        riskPerTradePct: 1.25,
+        rewardMultiple,
+      });
+    // $64.51 of risk: a 2R win pays $129.03 (trim to 80/129.03 = 0.62); a 1.4R win pays $90.32 (0.89).
+    expect(at(2).factor).toBeCloseTo(0.62, 2);
+    expect(at(1.4).factor).toBeCloseTo(0.89, 2);
+    expect(at(1.4).factor).toBeGreaterThan(at(2).factor);
+  });
+
   it('stays INACTIVE when a step-down already put the real payoff below the gap', () => {
     // Full size: risk $64.51, a 2R win pays $129.03 -- under the $80 gap it
     // would trim. Step-down halves it to a $64.51 payoff, which no longer

@@ -6293,3 +6293,51 @@ one of them. Then set `mlRegimeSizeCutPct` to the grid's cell — not to 35, not
 switch `mlRegimeEnabled` on; revert to OFF after 5 stale sessions; retrain quarterly and re-run
 the grid. The nowcast has its own gate: `regimeShockRangeRatio` stays 0 until three
 `market_shock_detected` days have been compared with the model's next-session label.
+
+## 2026-09-08 — the ML regime target tighten, built and left OFF
+
+**What shipped.** `services/autotrading/regimeTargets.ts`: `regimeAdjustedTargets(cfg, regime)`
+multiplies `targetRMultiple` and `optionsTakeProfitPct` by `1 − mlRegimeTargetTightenPct/100`
+(never below 0.1) while the overlay is on and `regime` is High Volatility/Bearish, and returns
+the factor. Three consumers, one helper: (1) the loop's decide call and the `/decide` preview
+(from today's persisted reading) hand `decide.ts` the effective `targetRMultiple`, so every
+signal's `rMultiple` is the tightened one; (2) both live books' finish-line trim reasons about
+the tightened payoff (`rewardMultiple`), guarded by the wiring scan; (3) the options exit rules
+— the short-dated ladder and the %-of-premium take-profit, paper and live — read the regime
+STAMPED on the position (`ml_regime`, which since the size cut is the tick's effective regime,
+nowcast included), so a High-Vol entry keeps its tighter target through a calm afternoon and a
+calm-tape entry is never tightened by a later switch. Equity targets are fixed at entry by the
+bracket, so both instruments tighten at entry. The applied factor is stamped as
+`regime_target_factor` on the same six tables as `ml_regime` (1 = untightened; NULL predates
+the column), copied from the order row at live materialization, exported as
+`regimeTargetFactor`. One config field, `mlRegimeTargetTightenPct` (30, `NEVER_TUNED`).
+
+**Why at entry, and why the goal is not scaled.** A target moved after entry would either
+loosen a bracket the broker already holds or tighten a position that was sized for the wider
+one; at entry the trade's geometry, its size and its journal line agree. The daily goal is
+scaled by the size cut (its own row), not by the tighten: the tighten changes the R
+distribution — smaller wins, more of them — which the walk-forward grid measures rather than
+assumes, and the counterfactual ledger (next) records per trade whether the full target would
+have been reached.
+
+**Interaction with the exit tune.** Auto-tune's exit tune moves the BASE `targetRMultiple`; the
+tighten multiplies whatever it set (a tuned 1.75R reads 1.225R on a High-Vol morning). The tune
+journal reports the untightened base.
+
+### What this does NOT do
+
+- It does not change an open position's target, and it never widens one.
+- It does not scale the daily goal, raise the conviction bar, or run in a backtest — each is
+  its own change with its own row.
+- It does not tighten on a stale or unknown reading, or with the overlay off: factor 1, and
+  the stamp says so.
+- It does not read today's regime at an options exit — only the one the position was opened
+  under.
+
+### Enabling rules
+
+The size cut's rules apply unchanged; the tighten shares `mlRegimeEnabled`. The number that
+ships on is the walk-forward grid's tighten cell (0 / 15 / 30), by the written rule, and the
+counterfactual ledger's pre-committed reading after 30 tightened trades decides whether it
+stays: an optimistic full-target counterfactual that beats realized R with a CI excluding zero
+sets the tighten to 0 for that regime and re-runs the grid.

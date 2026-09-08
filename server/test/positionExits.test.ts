@@ -31,6 +31,7 @@ function opt(over: Partial<Position>): Position {
     entryComponents: null,
     marketRegime: null,
     mlRegime: null,
+    regimeTargetFactor: null,
     marketAtrPct: null,
     entryVwap: null,
     initialStopPrice: null,

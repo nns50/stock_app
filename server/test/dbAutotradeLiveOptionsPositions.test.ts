@@ -168,4 +168,9 @@ describe('the ML regime label at entry (2026-09-08)', () => {
     );
     expect(createLiveOptionsPosition(input({ symbol: 'LOPMN' })).mlRegime).toBeNull();
   });
+
+  it('carries the regime target factor the same way (2026-09-08)', () => {
+    expect(createLiveOptionsPosition(input({ symbol: 'LOPTF', regimeTargetFactor: 0.7 })).regimeTargetFactor).toBe(0.7);
+    expect(createLiveOptionsPosition(input({ symbol: 'LOPTN' })).regimeTargetFactor).toBeNull();
+  });
 });

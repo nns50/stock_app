@@ -92,6 +92,12 @@ const cfgFields = {
   // order, clustered rather than spread, and impossible to reproduce outside
   // market hours because minutesUntilClose() returns null there.
   endOfDayFlattenMinutes: 0,
+  // Same shape of leak (2026-09-08): explainRoute.test.ts leaves the live
+  // conviction floor at 72, and the 70-score fixture signal below is refused
+  // by liveEntryScoreGate before evaluateRiskCheck ever runs whenever that
+  // file happens to sort first. The floor is not what these tests are about,
+  // so it is pinned off here rather than inherited.
+  liveMinSignalScore: 0,
   stagnationExitMinutes: 0,
 };
 
@@ -245,6 +251,21 @@ describe('neither live executor feeds the trim the raw config risk %', () => {
     const args = call.slice(0, call.indexOf('});') + 3);
     expect(args).toMatch(/riskPerTradePct:\s*preFinishLineRiskPct\(/);
     expect(args).not.toMatch(/riskPerTradePct:\s*cfg\.riskPerTradePct/);
+  });
+
+  // The reward multiple the trim reasons about is the EFFECTIVE target — the
+  // config's, tightened by the ML regime overlay under the tick's effective
+  // regime (regimeTargets.ts), the same multiple decide.ts built the bracket
+  // from. Handed the raw config value, the trim would reason about a payoff
+  // the tightened trade can never produce and trim too deep, the defect above
+  // in a new coat.
+  it.each(EXECUTORS)('%s hands the trim the regime-tightened reward multiple, never the raw config target', (name) => {
+    const src = readFileSync(join(__dirname, '..', 'src', 'services', 'autotrading', name), 'utf8');
+    const call = src.slice(src.indexOf('computeFinishLineFactor({'));
+    const args = call.slice(0, call.indexOf('});') + 3);
+    expect(args).toMatch(/rewardMultiple:\s*regimeAdjustedTargets\(cfg, regime\.effectiveRegime\)/);
+    expect(args).not.toMatch(/rewardMultiple:\s*cfg\.targetRMultiple/);
+    expect(args).not.toMatch(/rewardMultiple:\s*cfg\.optionsTakeProfitPct/);
   });
 
   // The ML regime overlay (2026-09-08) is a second and third trigger of the

@@ -98,11 +98,21 @@ describe('attemptPaperEntry', () => {
 
   it('stamps the conviction grade plus at-entry context on the opened position (2026-07-26)', async () => {
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 101.5 }) as never);
-    const outcome = await attemptPaperEntry(signal(), okResult, 'MODERATE', 'B', 'risk-on', 2.2, 'high_vol_bearish');
+    const outcome = await attemptPaperEntry(
+      signal(),
+      okResult,
+      'MODERATE',
+      'B',
+      'risk-on',
+      2.2,
+      'high_vol_bearish',
+      0.7,
+    );
     expect(outcome.ok).toBe(true);
     expect(outcome.position!.grade).toBe('B');
-    // The ML regime label (2026-09-08) rides the same at-entry path.
+    // The ML regime label and the target tighten factor (2026-09-08) ride the same at-entry path.
     expect(outcome.position!.mlRegime).toBe('high_vol_bearish');
+    expect(outcome.position!.regimeTargetFactor).toBe(0.7);
     expect(outcome.position!.entryScore).toBe(70); // the signal's raw score, not the bucketed letter
     expect(outcome.position!.marketRegime).toBe('risk-on');
     expect(outcome.position!.marketAtrPct).toBe(2.2);

@@ -196,9 +196,13 @@ and `server/test/regimeModelParity.test.ts` holds the port to it (section 8).
   default) the sizing regime cut reads `actionableRegime(reading)` — the regime when known
   and fresh, null otherwise — through `effectiveRisk.ts`'s `regimeTriggers`, beside the SPY
   ATR trigger and the intraday shock nowcast, the deeper configured cut applying once
-  (`docs/AUTOTRADE_RISK_SETTINGS.md`, "Regime size cut"). The sticky switch's threshold
-  comes from `mlRegimeSwitchThreshold` on every classification, overlay on or off.
-  Everything else is display; the enabling rules are in `docs/AUTOTRADING_SPEC.md`.
+  (`docs/AUTOTRADE_RISK_SETTINGS.md`, "Regime size cut"), and the target tighten
+  (`regimeTargets.ts`) brings `targetRMultiple` and `optionsTakeProfitPct` in by
+  `mlRegimeTargetTightenPct` at entry — the options exit rules read the regime STAMPED on
+  the position, never today's — stamping the applied factor as `regime_target_factor`. The
+  sticky switch's threshold comes from `mlRegimeSwitchThreshold` on every classification,
+  overlay on or off. Everything else is display; the enabling rules are in
+  `docs/AUTOTRADING_SPEC.md`.
 
 ## 6. Validation — walk-forward, out of sample
 

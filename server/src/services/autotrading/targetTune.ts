@@ -706,6 +706,7 @@ export const NEVER_TUNED_KEYS = [
   'mlRegimeSizeCutPct',
   'mlRegimeSwitchThreshold',
   'regimeShockRangeRatio',
+  'mlRegimeTargetTightenPct',
   'equityCurveDeriskEnabled',
   'equityCurveLookbackDays',
   'equityCurveDeriskCutPct',

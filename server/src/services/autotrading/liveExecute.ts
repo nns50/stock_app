@@ -60,6 +60,7 @@ import { computeMethodMultipliers, methodOfEquitySignal } from './methodSizing';
 import { activeSymbolCooldowns, journalEntrySkipOncePerDay } from './symbolCooldown';
 import { isUnparseableSymbolError, markUnplaceableSymbol, unplaceableReason } from './unplaceableSymbols';
 import { computeFinishLineFactor } from './finishLine';
+import { regimeAdjustedTargets } from './regimeTargets';
 import { liveEntryScoreGate } from './entryScoreGate';
 import {
   cutFactor,
@@ -715,6 +716,9 @@ export async function attemptLiveEntry(
   /** The ML regime label at entry (2026-09-08), recorded on the order row and
    *  carried to the position at materialization; null when unknown or stale. */
   mlRegime: string | null = null,
+  /** The target tighten factor the bracket's target was built with
+   *  (regimeTargets.ts): 1 when untightened; null for a direct caller. */
+  regimeTargetFactor: number | null = null,
 ): Promise<LiveExecutionOutcome> {
   const symbol = signal.symbol.toUpperCase();
   // The deploy-level master gate, checked FIRST — mirrors placeOrder.ts's own
@@ -868,6 +872,7 @@ export async function attemptLiveEntry(
     marketRegime,
     marketAtrPct,
     mlRegime,
+    regimeTargetFactor,
     entryVwap,
     // The combo group id this client minted for the bracket. Stored on BOTH
     // paths below — including the ambiguous one, where the order may well have
@@ -1383,7 +1388,10 @@ export async function runLiveExecution(
           method: methodMultiplier,
         }),
       ),
-      rewardMultiple: cfg.targetRMultiple,
+      // What a winner pays per $1 risked is the EFFECTIVE target — tightened
+      // by the ML regime overlay under this tick's effective regime, the same
+      // multiple decide.ts built the bracket from (regimeTargets.ts).
+      rewardMultiple: regimeAdjustedTargets(cfg, regime.effectiveRegime).targetRMultiple,
     });
     const ctx: RiskCheckContext = {
       equity,
@@ -1493,6 +1501,7 @@ export async function runLiveExecution(
         marketRegime,
         marketAtrPct,
         regimeStamp(regime),
+        regimeAdjustedTargets(freshCfg, regime.effectiveRegime).factor,
       );
     } catch (err) {
       const reason = `Unexpected error placing order: ${(err as Error).message}`;
@@ -2030,6 +2039,7 @@ function materializeEntryFill(
         marketRegime: adopted.marketRegime ?? meta?.marketRegime ?? null,
         marketAtrPct: adopted.marketAtrPct ?? meta?.marketAtrPct ?? null,
         mlRegime: adopted.mlRegime ?? meta?.mlRegime ?? null,
+        regimeTargetFactor: adopted.regimeTargetFactor ?? meta?.regimeTargetFactor ?? null,
         entryVwap: adopted.entryVwap ?? meta?.entryVwap ?? null,
         ...(entryStamp ?? {}),
       });
@@ -2080,6 +2090,7 @@ function materializeEntryFill(
     marketRegime: orderMeta?.marketRegime ?? null,
     marketAtrPct: orderMeta?.marketAtrPct ?? null,
     mlRegime: orderMeta?.mlRegime ?? null,
+    regimeTargetFactor: orderMeta?.regimeTargetFactor ?? null,
     entryVwap: orderMeta?.entryVwap ?? null,
     sourceIntentId: intent.id,
     accountId,

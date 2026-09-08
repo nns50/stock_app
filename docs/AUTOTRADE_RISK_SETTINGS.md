@@ -55,8 +55,9 @@ header if it's collapsed). Top to bottom, you'll find:
   of their own.
 - The **regime sizing** group: **regime ATR threshold (%)**, **regime size cut (%)**,
   and — since 2026-09-08 — the **ML regime overlay** switch with its **ML regime size
-  cut (%)**, **ML regime switch threshold** and **shock day range ratio (× ATR)**.
-  Covered together in [§4](#regime-size-cut--three-triggers-one-cut).
+  cut (%)**, **ML regime switch threshold**, **shock day range ratio (× ATR)** and **ML
+  regime target tighten (%)**. Covered together in
+  [§4](#regime-size-cut--three-triggers-one-cut).
 - A **Daily goal** card (2026-09-07, right below **Tune from target daily gain**)
   holding the three day-level stopping rules the tune otherwise stamps: **daily gain
   goal %**, **give-back arm %**, **give-back floor %**. Covered at the end of
@@ -87,6 +88,7 @@ and the two correlation-methodology fields) has its own input box and its own
 | **ML regime size cut (%)** | How much smaller while the effective regime is High Volatility/Bearish? | 35% | % cut (100 = skip) |
 | **ML regime switch threshold** | How sure must the model be before the reading changes regime? | 0.6 | probability (0–1) |
 | **Shock day range ratio (× ATR)** | How many normal days of range, so far today, make a shock day? | 0 (off) | multiple of SPY ATR |
+| **ML regime target tighten (%)** | How much closer is the profit target while the regime is High Volatility/Bearish? | 30% | % tighter |
 
 Every default in the first ten rows matches the app's original `MODERATE` preset, so if
 you've never touched these fields, nothing about how the loop behaves has changed —
@@ -246,6 +248,28 @@ trusting the ratio.
 own sticky rule: the regime changes only when the new state's filtered probability
 reaches this. Higher = calmer, later switches. It applies whether or not the overlay is
 on, because the reading is displayed and stamped on every entry regardless.
+
+**ML regime target tighten (%)** (default 30) is the overlay's second act: in a High
+Volatility/Bearish tape a breakout has less room before the next reversal, so the
+profit target is brought in. While the effective regime is High Vol, the **target
+R-multiple** and the **options take-profit %** are both multiplied by (1 − tighten/100)
+— at the default, a 2R target becomes **1.4R** and a 60% take-profit **42%**. It applies
+**at entry**: the equity bracket's target is fixed when the order is built, and the
+options exit rules read the regime *stamped on the position* rather than today's, so a
+High-Vol entry keeps its tighter target through a calm afternoon and a calm-tape entry
+is never tightened by a later switch. The finish-line trim reasons about the same
+tightened payoff (a smaller win overshoots the bank line less, so it trims less), and
+the factor is stamped on every position (`regimeTargetFactor`, 1 when untightened) so
+the counterfactual ledger can measure what the full target would have done. A tighten
+of 90 or more is clamped to a 0.1× target. It does **not** change the daily goal — a
+tighter target changes the shape of the R distribution (smaller wins, more of them),
+which the walk-forward grid measures rather than assumes.
+
+*Example:* $100 stock, $95 stop, 2R target → a $110 target normally. Overlay on, reading
+High Volatility/Bearish, tighten 30 → the bracket's target is **$107** (1.4 × $5 above
+the entry). An options position opened that morning at $3.00 premium with a 60%
+take-profit closes at **$4.26** (+42%) instead of $4.80 (+60%); the same position opened
+on a Sideways morning keeps $4.80 whatever today reads.
 
 Everything here is **live + paper**, like the ATR trigger; the backtest engines carry
 the overlay inert until the parity change wires it. The whole group ships **off**: do

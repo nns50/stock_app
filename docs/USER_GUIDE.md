@@ -801,9 +801,9 @@ trades.
   `time_exit`) on the exit itself, so you can see *which exit mechanism* is making or
   losing the money instead of inferring it from prices. All of it is capture-only —
   nothing about entries, sizing, or exits changes — and it flows through the CSV/JSON
-  export (new `entryTime`, `entryScore`, `marketRegime`, `mlRegime`, `marketAtrPct`, and
-  `lastExitReason` columns) so a month of trades can be sliced by score band, regime,
-  and session offline. Since 2026-08-22 live equity entries also stamp the day's
+  export (new `entryTime`, `entryScore`, `marketRegime`, `mlRegime`, `regimeTargetFactor`,
+  `marketAtrPct`, and `lastExitReason` columns) so a month of trades can be sliced by
+  score band, regime, and session offline. Since 2026-08-22 live equity entries also stamp the day's
   **session VWAP at entry** (`entryVwap`, in the export too) — capture-only, like the
   rest: it exists so the journal itself can answer whether VWAP-aligned entries (longs
   above VWAP, shorts below) actually win more *here*, before any alignment filter is
@@ -1273,9 +1273,16 @@ equally-weighted cards in the order they happened to be built:
   risk-check entries says so); a stale or unknown reading never cuts; a shock day
   journals `market_shock_detected` once. The **ML regime switch threshold** (0–1,
   default 0.6) is the reading's own sticky rule — the regime changes only when the new
-  state's probability reaches it — and applies whether or not the overlay is on. Leave
-  the overlay off until the enabling rules in the model card are met; the plain-English
-  walkthrough with worked numbers is [AUTOTRADE_RISK_SETTINGS.md](AUTOTRADE_RISK_SETTINGS.md)
+  state's probability reaches it — and applies whether or not the overlay is on. The
+  same switch also **tightens the profit target** in that regime by the **ML regime
+  target tighten (%)** (default 30): the target R-multiple and the options take-profit
+  % are both multiplied by (1 − tighten/100) at entry — a 2R target becomes 1.4R and a
+  60% take-profit 42% — the finish-line trim reasons about the tightened payoff, and the
+  options exit rules read the regime stamped on the position at entry, so a High-Vol
+  entry keeps its tighter target through a calm afternoon and a calm-tape entry is never
+  tightened by a later switch. It does not change the daily goal. Leave the overlay off
+  until the enabling rules in the model card are met; the plain-English walkthrough
+  with worked numbers is [AUTOTRADE_RISK_SETTINGS.md](AUTOTRADE_RISK_SETTINGS.md)
   §"Regime size cut — three triggers, one cut". Finally, **equity-curve
   de-risking** (2026-07-24, off by default) is the same idea keyed to your _own_
   results instead of the market: when the strategy's cumulative closed-P&L curve —

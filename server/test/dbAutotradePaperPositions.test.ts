@@ -136,4 +136,9 @@ describe('the ML regime label at entry (2026-09-08)', () => {
     expect(openPaperPosition(input({ symbol: 'PPML', mlRegime: 'low_vol_bullish' })).mlRegime).toBe('low_vol_bullish');
     expect(openPaperPosition(input({ symbol: 'PPMN' })).mlRegime).toBeNull();
   });
+
+  it('carries the regime target factor the same way (2026-09-08)', () => {
+    expect(openPaperPosition(input({ symbol: 'PPTF', regimeTargetFactor: 0.7 })).regimeTargetFactor).toBe(0.7);
+    expect(openPaperPosition(input({ symbol: 'PPTN' })).regimeTargetFactor).toBeNull();
+  });
 });

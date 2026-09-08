@@ -16,6 +16,16 @@ const TABLES = [
 
 beforeAll(() => initDb());
 
+describe('regime_target_factor column (2026-09-08)', () => {
+  it.each(TABLES)('exists on %s, nullable REAL, beside ml_regime', (table) => {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string; type: string; notnull: number }[];
+    const col = cols.find((c) => c.name === 'regime_target_factor');
+    expect(col, `${table} has no regime_target_factor column`).toBeDefined();
+    expect(col?.type).toBe('REAL');
+    expect(col?.notnull).toBe(0);
+  });
+});
+
 describe('ml_regime column', () => {
   it.each(TABLES)('exists on %s, nullable, beside market_regime', (table) => {
     const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string; type: string; notnull: number }[];

@@ -2849,6 +2849,7 @@ export default function AutoTradePage() {
   const [mlRegimeSizeCutPctDraft, setMlRegimeSizeCutPctDraft] = useState<number | undefined>();
   const [mlRegimeSwitchThresholdDraft, setMlRegimeSwitchThresholdDraft] = useState<number | undefined>();
   const [regimeShockRangeRatioDraft, setRegimeShockRangeRatioDraft] = useState<number | undefined>();
+  const [mlRegimeTargetTightenPctDraft, setMlRegimeTargetTightenPctDraft] = useState<number | undefined>();
   const [equityCurveDeriskEnabled, setEquityCurveDeriskEnabled] = useState(false);
   const [equityCurveLookbackDaysDraft, setEquityCurveLookbackDaysDraft] = useState<number | undefined>();
   const [equityCurveDeriskCutPctDraft, setEquityCurveDeriskCutPctDraft] = useState<number | undefined>();
@@ -2987,6 +2988,7 @@ export default function AutoTradePage() {
     sync('mlRegimeSizeCutPct', setMlRegimeSizeCutPctDraft);
     sync('mlRegimeSwitchThreshold', setMlRegimeSwitchThresholdDraft);
     sync('regimeShockRangeRatio', setRegimeShockRangeRatioDraft);
+    sync('mlRegimeTargetTightenPct', setMlRegimeTargetTightenPctDraft);
     sync('equityCurveDeriskEnabled', setEquityCurveDeriskEnabled);
     sync('equityCurveLookbackDays', setEquityCurveLookbackDaysDraft);
     sync('equityCurveDeriskCutPct', setEquityCurveDeriskCutPctDraft);
@@ -3099,6 +3101,7 @@ export default function AutoTradePage() {
     mlRegimeSizeCutPct?: number;
     mlRegimeSwitchThreshold?: number;
     regimeShockRangeRatio?: number;
+    mlRegimeTargetTightenPct?: number;
     equityCurveDeriskEnabled?: boolean;
     equityCurveLookbackDays?: number;
     equityCurveDeriskCutPct?: number;
@@ -4728,6 +4731,36 @@ export default function AutoTradePage() {
                           regimeShockRangeRatioDraft < 0 ||
                           regimeShockRangeRatioDraft > 10 ||
                           regimeShockRangeRatioDraft === config.data?.regimeShockRangeRatio
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="ML regime target tighten (%)"
+                    hint="While the effective regime is High Volatility/Bearish, the profit target is brought in by this % — the equity target R-multiple and the options take-profit % are both multiplied by (1 − this/100), at entry: a 2R target becomes 1.4R and a 60% take-profit 42% at the default 30. The options exit rules read the regime stamped on the position, so a High-Vol entry keeps its tighter target through a calm afternoon. Does not change the daily goal. 90+ is clamped to a 0.1× target. Needs ML regime overlay on."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={mlRegimeTargetTightenPctDraft}
+                        onChange={setMlRegimeTargetTightenPctDraft}
+                        min={0}
+                        max={100}
+                        step={5}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save ML regime target tighten"
+                        onClick={() =>
+                          mlRegimeTargetTightenPctDraft != null &&
+                          saveConfig({ mlRegimeTargetTightenPct: mlRegimeTargetTightenPctDraft })
+                        }
+                        disabled={
+                          mlRegimeTargetTightenPctDraft == null ||
+                          mlRegimeTargetTightenPctDraft < 0 ||
+                          mlRegimeTargetTightenPctDraft > 100 ||
+                          mlRegimeTargetTightenPctDraft === config.data?.mlRegimeTargetTightenPct
                         }
                       >
                         Save

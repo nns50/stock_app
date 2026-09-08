@@ -124,6 +124,7 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     mlRegimeSizeCutPct: 35,
     mlRegimeSwitchThreshold: 0.6,
     regimeShockRangeRatio: 0,
+    mlRegimeTargetTightenPct: 30,
     equityCurveDeriskEnabled: false,
     equityCurveLookbackDays: 10,
     equityCurveDeriskCutPct: 50,
@@ -544,6 +545,22 @@ describe('AutoTradePage', () => {
 
     await waitFor(() =>
       expect(setConfig).toHaveBeenCalledWith({ regimeShockRangeRatio: 1.5, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new ML regime target tighten', async () => {
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const field = screen.getByText('ML regime target tighten (%)').closest('label')!;
+    fireEvent.change(within(field).getByRole('textbox'), { target: { value: '15' } });
+    const saveButton = screen.getByRole('button', { name: 'Save ML regime target tighten' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ mlRegimeTargetTightenPct: 15, confirmAggressive: undefined }),
     );
   });
 
@@ -3770,6 +3787,7 @@ describe('AutoTradePage', () => {
         entryComponents: null,
         marketRegime: null,
         mlRegime: null,
+        regimeTargetFactor: null,
         marketAtrPct: null,
         entryVwap: null,
         createdAt: Date.now(),

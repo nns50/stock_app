@@ -683,7 +683,13 @@ ratio) is treated the same way on day one, which a model read from yesterday's c
 see. It is a second layer on _dollar_ risk for what the per-trade ATR stop cannot price —
 gaps through stops, correlations going to one, a long-biased edge that weakens in bear tape
 — so the cut is moderate, applied once (the deeper of the triggers, never both), and a cut
-of 100% simply skips that regime. Turn it on only when the model card's pre-committed rules
+of 100% simply skips that regime. The same switch brings the profit target in by the ML
+regime target tighten (30% by default: 2R → 1.4R, a 60% options take-profit → 42%), at
+entry, from the regime stamped on the position — a breakout has less room before the next
+reversal in that tape, and a target that is reached beats one that was nearly reached. The
+factor is stamped on every trade, so whether the tighten banked wins or cost them is
+measurable against the favorable excursion later, not argued. Turn it on only when the
+model card's pre-committed rules
 are met (a walk-forward grid picks the number, twenty journaled sessions with few switches,
 the Python and TypeScript readings agreeing), and read `regime_sizing` in Recent activity to
 see exactly what each entry was cut by and why. The plain-English walkthrough is

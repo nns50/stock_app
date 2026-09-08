@@ -63,6 +63,7 @@ export interface CreateLiveOptionsPositionInput {
   /** ML regime label at entry (2026-09-08): 'high_vol_bearish' | 'low_vol_bullish' |
    *  'sideways', or null when the reading was unknown or stale — never a guess. */
   mlRegime?: string | null;
+  regimeTargetFactor?: number | null;
   marketAtrPct?: number | null;
   /** Underlying price at entry, carried from the entry order row at
    *  materialization — see the column comment in db/index.ts. */
@@ -107,6 +108,7 @@ export interface LiveOptionsPosition {
   ivRank: number | null;
   marketRegime: string | null;
   mlRegime: string | null;
+  regimeTargetFactor: number | null;
   marketAtrPct: number | null;
   /** Underlying price at entry — the reference an underlying-based stop
    *  measures against (docs/SHORT_DATED_OPTIONS_SPEC.md). Null on rows that
@@ -166,6 +168,7 @@ interface Row {
   iv_rank: number | null;
   market_regime: string | null;
   ml_regime: string | null;
+  regime_target_factor: number | null;
   market_atr_pct: number | null;
   underlying_at_entry: number | null;
   peak_premium: number | null;
@@ -202,6 +205,7 @@ function map(r: Row): LiveOptionsPosition {
     ivRank: r.iv_rank ?? null,
     marketRegime: r.market_regime ?? null,
     mlRegime: r.ml_regime ?? null,
+    regimeTargetFactor: r.regime_target_factor ?? null,
     marketAtrPct: r.market_atr_pct ?? null,
     underlyingAtEntry: r.underlying_at_entry ?? null,
     peakPremium: r.peak_premium ?? null,
@@ -229,9 +233,9 @@ export function createLiveOptionsPosition(input: CreateLiveOptionsPositionInput)
          (symbol, side, kind, contract_symbol, strike, short_contract_symbol, short_strike,
           expiration, quantity, entry_price, short_entry_price, entry_at,
           risk_amount, risk_profile, rationale, status, account_id,
-          grade, entry_score, iv_rank, market_regime, ml_regime, market_atr_pct,
+          grade, entry_score, iv_rank, market_regime, ml_regime, regime_target_factor, market_atr_pct,
           underlying_at_entry, peak_premium, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       input.symbol.toUpperCase(),
@@ -255,6 +259,7 @@ export function createLiveOptionsPosition(input: CreateLiveOptionsPositionInput)
       input.ivRank ?? null,
       input.marketRegime ?? null,
       input.mlRegime ?? null,
+      input.regimeTargetFactor ?? null,
       input.marketAtrPct ?? null,
       input.underlyingAtEntry ?? null,
       // The peak starts at the entry premium: a position has not been in

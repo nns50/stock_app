@@ -572,6 +572,22 @@ describe('checkOptionsPaperExits', () => {
       expect(outcomes[0].position!.exitReason).toBe('take_profit');
     });
 
+    it('takes profit at the tightened % for a position stamped High Vol with the overlay on, and at the full % otherwise (2026-09-08)', async () => {
+      // 50% × (1 − 30%) = 35%: a +40% mark closes a High-Vol-stamped position…
+      setAutotradeConfig({ optionsTakeProfitPct: 50, mlRegimeEnabled: true, mlRegimeTargetTightenPct: 30 });
+      openPos({ expiration: '2024-07-15', entryPrice: 3, mlRegime: 'high_vol_bearish' });
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4.2 } }) as never); // +40%
+      const tightened = await checkOptionsPaperExits();
+      expect(tightened[0].closed).toBe(true);
+      expect(tightened[0].position!.exitReason).toBe('take_profit');
+
+      // …and leaves a Sideways-stamped one open at the same mark, whatever today reads.
+      db.exec('DELETE FROM autotrade_options_paper_positions');
+      openPos({ expiration: '2024-07-15', entryPrice: 3, mlRegime: 'sideways' });
+      const untouched = await checkOptionsPaperExits();
+      expect(untouched[0].closed).toBe(false);
+    });
+
     it('does not close when unrealized P&L is inside both configured bands', async () => {
       setAutotradeConfig({ optionsStopLossPct: 50, optionsTakeProfitPct: 50 });
       openPos({ expiration: '2024-07-15', entryPrice: 3 });

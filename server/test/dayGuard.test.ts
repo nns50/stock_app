@@ -31,6 +31,7 @@ function makePosition(
     entryComponents: null,
     marketRegime: null,
     mlRegime: null,
+    regimeTargetFactor: null,
     marketAtrPct: null,
     entryVwap: null,
     initialStopPrice: null,

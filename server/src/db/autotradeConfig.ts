@@ -188,6 +188,18 @@ export interface AutotradeConfig {
    *  label), because a daily-bar backtest knows the full range only at the
    *  close. Needs mlRegimeEnabled. LIVE + PAPER. */
   regimeShockRangeRatio: number;
+  /** The target tighten (2026-09-08; services/autotrading/regimeTargets.ts):
+   *  while the effective regime is High Volatility/Bearish, targetRMultiple
+   *  and optionsTakeProfitPct are multiplied by (1 − this/100) — a breakout has
+   *  less room before the next reversal in that tape, so the target is brought
+   *  in. Applied at ENTRY: the equity bracket's target is fixed then, and the
+   *  options exit rules read the regime stamped on the position rather than
+   *  today's. The applied factor is stamped as regime_target_factor so the
+   *  counterfactual ledger can measure what the full target would have done.
+   *  Default 30 (the request's number; the walk-forward grid judges it); a
+   *  tighten of 90+ is clamped to a 0.1× target. Needs mlRegimeEnabled.
+   *  LIVE + PAPER. Does NOT scale the daily goal — that is the size cut's job. */
+  mlRegimeTargetTightenPct: number;
   /** Equity-curve de-risking (2026-07-24, services/autotrading/equityCurveDerisk.ts):
    *  a SOFTER, graduated companion to the binary `maxDailyDrawdownPct` halt.
    *  When on, and the strategy's OWN realized equity curve (cumulative closed
@@ -1106,6 +1118,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     mlRegimeSizeCutPct: 35,
     mlRegimeSwitchThreshold: 0.6,
     regimeShockRangeRatio: 0,
+    mlRegimeTargetTightenPct: 30,
     equityCurveDeriskEnabled: false,
     equityCurveLookbackDays: 10,
     equityCurveDeriskCutPct: 50,
@@ -1350,6 +1363,7 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     mlRegimeSizeCutPct: pct(input.mlRegimeSizeCutPct, d.mlRegimeSizeCutPct),
     mlRegimeSwitchThreshold: unitInterval(input.mlRegimeSwitchThreshold, d.mlRegimeSwitchThreshold),
     regimeShockRangeRatio: rangeRatio(input.regimeShockRangeRatio, d.regimeShockRangeRatio),
+    mlRegimeTargetTightenPct: pct(input.mlRegimeTargetTightenPct, d.mlRegimeTargetTightenPct),
     equityCurveDeriskEnabled:
       typeof input.equityCurveDeriskEnabled === 'boolean' ? input.equityCurveDeriskEnabled : d.equityCurveDeriskEnabled,
     equityCurveLookbackDays: posIntMin1(input.equityCurveLookbackDays, d.equityCurveLookbackDays),
