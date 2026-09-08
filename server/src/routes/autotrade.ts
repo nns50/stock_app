@@ -62,6 +62,9 @@ import { computeTargetTune, realizedBasisAvailability, resetToModerate } from '.
 import { collectBook, DEFAULT_LOOKBACK_SESSIONS, realizedEdgeOf } from '../services/autotrading/dailyTargetSweepData';
 import { runDailyTargetSweep } from '../services/autotrading/dailyTargetSweep';
 import { listUniverseSymbols } from '../db/universe';
+import { webullPlaceStandaloneBracket } from '../providers/webull/orders';
+import { webullAccountState } from '../providers/webull/accountState';
+import { config } from '../config';
 
 export const autotradeRouter = Router();
 
@@ -2174,5 +2177,103 @@ autotradeRouter.get(
       events: listAutotradeEvents({ ...q, ...(list ? { actions: list } : {}) }),
       ...neverSeen(list),
     });
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Re-arm a protective bracket on shares ALREADY HELD (2026-09-08).
+//
+// checkLiveBracketProtection's own alert says "check the broker and re-arm
+// protection by hand" — and until now there was no hand to do it with. The
+// no-MASTER standalone bracket existed in the provider
+// (webullPlaceStandaloneBracket) but was reachable only from
+// cancelReplaceBracket, behind a flag that is off. So the one action the
+// naked-position alarm asks for could only be taken in Webull's own UI.
+//
+// Vendor-documented shape, quoted from Place Order:
+//   "To sell and close an existing position with take-profit/stop-loss, submit
+//    only STOP_PROFIT/STOP_LOSS sub-orders (side = SELL) grouped under the same
+//    client_combo_order_id; no MASTER order is required in this scenario."
+// and, on combo_type: "no MASTER order is required OR SUPPORTED in this
+// scenario, since no new position is being opened."
+//
+// THE GUARD THAT MATTERS: quantity may not exceed the shares the BROKER says
+// are held right now. A protective sell for more than you own is a naked short
+// dressed as protection, and it is the one way this route could lose real
+// money. Read fresh from the broker every call — a stale ledger is exactly how
+// that mistake gets made.
+// ---------------------------------------------------------------------------
+const standaloneBracketBody = z.object({
+  symbol: z.string().min(1).max(12),
+  quantity: z.number().int().positive(),
+  takeProfitPrice: z.number().positive().optional(),
+  stopLossPrice: z.number().positive().optional(),
+  /** Typed confirmation: the symbol itself, same posture as the other routes
+   *  here that send real orders. */
+  confirmation: z.string().min(1),
+});
+
+autotradeRouter.post(
+  '/live/standalone-bracket',
+  asyncHandler(async (req, res) => {
+    const body = parseBody(standaloneBracketBody, req);
+    const symbol = body.symbol.trim().toUpperCase();
+    if (body.confirmation.trim().toUpperCase() !== symbol) {
+      throw new HttpError(400, `Confirmation must be the symbol ("${symbol}").`);
+    }
+    // buildStandaloneBracketRequest returns null with neither price and the
+    // caller must not read that as success — refuse here with a reason instead.
+    if (body.takeProfitPrice === undefined && body.stopLossPrice === undefined) {
+      throw new HttpError(400, 'At least one of takeProfitPrice / stopLossPrice is required.');
+    }
+    if (!config.trading.placeEnabled) throw new HttpError(400, 'Order placement is disabled (TRADING_PLACE_ENABLED).');
+    const cfg = getAutotradeConfig();
+    const accountId = cfg.liveAccountId;
+    if (!accountId) throw new HttpError(400, 'No live account is configured.');
+
+    const account = await webullAccountState(accountId, symbol);
+    if (!account.ok) throw new HttpError(502, `Could not read the account: ${account.error ?? 'unknown'}`);
+    const held = account.state?.currentPositionQty ?? 0;
+    if (!(held > 0)) throw new HttpError(400, `The account holds no ${symbol} to protect (broker says ${held}).`);
+    if (body.quantity > held) {
+      throw new HttpError(
+        400,
+        `Refusing to protect ${body.quantity} ${symbol} against ${held} held — a protective sell larger than the position is a short, not protection.`,
+      );
+    }
+
+    const placed = await webullPlaceStandaloneBracket(
+      accountId,
+      {
+        symbol,
+        assetKind: 'stock',
+        // The ENTRY side; bracketExit emits the legs on the closing side.
+        side: 'buy',
+        openClose: 'close',
+        quantity: body.quantity,
+        orderType: 'limit',
+      },
+      body.takeProfitPrice,
+      body.stopLossPrice,
+    );
+    logAutotradeEvent({
+      symbol,
+      stage: 'execution',
+      action: placed.ok ? 'live_bracket_rearmed' : 'live_bracket_rearm_failed',
+      detail: {
+        quantity: body.quantity,
+        heldAtBroker: held,
+        takeProfitPrice: body.takeProfitPrice ?? null,
+        stopLossPrice: body.stopLossPrice ?? null,
+        clientComboOrderId: placed.ok ? placed.clientComboOrderId : null,
+        error: placed.ok ? null : (placed.error ?? null),
+        ambiguous: placed.ok ? false : (placed.ambiguous ?? false),
+      },
+      riskProfile: cfg.riskProfile,
+    });
+    // The RAW broker payload is returned deliberately: this route exists partly
+    // to answer questions the docs cannot, and a summarized response would lose
+    // the combo ids that answer them.
+    res.json({ heldAtBroker: held, ...placed });
   }),
 );
