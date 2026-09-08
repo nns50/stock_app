@@ -68,6 +68,8 @@ export default defineConfig({
   test: {
     fileParallelism: false,
     sequence: { sequencer: PathOrderSequencer },
+    // Runs once per TEST FILE — see test/setupConfigIsolation.ts.
+    setupFiles: ['./test/setupConfigIsolation.ts'],
     globalSetup: './test/globalSetup.ts',
     env: {
       DATABASE_PATH,

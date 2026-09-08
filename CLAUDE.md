@@ -60,10 +60,18 @@ Guidelines:
   is half of task #46's "2 in 6 runs, unattributed" (the other half was a stale
   database, see `test/dbFile.ts`). A path-sorting sequencer now fixes the order. It does
   NOT remove the coupling; it removes the ghost, so a config leak now fails identically
-  on every run and can be bisected. **A test file that patches shared config should
-  spread `defaultAutotradeConfig()` first** — pinning fields one at a time only ever
-  fixes the field that happened to bite. And never write a comment claiming some file
+  on every run and can be bisected. And never write a comment claiming some file
   "always runs first"; three such comments were wrong.
+- **The config row itself is now reset per test FILE** (`test/setupConfigIsolation.ts`,
+  wired via `setupFiles`), which removes the coupling rather than only making it
+  deterministic. Per file, not per test: many files set their config in their own
+  `beforeAll` and rely on it across their cases. A survey found ELEVEN files patching
+  the row without ever spreading defaults, so fixing them one at a time would have left
+  the twelfth to be written next week. `test/configIsolation.test.ts` guards it, and its
+  NAME is load-bearing — under the pinned path order it runs after every `autotrade*`
+  file, which is where leakage would show. It asserts DEEP equality against
+  `defaultAutotradeConfig()` on purpose: naming individual fields only ever catches the
+  ones that have already bitten, which is the mistake the earlier per-field pinning made.
 - Demo data: `npm run seed` (idempotent; `--force` to add anyway).
 - Run locally: `npm run dev` → API `:3001` + web `:5173`.
 
