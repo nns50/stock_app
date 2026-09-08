@@ -51,6 +51,14 @@ vi.mock('../src/providers/webull/positions', () => ({ runWebullPositionsSync: vi
 vi.mock('../src/services/marketRegime', () => ({
   computeMarketRegime: vi.fn(async () => ({ label: 'neutral' })),
 }));
+// The ML regime reading (services/mlRegime.ts) has its own end-to-end coverage
+// (mlRegime.test.ts); here it is a stub the tick mirrors, so the tests below
+// assert the WIRING — the summary carries what the read returned, and a read
+// that throws costs the tick nothing but a journaled stage failure.
+vi.mock('../src/services/mlRegime', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/services/mlRegime')>();
+  return { ...actual, getMarketRegime: vi.fn(async () => actual.getMarketRegime({ source: 'off' })) };
+});
 vi.mock('../src/services/autotrading/moversPromotion', () => ({ processMoversForPromotion: vi.fn() }));
 vi.mock('../src/services/autotrading/executionGuards', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/services/autotrading/executionGuards')>();
@@ -101,6 +109,7 @@ import { checkSessionWindow, getMarketAtrPct } from '../src/services/autotrading
 import { logAutotradeEvent } from '../src/db/autotradeEvents';
 import { runAutotradeLoopTick, startAutotradeLoop, stopAutotradeLoop } from '../src/services/autotrading/loop';
 import { getLastTick } from '../src/db/autotradeLastTick';
+import { getMarketRegime, MlRegimeReading } from '../src/services/mlRegime';
 import { ScreenCandidate } from '../src/services/autotrading/screen';
 import { TradeSignal } from '../src/services/autotrading/decide';
 import { initDb, db } from '../src/db';
@@ -134,6 +143,7 @@ const mockMoversPromotion = vi.mocked(processMoversForPromotion);
 const mockSessionWindow = vi.mocked(checkSessionWindow);
 const mockMarketAtr = vi.mocked(getMarketAtrPct);
 const mockLogEvent = vi.mocked(logAutotradeEvent);
+const mockGetMarketRegime = vi.mocked(getMarketRegime);
 
 function candidate(symbol: string, atrPct: number | null): ScreenCandidate {
   return {
@@ -934,6 +944,69 @@ describe('runAutotradeLoopTick', () => {
 
     expect(summary.skippedReason).toBe('Neither paper nor live auto-trading is active');
     expect(getLastTick()?.summary.skippedReason).toBe('Neither paper nor live auto-trading is active');
+  });
+
+  it('mirrors the ML regime reading on the tick summary and the persisted last tick', async () => {
+    // The read runs before the entry gates, so even a skipped tick carries it.
+    setAutotradeConfig({ enabled: false, liveTradingEnabled: false });
+    const reading: MlRegimeReading = {
+      regime: 'high_vol_bearish',
+      label: 'High Volatility/Bearish',
+      candidate: 'high_vol_bearish',
+      probabilities: { high_vol_bearish: 0.91, low_vol_bullish: 0.02, sideways: 0.07 },
+      predictedNext: null,
+      asOf: '2026-09-03',
+      etDate: '2026-09-04',
+      features: null,
+      source: 'fred',
+      stale: false,
+      drift: false,
+      driftScore: -2,
+      driftP5: -4.7,
+      modelVersion: 'test',
+      switched: false,
+      heldBelowThreshold: false,
+      threshold: 0.6,
+      previous: null,
+      rows: 250,
+      logLikelihood: -70,
+      computedAt: 0,
+    };
+    mockGetMarketRegime.mockResolvedValueOnce(reading);
+
+    const summary = await runAutotradeLoopTick();
+
+    expect(summary.mlRegime).toEqual({
+      regime: 'high_vol_bearish',
+      label: 'High Volatility/Bearish',
+      source: 'fred',
+      asOf: '2026-09-03',
+      stale: false,
+      drift: false,
+      probability: 0.91,
+    });
+    expect(getLastTick()?.summary.mlRegime).toEqual(summary.mlRegime);
+  });
+
+  it('a regime read that throws is journaled as a stage failure and the tick carries null', async () => {
+    setAutotradeConfig({ enabled: false, liveTradingEnabled: false });
+    mockGetMarketRegime.mockRejectedValueOnce(new Error('FRED is down'));
+
+    const summary = await runAutotradeLoopTick();
+
+    expect(summary.mlRegime).toBeNull();
+    const stages = mockLogEvent.mock.calls
+      .filter((c) => c[0].action === 'loop_stage_failed')
+      .map((c) => (c[0].detail as { loopStage: string }).loopStage);
+    expect(stages).toContain('ml regime read');
+  });
+
+  it('with the source off (the test suite), the tick reads unknown/source_off without I/O', async () => {
+    setAutotradeConfig({ enabled: false, liveTradingEnabled: false });
+
+    const summary = await runAutotradeLoopTick();
+
+    expect(summary.mlRegime).toMatchObject({ regime: 'unknown', source: 'off', probability: null });
   });
 
   it('runs options paper execution alongside equity, seeding equity with options’ own pre-existing snapshot', async () => {

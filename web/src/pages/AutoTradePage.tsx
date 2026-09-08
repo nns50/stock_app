@@ -1911,6 +1911,18 @@ function MonitoringDashboard({
               {dash.lastTick.summary.moversAutoPromoted > 0 &&
                 ` · ${dash.lastTick.summary.moversAutoPromoted} movers promoted`}
             </p>
+            {/* The ML market-regime reading this tick saw (services/mlRegime.ts).
+                Older persisted ticks predate the field, so it is guarded. */}
+            {dash.lastTick.summary.mlRegime && (
+              <p data-testid="last-cycle-ml-regime">
+                ML regime: {dash.lastTick.summary.mlRegime.label}
+                {dash.lastTick.summary.mlRegime.probability !== null &&
+                  ` (p=${dash.lastTick.summary.mlRegime.probability.toFixed(2)})`}{' '}
+                · {dash.lastTick.summary.mlRegime.source}
+                {dash.lastTick.summary.mlRegime.stale ? ' · stale' : ''}
+                {dash.lastTick.summary.mlRegime.drift ? ' · drift' : ''}
+              </p>
+            )}
             {/* The LIVE side of the tick. Every number below was already
                 computed, stored and served — and rendered nowhere, so this
                 panel showed a live cycle as if only its paper half had

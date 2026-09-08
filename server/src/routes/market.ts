@@ -9,6 +9,7 @@ import { runProviderTest } from '../services/providerTest';
 import { smaSeries } from '../indicators/indicators';
 import { computeIndicators, defaultScreenerConfig } from '../indicators/screener';
 import { computeMarketRegime } from '../services/marketRegime';
+import { getMarketRegime } from '../services/mlRegime';
 
 export const marketRouter = Router();
 
@@ -36,6 +37,19 @@ marketRouter.get(
   asyncHandler(async (req, res) => {
     const q = parseQuery(regimeQuery, req);
     res.json(await computeMarketRegime({ force: q.force }));
+  }),
+);
+
+// The ML market-regime reading — the shipped HMM's filtered posterior over the
+// last 250 sessions, sticky-switched from yesterday (services/mlRegime.ts,
+// docs/MARKET_REGIME_MODEL.md). Cached per ET day in the service; `force`
+// refetches FRED and re-classifies. Never throws: a missing model, missing
+// data or a stale data date reads `unknown` with a reason.
+marketRouter.get(
+  '/market/regime-ml',
+  asyncHandler(async (req, res) => {
+    const q = parseQuery(regimeQuery, req);
+    res.json(await getMarketRegime({ force: q.force }));
   }),
 );
 

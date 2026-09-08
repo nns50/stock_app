@@ -7,6 +7,9 @@ import { logAutotradeEvent } from '../src/db/autotradeEvents';
 import { saveLastTick } from '../src/db/autotradeLastTick';
 import { getAutotradeDashboard } from '../src/services/autotrading/dashboard';
 import { seedClosedAutotradeSessions } from './helpers/autotradeSessions';
+import { saveMlRegimeReading } from '../src/db/mlRegimeReadings';
+import { resetMlRegimeCache } from '../src/services/mlRegime';
+import { etToday } from '../src/util/marketDate';
 
 // Unit coverage for the Phase 7 dashboard snapshot (docs/AUTOTRADING_SPEC.md —
 // MONITORING & KILL SWITCH). Every "used vs limit" figure here is meant to be
@@ -136,6 +139,7 @@ describe('getAutotradeDashboard', () => {
       moversDiscovered: 0,
       moversCandidates: 0,
       moversFetchError: null,
+      mlRegime: null,
     });
     const dash = getAutotradeDashboard();
     expect(dash.lastTick).not.toBeNull();
@@ -453,5 +457,28 @@ describe('dailyGoalEvidence', () => {
     expect(e.impliedDailyGainPct).toBeCloseTo(1, 2);
     expect(e.targetOverImplied).toBe(3);
     expect(e.reliable).toBe(false); // 3 of 20 trades, 2 of 20 sessions
+  });
+});
+
+describe("mlRegime — the dashboard peeks at today's reading, never fetches", () => {
+  beforeEach(() => {
+    db.exec('DELETE FROM ml_regime_readings');
+    resetMlRegimeCache();
+  });
+
+  it('is null before the loop has read today', () => {
+    expect(getAutotradeDashboard().mlRegime).toBeNull();
+  });
+
+  it("mirrors today's persisted reading", () => {
+    const reading = { regime: 'high_vol_bearish', label: 'High Volatility/Bearish', source: 'fred', stale: false };
+    saveMlRegimeReading({
+      etDate: etToday(),
+      regime: 'high_vol_bearish',
+      asOf: '2026-09-03',
+      reading,
+      modelVersion: 'test',
+    });
+    expect(getAutotradeDashboard().mlRegime).toMatchObject(reading);
   });
 });

@@ -487,6 +487,65 @@ export interface MarketRegime {
   asOf: number;
 }
 
+/** The ML market-regime reading's label (server: services/mlRegime.ts,
+ *  docs/MARKET_REGIME_MODEL.md). `unknown` = no model, no data, a stale data
+ *  date, or the source switched off — never acted on. */
+export type MlRegime = 'high_vol_bearish' | 'low_vol_bullish' | 'sideways' | 'unknown';
+export type MlRegimeSource = 'fred' | 'provider' | 'cache' | 'override' | 'off' | 'none';
+export type MlRegimeReason = 'no_model' | 'source_off' | 'no_data' | 'stale' | 'synthetic_provider' | 'fetch_failed';
+
+export interface MlRegimeProbabilities {
+  high_vol_bearish: number;
+  low_vol_bullish: number;
+  sideways: number;
+}
+
+/** One day's reading from the shipped Gaussian HMM: the filtered posterior over
+ *  the last 250 sessions, sticky-switched from the previous known day. */
+export interface MlRegimeReading {
+  regime: MlRegime;
+  /** `regime` in words: High Volatility/Bearish, Low Volatility/Bullish, Sideways, Unknown. */
+  label: string;
+  /** The argmax posterior before the sticky rule (what the model would read). */
+  candidate: MlRegime;
+  probabilities: MlRegimeProbabilities | null;
+  /** posterior × transition matrix — the one-step-ahead state distribution. */
+  predictedNext: MlRegimeProbabilities | null;
+  /** Last data date the reading was computed from (both series present). */
+  asOf: string | null;
+  etDate: string;
+  /** The last row's features in natural units. */
+  features: { ret: number; vix: number; rv20: number } | null;
+  source: MlRegimeSource;
+  /** Data older than the third most recent session — not acted on. */
+  stale: boolean;
+  /** Trailing likelihood below the training 5th percentile: a retrain signal. */
+  drift: boolean;
+  driftScore: number | null;
+  driftP5: number | null;
+  modelVersion: string | null;
+  switched: boolean;
+  heldBelowThreshold: boolean;
+  threshold: number;
+  previous: MlRegime | null;
+  rows: number;
+  logLikelihood: number | null;
+  reason?: MlRegimeReason;
+  computedAt: number;
+}
+
+/** The compact mirror the loop persists on each tick summary. */
+export interface MlRegimeTickSummary {
+  regime: MlRegime;
+  label: string;
+  source: MlRegimeSource;
+  asOf: string | null;
+  stale: boolean;
+  drift: boolean;
+  /** The acted-on regime's posterior (null when nothing was computed). */
+  probability: number | null;
+}
+
 export type RotationBasis = 'relative-to-benchmark' | 'absolute-return';
 
 export interface SectorRotationEntry {
@@ -2358,6 +2417,9 @@ export interface LoopTickSummary {
   moversDiscovered: number;
   moversCandidates: number;
   moversFetchError: string | null;
+  /** Today's ML market-regime reading as this tick saw it, or null when the
+   *  read did not run (older persisted ticks lack the field entirely). */
+  mlRegime: MlRegimeTickSummary | null;
 }
 
 /** The automated loop's most recently completed tick, persisted rather than
@@ -2542,6 +2604,9 @@ export interface AutotradeDashboard {
   /** The goal against the record: realized edge over recent sessions and the
    *  expected day it implies at the current sizing. */
   dailyGoalEvidence: DailyGoalEvidence;
+  /** Today's ML market-regime reading as the loop last computed it (never a
+   *  fetch) — null before the loop has read today. */
+  mlRegime: MlRegimeReading | null;
   /** Per-method recent realized performance + current sizing multiplier. */
   methodPerformance: MethodStats[];
   /** Symbols currently in a loss cooldown — live entries skipped until each

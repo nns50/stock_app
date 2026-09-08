@@ -6170,3 +6170,52 @@ symmetric. That would pin risk wherever it happens to sit whenever the edge is
 unclear — which is most of the time. The safe direction should stay easy to
 take; the asymmetry is only a defect because the *increase* side was
 unreachable, and PR #523 is what addressed that.
+
+## 2026-09-08 — an HMM market-regime reading, as an observer
+
+**What shipped.** A three-state Gaussian hidden Markov model over daily S&P 500 log returns,
+ln(VIX) and ln of the 20-day realized volatility, trained offline in Python on five years of
+FRED closes and shipped as `server/data/regimeModel.json`; a TypeScript forward filter held to
+the Python reference by a fixture of real rows (`server/test/regimeModelParity.test.ts`); and
+the **reading** — `services/mlRegime.ts`, `GET /api/market/regime-ml`, the ML block of the
+Today page's Market regime tile, the loop's once-per-tick read mirrored on the tick summary
+and the Auto-Trade page's _Last cycle_ card, and the journal actions `ml_regime_read`,
+`ml_regime_changed`, `ml_regime_drift`, `ml_regime_fetch_failed`, `ml_regime_override`. The
+model card is `docs/MARKET_REGIME_MODEL.md`; the walk-forward evidence is in `ml/reports/`.
+
+**Why an observer first.** The reading has to be watched before anything is allowed to act on
+it: the model is read one to two sessions behind (FRED's publication lag), a two-session
+spike is invisible to a 20-day feature (Aug-2024 in the walk-forward), and the drift flag is a
+retrain signal rather than a gate (a drift-as-unknown rule would have switched an overlay
+off on 92% of the COVID-crash sessions). Twenty sessions of journaled readings are the
+minimum before the enabling rules below can even be evaluated.
+
+**Two findings recorded here because they changed the design.** (1) The third feature is the
+_log_ of the 20-day standard deviation: on the raw scale the COVID crash defined the high-vol
+state and the 2022 bear market read as Sideways (33% High Vol out of sample); on the log
+scale it reads 67%. (2) States are labeled by their fitted VIX ordering, with the drift
+ordering of the high- and low-vol states asserted and the two calm states' drifts only
+reported; the earlier rule refused a valid 2020-04 refit.
+
+### What this does NOT do
+
+- It does not size, gate, tighten or stamp anything. Every consumer of the reading is a
+  later, separately gated change that ships OFF, with its own evidence and its own rows here.
+- It is not a direction forecast. "Bearish" and "Bullish" are the states' fitted drifts over
+  the training window; out of sample, the sessions read as High Volatility/Bearish had the
+  _highest_ next-20-day returns (the post-stress bounce). What it separates is volatility:
+  next-20-day realized vol 1.51% [1.43, 1.60] in High Vol against 0.75% [0.73, 0.76] in Low Vol.
+- It cannot see today or intraday. Day one of a shock is never in the data; the intraday
+  range nowcast planned beside the overlay covers that case.
+- A stale or missing reading is `unknown`, and `unknown` is what every future consumer must
+  treat as "no overlay" — nothing is ever cut, tightened or gated on a guess.
+
+### Pre-committed enabling rules for anything that acts on the reading
+
+1. A walk-forward grid on the out-of-sample regime path picks the cut/tighten cell by a rule
+   written before the run (the backtest step), never a hand-chosen number.
+2. At least 20 sessions of `ml_regime_read` with no more than 2 `ml_regime_changed` per week.
+3. `npm run regime:predict` and `GET /api/market/regime-ml` agree on every one of those
+   sessions (same `asOf`, same probabilities to 1e-6).
+4. Revert to OFF after 5 stale sessions in a row; retrain quarterly (`training.retrainBy`)
+   and re-run rule 1.

@@ -245,6 +245,7 @@ function dashboardFixture(overrides: Partial<AutotradeDashboard> = {}): Autotrad
     equity: 100_000,
     dailyTarget: { active: false, reached: false, giveBackArmed: false, giveBackHalted: false, entriesHalted: false },
     dailyGoalEvidence: {
+      mlRegime: null,
       avgR: null,
       rTrades: 0,
       tradesPerSession: null,
@@ -334,6 +335,7 @@ function loopSummaryFixture(overrides: Partial<LoopTickSummary> = {}): LoopTickS
     moversDiscovered: 0,
     moversCandidates: 0,
     moversFetchError: null,
+    mlRegime: null,
     ...overrides,
   };
 }
@@ -4359,5 +4361,41 @@ describe('AutoTradePage live-trading settings guards', () => {
     const fatFinger = screen.getByPlaceholderText('e.g. 10') as HTMLInputElement;
     fireEvent.change(fatFinger, { target: { value: '150' } });
     expect(fatFinger.value).not.toBe('150');
+  });
+});
+
+describe('Last cycle — the ML regime line', () => {
+  it('shows the reading the tick saw, with its caveats', async () => {
+    vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+      dashboardFixture({
+        lastTick: {
+          ranAt: Date.now() - 30_000,
+          summary: loopSummaryFixture({
+            mlRegime: {
+              regime: 'high_vol_bearish',
+              label: 'High Volatility/Bearish',
+              source: 'fred',
+              asOf: '2026-09-03',
+              stale: true,
+              drift: false,
+              probability: 0.91,
+            },
+          }),
+        },
+      }),
+    );
+    renderDashboard();
+    expect(await screen.findByTestId('last-cycle-ml-regime')).toHaveTextContent(
+      'ML regime: High Volatility/Bearish (p=0.91) · fred · stale',
+    );
+  });
+
+  it('shows nothing for a tick persisted before the reading existed', async () => {
+    vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+      dashboardFixture({ lastTick: { ranAt: Date.now() - 30_000, summary: loopSummaryFixture({ mlRegime: null }) } }),
+    );
+    renderDashboard();
+    expect(await screen.findByText(/screened →/)).toBeInTheDocument();
+    expect(screen.queryByTestId('last-cycle-ml-regime')).not.toBeInTheDocument();
   });
 });

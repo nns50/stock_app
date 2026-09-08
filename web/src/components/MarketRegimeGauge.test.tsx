@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { MarketRegimeGauge } from './MarketRegimeGauge';
 import { client } from '../api/client';
-import type { MarketRegime } from '../api/types';
+import type { MarketRegime, MlRegimeReading } from '../api/types';
 
 beforeEach(() => {
   localStorage.clear();
@@ -52,6 +52,39 @@ function fixture(overrides: Partial<MarketRegime> = {}): MarketRegime {
     ...overrides,
   };
 }
+
+function mlFixture(overrides: Partial<MlRegimeReading> = {}): MlRegimeReading {
+  return {
+    regime: 'low_vol_bullish',
+    label: 'Low Volatility/Bullish',
+    candidate: 'low_vol_bullish',
+    probabilities: { high_vol_bearish: 0.01, low_vol_bullish: 0.83, sideways: 0.16 },
+    predictedNext: { high_vol_bearish: 0.02, low_vol_bullish: 0.81, sideways: 0.17 },
+    asOf: '2026-09-03',
+    etDate: '2026-09-04',
+    features: { ret: 0.0105, vix: 14.3, rv20: 0.0053 },
+    source: 'fred',
+    stale: false,
+    drift: false,
+    driftScore: -1.4,
+    driftP5: -4.7,
+    modelVersion: '2026.09.1',
+    switched: false,
+    heldBelowThreshold: false,
+    threshold: 0.6,
+    previous: 'low_vol_bullish',
+    rows: 250,
+    logLikelihood: -71.4,
+    computedAt: 1_700_000_000_000,
+    ...overrides,
+  };
+}
+
+// Every test renders both blocks; the ML call is stubbed by default so the
+// existing assertions (one retry button, one error) stay about the gauge.
+beforeEach(() => {
+  vi.spyOn(client, 'marketRegimeMl').mockResolvedValue(mlFixture());
+});
 
 describe('MarketRegimeGauge', () => {
   it('renders the overall regime label and each component read', async () => {
@@ -126,5 +159,72 @@ describe('MarketRegimeGauge', () => {
     fireEvent.click(screen.getByRole('button', { name: /retry/i }));
     expect(await screen.findByText('Risk-on')).toBeInTheDocument();
     expect(spy).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('MarketRegimeGauge — the ML regime block', () => {
+  beforeEach(() => {
+    vi.spyOn(client, 'marketRegime').mockResolvedValue(fixture());
+  });
+
+  it('renders the label in the operator’s words, the probability and the data date', async () => {
+    render(<MarketRegimeGauge />);
+    expect(await screen.findByText('Low Volatility/Bullish')).toBeInTheDocument();
+    expect(screen.getByText('p=0.83')).toBeInTheDocument();
+    expect(screen.getByText(/as of 2026-09-03 · fred/)).toBeInTheDocument();
+    expect(screen.getByText(/Nothing acts on this reading yet/)).toBeInTheDocument();
+  });
+
+  it('a stale reading says so and names what the model would read', async () => {
+    vi.spyOn(client, 'marketRegimeMl').mockResolvedValue(
+      mlFixture({
+        regime: 'unknown',
+        label: 'Unknown',
+        candidate: 'high_vol_bearish',
+        stale: true,
+        reason: 'stale',
+        asOf: '2026-08-28',
+      }),
+    );
+    render(<MarketRegimeGauge />);
+    expect(await screen.findByText('Unknown')).toBeInTheDocument();
+    expect(screen.getByText(/Stale — data through 2026-08-28/)).toBeInTheDocument();
+    expect(screen.getByText(/the model would read High Volatility\/Bearish/)).toBeInTheDocument();
+  });
+
+  it('a held reading names the candidate and the threshold', async () => {
+    vi.spyOn(client, 'marketRegimeMl').mockResolvedValue(
+      mlFixture({
+        regime: 'sideways',
+        label: 'Sideways',
+        candidate: 'high_vol_bearish',
+        probabilities: { high_vol_bearish: 0.55, low_vol_bullish: 0.05, sideways: 0.4 },
+        heldBelowThreshold: true,
+      }),
+    );
+    render(<MarketRegimeGauge />);
+    expect(await screen.findByText('Sideways')).toBeInTheDocument();
+    expect(screen.getByText(/Held below 0.6 — the model prefers High Volatility\/Bearish at 0.55/)).toBeInTheDocument();
+  });
+
+  it('an unknown reading names its reason, and drift asks for a retrain', async () => {
+    vi.spyOn(client, 'marketRegimeMl').mockResolvedValue(
+      mlFixture({
+        regime: 'unknown',
+        label: 'Unknown',
+        candidate: 'unknown',
+        probabilities: null,
+        asOf: null,
+        source: 'none',
+        reason: 'no_model',
+      }),
+    );
+    const { unmount } = render(<MarketRegimeGauge />);
+    expect(await screen.findByText(/Unknown — no model file is shipped/)).toBeInTheDocument();
+    expect(screen.queryByText(/^p=/)).not.toBeInTheDocument();
+    unmount();
+    vi.spyOn(client, 'marketRegimeMl').mockResolvedValue(mlFixture({ drift: true, driftScore: -6.1 }));
+    render(<MarketRegimeGauge />);
+    expect(await screen.findByText(/Model drift — the tape has left/)).toBeInTheDocument();
   });
 });

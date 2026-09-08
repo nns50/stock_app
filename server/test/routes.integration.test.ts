@@ -5,6 +5,7 @@ import { app } from '../src/index';
 import { db } from '../src/db';
 import { addExclusion } from '../src/db/autotradeExclusions';
 import { config } from '../src/config';
+import { resetMlRegimeCache } from '../src/services/mlRegime';
 import { totp } from '../src/services/totp';
 import { resetLoginThrottle } from '../src/services/auth';
 import { setSetting } from '../src/db/settings';
@@ -1125,6 +1126,7 @@ describe('health (integration)', () => {
       moversDiscovered: 0,
       moversCandidates: 0,
       moversFetchError: null,
+      mlRegime: null,
     });
     const after = (await getJson('/api/health')) as { loopLastTickAgeMs: number | null };
     expect(after.loopLastTickAgeMs).toBeGreaterThanOrEqual(0);
@@ -3358,5 +3360,33 @@ describe('journal analysis routes tell you what they could not cover (integratio
     // never undefined, which JSON drops entirely and the client reads as absent.
     expect(rep.startDate === null || typeof rep.startDate === 'string').toBe(true);
     expect(typeof rep.totalRealized).toBe('number');
+  });
+});
+
+describe('ML market-regime reading (integration)', () => {
+  afterEach(() => {
+    config.mlRegime.source = 'off';
+    config.mlRegime.devOverride = '';
+    resetMlRegimeCache();
+    db.exec('DELETE FROM ml_regime_readings');
+  });
+
+  it('reads unknown/source_off in the test environment, in the operator’s words', async () => {
+    const r = (await getJson('/api/market/regime-ml')) as {
+      regime: string;
+      label: string;
+      reason?: string;
+      source: string;
+    };
+    expect(r).toMatchObject({ regime: 'unknown', label: 'Unknown', reason: 'source_off', source: 'off' });
+  });
+
+  it('honours the dev override and mirrors it on the dashboard without a fetch', async () => {
+    config.mlRegime.source = 'fred';
+    config.mlRegime.devOverride = 'high_vol_bearish';
+    const r = (await getJson('/api/market/regime-ml?force=true')) as { regime: string; label: string; source: string };
+    expect(r).toMatchObject({ regime: 'high_vol_bearish', label: 'High Volatility/Bearish', source: 'override' });
+    const dash = (await getJson('/api/autotrade/dashboard')) as { mlRegime: { regime: string; source: string } | null };
+    expect(dash.mlRegime).toMatchObject({ regime: 'high_vol_bearish', source: 'override' });
   });
 });

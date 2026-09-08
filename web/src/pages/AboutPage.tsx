@@ -247,6 +247,24 @@ export default function AboutPage() {
           <strong className="text-slate-200">“no data”</strong> and is dropped from the sum entirely, never counted as a
           fake neutral in any regime’s favor. The read is cached for an hour, since it turns on the daily close.
         </p>
+        <p className="mt-3">
+          <strong className="text-slate-200">The ML regime reading</strong> beneath it comes from a three-state{' '}
+          <strong className="text-slate-200">Gaussian hidden Markov model</strong> trained offline on five years of
+          daily S&amp;P 500 data (FRED) — three features in a fixed order: the day’s log return, ln(VIX), and ln of the
+          20-day realized volatility of those returns — standardized with the training set’s mean and scale. Each day
+          the app runs a <strong className="text-slate-200">forward filter</strong> over the last 250 sessions (never a
+          smoother, which would label a day with its own future) and reads the last posterior:{' '}
+          <strong className="text-slate-200">High Volatility/Bearish</strong>,{' '}
+          <strong className="text-slate-200">Low Volatility/Bullish</strong> or{' '}
+          <strong className="text-slate-200">Sideways</strong>, named by a written rule from the states’ fitted means
+          (highest VIX and realized vol → High Vol; lowest → Low Vol; the third → Sideways). The label is{' '}
+          <strong className="text-slate-200">sticky</strong>: it changes only when the new state’s probability reaches{' '}
+          <span className="tabular-nums">0.6</span>. Data older than the third most recent session reads{' '}
+          <strong className="text-slate-200">unknown (stale)</strong>; a trailing likelihood below the training 5th
+          percentile raises a <strong className="text-slate-200">drift</strong> flag — a retrain signal, not a gate.
+          “Bearish” and “Bullish” describe fitted drift, not a forecast. Nothing acts on this reading yet; the model
+          card (docs/MARKET_REGIME_MODEL.md) has the data, the validation and what it does not do.
+        </p>
       </Section>
 
       <Section id="sectorRotation" title="How the sector-rotation board works">

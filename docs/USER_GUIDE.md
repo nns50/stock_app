@@ -141,6 +141,18 @@ Your at-a-glance morning screen.
   out of the score — never counted as a fake neutral. It's **context, not a signal**: it
   does not place, size, or block any trade, and it's cached hourly (regime turns on the
   daily close). Formula details live on the **About** page.
+- **ML regime (HMM)** (2026-09-08) — a second read inside the same tile, from a three-state
+  **Gaussian hidden Markov model** trained on five years of daily S&P 500 log returns, the
+  VIX and 20-day realized volatility: **High Volatility/Bearish**, **Low Volatility/Bullish**
+  or **Sideways**, with the filtered probability (`p=0.83`), the data date it is _as of_
+  (FRED publishes the prior close the next morning, so the reading runs one to two sessions
+  behind), and the caveats that matter: **stale** (data older than the third most recent
+  session — never acted on), **held** (the model prefers another state but not by enough to
+  switch — a regime changes only when the new state's probability clears 0.6), **unknown**
+  with its reason, and **model drift** (the tape has left the model's distribution; retrain).
+  "Bearish"/"Bullish" describe each state's fitted drift, **not** a forecast — out of sample
+  the sessions read as High Volatility had the _highest_ forward returns. Display only:
+  nothing acts on it yet. The model card is [MARKET_REGIME_MODEL.md](MARKET_REGIME_MODEL.md).
 - **Needs attention** panel — positions that hit their stop/target or option exit
   rules, plus any triggered symbol alerts, each linking to where you act. If the check
   itself **fails**, the panel says so and the tile reads `?` instead of `0` — an
@@ -2023,7 +2035,9 @@ because the loop is the only caller that is always flat by the bell, so it is
   turned into signals (equity and options), how many paper/live entries it opened, how
   many exits it checked/closed, and any movers promoted that cycle — persisted from the
   actual last tick (not recomputed), so it reads "hasn't run yet" only before the loop's
-  very first cycle, and survives the page being closed and reopened. The same line now
+  very first cycle, and survives the page being closed and reopened. Since 2026-09-08 it
+  also shows the **ML regime** the tick read (label, probability, source, and whether the
+  reading was stale or drifting) — see the Today page's Market regime tile. The same line now
   reports **how many of the premarket movers fetched actually became candidates**
   ("Movers discovery contributed 1 of 35 fetched"), or, if the fetch itself failed, says
   so in amber with the reason. Read the pair together: a high fetched count with zero

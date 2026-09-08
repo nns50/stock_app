@@ -427,6 +427,26 @@ CREATE TABLE IF NOT EXISTS autotrade_config (
 -- The automated loop's most recently COMPLETED tick's diagnostics (candidates
 -- screened, entries opened, why it skipped, etc.) — previously computed fresh
 -- every 60s and discarded the moment the next tick overwrote it in memory.
+-- Daily closes of the FRED series the market-regime model reads (db/dailySeries.ts).
+-- FRED rows only — never provider candles (docs/MARKET_REGIME_MODEL.md).
+CREATE TABLE IF NOT EXISTS daily_series (
+  series_id TEXT NOT NULL,
+  date TEXT NOT NULL,
+  value REAL NOT NULL,
+  fetched_at INTEGER NOT NULL,
+  PRIMARY KEY (series_id, date)
+);
+-- One market-regime reading per ET day (db/mlRegimeReadings.ts). regime is
+-- the LABEL, never a state index; reading is the full JSON for the gauge.
+CREATE TABLE IF NOT EXISTS ml_regime_readings (
+  et_date TEXT PRIMARY KEY,
+  regime TEXT NOT NULL,
+  as_of TEXT,
+  reading TEXT NOT NULL,
+  model_version TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS autotrade_last_tick (
   id          INTEGER PRIMARY KEY CHECK(id = 1),   -- singleton row
   summary     TEXT NOT NULL,           -- JSON LoopTickSummary

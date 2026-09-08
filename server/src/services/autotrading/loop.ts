@@ -1,6 +1,7 @@
 import { config } from '../../config';
 import { getAutotradeConfig, AutotradeConfig } from '../../db/autotradeConfig';
 import { saveLastTick } from '../../db/autotradeLastTick';
+import { MlRegimeTickSummary, getMarketRegime, summarizeMlRegime } from '../mlRegime';
 import { getTradingConfig } from '../../db/trading';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { runAutotradeScreen, ScreenCandidate } from './screen';
@@ -182,6 +183,10 @@ export interface LoopTickSummary {
   /** Why the movers fetch produced nothing, when it failed rather than
    *  returned an empty list. Null on success and when no fetch was made. */
   moversFetchError: string | null;
+  /** Today's ML market-regime reading as this tick saw it (services/mlRegime.ts),
+   *  or null when the read did not run (a tick that ended before it, or a
+   *  read that threw — runStage journals that). */
+  mlRegime: MlRegimeTickSummary | null;
 }
 
 /** Ticker-level volatility pre-filter, applied between Screen and Decision —
@@ -240,6 +245,7 @@ function emptySummary(skippedReason?: string): LoopTickSummary {
     moversDiscovered: 0,
     moversCandidates: 0,
     moversFetchError: null,
+    mlRegime: null,
   };
 }
 
@@ -502,6 +508,14 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     } catch (e) {
       journalStageFailure('live-caps re-anchor', e);
     }
+    // The ML market-regime reading (services/mlRegime.ts): once per tick, in
+    // or out of session, cached per ET day inside the service (a day's first
+    // tick fetches FRED; the hourly refresh picks up a late publication). It
+    // sits BEFORE the daily-target refresh below because the day's goal will
+    // be scaled from this reading right here (docs/MARKET_REGIME_MODEL.md);
+    // today it only records. A failed read is journaled by runStage and the
+    // tick carries null — nothing downstream ever waits on it.
+    const mlRegimeReading = await runStage('ml regime read', () => getMarketRegime(), null);
     // Re-measure the daily-gain goal with THIS tick's just-synced equity, so
     // the entry gates below see the freshest number (the first measurement
     // above ran before the sync, for the scale-in gate). Second call is safe:
@@ -539,6 +553,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       liveScaleOutsRequested: liveScaleOutOutcomes.filter((o) => o.requested).length,
       liveStopsRatcheted: liveStopAdjustOutcomes.filter((o) => o.adjusted).length,
     };
+    summary.mlRegime = mlRegimeReading ? summarizeMlRegime(mlRegimeReading) : null;
 
     const config = getAutotradeConfig();
     const paperActive = isPaperEntryActive(config);

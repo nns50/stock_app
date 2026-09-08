@@ -1,3 +1,4 @@
+import { MlRegimeReading, peekMarketRegime } from '../mlRegime';
 import { getDailyBaseline } from '../../db/dailyBaseline';
 import { MethodStats, computeMethodPerformance } from './methodSizing';
 import { SymbolCooldownState, activeSymbolCooldowns } from './symbolCooldown';
@@ -97,6 +98,12 @@ export interface AutotradeDashboard {
    *  shown without "expected day ≈ 0.6%" beside it. No bootstrap on this
    *  polled path — the sweep route owns the confidence intervals. */
   dailyGoalEvidence: DailyGoalEvidence;
+
+  /** Today's ML market-regime reading (services/mlRegime.ts) as the loop last
+   *  computed it — the cache, then the persisted row; never a fetch, so a
+   *  dashboard poll costs nothing and can never be the first to hit FRED.
+   *  Null before the loop has read today. */
+  mlRegime: MlRegimeReading | null;
 
   /** Per-method recent realized performance and the sizing multiplier each
    *  method currently carries (methodSizing.ts) — the "which methods are
@@ -309,6 +316,7 @@ export function getAutotradeDashboard(): AutotradeDashboard {
       config.riskPerTradePct,
       config.targetDailyGainPct,
     ),
+    mlRegime: peekMarketRegime(),
     methodPerformance: computeMethodPerformance(closedAutotrade, config, liveOptionsClosed),
     symbolCooldowns: [...activeSymbolCooldowns(config).values()].sort((a, b) => a.symbol.localeCompare(b.symbol)),
     lastTick: getLastTick(),

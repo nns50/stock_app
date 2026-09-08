@@ -1,10 +1,13 @@
 # Market regime model — a Gaussian HMM over daily S&P 500 features
 
-**Status (PR 1):** the model, its trainer, its TypeScript port and their parity tests ship
-here. **Nothing in the running app reads the model yet** — the regime reading, the gauge and
-the sizing overlay are later, separately gated changes (see `docs/AUTOTRADING_SPEC.md` once
-they land). This page is the model card: what the model is, what it was trained on, how it
-was validated, what it does not do, and how to retrain it.
+**Status:** the model, its trainer, its TypeScript port and the parity tests shipped first;
+the **reading** now runs in the app (section 5a): `GET /api/market/regime-ml`, the "ML regime
+(HMM)" block of the Today page's Market regime tile, the loop's once-per-tick read mirrored on
+each tick summary and the Auto-Trade page's _Last cycle_ card, and the journal actions
+`ml_regime_read`, `ml_regime_changed`, `ml_regime_drift`, `ml_regime_fetch_failed` and
+`ml_regime_override`. **Nothing acts on the reading yet** — the at-entry stamp, the sizing
+overlay and the target tighten are later, separately gated changes (see
+`docs/AUTOTRADING_SPEC.md` as they land).
 
 Decision-support only, not financial advice — the same framing as the About page. A regime
 label is a description of the tape's volatility, not a prediction of where prices go.
@@ -159,6 +162,34 @@ and `server/test/regimeModelParity.test.ts` holds the port to it (section 8).
    in the high-vol direction is still nearest the high-vol state, so the label under drift is
    directionally right; what drift means is "the probabilities are no longer calibrated —
    retrain".
+
+## 5a. At runtime — how the app reads it
+
+`server/src/services/mlRegime.ts` produces one reading per ET day:
+
+- **Source.** `ML_REGIME_SOURCE=fred` (default) fetches the same two FRED series the model was
+  trained on and caches every close in the `daily_series` table (FRED rows only). If FRED
+  fails, the cached rows are used while they are fresh; then the configured market-data
+  provider's `^GSPC`/`^VIX` daily candles (`source: provider`, never persisted, never the
+  mock provider). `provider` skips FRED; `off` skips every fetch and reads `unknown` — the
+  test suite runs that way.
+- **Refresh.** The loop reads once per tick, in or out of session. A day's first tick is just
+  after midnight ET, before FRED has posted the prior close, so the service refetches at most
+  hourly until both series carry the previous session's close and then holds for the day. A
+  reading can therefore update once mid-morning; the sticky switch keeps that from flapping.
+- **Persistence.** Every reading (including `unknown`) is stored in `ml_regime_readings`,
+  keyed by ET day, with the label — never a state index, so a retrain cannot corrupt the
+  sticky switch's "previous regime", which is the newest **known** day before today.
+- **Journal.** `ml_regime_read` once per day on the first known reading (regime, probabilities,
+  data date, source, drift, previous), `ml_regime_changed` when the sticky switch changes the
+  regime, `ml_regime_drift` once per day while drift is raised, `ml_regime_fetch_failed` once
+  per day, and `ml_regime_override` when `ML_REGIME_DEV_OVERRIDE` forces a label (refused in
+  production).
+- **Display.** `GET /api/market/regime-ml` (`?force=true` refetches now), the Market regime
+  tile's ML block, the tick summary's `mlRegime` mirror and the dashboard's `mlRegime` (a
+  peek at today's reading — never a fetch).
+- **Freshness.** `server/test/regimeModelFreshness.test.ts` fails once today passes the
+  artifact's `retrainBy`; the fix is section 10, never deleting the test.
 
 ## 6. Validation — walk-forward, out of sample
 
