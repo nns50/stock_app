@@ -1071,15 +1071,35 @@ export function exitLegKind(o: WebullOpenOrder): 'tp' | 'sl' | null {
  */
 export function buildBracketResizePatches(legs: WebullOpenOrder[], quantity: number): ReplaceOrderPatch[] | null {
   if (legs.length === 0 || legs.length > 2) return null;
+  // MINIMAL: the client order id and the one field being changed. Nothing else.
+  //
+  // This shape is copied from the STOP RATCHET, which is the only request this
+  // codebase has ever seen `/order/replace` accept on a resting bracket leg —
+  // and it accepts it every single time. webullReplaceOrder(id, { stopPrice })
+  // sends exactly two fields and `live_stop_adjust_failed` has never once been
+  // journalled, across DELL, SNDK, IOT, SMCI and FCX; FCX ratcheted four times
+  // in four minutes on 2026-09-08 inside a live combo group.
+  //
+  // Every field this builder used to add beyond that pair — comboType,
+  // orderType, and the echoed limit/stop price — was added as a HYPOTHESIS
+  // about why the broker was refusing, and each one shipped without ever being
+  // confirmed against the wire. 148 refusals later they are the only thing
+  // separating this request from the one that works. So they are gone, and the
+  // resize now differs from the proven ratchet call in exactly two respects: it
+  // changes `quantity` instead of a price, and it names two legs instead of
+  // one. (Two legs, not one, stays deliberate: single-leg quantity modifies are
+  // what drew the original 98 refusals, and one leg alone genuinely does
+  // unbalance the take-profit / stop-loss pair the broker complains about.)
+  //
+  // Omitting the price rests on the endpoint being a PARTIAL patch, which the
+  // ratchet also evidences: it sends stopPrice and no quantity, and the leg's
+  // quantity survives. The converse is assumed here, and NOT trusted — the
+  // caller re-reads the book and checks the prices are still there before
+  // anything sells. See verifyLegsResized.
   const patch = (o: WebullOpenOrder): ReplaceOrderPatch | null => {
     const kind = exitLegKind(o);
     if (!o.clientOrderId || !kind) return null;
-    // orderType is spread in only when the broker actually reported one, so an
-    // unreported type stays absent rather than becoming the string "undefined".
-    const identity = o.orderType ? { orderType: o.orderType } : {};
-    return kind === 'tp'
-      ? { clientOrderId: o.clientOrderId, quantity, limitPrice: o.limitPrice, comboType: 'STOP_PROFIT', ...identity }
-      : { clientOrderId: o.clientOrderId, quantity, stopPrice: o.stopPrice, comboType: 'STOP_LOSS', ...identity };
+    return { clientOrderId: o.clientOrderId, quantity };
   };
   if (legs.length === 1) {
     const only = patch(legs[0]!);

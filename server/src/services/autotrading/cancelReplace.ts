@@ -166,3 +166,88 @@ export function cancelOrderForLegs(legs: WebullOpenOrder[]): WebullOpenOrder[] {
 export function stopWasCancelled(attempted: WebullOpenOrder[], cancelledCount: number): boolean {
   return attempted.slice(0, cancelledCount).some((l) => exitLegKind(l) === 'sl');
 }
+
+/** What verifyLegsResized concluded, and what the caller may do next. */
+export type ResizeVerdict =
+  | { ok: true }
+  /** The legs are UNCHANGED — the broker accepted a request that did nothing.
+   *  The bracket still covers the whole position, so the safe move is simply
+   *  not to sell. Nothing is unprotected. */
+  | { ok: false; applied: false; reason: string }
+  /** The legs changed, but not into the shape asked for. The position's
+   *  protection is now something nobody chose, which is an alarm, not a retry. */
+  | { ok: false; applied: true; reason: string };
+
+/**
+ * Did the resize actually happen?
+ *
+ * `replaced.ok` means the broker ACCEPTED the request, which is not the same as
+ * the resting legs having changed — the identical distinction verifyLegsGone
+ * exists for on the cancel side. Until 2026-09-08 the scale-out did not draw it:
+ * it went straight from a 200 to selling the difference. Had a modify ever been
+ * accepted without being applied, the sale would have gone out against a
+ * FULL-SIZE bracket still resting, and the extra sell shares are a short.
+ *
+ * That was latent only because the request was refused 148 times out of 148. The
+ * moment the payload changes, it stops being latent — so the check lands in the
+ * same commit as the new payload, not after it.
+ *
+ * The price check is the other half. The new minimal patch sends no price at
+ * all, on the reasoning that the endpoint patches only the fields it is given
+ * (which is why the ratchet's price-only call preserves quantity). If that is
+ * wrong in the other direction, a resize would silently clear a stop — so the
+ * prices the legs went in with are compared against the ones they came back
+ * with, and a change is treated as a malformed bracket.
+ */
+export function verifyLegsResized(
+  freshOrders: WebullOpenOrder[] | null,
+  before: WebullOpenOrder[],
+  expectedQuantity: number,
+): ResizeVerdict {
+  if (freshOrders === null) {
+    return { ok: false, applied: false, reason: 'could not re-read open orders after the resize' };
+  }
+  const byId = new Map(freshOrders.filter((o) => o.clientOrderId).map((o) => [o.clientOrderId!, o]));
+  const problems: string[] = [];
+  let anyChanged = false;
+  let allUnchanged = true;
+
+  for (const was of before) {
+    const id = was.clientOrderId;
+    if (!id) return { ok: false, applied: false, reason: 'a leg being resized has no client order id to verify by' };
+    const now = byId.get(id);
+    if (!now) {
+      // Gone means filled or cancelled, NOT resized. Selling against a leg that
+      // just filled is how a position goes short.
+      return { ok: false, applied: true, reason: `leg ${id} is no longer resting — it filled or was cancelled` };
+    }
+    if (now.quantity !== expectedQuantity) {
+      problems.push(`leg ${id} is ${now.quantity ?? 'unknown'}, expected ${expectedQuantity}`);
+      if (now.quantity !== was.quantity) anyChanged = true;
+    } else {
+      allUnchanged = false;
+      anyChanged = true;
+    }
+    // A price that moved is a bracket nobody chose, whichever way the quantity went.
+    if (now.limitPrice !== was.limitPrice) {
+      problems.push(`leg ${id} limit price changed ${was.limitPrice ?? 'none'} -> ${now.limitPrice ?? 'none'}`);
+      anyChanged = true;
+    }
+    if (now.stopPrice !== was.stopPrice) {
+      problems.push(`leg ${id} stop price changed ${was.stopPrice ?? 'none'} -> ${now.stopPrice ?? 'none'}`);
+      anyChanged = true;
+    }
+  }
+
+  if (problems.length === 0) return { ok: true };
+  // Nothing moved at all: the request was a no-op. Protection is intact and the
+  // only correct response is to skip the partial.
+  if (!anyChanged && allUnchanged) {
+    return {
+      ok: false,
+      applied: false,
+      reason: `the broker accepted the resize but no leg changed: ${problems.join('; ')}`,
+    };
+  }
+  return { ok: false, applied: true, reason: problems.join('; ') };
+}

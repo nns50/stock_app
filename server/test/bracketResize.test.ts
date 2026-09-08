@@ -72,54 +72,66 @@ describe('exitLegKind', () => {
 });
 
 describe('buildBracketResizePatches', () => {
-  // The bug this exists for: a quantity-only modify names nothing that
-  // identifies either leg, and the broker refuses the pair with "The number of
-  // take-profit orders and the number of stop-loss orders must be the same" —
-  // 9 refusals on 2026-09-03, on the first day the stop ratchet worked. The
-  // ratchet's own single-leg modify carries stop_price and was accepted 6/6.
-  it('restates each leg’s DEFINING price alongside the new quantity', () => {
+  // ---------------------------------------------------------------------
+  // THE PAYLOAD IS NOW THE RATCHET'S, AND THESE TESTS SAY WHY (2026-09-08).
+  //
+  // Everything this builder used to add beyond {clientOrderId, quantity} was a
+  // guess at why the broker was refusing, and each guess shipped with a test
+  // that asserted the guess rather than the outcome:
+  //
+  //   09-03  quantity only, one leg per request       9 refusals
+  //   09-04  + the echoed defining price              refused
+  //   09-04  + combo_type                             refused
+  //   09-05  + order_type                             refused
+  //   09-04+ both legs in one request, + combo id    46 refusals
+  //
+  // 148 refusals, 0 fills, and the tests were green for every one of them —
+  // they asserted the request SHAPE, which was never the thing in doubt.
+  //
+  // Meanwhile webullReplaceOrder(id, { stopPrice }) — the stop ratchet — sends
+  // the client order id and ONE field and has never failed: live_stop_adjust_failed
+  // has never been journalled, and FCX ratcheted four times in four minutes on
+  // 2026-09-08 inside a live combo group. That is the only shape this endpoint
+  // is known to accept on a resting bracket leg, so the resize now copies it.
+  // ---------------------------------------------------------------------
+  it('sends the client order id and the new quantity, and NOTHING else', () => {
     const out = buildBracketResizePatches([tp(), sl()], 4);
-    // combo_type names each leg's ROLE. Added 2026-09-04 after the
-    // price-restating payload was also refused: the reference lists combo_type
-    // as required on an order, and the broker's complaint is precisely that it
-    // cannot tell the take-profit from the stop-loss.
-    // order_type joins them from 2026-09-05: it is the field the REPLACE
-    // endpoint's own schema documents (combo_type is not), and it is what tells
-    // a LIMIT take-profit from a STOP_LOSS stop when both legs are `sell`.
     expect(out).toEqual([
-      { clientOrderId: 'TGT-1', quantity: 4, limitPrice: 110, comboType: 'STOP_PROFIT', orderType: 'LIMIT' },
-      { clientOrderId: 'STOP-1', quantity: 4, stopPrice: 96, comboType: 'STOP_LOSS', orderType: 'STOP_LOSS' },
+      { clientOrderId: 'TGT-1', quantity: 4 },
+      { clientOrderId: 'STOP-1', quantity: 4 },
     ]);
   });
 
-  it('ECHOES order_type rather than deriving it from the leg role', () => {
-    // A stop reported as STOP_LOSS_LIMIT must go back as STOP_LOSS_LIMIT.
-    // Deriving 'STOP_LOSS' from "this is the stop leg" would convert a
-    // stop-limit into a plain stop — changing a live protective order while
-    // claiming only to identify it.
-    const out = buildBracketResizePatches([sl({ orderType: 'STOP_LOSS_LIMIT' })], 3);
-    expect(out![0]!.orderType).toBe('STOP_LOSS_LIMIT');
+  it('sends no combo_type and no order_type — both were refused hypotheses', () => {
+    const out = buildBracketResizePatches([tp(), sl({ orderType: 'STOP_LOSS_LIMIT' })], 4);
+    for (const patch of out!) {
+      expect(patch).not.toHaveProperty('comboType');
+      expect(patch).not.toHaveProperty('orderType');
+    }
   });
 
-  it('omits order_type when the broker reported none, rather than inventing one', () => {
-    const out = buildBracketResizePatches([sl({ orderType: undefined })], 3);
-    expect(out![0]).not.toHaveProperty('orderType');
-    expect(out![0]!.comboType).toBe('STOP_LOSS'); // still classifiable by combo_type
+  it('sends NO price, so a resize can never move a live stop', () => {
+    // The old payload echoed the resting price back to "identify" the leg. That
+    // put a protective price on the wire on every partial, for no benefit the
+    // broker ever acknowledged — and a typo or a stale read would have moved a
+    // real stop. The client order id identifies the leg; nothing else needs to.
+    const out = buildBracketResizePatches([tp({ limitPrice: 110 }), sl({ stopPrice: 101.25 })], 3);
+    for (const patch of out!) {
+      expect(patch).not.toHaveProperty('limitPrice');
+      expect(patch).not.toHaveProperty('stopPrice');
+    }
   });
 
-  it('echoes the price the broker reported — this identifies, it does not move a stop', () => {
-    const out = buildBracketResizePatches([sl({ stopPrice: 101.25 })], 3);
-    expect(out![0]!.stopPrice).toBe(101.25); // unchanged from what was read back
-    expect(out![0]).not.toHaveProperty('limitPrice');
+  it('still CLASSIFIES both legs even though it no longer sends the labels', () => {
+    // The classification has not become decorative. It is what refuses a pair
+    // that is not one take-profit and one stop — see the two tests below — so
+    // dropping the labels from the wire must not drop the check.
+    expect(buildBracketResizePatches([tp(), sl()], 4)).toHaveLength(2);
   });
 
   it('resizes a lone surviving leg — a filled target legitimately leaves one', () => {
-    expect(buildBracketResizePatches([sl()], 2)).toEqual([
-      { clientOrderId: 'STOP-1', quantity: 2, stopPrice: 96, comboType: 'STOP_LOSS', orderType: 'STOP_LOSS' },
-    ]);
-    expect(buildBracketResizePatches([tp()], 2)).toEqual([
-      { clientOrderId: 'TGT-1', quantity: 2, limitPrice: 110, comboType: 'STOP_PROFIT', orderType: 'LIMIT' },
-    ]);
+    expect(buildBracketResizePatches([sl()], 2)).toEqual([{ clientOrderId: 'STOP-1', quantity: 2 }]);
+    expect(buildBracketResizePatches([tp()], 2)).toEqual([{ clientOrderId: 'TGT-1', quantity: 2 }]);
   });
 
   it('refuses a pair that is not one of each — two stops is not a bracket', () => {
