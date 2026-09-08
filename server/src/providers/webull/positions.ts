@@ -18,6 +18,7 @@ import { bumpMissStreak, clearMissStreak, MISS_CONFIRM_THRESHOLD } from '../../d
 import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { listPendingLiveOrders } from '../../db/autotradeLiveOrders';
 import { getIntent } from '../../db/orders';
+import { isTerminal } from '../../services/trading/orderLifecycle';
 import { classifyExpiredOptions, ExpiredOptionFinding } from '../../services/expiredOptions';
 import { resolveExpiryCloses } from '../../services/expiredOptionsSweep';
 
@@ -570,6 +571,12 @@ const NOTE_EXPIRED_AUTO_CLOSED =
  *  never reports FILLED cannot leave the row open forever. */
 const BRACKET_RECONCILE_GRACE_SYNCS = 2;
 
+/** Syncs a position may sit deferred before the defer itself is worth a journal
+ *  row. Well past BRACKET_RECONCILE_GRACE_SYNCS: this is not "still waiting",
+ *  it is "something is stuck". At the loop's cadence this is roughly twenty
+ *  minutes. Reported, never acted on — the defer stays, a human decides. */
+const STUCK_DEFER_STREAK = 10;
+
 async function closePositionsFromPreview(
   preview: PositionsPreview,
 ): Promise<{ closed: number; closedSymbols: string[] }> {
@@ -694,9 +701,41 @@ async function closePositionsFromPreview(
   // these are left alone here; reconcileLiveOrders() closes them properly on
   // its own next pass. The miss streak is deliberately NOT cleared for them,
   // so if that reconcile never happens the gap is still pending here.
+  //
+  // "ALREADY PLACED" MUST MEAN STILL IN FLIGHT (2026-09-08). listPendingLiveOrders
+  // deliberately keeps a FILLED exit row alive while its position is open, so
+  // reconcileLiveOrders can still work with it. Read as "closing in flight",
+  // that is circular: the position stays open because this sync defers, and
+  // this sync defers because the exit row is pending, and the exit row is
+  // pending because the position is open. Nothing breaks the cycle — unlike
+  // the bracket defer below, this branch has no streak bound.
+  //
+  // Unreachable until a PARTIAL exit existed. A full exit's reconcile closes
+  // the position, which drops its row out of the pending list, which ends the
+  // cycle. A partial books its slice and CORRECTLY leaves the position open —
+  // and from that moment its filled exit row pins the position against this
+  // sync permanently. The first live cancel-and-replace scale-out ran on
+  // 2026-09-08 and NOK 600 was stuck within minutes: 80 shares stopped out at
+  // the broker, journal still showing them open an hour later, holding one of
+  // three concurrency slots against a 3%/day target.
+  //
+  // So filter on the INTENT's state, not on membership of a list that answers a
+  // different question. A filled exit has already been booked by whoever placed
+  // it — which is the whole point of deferring — so it has no claim to defer
+  // any longer.
   const loopClosingPositionIds = new Set(
     listPendingLiveOrders()
-      .filter((o) => o.role === 'exit' && o.positionId !== null)
+      .filter((o) => {
+        if (o.role !== 'exit' || o.positionId === null) return false;
+        const state = getIntent(o.intentId)?.state;
+        // Unknown intent -> assume in flight. NOT a live case and not testable:
+        // listPendingLiveOrders JOINs order_intents, so a row without an intent
+        // never reaches this filter at all — only a delete racing between those
+        // two queries could produce it. Kept because the safe default is free
+        // here: deferring one more pass costs a sync, and closing at a guessed
+        // price over a real fill is the bug this whole branch exists to prevent.
+        return state === undefined || !isTerminal(state);
+      })
       .map((o) => o.positionId as number),
   );
 
@@ -759,7 +798,19 @@ async function closePositionsFromPreview(
       continue;
     }
     if (lots.some((l) => loopClosingPositionIds.has(l.id))) {
-      if (justConfirmed) {
+      // OVERDUE defers must speak up. `justConfirmed` fires only on the sync
+      // that first crosses MISS_CONFIRM_THRESHOLD, so a position that spends
+      // its early syncs in the bracket branch above and only later falls
+      // through to this one logs NOTHING here, ever — which is exactly how NOK
+      // 600 sat closed-at-the-broker but open in the journal for an hour on
+      // 2026-09-08, holding one of three concurrency slots, with a journal that
+      // said only "streak 2" from an event written 60 minutes earlier.
+      //
+      // Keyed on EQUALITY, not a threshold, so it fires exactly once per
+      // episode: the streak climbs by one per sync, so it passes through this
+      // value and out the other side without needing state of its own.
+      const overdue = streak === STUCK_DEFER_STREAK;
+      if (justConfirmed || overdue) {
         logAutotradeEvent({
           symbol: lots[0].symbol,
           stage: 'execution',
@@ -770,7 +821,16 @@ async function closePositionsFromPreview(
             reason: 'autotrade_exit_in_flight',
             journalQty: journalQtyBefore,
             brokerQty,
-            note: "Auto-trading already placed this position's closing order — leaving it for that order's own reconcile, which books the real fill price and exit reason.",
+            // Absent until 2026-09-08. Without it a reader cannot tell a defer
+            // that started seconds ago from one that has been running for an
+            // hour, and both print the same row.
+            streak,
+            overdue,
+            note: overdue
+              ? `This position has been deferred for ${streak} consecutive syncs because an exit order is ` +
+                'still reported in flight. That is far past the point where the exit should have booked. ' +
+                'The position is holding a concurrency slot; check whether its exit intent is stuck.'
+              : "Auto-trading already placed this position's closing order — leaving it for that order's own reconcile, which books the real fill price and exit reason.",
           },
         });
       }

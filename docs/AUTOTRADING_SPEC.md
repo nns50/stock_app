@@ -6464,3 +6464,69 @@ just **filled**. The held quantity is the only thing that separates them — the
 same distinction that made the naked-position alarm page on a stop that was in
 the act of working, earlier the same day. Until this endpoint existed, the only
 component that could ask the question directly was the alarm itself.
+
+---
+
+## 2026-09-08 — a booked exit pinned its position against the broker-truth sync
+
+The first live cancel-and-replace scale-out ran at 16:36Z. Within minutes NOK 600
+was flat at the broker and still open in the journal, and it stayed that way for
+an hour — holding one of three concurrency slots, against a 3%/day target sitting
+at 0.53% with two hours of session left. Nothing was unprotected; this cost
+opportunity, not money.
+
+### The cycle
+
+`runWebullPositionsSync` refuses to close a position while the loop has a closing
+order in flight for it — the 2026-08-24 fix, which exists because this sync was
+beating the loop's own reconcile to a fill and booking a *quoted estimate* over a
+real price, losing both fidelity and the exit reason (VALE, then DELL 587).
+
+It decided "in flight" by membership of `listPendingLiveOrders()`. But that query
+deliberately keeps a **filled** exit row alive while its position is open, so
+`reconcileLiveOrders` can still work with it. Read as "in flight", that is
+circular:
+
+```
+position stays open  ->  because the sync defers
+sync defers          ->  because the exit row is pending
+exit row is pending  ->  because the position is open
+```
+
+The bracket-leg defer directly above it is bounded by the miss streak and
+self-releases. This branch has **no bound at all**.
+
+### Why it had never fired before
+
+It needed a **partial** exit to exist. A full exit's reconcile closes the
+position, which drops its row out of the pending list and ends the cycle. A
+partial books its slice and *correctly* leaves the position open — and from that
+moment its filled exit row pins the position permanently.
+
+No partial had ever executed. The scale-out had been refused ~150 times across
+six payload shapes and had never once filled. **The bug shipped long ago and was
+unreachable until the day the scale-out started working.**
+
+### The fix
+
+Filter on the intent's own state (`isTerminal`) rather than on membership of a
+list that answers a different question. A filled exit has already been booked by
+whoever placed it — which is the entire point of deferring — so it has no claim
+to defer any longer. An exit still `submitted` or `acknowledged` defers exactly
+as before.
+
+### And the reason it hid for an hour
+
+The journal row for this branch is gated on `justConfirmed`, which is true only on
+the sync that first crosses the miss threshold. NOK spent its early syncs in the
+*bracket* branch, logged there once at streak 2, then fell through to this branch
+at streak 4+ where `justConfirmed` was already false — so it logged nothing, ever.
+Every `position_reconcile_skipped` row in the journal reads "streak 2" for the
+same reason, which makes them look like fresh defers no matter how old they are.
+
+A defer that reaches `STUCK_DEFER_STREAK` (10 syncs, roughly twenty minutes) now
+journals once, carrying the streak and an `overdue` flag. Keyed on **equality**,
+not a threshold, so the streak passes through the value and it fires exactly once
+per episode without needing state of its own. It **reports and does not act** —
+the defer stays, a human decides. Shortening the grace window would reopen the
+DELL bug; the defect was the release condition, never the deferral.
