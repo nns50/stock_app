@@ -48,6 +48,8 @@ function baseCtx(overrides: Partial<RiskCheckContext> = {}): RiskCheckContext {
     marketAtrPct: null,
     regimeAtrThresholdPct: 3,
     regimeSizeCutPct: 0,
+    priorSameDayExits: 0,
+    repeatEntrySizeCutPct: 0,
     ...overrides,
   };
 }
@@ -298,6 +300,8 @@ describe('evaluateRiskCheck — pure evaluator', () => {
           marketAtrPct: 6,
           regimeAtrThresholdPct: 3,
           regimeSizeCutPct: 30,
+          priorSameDayExits: 0,
+          repeatEntrySizeCutPct: 0,
           equityCurveDeriskActive: true,
           equityCurveDeriskCutPct: 50,
         }),
@@ -371,6 +375,8 @@ describe('evaluateRiskCheck — pure evaluator', () => {
           marketAtrPct: 6,
           regimeAtrThresholdPct: 3,
           regimeSizeCutPct: 30,
+          priorSameDayExits: 0,
+          repeatEntrySizeCutPct: 0,
           expectancyMultiplier: 1.2,
         }),
       );
@@ -759,5 +765,76 @@ describe('runAutotradeRiskCheck — batch orchestration', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Same-day re-entry size cut (#49), asserted where the SIZE is decided.
+//
+// The measurement, 2026-09-08 over 89 closed live-autotrade trades: first
+// entries n=56 +$398.98 (mean +$7.12), repeats n=33 -$121.03 (mean -$3.67).
+// A cut rather than a block because the direction survives trimming and the
+// magnitude does not — 86% of the repeat deficit is one DELL trade, and
+// dropping the worst from each side leaves repeats at -$0.55 a trade.
+//
+// These read suggestedQuantity, not the factor. effectiveRisk.ts's own history
+// is the reason: the repeatEntry factor was computed by preFinishLineFactors
+// and left out of effectiveRiskPct's product while every unit test on the
+// builder stayed green. A test on the factor proves the factor; only the
+// quantity proves the trade.
+// ---------------------------------------------------------------------------
+describe('evaluateRiskCheck — same-day re-entry size cut', () => {
+  it('sizes a repeat entry DOWN by the configured cut', () => {
+    // $100k at 1% risk over a $5 stop = 200 shares at full size.
+    const first = evaluateRiskCheck(signal(), baseCtx());
+    expect(first.sizing.suggestedQuantity).toBe(200);
+
+    const repeat = evaluateRiskCheck(signal(), baseCtx({ priorSameDayExits: 1, repeatEntrySizeCutPct: 50 }));
+    expect(repeat.sizing.suggestedQuantity).toBe(100);
+  });
+
+  it('leaves the FIRST entry of the day in a name at full size', () => {
+    const ctx = baseCtx({ priorSameDayExits: 0, repeatEntrySizeCutPct: 50 });
+    expect(evaluateRiskCheck(signal(), ctx).sizing.suggestedQuantity).toBe(200);
+  });
+
+  it('ships OFF: a 0% cut changes nothing however many prior exits there are', () => {
+    // The default. The field lands at 0 and the operator decides the number —
+    // so "on but 0" must be identical to "no prior exits", not merely close.
+    const off = evaluateRiskCheck(signal(), baseCtx({ priorSameDayExits: 3, repeatEntrySizeCutPct: 0 }));
+    expect(off.sizing.suggestedQuantity).toBe(200);
+  });
+
+  it('does not deepen the cut for a second repeat — it is one cut, not a ladder', () => {
+    // isRepeatEntryActive is a boolean on purpose. Compounding per prior exit
+    // was never measured, and the third entry in a name is rare enough that a
+    // ladder would be tuned on almost no data.
+    const one = evaluateRiskCheck(signal(), baseCtx({ priorSameDayExits: 1, repeatEntrySizeCutPct: 40 }));
+    const three = evaluateRiskCheck(signal(), baseCtx({ priorSameDayExits: 3, repeatEntrySizeCutPct: 40 }));
+    expect(three.sizing.suggestedQuantity).toBe(one.sizing.suggestedQuantity);
+  });
+
+  it('compounds with the other cuts rather than replacing them', () => {
+    // Two reasons to size down should both apply — 50% step-down AND a 50%
+    // repeat cut is a quarter-size trade, not a half-size one.
+    const both = evaluateRiskCheck(
+      signal(),
+      baseCtx({ consecutiveLosses: 2, priorSameDayExits: 1, repeatEntrySizeCutPct: 50 }),
+    );
+    expect(both.sizing.suggestedQuantity).toBe(50);
+  });
+
+  it('reports the cut in the checks, and never calls a 0% cut "active"', () => {
+    const active = evaluateRiskCheck(signal(), baseCtx({ priorSameDayExits: 1, repeatEntrySizeCutPct: 50 }));
+    const repeatCheck = active.checks.find((c) => c.rule === 'repeat_entry_sizing');
+    expect(repeatCheck?.detail).toMatch(/^active — 1 prior exit/);
+
+    // The regime_sizing lie of 2026-09-05, one feature over: a trigger firing
+    // and a size changing are different facts.
+    const neutral = evaluateRiskCheck(signal(), baseCtx({ priorSameDayExits: 1, repeatEntrySizeCutPct: 0 }));
+    expect(neutral.checks.find((c) => c.rule === 'repeat_entry_sizing')?.detail).toMatch(/^triggered/);
+
+    const inactive = evaluateRiskCheck(signal(), baseCtx({ priorSameDayExits: 0, repeatEntrySizeCutPct: 50 }));
+    expect(inactive.checks.find((c) => c.rule === 'repeat_entry_sizing')?.detail).toMatch(/^inactive/);
   });
 });

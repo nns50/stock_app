@@ -581,6 +581,9 @@ export async function runOptionsPaperExecution(
       sectorOf,
     );
     const ctx: RiskCheckContext = {
+      // Paper options: control arm, and the finding is equity-only.
+      priorSameDayExits: 0,
+      repeatEntrySizeCutPct: 0,
       equity,
       dailyPnl,
       tradesToday,

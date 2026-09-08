@@ -115,6 +115,8 @@ describe('the finish-line trim reasons about the risk the trade will really take
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      priorSameDayExits: 0,
+      repeatEntrySizeCutPct: 0,
       equityCurveDerisk: NEUTRAL,
       expectancy: NEUTRAL,
       method: NEUTRAL,

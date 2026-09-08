@@ -235,6 +235,28 @@ patch, just smaller, which blunts the string of full-size losses a drawdown can 
 without the whiplash of a hard stop. It stacks multiplicatively with step-down and regime
 sizing, and like them applies to paper and live only, not backtests.
 
+**The second trade in a name is not the first one.** Over 89 closed live trades, first
+entries in a symbol averaged **+$7.12** and same-day repeats **−$3.67** — the loop kept
+handing a freed slot straight back to the name it had just exited, usually via the
+stagnation exit, which by design closes near scratch and so never trips the losing-trade
+cooldown. **Same-day re-entry size cut (%)** (Config → risk settings, 0 = off) trims those
+repeats instead of blocking them, and the reason it trims is worth keeping in mind when
+you pick the number: only the _direction_ of that gap survives scrutiny. 86% of the repeat
+deficit is one DELL trade, and dropping the worst trade from each side leaves repeats at
+−$0.55 apiece — a rounding error, not a leak. So the honest reading is "repeats are worth
+less, not worthless", and a cut in the 25–50% range matches that; a block would be pricing
+in a certainty the data doesn't support. The counter-case is real and on the record: LVWR
+lost −0.98R at 12:30 and its same-day re-entry made +1.93R. A genuine second setup hours
+later still deserves a position, just a smaller one.
+
+It counts positions closed today, not exit rows — a scaled-out trade is one repeat, not
+two — and it uses the Eastern trading date, so an overnight gap resets the thesis and
+yesterday's close never suppresses this morning's first entry. It is **live equity only**:
+the paper book keeps taking every signal at full size so it stays a clean control arm to
+re-measure this against at ~60 repeats. Watch the `repeat_entry_sizing` line in each
+risk-check under **Recent activity** to see what it actually did — it reports itself from
+the factor, so a 0% cut reads as "triggered, size unchanged" rather than "active".
+
 **Don't size bigger than you can exit.** Risk-based sizing only looks at your stop
 distance, not the stock's liquidity — so a tight stop on a thin name can hand you a
 position that takes days to unwind without moving the price against yourself. **Max ADV

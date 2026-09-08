@@ -150,6 +150,25 @@ export interface AutotradeConfig {
    *  behavior this config merely made tunable), this is a brand-new feature,
    *  so an untouched config changes nothing. */
   regimeSizeCutPct: number;
+  /** % cut to riskPerTradePct when this symbol ALREADY closed a position today
+   *  — a same-day re-entry into a name that has just been exited.
+   *
+   *  Measured 2026-09-08 over 89 closed live-autotrade trades: first entries
+   *  n=56 +$398.98 (mean +$7.12, 41% win), repeats n=33 -$121.03 (mean -$3.67,
+   *  33% win). The DIRECTION survives trimming — first entries beat repeats by
+   *  roughly $8-11 a trade under every treatment — but the claim "repeats lose
+   *  money" does NOT: 86% of that deficit is one DELL trade, and dropping the
+   *  single worst from each side leaves repeats at -$0.55 a trade.
+   *
+   *  So this cuts SIZE rather than blocking the entry. A hard block would spend
+   *  real opportunity on a finding one trade could reverse; a size cut shrinks
+   *  the tail doing the damage and stays reversible. Defaults to 0 (off) — the
+   *  evidence supports acting, not acting hard.
+   *
+   *  LIVE ONLY by design, like liveMinSignalScore: paper takes every signal so
+   *  the repeat-vs-first comparison keeps a clean control arm to be re-measured
+   *  against at ~60 repeats. */
+  repeatEntrySizeCutPct: number;
   /** Equity-curve de-risking (2026-07-24, services/autotrading/equityCurveDerisk.ts):
    *  a SOFTER, graduated companion to the binary `maxDailyDrawdownPct` halt.
    *  When on, and the strategy's OWN realized equity curve (cumulative closed
@@ -1064,6 +1083,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     maxTradesPerDay: 6,
     regimeAtrThresholdPct: 3,
     regimeSizeCutPct: 0,
+    repeatEntrySizeCutPct: 0,
     equityCurveDeriskEnabled: false,
     equityCurveLookbackDays: 10,
     equityCurveDeriskCutPct: 50,
@@ -1297,6 +1317,7 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     maxTradesPerDay: posInt(input.maxTradesPerDay, d.maxTradesPerDay),
     regimeAtrThresholdPct: pct(input.regimeAtrThresholdPct, d.regimeAtrThresholdPct),
     regimeSizeCutPct: pct(input.regimeSizeCutPct, d.regimeSizeCutPct),
+    repeatEntrySizeCutPct: pct(input.repeatEntrySizeCutPct, d.repeatEntrySizeCutPct),
     equityCurveDeriskEnabled:
       typeof input.equityCurveDeriskEnabled === 'boolean' ? input.equityCurveDeriskEnabled : d.equityCurveDeriskEnabled,
     equityCurveLookbackDays: posIntMin1(input.equityCurveLookbackDays, d.equityCurveLookbackDays),

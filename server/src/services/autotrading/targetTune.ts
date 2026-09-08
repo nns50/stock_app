@@ -702,6 +702,7 @@ export const NEVER_TUNED_KEYS = [
   'optionsPartialExitPct',
   'regimeAtrThresholdPct',
   'regimeSizeCutPct',
+  'repeatEntrySizeCutPct',
   'equityCurveDeriskEnabled',
   'equityCurveLookbackDays',
   'equityCurveDeriskCutPct',

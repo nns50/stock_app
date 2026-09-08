@@ -334,6 +334,7 @@ export function NumberInput({
   min,
   max,
   placeholder,
+  ariaLabel,
 }: {
   value: number | undefined;
   onChange: (v: number | undefined) => void;
@@ -343,6 +344,10 @@ export function NumberInput({
   min?: number;
   max?: number;
   placeholder?: string;
+  /** Accessible name. A <Field> label is only adjacent text, not a real
+   *  association, so without this the input has no name at all — for a screen
+   *  reader, and for any test trying to tell two of them apart. */
+  ariaLabel?: string;
 }) {
   // A controlled text field (not type="number") so an in-progress decimal like
   // "0." / "1." / ".5" isn't sanitized back to an integer on each keystroke (the
@@ -361,6 +366,7 @@ export function NumberInput({
       className="input"
       value={text}
       placeholder={placeholder}
+      aria-label={ariaLabel}
       onChange={(e) => {
         let t = e.target.value;
         if (t !== '' && !/^-?\d*\.?\d*$/.test(t)) return; // ignore non-numeric keystrokes

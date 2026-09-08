@@ -6530,3 +6530,93 @@ not a threshold, so the streak passes through the value and it fires exactly onc
 per episode without needing state of its own. It **reports and does not act** —
 the defer stays, a human decides. Shortening the grace window would reopen the
 DELL bug; the defect was the release condition, never the deferral.
+
+---
+
+## Same-day re-entry size cut (2026-09-08)
+
+`repeatEntrySizeCutPct`, default `0` (off). Live equity book only.
+
+### The finding
+
+Over 89 closed live-autotrade trades: first entries in a name **n=56, +$398.98
+(mean +$7.12)**; same-day repeats **n=33, −$121.03 (mean −$3.67)**.
+
+`symbolCooldown.ts` does not catch these and was never going to. It needs two
+**losing** closed trades inside a rolling window measured in **calendar days**,
+and the exit producing most of these repeats is the stagnation exit — which by
+definition closes near scratch, so it is not a loss, never counts, and the
+cooldown never engages. `reentryCooldown.ts` (`symbolReentryCooldownMinutes`)
+does address the reflexive re-entry, but it ships at `0` and blocks outright,
+which is a stronger claim than the data supports.
+
+### Why a cut and not a block
+
+The **direction** of the gap survives trimming; the **magnitude** does not. 86%
+of the −$121.03 repeat deficit is a single DELL trade, and dropping the worst
+trade from each side leaves repeats at **−$0.55 a trade**. And the counter-case
+is on the record in `symbolCooldown.ts`'s own header: LVWR lost −0.98R at 12:30
+and its same-day re-entry won +1.93R. So repeats are worth *less*, not
+*nothing* — a trim is the honest expression of that, a block is not.
+
+For the same reason the cut is **flat, not a ladder**: `isRepeatEntryActive` is
+a boolean over the count, so the fourth attempt in a name is cut exactly as much
+as the second. Compounding per prior exit was never measured, and third entries
+are rare enough that a ladder would be tuned on almost no data.
+
+### How it is counted
+
+`sameDaySymbolExits(symbol, closedPositions, etDay)` in `reentryCooldown.ts`:
+
+- **Positions, not exit rows.** A scaled-out trade books a partial exit and a
+  final exit on the same day. Counting rows would score that single trade as two
+  repeats and cut the next entry twice as hard for no reason — and since the
+  scale-out started filling on 2026-09-05, that is now the ordinary shape of a
+  live trade, not an edge case.
+- **Exits, not entries.** A position opened yesterday and closed this morning
+  makes this morning's second attempt a repeat; entry-counting would miss it.
+- **The ET trading date, not a rolling 24h window.** The finding is about
+  re-entering inside the same *session*. An overnight gap resets the thesis, and
+  a wall-clock window would keep yesterday afternoon's exit suppressing this
+  morning's first entry.
+
+### Wiring
+
+- `SizingFactors` gains a required `repeatEntry` field, so neither risk check
+  compiles until both books state what it does. It is the **seventh**
+  multiplicative factor; `effectiveRiskPct` multiplies it with the rest.
+- `liveExecute.ts` derives `priorSameDayExits` **once per signal** and passes
+  the same value to `preFinishLineFactors` and to `RiskCheckContext` — the
+  finish-line trim and the sizer must reason about the same count.
+- The closed-position read is shared with the re-entry cooldown behind an **OR**
+  (`symbolReentryCooldownMinutes > 0 || repeatEntrySizeCutPct > 0`). Tying it to
+  either feature's own setting would hand the other an empty list and it would
+  do nothing, silently.
+- `evaluateRiskCheck` emits a `repeat_entry_sizing` check derived from the
+  **factor**, not the trigger, so a 0% cut reads `triggered … size unchanged`
+  rather than `active` — the `regime_sizing` lie of 2026-09-05, avoided by
+  construction.
+
+### Scope: LIVE only, by decision
+
+Paper passes `priorSameDayExits: 0` **and** `repeatEntrySizeCutPct: 0`, with the
+reason written at the call site: this finding gets re-measured at ~60 repeats,
+and paper is the arm it gets re-measured *against*. A control arm that takes the
+same treatment as the test arm cannot settle anything. Both options books and
+all three backtest engines opt out the same way, each with its own note.
+
+### What the tests assert
+
+At the **consumer**, throughout — `evaluateRiskCheck`'s `suggestedQuantity` and
+the quantity that reaches `webullPlaceOrder`, never the factor. That is not
+ceremony: this feature's own first draft computed `repeatEntry` in
+`preFinishLineFactors` and left it out of `effectiveRiskPct`'s product, and
+every unit test on the builder stayed green. The generalised guard in
+`effectiveRisk.test.ts` — set each `SizingFactors` key to 0.5 alone and the
+result must halve — is what catches that class of defect for the next factor
+too, since the required-field type forces the new key into the fixture it
+iterates.
+
+The live-path tests measure their own full-size baseline rather than hardcoding
+a share count: live probation is halving the same orders, and a literal would
+quietly start asserting the probation factor the day either number moves.

@@ -120,6 +120,7 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     maxTradesPerDay: 6,
     regimeAtrThresholdPct: 3,
     regimeSizeCutPct: 0,
+    repeatEntrySizeCutPct: 0,
     equityCurveDeriskEnabled: false,
     equityCurveLookbackDays: 10,
     equityCurveDeriskCutPct: 50,
@@ -472,7 +473,9 @@ describe('AutoTradePage', () => {
     renderPage();
     await screen.findByText('VNQ');
 
-    const sizeCutInput = screen.getByPlaceholderText('0 (no cut)');
+    // By name, not by placeholder: the same-day re-entry cut shares the
+    // "0 (no cut)" placeholder, and a placeholder was never an accessible name.
+    const sizeCutInput = screen.getByRole('textbox', { name: 'Regime size cut (%)' });
     fireEvent.change(sizeCutInput, { target: { value: '25' } });
 
     const saveButton = screen.getByRole('button', { name: 'Save regime size cut' });
@@ -480,6 +483,27 @@ describe('AutoTradePage', () => {
     fireEvent.click(saveButton);
 
     await waitFor(() => expect(setConfig).toHaveBeenCalledWith({ regimeSizeCutPct: 25, confirmAggressive: undefined }));
+  });
+
+  it('saves a new same-day re-entry size cut value', async () => {
+    // The field is LIVE-only and ships at 0, so the operator has to be able to
+    // set it from the app — an API-only setting is how the other four inert
+    // settings groups stayed inert.
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Same-day re-entry size cut (%)' }), {
+      target: { value: '25' },
+    });
+
+    const saveButton = screen.getByRole('button', { name: 'Save same-day re-entry size cut' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ repeatEntrySizeCutPct: 25, confirmAggressive: undefined }),
+    );
   });
 
   it('toggling equity-curve de-risking saves immediately', async () => {

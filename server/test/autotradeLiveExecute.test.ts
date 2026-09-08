@@ -45,8 +45,9 @@ import {
   AutotradeConfig,
 } from '../src/db/autotradeConfig';
 import { setTradingConfig } from '../src/db/trading';
+import { etToday } from '../src/util/marketDate';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
-import { listPositions, createPosition } from '../src/db/positions';
+import { listPositions, createPosition, addExit } from '../src/db/positions';
 import * as positionsDb from '../src/db/positions';
 import {
   getLiveOrder,
@@ -155,6 +156,8 @@ function baseRiskCtx() {
     marketAtrPct: null,
     regimeAtrThresholdPct: 3,
     regimeSizeCutPct: 0,
+    priorSameDayExits: 0,
+    repeatEntrySizeCutPct: 0,
   };
 }
 
@@ -315,6 +318,8 @@ describe('getProbationStatus', () => {
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      priorSameDayExits: 0,
+      repeatEntrySizeCutPct: 0,
     });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', cfg);
     const intentId = listIntents()[0].id;
@@ -446,6 +451,8 @@ describe('attemptLiveEntry', () => {
     marketAtrPct: null,
     regimeAtrThresholdPct: 3,
     regimeSizeCutPct: 0,
+    priorSameDayExits: 0,
+    repeatEntrySizeCutPct: 0,
   });
 
   it('refuses when TRADING_ENABLED is off — no intent, no broker call, regardless of every other gate passing', async () => {
@@ -1582,6 +1589,8 @@ describe('adoptOrphanedLivePositions', () => {
     marketAtrPct: null,
     regimeAtrThresholdPct: 3,
     regimeSizeCutPct: 0,
+    priorSameDayExits: 0,
+    repeatEntrySizeCutPct: 0,
   };
 
   /** A still-pending (not yet reconciled/materialized) autotrade entry order —
@@ -2215,6 +2224,8 @@ describe('reconcileLiveOrders', () => {
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      priorSameDayExits: 0,
+      repeatEntrySizeCutPct: 0,
     });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', cfg, 'risk-off', 2.5);
     const intentId = listIntents()[0].id;
@@ -2278,6 +2289,8 @@ describe('reconcileLiveOrders', () => {
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      priorSameDayExits: 0,
+      repeatEntrySizeCutPct: 0,
     });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
 
@@ -2337,6 +2350,8 @@ describe('reconcileLiveOrders', () => {
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      priorSameDayExits: 0,
+      repeatEntrySizeCutPct: 0,
     });
 
   it('keeps an AMBIGUOUS placement pending instead of rejecting it, so it cannot be re-placed', async () => {
@@ -2535,6 +2550,8 @@ describe('reconcileLiveOrders', () => {
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      priorSameDayExits: 0,
+      repeatEntrySizeCutPct: 0,
     });
     await attemptLiveEntry(signal(), res, 'MODERATE', liveConfig());
 
@@ -2597,6 +2614,8 @@ describe('reconcileLiveOrders', () => {
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      priorSameDayExits: 0,
+      repeatEntrySizeCutPct: 0,
     });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
 
@@ -2658,6 +2677,8 @@ describe('reconcileLiveOrders', () => {
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      priorSameDayExits: 0,
+      repeatEntrySizeCutPct: 0,
     });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
     const intentId = listIntents()[0].id;
@@ -2718,6 +2739,8 @@ describe('reconcileLiveOrders', () => {
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      priorSameDayExits: 0,
+      repeatEntrySizeCutPct: 0,
     });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
 
@@ -2797,6 +2820,8 @@ describe('reconcileLiveOrders + adoptOrphanedLivePositions interaction', () => {
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      priorSameDayExits: 0,
+      repeatEntrySizeCutPct: 0,
     });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
     const intentId = listIntents()[0].id;
@@ -3078,6 +3103,8 @@ describe('listPendingLiveOrders / terminal-state exclusion', () => {
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      priorSameDayExits: 0,
+      repeatEntrySizeCutPct: 0,
     });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
     expect(listPendingLiveOrders()).toHaveLength(1); // acknowledged — still working, not yet filled
@@ -3139,6 +3166,8 @@ describe('listPendingLiveOrders / terminal-state exclusion', () => {
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      priorSameDayExits: 0,
+      repeatEntrySizeCutPct: 0,
     });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
     expect(listIntents()).toHaveLength(1); // the rejected intent IS audited...
@@ -3187,6 +3216,8 @@ describe('checkLiveScaleIns', () => {
     marketAtrPct: null,
     regimeAtrThresholdPct: 3,
     regimeSizeCutPct: 0,
+    priorSameDayExits: 0,
+    repeatEntrySizeCutPct: 0,
   };
 
   // Open a real live position through the entry -> reconcile flow, then set the
@@ -3399,6 +3430,8 @@ describe('reconcileLiveOrders — partial fills', () => {
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      priorSameDayExits: 0,
+      repeatEntrySizeCutPct: 0,
     });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', cfg);
     const intentId = listIntents()[0].id;
@@ -3548,6 +3581,8 @@ describe('reconcileLiveOrders — booking and the materialization mark are atomi
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      priorSameDayExits: 0,
+      repeatEntrySizeCutPct: 0,
     });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig(), null, null);
     const intentId = listIntents()[0].id;
@@ -3783,5 +3818,137 @@ describe('manual positions are never auto-sold', () => {
     const outcomes = await runLiveExecution([{ signal: signal({ symbol: 'AAPL' }) }]);
     expect(outcomes[0]).toMatchObject({ symbol: 'AAPL', ok: false });
     expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Same-day re-entry size cut (#49) — asserted at the BROKER, not the sizer.
+//
+// The measurement, 2026-09-08 over 89 closed live-autotrade trades: first
+// entries n=56 +$398.98 (mean +$7.12), repeats n=33 -$121.03 (mean -$3.67).
+// A cut and not a block: the direction survives trimming, the magnitude does
+// not (86% of the deficit is one DELL trade; drop the worst from each side and
+// repeats are -$0.55 a trade).
+//
+// The whole point of this block is the WIRING. evaluateRiskCheck applying a
+// cut it is handed is one fact; liveExecute counting real closed positions and
+// handing it the right number is another, and only the second one moves money.
+// effectiveRisk.ts's own history is why that distinction is written down: the
+// repeatEntry factor was built by preFinishLineFactors and left out of
+// effectiveRiskPct's product, with every unit test on the builder green.
+// ---------------------------------------------------------------------------
+describe('runLiveExecution — same-day re-entry size cut', () => {
+  const cfgFields = {
+    accountEquityUsd: 100_000,
+    riskProfile: 'MODERATE' as const,
+    liveAccountId: 'ACC1',
+    liveTradingEnabled: true,
+    liveEnabledAt: Date.now(),
+    liveMaxOrderUsd: 50_000,
+    liveMaxExposurePct: 1_000,
+    liveMaxDailyLossUsd: 5_000,
+    liveMaxOrdersPerDay: 20,
+    killSwitch: false,
+  };
+
+  /** A concluded autotrade trade in `symbol`, on `book`, exiting on `exitDate`.
+   *  Exits a hair ABOVE entry on purpose: a loser would engage the
+   *  consecutive-loss step-down and a second cut would then be doing the work
+   *  this test attributes to the first. A near-scratch is also the exact shape
+   *  of the stagnation exit that produces these repeats. */
+  function concludedTrade(symbol: string, book: 'live' | 'paper', exitDate: string = etToday()) {
+    const pos = createPosition({
+      assetType: 'stock',
+      symbol,
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      entryDate: exitDate,
+      tags: ['autotrade', book],
+    });
+    addExit(pos.id, { quantity: 10, exitPrice: 100.01, exitDate });
+    return pos;
+  }
+
+  async function enter(symbols: string[]) {
+    mockGetProvider.mockReturnValue(quoteReturning(Object.fromEntries(symbols.map((s) => [s, 100]))));
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-REPEAT' });
+    const outcomes = await runLiveExecution(symbols.map((sym) => ({ signal: signal({ symbol: sym }) })));
+    for (const o of outcomes) expect(o.ok, `expected an entry, got: ${o.reason}`).toBe(true);
+    return mockPlaceOrder.mock.calls.map((c) => (c[1] as { quantity: number }).quantity);
+  }
+
+  /** The size this signal reaches the broker at with NO same-day history.
+   *  Measured, not hardcoded: live probation is also halving these orders, and
+   *  a literal here would silently start asserting the probation factor the
+   *  day either number moves. */
+  async function fullSize() {
+    const [qty] = await enter(['AAPL']);
+    mockPlaceOrder.mockClear();
+    db.exec(
+      'DELETE FROM autotrade_live_orders; DELETE FROM order_events; DELETE FROM order_intents; DELETE FROM position_exits; DELETE FROM positions;',
+    );
+    return qty;
+  }
+
+  it('sends a SMALLER order when this name already concluded a trade today', async () => {
+    setAutotradeConfig({ ...cfgFields, repeatEntrySizeCutPct: 50 });
+    const full = await fullSize();
+    expect(full).toBeGreaterThan(1); // a 1-share baseline could not show a cut
+
+    // Same config, same signal — the only change is AAPL's own history today.
+    concludedTrade('AAPL', 'live');
+    expect(await enter(['AAPL'])).toEqual([full / 2]);
+  });
+
+  it('loads the closed book for the cut even with the re-entry COOLDOWN off', async () => {
+    // The two features share one listPositions read, behind an OR. Tying that
+    // read to symbolReentryCooldownMinutes alone — which ships at 0 and is 0 in
+    // production — would hand the cut an empty list and it would do nothing,
+    // silently, exactly as configured. This is the assertion that catches it.
+    setAutotradeConfig({ ...cfgFields, repeatEntrySizeCutPct: 50, symbolReentryCooldownMinutes: 0 });
+    const full = await fullSize();
+    concludedTrade('AAPL', 'live');
+    expect(await enter(['AAPL'])).toEqual([full / 2]);
+  });
+
+  it('does not let a PAPER trade in the name cut the live size', async () => {
+    // Paper is the control arm this finding gets re-measured against at ~60
+    // repeats. If paper's own repeats size the live book down, the two arms
+    // stop being independent and the re-measurement cannot settle anything.
+    setAutotradeConfig({ ...cfgFields, repeatEntrySizeCutPct: 50 });
+    const full = await fullSize();
+    concludedTrade('AAPL', 'paper');
+    expect(await enter(['AAPL'])).toEqual([full]);
+  });
+
+  it("does not let YESTERDAY's exit cut this morning's first entry", async () => {
+    setAutotradeConfig({ ...cfgFields, repeatEntrySizeCutPct: 50 });
+    const full = await fullSize();
+    concludedTrade('AAPL', 'live', '2026-01-02');
+    expect(await enter(['AAPL'])).toEqual([full]);
+  });
+
+  it('cuts only the name that repeated, not every candidate in the tick', async () => {
+    setAutotradeConfig({
+      ...cfgFields,
+      repeatEntrySizeCutPct: 50,
+      maxConcurrentPositions: 5,
+      maxAggregateOpenRiskPct: 50,
+      maxTradesPerDay: 20,
+    });
+    concludedTrade('AAA', 'live');
+    const [aaa, bbb] = await enter(['AAA', 'BBB']);
+    expect(aaa).toBe(bbb / 2); // AAA repeated; BBB is a first entry
+  });
+
+  it('ships OFF — a 0% cut leaves a repeat at full size', async () => {
+    // The field lands at 0 and the operator picks the number. Until then the
+    // live book must behave exactly as it did before this existed.
+    setAutotradeConfig({ ...cfgFields, repeatEntrySizeCutPct: 0 });
+    const full = await fullSize();
+    concludedTrade('AAPL', 'live');
+    expect(await enter(['AAPL'])).toEqual([full]);
   });
 });

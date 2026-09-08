@@ -977,6 +977,11 @@ export async function runLiveOptionsExecution(
           marketAtrPct,
           regimeAtrThresholdPct: cfg.regimeAtrThresholdPct,
           regimeSizeCutPct: cfg.regimeSizeCutPct,
+          // Options opt out: the repeat finding was measured on 89 closed EQUITY
+          // trades and says nothing about a premium book. 0 exits + 0 cut is the
+          // written opt-out, not an omission.
+          priorSameDayExits: 0,
+          repeatEntrySizeCutPct: 0,
           equityCurveDerisk: NEUTRAL,
           expectancy: NEUTRAL,
           method: methodMultiplier,
@@ -987,6 +992,9 @@ export async function runLiveOptionsExecution(
       rewardMultiple: cfg.optionsTakeProfitPct / 100,
     });
     const ctx: RiskCheckContext = {
+      // Options opt out — the finding was measured on 89 closed EQUITY trades.
+      priorSameDayExits: 0,
+      repeatEntrySizeCutPct: 0,
       equity,
       dailyPnl,
       tradesToday,
