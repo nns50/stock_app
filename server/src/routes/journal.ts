@@ -9,6 +9,7 @@ import { aggregateExcursions, excursionForTrade, TradeExcursion } from '../servi
 import { aggregateSlippage, computeSlippage, SlippageRow } from '../services/slippage';
 import { aggregateStopOverruns, classifyStopExit, computeStopOverrun, StopOverrunRow } from '../services/stopOverrun';
 import { computeBenchmark } from '../services/benchmark';
+import { mapPool } from '../util/async';
 import { computeAutoTuneRiskEfficacy } from '../services/autotrading/autoTuneEfficacy';
 import { getProvider } from '../providers';
 
@@ -147,51 +148,79 @@ journalRouter.get(
 // underlying, not the option premium).
 /** One daily-candle fetch per trade, so the work is bounded. Newest trades win
  *  (listPositions orders by date DESC) and the number dropped is REPORTED — see
- *  ExcursionCoverage. */
-const EXCURSION_TRADE_CAP = 50;
+ *  ExcursionCoverage.
+ *
+ *  Raised from 50 on 2026-09-08. At 50 this route was analysing 50 of the 92
+ *  measurable closed stock trades and silently reporting the other 42 as
+ *  `overCap` — which is what made task #32's target-multiple comparison
+ *  undecidable: every candidate target came out inside noise, and at 1.25R and
+ *  above only three or four trades differed at all. A cap that throws away half
+ *  the evidence is the binding constraint on a question about the tail. */
+const EXCURSION_TRADE_CAP = 250;
+
+/** Concurrent candle fetches. `Promise.all` over every selected trade fired all
+ *  of them at once, which was survivable at 50 and is not the thing to scale:
+ *  the provider rate-limits hard enough that the screener already loses ~47 of
+ *  559 symbols a tick to it, and here a throttled fetch does not fail loudly —
+ *  it lands in `unavailable` and SHRINKS the sample, which is the exact opposite
+ *  of what raising the cap is for. Same pool size the screener uses. */
+const EXCURSION_FETCH_CONCURRENCY = 6;
 
 journalRouter.get(
   '/excursions',
-  asyncHandler(async (_req, res) => {
+  asyncHandler(async (req, res) => {
+    // `?limit=` so a growing book can be analysed in full without a deploy —
+    // the cap above exists to bound work, not to be the answer to "how much
+    // history may I look at".
+    //
+    // Clamped to the cap so a request can never ask for more work than the
+    // constant allows. That clamp is DEFENSIVE AND UNTESTED on purpose: making
+    // it observable needs a fixture book larger than EXCURSION_TRADE_CAP, i.e.
+    // 251 closed stock trades, and a test that slow buys less than it costs.
+    // The junk-limit cases below are covered; this one bound is not, and saying
+    // so beats a test that passes because the fixture never reaches it.
+    const requested = Number(req.query.limit);
+    const cap =
+      Number.isFinite(requested) && requested > 0
+        ? Math.min(Math.floor(requested), EXCURSION_TRADE_CAP)
+        : EXCURSION_TRADE_CAP;
     const closedStock = listPositions({ status: 'closed', assetType: 'stock' });
     // An excursion walks daily candles from the entry to the exit, so a trade
     // with no known entry date cannot be measured and is left out.
     const dated = closedStock.filter((p): p is typeof p & { entryDate: string } => p.entryDate !== null);
-    const selected = dated.slice(0, EXCURSION_TRADE_CAP);
+    const selected = dated.slice(0, cap);
     const provider = getProvider();
     const rows: TradeExcursion[] = [];
     let unavailable = 0;
-    await Promise.all(
-      selected.map(async (p) => {
-        try {
-          const ex = await excursionForTrade(provider, {
-            positionId: p.id,
-            symbol: p.symbol,
-            side: p.side,
-            entryPrice: p.entryPrice,
-            quantity: p.quantity,
-            multiplier: p.multiplier,
-            // The FROZEN stop — this is the excursion's R denominator, and the
-            // ratchet mutates p.stopPrice (see initialRiskOf in services/pnl.ts).
-            // Using the live value would inflate every mfeR/maeR/realizedR the
-            // moment a trailing stop moves.
-            stopPrice: p.initialStopPrice ?? p.stopPrice,
-            realizedPnl: realizedPnlOf(p),
-            entryDate: p.entryDate,
-            exitDate: lastExitDate(p),
-            entryTime: p.entryTime,
-            exitAt: lastExitAt(p),
-          });
-          // A null here means the candles arrived but held nothing usable over
-          // the holding window — counted, not discarded, for the same reason a
-          // failed fetch is.
-          if (ex) rows.push(ex);
-          else unavailable++;
-        } catch {
-          unavailable++;
-        }
-      }),
-    );
+    await mapPool(selected, EXCURSION_FETCH_CONCURRENCY, async (p) => {
+      try {
+        const ex = await excursionForTrade(provider, {
+          positionId: p.id,
+          symbol: p.symbol,
+          side: p.side,
+          entryPrice: p.entryPrice,
+          quantity: p.quantity,
+          multiplier: p.multiplier,
+          // The FROZEN stop — this is the excursion's R denominator, and the
+          // ratchet mutates p.stopPrice (see initialRiskOf in services/pnl.ts).
+          // Using the live value would inflate every mfeR/maeR/realizedR the
+          // moment a trailing stop moves.
+          stopPrice: p.initialStopPrice ?? p.stopPrice,
+          realizedPnl: realizedPnlOf(p),
+          entryDate: p.entryDate,
+          exitDate: lastExitDate(p),
+          entryTime: p.entryTime,
+          exitAt: lastExitAt(p),
+        });
+        // A null here means the candles arrived but held nothing usable over
+        // the holding window — counted, not discarded, for the same reason a
+        // failed fetch is.
+        if (ex) rows.push(ex);
+        else unavailable++;
+      } catch {
+        unavailable++;
+      }
+    });
     rows.sort((a, b) => b.entryDate.localeCompare(a.entryDate));
     res.json(
       aggregateExcursions(rows, {
