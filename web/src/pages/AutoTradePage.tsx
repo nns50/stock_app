@@ -2845,6 +2845,10 @@ export default function AutoTradePage() {
   const [maxTradesPerDayDraft, setMaxTradesPerDayDraft] = useState<number | undefined>();
   const [regimeAtrThresholdPctDraft, setRegimeAtrThresholdPctDraft] = useState<number | undefined>();
   const [regimeSizeCutPctDraft, setRegimeSizeCutPctDraft] = useState<number | undefined>();
+  const [mlRegimeEnabled, setMlRegimeEnabled] = useState(false);
+  const [mlRegimeSizeCutPctDraft, setMlRegimeSizeCutPctDraft] = useState<number | undefined>();
+  const [mlRegimeSwitchThresholdDraft, setMlRegimeSwitchThresholdDraft] = useState<number | undefined>();
+  const [regimeShockRangeRatioDraft, setRegimeShockRangeRatioDraft] = useState<number | undefined>();
   const [equityCurveDeriskEnabled, setEquityCurveDeriskEnabled] = useState(false);
   const [equityCurveLookbackDaysDraft, setEquityCurveLookbackDaysDraft] = useState<number | undefined>();
   const [equityCurveDeriskCutPctDraft, setEquityCurveDeriskCutPctDraft] = useState<number | undefined>();
@@ -2979,6 +2983,10 @@ export default function AutoTradePage() {
     sync('maxTradesPerDay', setMaxTradesPerDayDraft);
     sync('regimeAtrThresholdPct', setRegimeAtrThresholdPctDraft);
     sync('regimeSizeCutPct', setRegimeSizeCutPctDraft);
+    sync('mlRegimeEnabled', setMlRegimeEnabled);
+    sync('mlRegimeSizeCutPct', setMlRegimeSizeCutPctDraft);
+    sync('mlRegimeSwitchThreshold', setMlRegimeSwitchThresholdDraft);
+    sync('regimeShockRangeRatio', setRegimeShockRangeRatioDraft);
     sync('equityCurveDeriskEnabled', setEquityCurveDeriskEnabled);
     sync('equityCurveLookbackDays', setEquityCurveLookbackDaysDraft);
     sync('equityCurveDeriskCutPct', setEquityCurveDeriskCutPctDraft);
@@ -3087,6 +3095,10 @@ export default function AutoTradePage() {
     maxTradesPerDay?: number;
     regimeAtrThresholdPct?: number;
     regimeSizeCutPct?: number;
+    mlRegimeEnabled?: boolean;
+    mlRegimeSizeCutPct?: number;
+    mlRegimeSwitchThreshold?: number;
+    regimeShockRangeRatio?: number;
     equityCurveDeriskEnabled?: boolean;
     equityCurveLookbackDays?: number;
     equityCurveDeriskCutPct?: number;
@@ -4607,6 +4619,115 @@ export default function AutoTradePage() {
                           regimeSizeCutPctDraft < 0 ||
                           regimeSizeCutPctDraft > 100 ||
                           regimeSizeCutPctDraft === config.data?.regimeSizeCutPct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <label className="flex items-start gap-2 text-sm sm:col-span-2">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={mlRegimeEnabled}
+                      onChange={(e) => saveConfig({ mlRegimeEnabled: e.target.checked })}
+                    />
+                    <span>
+                      ML regime overlay
+                      <span className="block text-[11px] text-slate-500">
+                        Lets the SAME regime cut above read the Today page's ML regime (HMM) reading: while it reads
+                        High Volatility/Bearish, new positions size down by the ML regime size cut below, and a shock
+                        day (the ratio below) is treated the same way. One cut, never two — when the ATR trigger and
+                        this fire together the deeper configured cut applies once. A stale or unknown reading never
+                        cuts. Off by default: leave it off until the enabling rules in the model card are met. Live +
+                        paper only.
+                      </span>
+                    </span>
+                  </label>
+                  <Field
+                    label="ML regime size cut (%)"
+                    hint="% cut to risk-per-trade while the effective regime is High Volatility/Bearish (the model's reading, or a shock day). Default 35 — below the ATR trigger's cut on purpose: the model's High-Vol state is a broad condition and cuts must be monotone in severity. 100 skips every new entry in that regime. Needs ML regime overlay on."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={mlRegimeSizeCutPctDraft}
+                        onChange={setMlRegimeSizeCutPctDraft}
+                        min={0}
+                        max={100}
+                        step={1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save ML regime size cut"
+                        onClick={() =>
+                          mlRegimeSizeCutPctDraft != null && saveConfig({ mlRegimeSizeCutPct: mlRegimeSizeCutPctDraft })
+                        }
+                        disabled={
+                          mlRegimeSizeCutPctDraft == null ||
+                          mlRegimeSizeCutPctDraft < 0 ||
+                          mlRegimeSizeCutPctDraft > 100 ||
+                          mlRegimeSizeCutPctDraft === config.data?.mlRegimeSizeCutPct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="ML regime switch threshold"
+                    hint="The reading's own sticky rule, not a cut: the ML regime changes only when the new state's filtered probability reaches this (0–1; the model's default is 0.6). Higher = calmer, later switches. Applies whether or not the overlay is on — the reading is displayed and stamped on every entry regardless."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={mlRegimeSwitchThresholdDraft}
+                        onChange={setMlRegimeSwitchThresholdDraft}
+                        min={0}
+                        max={1}
+                        step={0.05}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save ML regime switch threshold"
+                        onClick={() =>
+                          mlRegimeSwitchThresholdDraft != null &&
+                          saveConfig({ mlRegimeSwitchThreshold: mlRegimeSwitchThresholdDraft })
+                        }
+                        disabled={
+                          mlRegimeSwitchThresholdDraft == null ||
+                          mlRegimeSwitchThresholdDraft < 0 ||
+                          mlRegimeSwitchThresholdDraft > 1 ||
+                          mlRegimeSwitchThresholdDraft === config.data?.mlRegimeSwitchThreshold
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Shock day range ratio (× ATR)"
+                    hint="The intraday nowcast: when SPY's range so far today (high − low, % of yesterday's close) reaches this many times its 14-day ATR%, the tick is treated as High Volatility/Bearish — same cut — covering the day a model read from yesterday's close cannot see. 0 = off (default); 1.5 is a suggested start, not a fitted number. Journals market_shock_detected once per shock day. Needs ML regime overlay on."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={regimeShockRangeRatioDraft}
+                        onChange={setRegimeShockRangeRatioDraft}
+                        min={0}
+                        max={10}
+                        step={0.1}
+                        placeholder="0 (off)"
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save shock day range ratio"
+                        onClick={() =>
+                          regimeShockRangeRatioDraft != null &&
+                          saveConfig({ regimeShockRangeRatio: regimeShockRangeRatioDraft })
+                        }
+                        disabled={
+                          regimeShockRangeRatioDraft == null ||
+                          regimeShockRangeRatioDraft < 0 ||
+                          regimeShockRangeRatioDraft > 10 ||
+                          regimeShockRangeRatioDraft === config.data?.regimeShockRangeRatio
                         }
                       >
                         Save

@@ -6236,3 +6236,60 @@ stamps nothing. Capture-only: nothing about entries, sizing or exits changes. It
 realized results can be sliced by the regime they were entered under before anything is
 allowed to act on that regime, and so the later options-exit tighten can read the regime a
 position was *opened* under rather than today's.
+
+## 2026-09-08 — the ML regime size cut, built and left OFF
+
+**What shipped.** The regime sizing factor (`server/src/services/autotrading/effectiveRisk.ts`)
+now has three triggers and one cut. `regimeTriggers()` reads SPY's 14-day ATR above
+`regimeAtrThresholdPct` (the 2026-07-16 trigger, which has never fired on this book), the HMM
+reading High Volatility/Bearish with `mlRegimeEnabled`, and an intraday **shock day** — SPY's
+range so far today at or above `regimeShockRangeRatio` × that ATR, from the quote's high/low
+(`executionGuards.getMarketRangePct`: null without a real high, low and previous close, and
+refused on the synthetic provider). It returns the deeper configured cut (never the product:
+ATR 40 + ML 35 is 40), a `skip` for a cut of 100 or more (a FAILING `regime_sizing` rule through
+the normal refusal path, so the journal names it), and the one `effectiveRegime` every consumer
+reads. The loop derives it once per tick and hands each executor a `TickRegime` — the two
+inputs and the effective regime; each executor feeds the inputs to its risk check, which calls
+the same function per candidate for the sizing line, and stamps the effective regime on what it
+opens, so a shock day is cut AND stamped High Vol, or neither. Both risk-check previews peek at
+today's persisted reading (never a fetch). Four config fields, all `NEVER_TUNED`, with the
+About page, the User Guide and `docs/AUTOTRADE_RISK_SETTINGS.md` ("Regime size cut — three
+triggers, one cut") describing them: `mlRegimeEnabled` (false), `mlRegimeSizeCutPct` (35),
+`mlRegimeSwitchThreshold` (0.6 — read by the reading itself on every classification, overlay on
+or off), `regimeShockRangeRatio` (0). A shock day journals `market_shock_detected` once.
+
+**Why 35, not the request's 50.** Cuts must be monotone in severity. The ATR trigger fires on
+SPY ATR above 3% — a few weeks a decade — and carries the operator's 40%; the HMM's High-Vol
+state is a broad condition, roughly one session in four over the training window, and a broad
+trigger must not cut deeper than the extreme one. The per-trade ATR stop already vol-normalizes
+share count, so this is a second layer on dollar risk for what a stop cannot see (gaps through
+stops, correlations going to one, a long-biased edge weakening in bear tape); after the stop's
+share, 30–40% is the residual. 50 stays available in the UI and in the grid, and the number
+that ships ON is the walk-forward grid's cell, by its written rule — never this default.
+
+**Why a nowcast.** A model read through FRED labels the morning after a shock; day one is
+always missed, and the Aug-2024 spike was too short for a 20-day feature to see at all. SPY's
+range so far today against the same ATR the ATR trigger uses is a nowcast of the same state,
+so it takes the same cut and stamps the same regime by construction. It cannot be backtested
+without foresight (a daily bar knows the full range only at the close), so it ships at 0 and
+is judged on its first three live shock days against the model's next-session label.
+
+### What this does NOT do
+
+- It does not tighten targets, scale the daily goal, or raise the conviction bar. Those are the
+  next changes behind the same switch, each with its own row here.
+- It does not run in a backtest: the three engines write the overlay inert (`mlRegime: null`,
+  overlay off, nowcast off) until the parity change carries the out-of-sample regime path in.
+- It does not fire on a stale or unknown reading, on the synthetic provider's quote, or on a
+  quote without a real high, low and previous close — null is "no trigger", never a guess.
+- It never compounds with the ATR cut, and it never changes an open position.
+
+### Enabling rules
+
+The observer section's pre-committed rules apply unchanged: the walk-forward grid picks the
+cell by its written rule; at least 20 sessions of `ml_regime_read` with no more than 2
+`ml_regime_changed` per week; `regime:predict` and `GET /api/market/regime-ml` agreeing on every
+one of them. Then set `mlRegimeSizeCutPct` to the grid's cell — not to 35, not to 50 — and
+switch `mlRegimeEnabled` on; revert to OFF after 5 stale sessions; retrain quarterly and re-run
+the grid. The nowcast has its own gate: `regimeShockRangeRatio` stays 0 until three
+`market_shock_detected` days have been compared with the model's next-session label.

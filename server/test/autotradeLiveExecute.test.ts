@@ -155,6 +155,11 @@ function baseRiskCtx() {
     marketAtrPct: null,
     regimeAtrThresholdPct: 3,
     regimeSizeCutPct: 0,
+    mlRegime: null,
+    mlRegimeEnabled: false,
+    mlRegimeSizeCutPct: 35,
+    todayRangePct: null,
+    regimeShockRangeRatio: 0,
   };
 }
 
@@ -315,6 +320,11 @@ describe('getProbationStatus', () => {
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      mlRegime: null,
+      mlRegimeEnabled: false,
+      mlRegimeSizeCutPct: 35,
+      todayRangePct: null,
+      regimeShockRangeRatio: 0,
     });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', cfg);
     const intentId = listIntents()[0].id;
@@ -446,6 +456,11 @@ describe('attemptLiveEntry', () => {
     marketAtrPct: null,
     regimeAtrThresholdPct: 3,
     regimeSizeCutPct: 0,
+    mlRegime: null,
+    mlRegimeEnabled: false,
+    mlRegimeSizeCutPct: 35,
+    todayRangePct: null,
+    regimeShockRangeRatio: 0,
   });
 
   it('refuses when TRADING_ENABLED is off — no intent, no broker call, regardless of every other gate passing', async () => {
@@ -1582,6 +1597,11 @@ describe('adoptOrphanedLivePositions', () => {
     marketAtrPct: null,
     regimeAtrThresholdPct: 3,
     regimeSizeCutPct: 0,
+    mlRegime: null,
+    mlRegimeEnabled: false,
+    mlRegimeSizeCutPct: 35,
+    todayRangePct: null,
+    regimeShockRangeRatio: 0,
   };
 
   /** A still-pending (not yet reconciled/materialized) autotrade entry order —
@@ -2127,6 +2147,11 @@ describe('reconcileLiveOrders', () => {
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      mlRegime: null,
+      mlRegimeEnabled: false,
+      mlRegimeSizeCutPct: 35,
+      todayRangePct: null,
+      regimeShockRangeRatio: 0,
     });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', cfg, 'risk-off', 2.5, 'sideways');
     const intentId = listIntents()[0].id;
@@ -2194,6 +2219,11 @@ describe('reconcileLiveOrders', () => {
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      mlRegime: null,
+      mlRegimeEnabled: false,
+      mlRegimeSizeCutPct: 35,
+      todayRangePct: null,
+      regimeShockRangeRatio: 0,
     });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
 
@@ -2253,6 +2283,11 @@ describe('reconcileLiveOrders', () => {
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      mlRegime: null,
+      mlRegimeEnabled: false,
+      mlRegimeSizeCutPct: 35,
+      todayRangePct: null,
+      regimeShockRangeRatio: 0,
     });
 
   it('keeps an AMBIGUOUS placement pending instead of rejecting it, so it cannot be re-placed', async () => {
@@ -2451,6 +2486,11 @@ describe('reconcileLiveOrders', () => {
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      mlRegime: null,
+      mlRegimeEnabled: false,
+      mlRegimeSizeCutPct: 35,
+      todayRangePct: null,
+      regimeShockRangeRatio: 0,
     });
     await attemptLiveEntry(signal(), res, 'MODERATE', liveConfig());
 
@@ -2513,6 +2553,11 @@ describe('reconcileLiveOrders', () => {
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      mlRegime: null,
+      mlRegimeEnabled: false,
+      mlRegimeSizeCutPct: 35,
+      todayRangePct: null,
+      regimeShockRangeRatio: 0,
     });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
 
@@ -2574,6 +2619,11 @@ describe('reconcileLiveOrders', () => {
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      mlRegime: null,
+      mlRegimeEnabled: false,
+      mlRegimeSizeCutPct: 35,
+      todayRangePct: null,
+      regimeShockRangeRatio: 0,
     });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
     const intentId = listIntents()[0].id;
@@ -2634,6 +2684,11 @@ describe('reconcileLiveOrders', () => {
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      mlRegime: null,
+      mlRegimeEnabled: false,
+      mlRegimeSizeCutPct: 35,
+      todayRangePct: null,
+      regimeShockRangeRatio: 0,
     });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
 
@@ -2713,6 +2768,11 @@ describe('reconcileLiveOrders + adoptOrphanedLivePositions interaction', () => {
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      mlRegime: null,
+      mlRegimeEnabled: false,
+      mlRegimeSizeCutPct: 35,
+      todayRangePct: null,
+      regimeShockRangeRatio: 0,
     });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
     const intentId = listIntents()[0].id;
@@ -2994,6 +3054,11 @@ describe('listPendingLiveOrders / terminal-state exclusion', () => {
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      mlRegime: null,
+      mlRegimeEnabled: false,
+      mlRegimeSizeCutPct: 35,
+      todayRangePct: null,
+      regimeShockRangeRatio: 0,
     });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
     expect(listPendingLiveOrders()).toHaveLength(1); // acknowledged — still working, not yet filled
@@ -3055,6 +3120,11 @@ describe('listPendingLiveOrders / terminal-state exclusion', () => {
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      mlRegime: null,
+      mlRegimeEnabled: false,
+      mlRegimeSizeCutPct: 35,
+      todayRangePct: null,
+      regimeShockRangeRatio: 0,
     });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
     expect(listIntents()).toHaveLength(1); // the rejected intent IS audited...
@@ -3103,6 +3173,11 @@ describe('checkLiveScaleIns', () => {
     marketAtrPct: null,
     regimeAtrThresholdPct: 3,
     regimeSizeCutPct: 0,
+    mlRegime: null,
+    mlRegimeEnabled: false,
+    mlRegimeSizeCutPct: 35,
+    todayRangePct: null,
+    regimeShockRangeRatio: 0,
   };
 
   // Open a real live position through the entry -> reconcile flow, then set the
@@ -3315,6 +3390,11 @@ describe('reconcileLiveOrders — partial fills', () => {
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      mlRegime: null,
+      mlRegimeEnabled: false,
+      mlRegimeSizeCutPct: 35,
+      todayRangePct: null,
+      regimeShockRangeRatio: 0,
     });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', cfg);
     const intentId = listIntents()[0].id;
@@ -3464,6 +3544,11 @@ describe('reconcileLiveOrders — booking and the materialization mark are atomi
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      mlRegime: null,
+      mlRegimeEnabled: false,
+      mlRegimeSizeCutPct: 35,
+      todayRangePct: null,
+      regimeShockRangeRatio: 0,
     });
     await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig(), null, null);
     const intentId = listIntents()[0].id;

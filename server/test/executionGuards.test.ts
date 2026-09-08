@@ -1,13 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('../src/providers', () => ({ getProvider: vi.fn() }));
+vi.mock('../src/providers', () => ({ getProvider: vi.fn(), getProviderStatus: vi.fn(() => ({ synthetic: false })) }));
 
-import { getProvider } from '../src/providers';
+import { getProvider, getProviderStatus } from '../src/providers';
 import {
   checkSessionWindow,
   checkMacroEventBlackout,
   checkVolatility,
   getMarketAtrPct,
+  getMarketRangePct,
   defaultVolatilityFilterConfig,
 } from '../src/services/autotrading/executionGuards';
 import { Candle } from '../src/providers/types';
@@ -156,5 +157,46 @@ describe('getMarketAtrPct', () => {
   it('returns null when there is not enough history for ATR', async () => {
     mockGetProvider.mockReturnValue({ getCandles: vi.fn().mockResolvedValue([candle(100, 101, 99)]) } as never);
     expect(await getMarketAtrPct('SPY')).toBeNull();
+  });
+});
+
+describe('getMarketRangePct — the shock nowcast input (2026-09-08)', () => {
+  const quote = (over: Record<string, unknown>) => ({
+    getQuote: vi.fn().mockResolvedValue({ symbol: 'SPY', last: 500, timestamp: 0, ...over }),
+  });
+  beforeEach(() => {
+    mockGetProvider.mockReset();
+    vi.mocked(getProviderStatus).mockReturnValue({ synthetic: false } as never);
+  });
+
+  it('is (high − low) ÷ previous close, as a percentage', async () => {
+    mockGetProvider.mockReturnValue(quote({ high: 506, low: 490, prevClose: 500 }) as never);
+    expect(await getMarketRangePct('SPY')).toBeCloseTo(3.2, 10);
+  });
+
+  it('is null without a real high, low or previous close — never a guessed range', async () => {
+    mockGetProvider.mockReturnValue(quote({ low: 490, prevClose: 500 }) as never);
+    expect(await getMarketRangePct('SPY')).toBeNull();
+    mockGetProvider.mockReturnValue(quote({ high: 506, prevClose: 500 }) as never);
+    expect(await getMarketRangePct('SPY')).toBeNull();
+    mockGetProvider.mockReturnValue(quote({ high: 506, low: 490 }) as never);
+    expect(await getMarketRangePct('SPY')).toBeNull();
+    mockGetProvider.mockReturnValue(quote({ high: 506, low: 490, prevClose: 0 }) as never);
+    expect(await getMarketRangePct('SPY')).toBeNull();
+    mockGetProvider.mockReturnValue(quote({ high: 490, low: 506, prevClose: 500 }) as never);
+    expect(await getMarketRangePct('SPY')).toBeNull();
+  });
+
+  it('refuses the synthetic provider without asking it', async () => {
+    vi.mocked(getProviderStatus).mockReturnValue({ synthetic: true } as never);
+    const p = quote({ high: 506, low: 490, prevClose: 500 });
+    mockGetProvider.mockReturnValue(p as never);
+    expect(await getMarketRangePct('SPY')).toBeNull();
+    expect(p.getQuote).not.toHaveBeenCalled();
+  });
+
+  it('is null when the quote fails', async () => {
+    mockGetProvider.mockReturnValue({ getQuote: vi.fn().mockRejectedValue(new Error('boom')) } as never);
+    expect(await getMarketRangePct('SPY')).toBeNull();
   });
 });

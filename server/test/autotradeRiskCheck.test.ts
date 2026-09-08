@@ -48,6 +48,11 @@ function baseCtx(overrides: Partial<RiskCheckContext> = {}): RiskCheckContext {
     marketAtrPct: null,
     regimeAtrThresholdPct: 3,
     regimeSizeCutPct: 0,
+    mlRegime: null,
+    mlRegimeEnabled: false,
+    mlRegimeSizeCutPct: 35,
+    todayRangePct: null,
+    regimeShockRangeRatio: 0,
     ...overrides,
   };
 }
@@ -268,6 +273,103 @@ describe('evaluateRiskCheck — pure evaluator', () => {
       );
       expect(result.regimeActive).toBe(true);
       expect(result.sizing.suggestedQuantity).toBe(200); // unchanged — same as full 1% sizing
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // The ML regime overlay (2026-09-08), asserted at the CONSUMER: it is the
+  // risk check's own quantity that has to move, not regimeTriggers' return
+  // value (effectiveRisk.test.ts covers that). Entry 100 / stop 95 / 1% of
+  // $100k → 200 shares at full size.
+  // -------------------------------------------------------------------------
+  describe('the ML regime overlay (2026-09-08)', () => {
+    const highVol = (over: Partial<RiskCheckContext> = {}) =>
+      baseCtx({ mlRegimeEnabled: true, mlRegime: 'high_vol_bearish', marketAtrPct: 0.9, ...over });
+
+    it('halves the size at a 50% cut and names the ML trigger', () => {
+      const result = evaluateRiskCheck(signal(), highVol({ mlRegimeSizeCutPct: 50 }));
+      expect(result.regimeActive).toBe(true);
+      expect(result.sizing.suggestedQuantity).toBe(100);
+      expect(result.sizing.riskOfPosition).toBe(500);
+      expect(findCheck(result, 'regime_sizing').detail).toBe(
+        'active — ML regime High Volatility/Bearish (50% cut; ATR trigger inactive at 0.9%), sizing at 0.5% instead of 1%',
+      );
+    });
+
+    it('sizes at 0.65% at the shipped default of 35', () => {
+      const result = evaluateRiskCheck(signal(), highVol());
+      expect(result.sizing.suggestedQuantity).toBe(130);
+      expect(findCheck(result, 'regime_sizing').detail).toMatch(/35% cut; ATR trigger inactive at 0\.9%/);
+    });
+
+    it('with the ATR trigger firing too, applies the DEEPER cut once — never both', () => {
+      const mlDeeper = evaluateRiskCheck(
+        signal(),
+        highVol({ marketAtrPct: 6, regimeSizeCutPct: 40, mlRegimeSizeCutPct: 50 }),
+      );
+      expect(mlDeeper.sizing.suggestedQuantity).toBe(100); // 50%: not 40% (120), not both (60)
+      expect(findCheck(mlDeeper, 'regime_sizing').detail).toMatch(/deeper of ATR 40% \/ ML 50%/);
+      const atrDeeper = evaluateRiskCheck(
+        signal(),
+        highVol({ marketAtrPct: 6, regimeSizeCutPct: 40, mlRegimeSizeCutPct: 35 }),
+      );
+      expect(atrDeeper.sizing.suggestedQuantity).toBe(120); // 40%: not 35% (130), not both (78)
+    });
+
+    it('does nothing with the overlay off, whatever the model reads', () => {
+      const result = evaluateRiskCheck(
+        signal(),
+        baseCtx({ mlRegimeEnabled: false, mlRegime: 'high_vol_bearish', mlRegimeSizeCutPct: 50 }),
+      );
+      expect(result.regimeActive).toBe(false);
+      expect(result.sizing.suggestedQuantity).toBe(200);
+      expect(findCheck(result, 'regime_sizing').detail).toMatch(/overlay off/);
+    });
+
+    it('does nothing on an unknown (stale) reading or a calm regime', () => {
+      expect(evaluateRiskCheck(signal(), highVol({ mlRegime: null })).sizing.suggestedQuantity).toBe(200);
+      expect(evaluateRiskCheck(signal(), highVol({ mlRegime: 'unknown' })).sizing.suggestedQuantity).toBe(200);
+      expect(evaluateRiskCheck(signal(), highVol({ mlRegime: 'sideways' })).sizing.suggestedQuantity).toBe(200);
+      expect(evaluateRiskCheck(signal(), highVol({ mlRegime: 'low_vol_bullish' })).sizing.suggestedQuantity).toBe(200);
+      expect(findCheck(evaluateRiskCheck(signal(), highVol({ mlRegime: null })), 'regime_sizing').detail).toMatch(
+        /^inactive — .*ML regime unknown \(stale or unavailable — no cut\)/,
+      );
+    });
+
+    it('a cut of 100 refuses the entry through the normal path, naming the reason', () => {
+      const result = evaluateRiskCheck(signal(), highVol({ mlRegimeSizeCutPct: 100 }));
+      expect(result.ok).toBe(false);
+      expect(result.regimeActive).toBe(true);
+      expect(result.sizing.suggestedQuantity).toBe(0);
+      expect(result.approvedRiskAmount).toBe(0);
+      const rule = findCheck(result, 'regime_sizing');
+      expect(rule.passed).toBe(false);
+      expect(rule.detail).toMatch(/^High Volatility\/Bearish — entries skipped \(cut 100%\)/);
+    });
+
+    it('a shock day sizes and reads as High Vol while the model says Sideways', () => {
+      const shock = (todayRangePct: number) =>
+        baseCtx({
+          mlRegimeEnabled: true,
+          mlRegime: 'sideways',
+          marketAtrPct: 1,
+          todayRangePct,
+          regimeShockRangeRatio: 1.5,
+        });
+      const result = evaluateRiskCheck(signal(), shock(3.2));
+      expect(result.regimeActive).toBe(true);
+      expect(result.sizing.suggestedQuantity).toBe(130);
+      expect(findCheck(result, 'regime_sizing').detail).toMatch(
+        /shock day: SPY range 3\.2% ≥ 1\.5 × ATR 1\.0% \(35% cut; .*model reads Sideways\)/,
+      );
+      // 1.4% of range on the same ATR is an ordinary day.
+      expect(evaluateRiskCheck(signal(), shock(1.4)).sizing.suggestedQuantity).toBe(200);
+    });
+
+    it('stacks with the step-down like any other factor — the ML cut is one factor, not a second regime', () => {
+      const result = evaluateRiskCheck(signal(), highVol({ consecutiveLosses: 2, mlRegimeSizeCutPct: 50 }));
+      // 1% × 0.5 (step-down) × 0.5 (regime) = 0.25% → $250 / $5 = 50 shares
+      expect(result.sizing.suggestedQuantity).toBe(50);
     });
   });
 

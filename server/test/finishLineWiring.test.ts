@@ -246,4 +246,22 @@ describe('neither live executor feeds the trim the raw config risk %', () => {
     expect(args).toMatch(/riskPerTradePct:\s*preFinishLineRiskPct\(/);
     expect(args).not.toMatch(/riskPerTradePct:\s*cfg\.riskPerTradePct/);
   });
+
+  // The ML regime overlay (2026-09-08) is a second and third trigger of the
+  // regime factor, so the basis the trim reasons about must see the tick's
+  // inputs for it — the same five the risk check gets, from the same tick.
+  it.each(EXECUTORS)('%s hands the trim the ML regime overlay inputs the risk check sizes by', (name) => {
+    const src = readFileSync(join(__dirname, '..', 'src', 'services', 'autotrading', name), 'utf8');
+    const call = src.slice(src.indexOf('computeFinishLineFactor({'));
+    const args = call.slice(0, call.indexOf('});') + 3);
+    for (const field of [
+      'mlRegime: regime.mlRegime',
+      'mlRegimeEnabled: cfg.mlRegimeEnabled',
+      'mlRegimeSizeCutPct: cfg.mlRegimeSizeCutPct',
+      'todayRangePct: regime.todayRangePct',
+      'regimeShockRangeRatio: cfg.regimeShockRangeRatio',
+    ]) {
+      expect(args, `${name}: ${field}`).toContain(field);
+    }
+  });
 });

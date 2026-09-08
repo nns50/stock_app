@@ -203,6 +203,11 @@ const okResult = (signal: SingleLegOptionsSignal | DebitSpreadOptionsSignal): Op
     marketAtrPct: null,
     regimeAtrThresholdPct: 3,
     regimeSizeCutPct: 0,
+    mlRegime: null,
+    mlRegimeEnabled: false,
+    mlRegimeSizeCutPct: 35,
+    todayRangePct: null,
+    regimeShockRangeRatio: 0,
   });
 
 const origPlaceEnabled = config.trading.placeEnabled;

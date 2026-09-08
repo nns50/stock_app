@@ -11,6 +11,7 @@ import { initDb, db } from '../src/db';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { getDailySeries, upsertDailySeries } from '../src/db/dailySeries';
 import { getMlRegimeReading, saveMlRegimeReading } from '../src/db/mlRegimeReadings';
+import { setAutotradeConfig } from '../src/db/autotradeConfig';
 import { REGIME_FIXTURE_FILE, RegimeModel, loadRegimeModel } from '../src/services/regimeModel';
 import { FRED_SP500, FRED_VIX } from '../src/services/fredSeries';
 import { buildFeatures } from '../src/services/hmmForward';
@@ -173,6 +174,30 @@ describe('getMarketRegime', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(4);
     expect(forced.regime).toBe(argmaxLabel);
     expect(events(ML_REGIME_READ_ACTION)).toHaveLength(1);
+  });
+
+  it('reads the sticky threshold from the auto-trade config, overridable per call (2026-09-08)', async () => {
+    // Yesterday read a different regime, so today's argmax is a candidate switch.
+    const other = argmaxLabel === 'sideways' ? 'low_vol_bullish' : 'sideways';
+    saveMlRegimeReading({ etDate: '2026-09-03', regime: other, asOf: '2026-09-02', reading: {}, modelVersion: 'test' });
+    setAutotradeConfig({ mlRegimeSwitchThreshold: 1 });
+    try {
+      // At a threshold of 1 no posterior clears the bar: the previous regime holds.
+      const held = await read({ fetchImpl: fredStub() });
+      expect(held.threshold).toBe(1);
+      expect(held.regime).toBe(other);
+      expect(held.candidate).toBe(argmaxLabel);
+      expect(held.heldBelowThreshold).toBe(true);
+
+      resetMlRegimeCache();
+      db.exec("DELETE FROM ml_regime_readings WHERE et_date = '2026-09-04'");
+      const switched = await read({ fetchImpl: fredStub(), threshold: 0.5 });
+      expect(switched.threshold).toBe(0.5);
+      expect(switched.regime).toBe(argmaxLabel);
+      expect(switched.switched).toBe(true);
+    } finally {
+      setAutotradeConfig({ mlRegimeSwitchThreshold: 0.6 });
+    }
   });
 
   it('survives a restart: the persisted row is reused once both series are complete', async () => {

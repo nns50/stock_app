@@ -150,6 +150,44 @@ export interface AutotradeConfig {
    *  behavior this config merely made tunable), this is a brand-new feature,
    *  so an untouched config changes nothing. */
   regimeSizeCutPct: number;
+  /** The ML regime overlay (2026-09-08; docs/MARKET_REGIME_MODEL.md and
+   *  docs/AUTOTRADE_RISK_SETTINGS.md "Regime size cut"): the master switch for
+   *  everything that ACTS on the HMM market-regime reading. Today that is the
+   *  size cut below and the shock nowcast (both read by effectiveRisk.ts's
+   *  regimeTriggers, which both risk checks and the loop call); the target
+   *  tighten, the goal scale and the conviction bar follow behind the same
+   *  switch. OFF by default and meant to stay off until the pre-committed
+   *  enabling rules in docs/AUTOTRADING_SPEC.md are met — a stale or unknown
+   *  reading is always "no overlay", never a guess. LIVE + PAPER; the backtest
+   *  engines write the overlay inert until the parity change wires it. */
+  mlRegimeEnabled: boolean;
+  /** % cut to riskPerTradePct while the EFFECTIVE regime is High Volatility/
+   *  Bearish — the model's reading, or a shock day promoted by the nowcast.
+   *  The SAME `regime` sizing factor the ATR trigger above drives, not a
+   *  seventh: when both fire the deeper cut applies once, never the product
+   *  (ATR 40 + ML 35 → 40, not 61). 100 = skip every new entry in that regime.
+   *  Default 35, below the operator's 40% ATR cut on purpose: the HMM's
+   *  High-Vol state is a broad condition (roughly one session in four over the
+   *  training window) while SPY ATR > 3% is a few weeks a decade, and cuts
+   *  must be monotone in severity. Inert until mlRegimeEnabled. */
+  mlRegimeSizeCutPct: number;
+  /** The reading's sticky switch (services/mlRegime.ts): the regime changes
+   *  only when the new state's filtered probability reaches this. 0–1; 0.6 is
+   *  the model artifact's default. Read on every classification whether or not
+   *  the overlay is on — it shapes the reading itself, which is displayed and
+   *  stamped regardless. */
+  mlRegimeSwitchThreshold: number;
+  /** The intraday shock nowcast: when SPY's range so far today (high − low as
+   *  a % of the previous close) reaches this multiple of its 14-day ATR%, the
+   *  tick is treated as High Volatility/Bearish — same cut, same everything —
+   *  covering the day a daily model cannot see (FRED labels the morning after).
+   *  0 = off (default); 1.5 is the suggested starting point, a starting point
+   *  and not a fitted number — a day whose range is 1.5 normal FULL days by
+   *  mid-morning is a shock day, an ordinary day never trips it. Its evidence
+   *  is live (`market_shock_detected` days against the model's next-session
+   *  label), because a daily-bar backtest knows the full range only at the
+   *  close. Needs mlRegimeEnabled. LIVE + PAPER. */
+  regimeShockRangeRatio: number;
   /** Equity-curve de-risking (2026-07-24, services/autotrading/equityCurveDerisk.ts):
    *  a SOFTER, graduated companion to the binary `maxDailyDrawdownPct` halt.
    *  When on, and the strategy's OWN realized equity curve (cumulative closed
@@ -1064,6 +1102,10 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     maxTradesPerDay: 6,
     regimeAtrThresholdPct: 3,
     regimeSizeCutPct: 0,
+    mlRegimeEnabled: false,
+    mlRegimeSizeCutPct: 35,
+    mlRegimeSwitchThreshold: 0.6,
+    regimeShockRangeRatio: 0,
     equityCurveDeriskEnabled: false,
     equityCurveLookbackDays: 10,
     equityCurveDeriskCutPct: 50,
@@ -1256,6 +1298,13 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     const n = Number(v);
     return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : fallback;
   };
+  // A range-to-ATR multiple (the shock nowcast): clamped to [0, 10] the way
+  // pct() clamps to [0, 100] — a "day whose range is ten normal days" is not
+  // a threshold anyone means to set, and 0 is the documented off.
+  const rangeRatio = (v: unknown, fallback: number) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.min(10, Math.max(0, n)) : fallback;
+  };
   // A screener weight set — coerce every known IndicatorKey to a non-negative
   // number, filling any missing/invalid key from the fallback (so a partial
   // preset from an older client, or one missing a newly-added weight key, still
@@ -1297,6 +1346,10 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     maxTradesPerDay: posInt(input.maxTradesPerDay, d.maxTradesPerDay),
     regimeAtrThresholdPct: pct(input.regimeAtrThresholdPct, d.regimeAtrThresholdPct),
     regimeSizeCutPct: pct(input.regimeSizeCutPct, d.regimeSizeCutPct),
+    mlRegimeEnabled: typeof input.mlRegimeEnabled === 'boolean' ? input.mlRegimeEnabled : d.mlRegimeEnabled,
+    mlRegimeSizeCutPct: pct(input.mlRegimeSizeCutPct, d.mlRegimeSizeCutPct),
+    mlRegimeSwitchThreshold: unitInterval(input.mlRegimeSwitchThreshold, d.mlRegimeSwitchThreshold),
+    regimeShockRangeRatio: rangeRatio(input.regimeShockRangeRatio, d.regimeShockRangeRatio),
     equityCurveDeriskEnabled:
       typeof input.equityCurveDeriskEnabled === 'boolean' ? input.equityCurveDeriskEnabled : d.equityCurveDeriskEnabled,
     equityCurveLookbackDays: posIntMin1(input.equityCurveLookbackDays, d.equityCurveLookbackDays),

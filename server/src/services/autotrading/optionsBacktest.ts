@@ -1121,6 +1121,14 @@ export async function simulateOptionsBacktest(
         marketAtrPct: null,
         regimeAtrThresholdPct: 0,
         regimeSizeCutPct: 0,
+        // The ML regime overlay's triggers (2026-09-08) are inert here too —
+        // null reading, overlay off, nowcast off — until the backtest parity
+        // change carries a date→regime map into the engines.
+        mlRegime: null,
+        mlRegimeEnabled: false,
+        mlRegimeSizeCutPct: 0,
+        todayRangePct: null,
+        regimeShockRangeRatio: 0,
       };
       const result = evaluateOptionsRiskCheck(
         shortRef

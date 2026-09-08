@@ -192,6 +192,13 @@ and `server/test/regimeModelParity.test.ts` holds the port to it (section 8).
   peek at today's reading — never a fetch).
 - **Freshness.** `server/test/regimeModelFreshness.test.ts` fails once today passes the
   artifact's `retrainBy`; the fix is section 10, never deleting the test.
+- **Consumers (2026-09-08).** With the auto-trade config's `mlRegimeEnabled` on (off by
+  default) the sizing regime cut reads `actionableRegime(reading)` — the regime when known
+  and fresh, null otherwise — through `effectiveRisk.ts`'s `regimeTriggers`, beside the SPY
+  ATR trigger and the intraday shock nowcast, the deeper configured cut applying once
+  (`docs/AUTOTRADE_RISK_SETTINGS.md`, "Regime size cut"). The sticky switch's threshold
+  comes from `mlRegimeSwitchThreshold` on every classification, overlay on or off.
+  Everything else is display; the enabling rules are in `docs/AUTOTRADING_SPEC.md`.
 
 ## 6. Validation — walk-forward, out of sample
 
@@ -253,7 +260,9 @@ model's distribution) and 5% of 2022 sessions.
 - **It cannot see intraday.** The features are daily closes; a spike shorter than 20 sessions
   is smoothed away (Aug-2024).
 - **It is not a trading signal.** It does not know the book, the strategy, or the symbol. Any
-  use in sizing or targets is a separate, gated change with its own evidence.
+  use in sizing or targets is a separate, gated change with its own evidence — the size cut
+  that reads it (2026-09-08) is one, shipped OFF behind `mlRegimeEnabled` with its own
+  decision-log row; targets follow the same rule.
 - **It has three states because the request asked for three.** Volatility is a continuum;
   the boundaries are where the fit put them, and a retrain moves them.
 - **It has only seen 2016–2026.** Ten years of S&P 500 closes, one crash, one grind. A regime

@@ -81,6 +81,11 @@ describe('attemptPaperEntry', () => {
     marketAtrPct: null,
     regimeAtrThresholdPct: 3,
     regimeSizeCutPct: 0,
+    mlRegime: null,
+    mlRegimeEnabled: false,
+    mlRegimeSizeCutPct: 35,
+    todayRangePct: null,
+    regimeShockRangeRatio: 0,
   });
 
   it('fills at a freshly-fetched quote, not the signal price', async () => {

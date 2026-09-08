@@ -6,16 +6,18 @@ import { dailyReturns, pearsonCorrelation } from '../../indicators/indicators';
 import { getAutotradeConfig } from '../../db/autotradeConfig';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { listUniverse } from '../../db/universe';
-import { getMarketAtrPct } from './executionGuards';
+import { getMarketAtrPct, getMarketRangePct } from './executionGuards';
 import { computeEquityCurveDerisk } from './equityCurveDerisk';
 import {
   cutFactor,
   factorState,
   effectiveRiskPct as computeEffectiveRiskPct,
-  isRegimeActive,
   isStepDownActive,
   preFinishLineFactors,
+  regimeTriggers,
 } from './effectiveRisk';
+import { ML_REGIME_LABELS, MlRegime } from '../regimeModel';
+import { actionableRegime, peekMarketRegime } from '../mlRegime';
 import { computeGradeExpectancyMultipliers } from './expectancySizing';
 import { computeMethodMultipliers, methodOfEquitySignal } from './methodSizing';
 import { fundableMaxQuantity, isTooSmallToFund, MIN_FUNDED_SIZE_FRACTION } from './buyingPowerSizing';
@@ -387,6 +389,22 @@ export interface RiskCheckContext {
   marketAtrPct: number | null;
   regimeAtrThresholdPct: number;
   regimeSizeCutPct: number;
+  /** The ML regime overlay (2026-09-08) — the other two triggers of the SAME
+   *  regime sizing factor (effectiveRisk.ts's regimeTriggers: the deeper cut
+   *  applies once, never the product). `mlRegime` is the HMM reading when it
+   *  is known and fresh (services/mlRegime.ts's actionableRegime) and null
+   *  otherwise — null is "no ML trigger", exactly as a null marketAtrPct is
+   *  "no ATR trigger". `todayRangePct` is SPY's range so far today for the
+   *  shock nowcast (executionGuards.getMarketRangePct); null = no shock
+   *  trigger. All five REQUIRED, so every context builder states its value:
+   *  the executors pass the tick's, the previews peek at today's persisted
+   *  reading, and the backtest engines write the overlay inert with a comment
+   *  until the parity change wires it. */
+  mlRegime: MlRegime | null;
+  mlRegimeEnabled: boolean;
+  mlRegimeSizeCutPct: number;
+  todayRangePct: number | null;
+  regimeShockRangeRatio: number;
   /** Equity-curve de-risking (2026-07-24, services/autotrading/equityCurveDerisk.ts).
    *  Optional — only the LIVE and PAPER equity paths (which have a per-book
    *  realized equity curve) set these; every other caller (backtest engines,
@@ -446,8 +464,9 @@ export interface RiskCheckResult {
   checks: RiskCheckRule[];
   sizing: RiskSizingResult;
   stepDownActive: boolean;
-  /** Regime-aware sizing cut active this check (2026-07-16) — see
-   *  RiskCheckContext.marketAtrPct's own doc comment. */
+  /** A regime-sizing trigger fired this check (2026-07-16; since 2026-09-08
+   *  any of the three — see effectiveRisk.ts's regimeTriggers). Whether the
+   *  size actually moved is the `regime_sizing` rule's own business. */
   regimeActive: boolean;
   /** Equity-curve de-risking cut active this check (2026-07-24). */
   equityCurveDeriskActive: boolean;
@@ -493,7 +512,20 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
   if (!equityOk) return blocked(ZERO_SIZING, false, false, false);
 
   const stepDownActive = isStepDownActive(ctx.consecutiveLosses, ctx.stepDownAfterLosses);
-  const regimeActive = isRegimeActive(ctx.marketAtrPct, ctx.regimeAtrThresholdPct);
+  // The regime factor's three triggers, from the SAME inputs the loop derived
+  // this tick's effective regime from — so the sizing line here and the label
+  // stamped on the position cannot disagree (effectiveRisk.ts's header).
+  const regime = regimeTriggers({
+    marketAtrPct: ctx.marketAtrPct,
+    regimeAtrThresholdPct: ctx.regimeAtrThresholdPct,
+    regimeSizeCutPct: ctx.regimeSizeCutPct,
+    mlRegime: ctx.mlRegime,
+    mlRegimeEnabled: ctx.mlRegimeEnabled,
+    mlRegimeSizeCutPct: ctx.mlRegimeSizeCutPct,
+    todayRangePct: ctx.todayRangePct,
+    regimeShockRangeRatio: ctx.regimeShockRangeRatio,
+  });
+  const regimeActive = regime.triggered;
   const equityCurveDeriskActive = ctx.equityCurveDeriskActive === true;
   const equityCurveCutPct = ctx.equityCurveDeriskCutPct ?? 0;
   const expectancyMultiplier = ctx.expectancyMultiplier ?? 1;
@@ -513,6 +545,11 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
       marketAtrPct: ctx.marketAtrPct,
       regimeAtrThresholdPct: ctx.regimeAtrThresholdPct,
       regimeSizeCutPct: ctx.regimeSizeCutPct,
+      mlRegime: ctx.mlRegime,
+      mlRegimeEnabled: ctx.mlRegimeEnabled,
+      mlRegimeSizeCutPct: ctx.mlRegimeSizeCutPct,
+      todayRangePct: ctx.todayRangePct,
+      regimeShockRangeRatio: ctx.regimeShockRangeRatio,
       equityCurveDerisk: cutFactor(equityCurveDeriskActive, equityCurveCutPct),
       expectancy: expectancyMultiplier,
       method: methodMultiplier,
@@ -525,7 +562,7 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
   // See factorState — regimeAtrThresholdPct 3 with regimeSizeCutPct 0 was live
   // when this was written.
   const stepDownState = factorState(stepDownActive, cutFactor(stepDownActive, ctx.stepDownSizeCutPct));
-  const regimeState = factorState(regimeActive, cutFactor(regimeActive, ctx.regimeSizeCutPct));
+  const regimeState = factorState(regime.triggered, regime.factor);
   const equityCurveState = factorState(equityCurveDeriskActive, cutFactor(equityCurveDeriskActive, equityCurveCutPct));
   const sizingAt = `sizing at ${effectiveRiskPct}% instead of ${ctx.riskPerTradePct}%`;
   check(
@@ -537,15 +574,21 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
         ? `triggered at ${ctx.consecutiveLosses} consecutive losses, but the configured cut is 0% — size unchanged`
         : `inactive — ${ctx.consecutiveLosses} consecutive losses (triggers at ${ctx.stepDownAfterLosses})`,
   );
+  // A cut of 100% is "no entries in this regime": a FAILING rule through the
+  // normal refusal path, so the journal names the reason, rather than a
+  // zero-share order failing the quantity rule further down.
   check(
     'regime_sizing',
-    true,
-    regimeState === 'active'
-      ? `active — market ATR ${ctx.marketAtrPct!.toFixed(1)}% exceeds ${ctx.regimeAtrThresholdPct}%, ${sizingAt} (${ctx.regimeSizeCutPct}% cut)`
-      : regimeState === 'triggered-but-neutral'
-        ? `triggered — market ATR ${ctx.marketAtrPct!.toFixed(1)}% exceeds ${ctx.regimeAtrThresholdPct}%, but the configured cut is 0% — size unchanged`
-        : `inactive — market ATR ${ctx.marketAtrPct == null ? 'unavailable' : ctx.marketAtrPct.toFixed(1) + '%'} (triggers above ${ctx.regimeAtrThresholdPct}%)`,
+    !regime.skip,
+    regime.skip
+      ? `${ML_REGIME_LABELS.high_vol_bearish} — entries skipped (cut 100%): ${regime.detail}`
+      : regimeState === 'active'
+        ? `active — ${regime.detail}, ${sizingAt}`
+        : regimeState === 'triggered-but-neutral'
+          ? `triggered — ${regime.detail}, but the configured cut is 0% — size unchanged`
+          : `inactive — ${regime.detail}`,
   );
+  if (regime.skip) return blocked(ZERO_SIZING, stepDownActive, regimeActive, equityCurveDeriskActive);
   check(
     'equity_curve_derisk',
     true,
@@ -777,6 +820,12 @@ export async function runAutotradeRiskCheck(signals: TradeSignal[]): Promise<Ris
   // 'SPY' matches loop.ts's own hardcoded proxy symbol — not actually
   // user-configurable anywhere despite VolatilityFilterConfig's own field.
   const marketAtrPct = await getMarketAtrPct('SPY');
+  // The ML regime overlay's two inputs, the way the loop sees them: today's
+  // persisted reading (a peek — this preview never fetches FRED) and SPY's
+  // range so far, fetched only when the nowcast is switched on.
+  const mlRegime = actionableRegime(peekMarketRegime());
+  const todayRangePct =
+    config.mlRegimeEnabled && config.regimeShockRangeRatio > 0 ? await getMarketRangePct('SPY') : null;
 
   const results: RiskCheckResult[] = [];
   let runningRisk = snapshot.openPositions.reduce((s, p) => s + p.riskAmount, 0);
@@ -834,6 +883,11 @@ export async function runAutotradeRiskCheck(signals: TradeSignal[]): Promise<Ris
       marketAtrPct,
       regimeAtrThresholdPct: config.regimeAtrThresholdPct,
       regimeSizeCutPct: config.regimeSizeCutPct,
+      mlRegime,
+      mlRegimeEnabled: config.mlRegimeEnabled,
+      mlRegimeSizeCutPct: config.mlRegimeSizeCutPct,
+      todayRangePct,
+      regimeShockRangeRatio: config.regimeShockRangeRatio,
       equityCurveDeriskActive: snapshot.equityCurveDeriskActive,
       equityCurveDeriskCutPct: config.equityCurveDeriskCutPct,
       maxAdvParticipationPct: config.maxAdvParticipationPct,

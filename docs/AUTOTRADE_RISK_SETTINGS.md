@@ -53,6 +53,10 @@ header if it's collapsed). Top to bottom, you'll find:
   **correlation lookback (days)** and **correlation threshold (|r|)** — they define
   *how* two tickers count as "correlated" for that cap, rather than adding a new cap
   of their own.
+- The **regime sizing** group: **regime ATR threshold (%)**, **regime size cut (%)**,
+  and — since 2026-09-08 — the **ML regime overlay** switch with its **ML regime size
+  cut (%)**, **ML regime switch threshold** and **shock day range ratio (× ATR)**.
+  Covered together in [§4](#regime-size-cut--three-triggers-one-cut).
 - A **Daily goal** card (2026-09-07, right below **Tune from target daily gain**)
   holding the three day-level stopping rules the tune otherwise stamps: **daily gain
   goal %**, **give-back arm %**, **give-back floor %**. Covered at the end of
@@ -77,10 +81,17 @@ and the two correlation-methodology fields) has its own input box and its own
 | **Max trades per day** | How many new positions can open in one day? | 6 | count |
 | **Correlation lookback (days)** | How many days of price history define "correlated"? | 30 | trading days |
 | **Correlation threshold (\|r\|)** | How similar do two tickers' moves have to be to count as "correlated"? | 0.7 | Pearson r (0-1) |
+| **Regime ATR threshold (%)** | Above what SPY 14-day ATR% do new trades size down? | 3% | % (0 = off) |
+| **Regime size cut (%)** | How much smaller while that ATR trigger is active? | 0% (off) | % cut |
+| **ML regime overlay** | May the ML regime reading and the shock nowcast cut size too? | off | on/off |
+| **ML regime size cut (%)** | How much smaller while the effective regime is High Volatility/Bearish? | 35% | % cut (100 = skip) |
+| **ML regime switch threshold** | How sure must the model be before the reading changes regime? | 0.6 | probability (0–1) |
+| **Shock day range ratio (× ATR)** | How many normal days of range, so far today, make a shock day? | 0 (off) | multiple of SPY ATR |
 
-Every default above matches the app's original `MODERATE` preset, so if you've never
-touched these fields, nothing about how the loop behaves has changed — they're just
-editable now instead of baked into a dropdown.
+Every default in the first ten rows matches the app's original `MODERATE` preset, so if
+you've never touched these fields, nothing about how the loop behaves has changed —
+they're just editable now instead of baked into a dropdown. The regime rows are later
+additions whose defaults are inert: no ATR cut at 0%, the overlay off, the nowcast off.
 
 ## 3. The big picture: how one trade gets approved
 
@@ -181,6 +192,67 @@ sizing goes back to normal (1%, 500 shares) on the trade after that.
 
 The idea: after a losing streak, trade smaller until you've proven you're back on
 track — a much gentler response than the hard stop the daily-drawdown halt applies.
+
+### Regime size cut — three triggers, one cut
+
+**One mechanism, three ways to fire, one number applied.** The regime cut sizes new
+trades down when the *market* (not your streak) says to. It fires on any of:
+
+1. **Regime ATR threshold (%)** — SPY's 14-day ATR%, the same reading max market ATR
+   blocks on, above this threshold (3% by default; 0 turns this trigger off). In
+   practice that is a few weeks a decade: across every entry this book has recorded,
+   market ATR ran 0.8–1.2%.
+2. **ML regime overlay** *on* and the Today page's **ML regime (HMM)** reading is
+   **High Volatility/Bearish** — a broad condition, roughly one session in four over the
+   model's training window (2022 nearly whole, the Aug-2024 and Apr-2025 spikes, every
+   VIX-25 correction). A **stale** or **unknown** reading never fires this.
+3. **ML regime overlay** *on* and a **shock day**: SPY's range so far today (high − low,
+   as a % of yesterday's close) is at least **shock day range ratio** × its 14-day ATR%.
+   0 = off; 1.5 is the suggested start — a day that has already covered one and a half
+   normal *full* days by mid-morning is a shock day, an ordinary day never trips it.
+   This is the one trigger that can see day one of a shock: the model reads yesterday's
+   close, so it labels the morning *after*.
+
+Whichever fired, **the deeper configured cut applies, once.** The ATR trigger carries
+**regime size cut (%)**; the other two carry **ML regime size cut (%)**. They never
+multiply.
+
+*Example:* $100,000 account, 1% risk per trade, a $100 stock with a $95 stop → 200
+shares normally. Overlay on, reading High Volatility/Bearish, ML regime size cut 35% →
+risk 0.65% → **130 shares**. Set the cut to 50% → 100 shares. Now suppose the same
+morning SPY's ATR also crosses the 3% threshold with regime size cut 40%: the trade
+sizes at **0.6%, 120 shares** — the deeper of 40% and 35%, not 61% (which would be 78
+shares). Set either cut to **100%** and the trade is refused outright: the
+`regime_sizing` line reads "entries skipped (cut 100%)" instead of building a
+zero-share order, and Recent activity's risk-check entry names it.
+
+*Why 35% and not 50%.* Cuts should be monotone in severity: the ATR trigger is the
+extreme case and carries 40%, so the broad ML condition must not cut deeper. And the
+per-trade ATR stop already halves the share count when ranges double (shares = risk ÷
+(ATR multiple × ATR)); this cut is a second layer on *dollar* risk for what a stop
+cannot see — gaps through stops, correlations going to one, a long-biased edge that
+weakens in bear tape. A 30–40% cut on dollar risk is the residual after the stop's
+share. 50 stays available, and the walk-forward grid (the model card's "validating the
+overlay" step) chooses the number that ships on — not this default, not the original
+request's 50.
+
+*The nowcast has no backtest.* A daily bar knows the full range only at the close, so a
+backtest cannot validate a mid-morning trigger without foresight. Its evidence is live:
+every shock day journals `market_shock_detected` once (range, ATR, ratio, what the model
+read); after the first three, compare them with the model's next-session label before
+trusting the ratio.
+
+**ML regime switch threshold** (0–1, default 0.6) is not a cut — it is the reading's
+own sticky rule: the regime changes only when the new state's filtered probability
+reaches this. Higher = calmer, later switches. It applies whether or not the overlay is
+on, because the reading is displayed and stamped on every entry regardless.
+
+Everything here is **live + paper**, like the ATR trigger; the backtest engines carry
+the overlay inert until the parity change wires it. The whole group ships **off**: do
+not enable it before the pre-committed rules in
+[AUTOTRADING_SPEC.md](./AUTOTRADING_SPEC.md) ("the ML regime size cut, built and left
+OFF") are met — the grid picks the cut, twenty journaled sessions with few switches,
+and the Python and TypeScript readings agreeing on every one of them.
 
 ### Max aggregate open risk (%)
 

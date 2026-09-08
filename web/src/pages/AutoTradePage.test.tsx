@@ -120,6 +120,10 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     maxTradesPerDay: 6,
     regimeAtrThresholdPct: 3,
     regimeSizeCutPct: 0,
+    mlRegimeEnabled: false,
+    mlRegimeSizeCutPct: 35,
+    mlRegimeSwitchThreshold: 0.6,
+    regimeShockRangeRatio: 0,
     equityCurveDeriskEnabled: false,
     equityCurveLookbackDays: 10,
     equityCurveDeriskCutPct: 50,
@@ -482,6 +486,65 @@ describe('AutoTradePage', () => {
     fireEvent.click(saveButton);
 
     await waitFor(() => expect(setConfig).toHaveBeenCalledWith({ regimeSizeCutPct: 25, confirmAggressive: undefined }));
+  });
+
+  it('toggling the ML regime overlay saves immediately', async () => {
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /ML regime overlay/ }));
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ mlRegimeEnabled: true, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new ML regime size cut', async () => {
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const field = screen.getByText('ML regime size cut (%)').closest('label')!;
+    fireEvent.change(within(field).getByRole('textbox'), { target: { value: '50' } });
+    const saveButton = screen.getByRole('button', { name: 'Save ML regime size cut' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ mlRegimeSizeCutPct: 50, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new ML regime switch threshold', async () => {
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const field = screen.getByText('ML regime switch threshold').closest('label')!;
+    fireEvent.change(within(field).getByRole('textbox'), { target: { value: '0.7' } });
+    const saveButton = screen.getByRole('button', { name: 'Save ML regime switch threshold' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ mlRegimeSwitchThreshold: 0.7, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new shock day range ratio', async () => {
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.change(screen.getByPlaceholderText('0 (off)'), { target: { value: '1.5' } });
+    const saveButton = screen.getByRole('button', { name: 'Save shock day range ratio' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ regimeShockRangeRatio: 1.5, confirmAggressive: undefined }),
+    );
   });
 
   it('toggling equity-curve de-risking saves immediately', async () => {

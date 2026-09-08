@@ -1,5 +1,5 @@
 import { atr } from '../../indicators/indicators';
-import { getProvider } from '../../providers';
+import { getProvider, getProviderStatus } from '../../providers';
 import { isUsEquityMarketOpen } from '../trading/marketHours';
 
 // ---------------------------------------------------------------------------
@@ -130,6 +130,31 @@ export async function getMarketAtrPct(proxySymbol: string): Promise<number | nul
     const atrVal = atr(candles, 14);
     const lastClose = candles[candles.length - 1]?.close;
     return atrVal !== null && lastClose ? (atrVal / lastClose) * 100 : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The market proxy's range SO FAR TODAY — (high − low) ÷ previous close, as a
+ * percentage — the intraday shock nowcast's input (effectiveRisk.ts's
+ * regimeTriggers). Compared against the same 14-day ATR% getMarketAtrPct
+ * returns, so a 3% range on a 1% ATR reads as "three normal days by now".
+ *
+ * Null whenever it cannot be known honestly: the quote lacks a high, a low or
+ * a previous close (all optional on Quote — a provider that does not carry
+ * them gets no trigger, never a guessed range), the provider is the synthetic
+ * Mock (its "range" is random), or the fetch fails. Null is "no trigger", the
+ * same reading getMarketAtrPct gives a failed fetch.
+ */
+export async function getMarketRangePct(proxySymbol: string): Promise<number | null> {
+  try {
+    if (getProviderStatus().synthetic) return null;
+    const q = await getProvider().getQuote(proxySymbol);
+    const { high, low, prevClose } = q;
+    if (high == null || low == null || prevClose == null) return null;
+    if (!Number.isFinite(high) || !Number.isFinite(low) || !(prevClose > 0) || high < low) return null;
+    return ((high - low) / prevClose) * 100;
   } catch {
     return null;
   }

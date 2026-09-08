@@ -62,7 +62,7 @@ vi.mock('../src/services/mlRegime', async (importOriginal) => {
 vi.mock('../src/services/autotrading/moversPromotion', () => ({ processMoversForPromotion: vi.fn() }));
 vi.mock('../src/services/autotrading/executionGuards', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/services/autotrading/executionGuards')>();
-  return { ...actual, checkSessionWindow: vi.fn(), getMarketAtrPct: vi.fn() };
+  return { ...actual, checkSessionWindow: vi.fn(), getMarketAtrPct: vi.fn(), getMarketRangePct: vi.fn() };
 });
 vi.mock('../src/db/autotradeEvents', () => ({
   logAutotradeEvent: vi.fn(),
@@ -105,7 +105,7 @@ import {
 } from '../src/services/autotrading/liveOptionsExecute';
 import { runWebullPositionsSync } from '../src/providers/webull/positions';
 import { processMoversForPromotion } from '../src/services/autotrading/moversPromotion';
-import { checkSessionWindow, getMarketAtrPct } from '../src/services/autotrading/executionGuards';
+import { checkSessionWindow, getMarketAtrPct, getMarketRangePct } from '../src/services/autotrading/executionGuards';
 import { logAutotradeEvent } from '../src/db/autotradeEvents';
 import { runAutotradeLoopTick, startAutotradeLoop, stopAutotradeLoop } from '../src/services/autotrading/loop';
 import { getLastTick } from '../src/db/autotradeLastTick';
@@ -142,6 +142,7 @@ const mockPositionsSync = vi.mocked(runWebullPositionsSync);
 const mockMoversPromotion = vi.mocked(processMoversForPromotion);
 const mockSessionWindow = vi.mocked(checkSessionWindow);
 const mockMarketAtr = vi.mocked(getMarketAtrPct);
+const mockMarketRange = vi.mocked(getMarketRangePct);
 const mockLogEvent = vi.mocked(logAutotradeEvent);
 const mockGetMarketRegime = vi.mocked(getMarketRegime);
 
@@ -220,6 +221,10 @@ const emptySeed = {
   positions: [],
 };
 
+/** What every executor is handed on a tick with nothing known about the regime
+ *  (effectiveRisk.ts's NO_TICK_REGIME): the test suite's source is `off`. */
+const noRegime = { mlRegime: null, todayRangePct: null, effectiveRegime: 'unknown' };
+
 const origPlaceEnabled = config.trading.placeEnabled;
 
 beforeAll(() => initDb());
@@ -266,6 +271,7 @@ beforeEach(() => {
   mockMoversPromotion.mockReset().mockReturnValue({ recorded: [], promoted: [], atCap: [] });
   mockSessionWindow.mockReset().mockReturnValue({ ok: true });
   mockMarketAtr.mockReset().mockResolvedValue(2);
+  mockMarketRange.mockReset().mockResolvedValue(null);
   mockLogEvent.mockReset();
   // runAutotradeLoopTick's own gates (unlike everything else in this file)
   // hit the REAL db/autotradeConfig and db/trading, not a mock — default to
@@ -799,7 +805,7 @@ describe('runAutotradeLoopTick', () => {
       targetRMultiple: 2,
       maxStopDistancePct: 0,
     });
-    expect(mockExecute).toHaveBeenCalledWith([{ signal: signal('AAPL') }], emptySeed, 2, 'neutral', null);
+    expect(mockExecute).toHaveBeenCalledWith([{ signal: signal('AAPL') }], emptySeed, 2, 'neutral', noRegime);
     expect(summary.ranEntries).toBe(true);
     expect(summary.candidatesScreened).toBe(1);
     expect(summary.candidatesPassedVolatility).toBe(1);
@@ -827,7 +833,7 @@ describe('runAutotradeLoopTick', () => {
     // Not re-fetched a second time for sizing — the SAME reading already
     // computed for the volatility filter is threaded through to execution.
     expect(mockMarketAtr).toHaveBeenCalledTimes(1);
-    expect(mockExecute).toHaveBeenCalledWith([{ signal: signal('AAPL') }], emptySeed, 2, 'neutral', null);
+    expect(mockExecute).toHaveBeenCalledWith([{ signal: signal('AAPL') }], emptySeed, 2, 'neutral', noRegime);
   });
 
   it('threads the configured screening/decision thresholds through, not the hardcoded legacy defaults', async () => {
@@ -1028,13 +1034,11 @@ describe('runAutotradeLoopTick', () => {
 
     mockGetMarketRegime.mockResolvedValueOnce(reading);
     await runAutotradeLoopTick();
-    expect(mockExecute).toHaveBeenLastCalledWith(
-      [{ signal: signal('AAPL') }],
-      emptySeed,
-      2,
-      'neutral',
-      'high_vol_bearish',
-    );
+    expect(mockExecute).toHaveBeenLastCalledWith([{ signal: signal('AAPL') }], emptySeed, 2, 'neutral', {
+      mlRegime: 'high_vol_bearish',
+      todayRangePct: null,
+      effectiveRegime: 'high_vol_bearish',
+    });
 
     // A stale reading stamps nothing — never a guess.
     mockGetMarketRegime.mockResolvedValueOnce({
@@ -1045,7 +1049,50 @@ describe('runAutotradeLoopTick', () => {
       reason: 'stale',
     });
     await runAutotradeLoopTick();
-    expect(mockExecute).toHaveBeenLastCalledWith([{ signal: signal('AAPL') }], emptySeed, 2, 'neutral', null);
+    expect(mockExecute).toHaveBeenLastCalledWith([{ signal: signal('AAPL') }], emptySeed, 2, 'neutral', noRegime);
+  });
+
+  it('a shock day promotes the tick to High Vol for every executor and journals market_shock_detected once (2026-09-08)', async () => {
+    setAutotradeConfig({ mlRegimeEnabled: true, regimeShockRangeRatio: 1.5, mlRegimeSizeCutPct: 35 });
+    mockScreen.mockResolvedValue({
+      generatedAt: Date.now(),
+      candidates: [candidate('AAPL', 2)],
+      excluded: [],
+      skipped: [],
+      errors: [],
+      rejected: [],
+      relVolMedian: null,
+      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
+    });
+    mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
+    mockExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
+    mockMarketAtr.mockResolvedValue(1);
+    mockMarketRange.mockResolvedValue(3.2); // 3.2× a normal full day, on a 1.5 ratio
+
+    await runAutotradeLoopTick();
+    // The model read nothing (source off) — the nowcast alone makes the tick High Vol,
+    // and the executors get the SAME inputs the loop derived it from.
+    const promoted = { mlRegime: null, todayRangePct: 3.2, effectiveRegime: 'high_vol_bearish' };
+    expect(mockExecute).toHaveBeenLastCalledWith([{ signal: signal('AAPL') }], emptySeed, 1, 'neutral', promoted);
+    expect(mockOptionsExecute).toHaveBeenLastCalledWith([], 1, 'neutral', promoted);
+    const shocks = () => mockLogEvent.mock.calls.filter((c) => c[0].action === 'market_shock_detected');
+    expect(shocks()).toHaveLength(1);
+    expect(shocks()[0][0]).toMatchObject({
+      stage: 'execution',
+      detail: { rangePct: 3.2, marketAtrPct: 1, ratio: 1.5, modelRegime: 'unknown', cutPct: 35 },
+    });
+
+    // A second tick the same day is promoted again but journaled once.
+    await runAutotradeLoopTick();
+    expect(mockExecute).toHaveBeenLastCalledWith([{ signal: signal('AAPL') }], emptySeed, 1, 'neutral', promoted);
+    expect(shocks()).toHaveLength(1);
+
+    // With the nowcast off the range is not even fetched, and nothing is promoted.
+    setAutotradeConfig({ regimeShockRangeRatio: 0 });
+    mockMarketRange.mockClear();
+    await runAutotradeLoopTick();
+    expect(mockMarketRange).not.toHaveBeenCalled();
+    expect(mockExecute).toHaveBeenLastCalledWith([{ signal: signal('AAPL') }], emptySeed, 1, 'neutral', noRegime);
   });
 
   it('a regime read that throws is journaled as a stage failure and the tick carries null', async () => {
@@ -1093,9 +1140,9 @@ describe('runAutotradeLoopTick', () => {
 
     // Equity's batch is seeded from options' pre-existing snapshot...
     expect(mockOptionsSeed).toHaveBeenCalledWith(optSnapshot);
-    expect(mockExecute).toHaveBeenCalledWith([{ signal: signal('AAPL') }], seed, 2, 'neutral', null);
+    expect(mockExecute).toHaveBeenCalledWith([{ signal: signal('AAPL') }], seed, 2, 'neutral', noRegime);
     // ...and options execution runs too, on its own decided signals.
-    expect(mockOptionsExecute).toHaveBeenCalledWith([{ signal: optionSignal('AAPL') }], 2, 'neutral', null);
+    expect(mockOptionsExecute).toHaveBeenCalledWith([{ signal: optionSignal('AAPL') }], 2, 'neutral', noRegime);
     expect(summary.optionsEntriesOpened).toBe(1);
   });
 
@@ -1485,7 +1532,7 @@ describe('runAutotradeLoopTick', () => {
           tradesToday: 0,
         },
         'neutral',
-        null,
+        noRegime,
       );
       expect(summary.ranEntries).toBe(true);
       expect(summary.entriesOpened).toBe(0);
@@ -1634,7 +1681,7 @@ describe('runAutotradeLoopTick', () => {
 
       const summary = await runAutotradeLoopTick();
 
-      expect(mockLiveOptionsExecute).toHaveBeenCalledWith([{ signal: optionSignal('AAPL') }], 2, 'neutral', null);
+      expect(mockLiveOptionsExecute).toHaveBeenCalledWith([{ signal: optionSignal('AAPL') }], 2, 'neutral', noRegime);
       expect(summary.liveOptionsEntriesOpened).toBe(1);
     });
 

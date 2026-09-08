@@ -512,6 +512,10 @@ export const client = {
     maxTradesPerDay?: number;
     regimeAtrThresholdPct?: number;
     regimeSizeCutPct?: number;
+    mlRegimeEnabled?: boolean;
+    mlRegimeSizeCutPct?: number;
+    mlRegimeSwitchThreshold?: number;
+    regimeShockRangeRatio?: number;
     tradeDirection?: AutotradeTradeDirectionMode;
     minRelVol?: number;
     requireWeeklyTrendAlignment?: boolean;

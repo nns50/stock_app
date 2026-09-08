@@ -151,8 +151,10 @@ Your at-a-glance morning screen.
   switch — a regime changes only when the new state's probability clears 0.6), **unknown**
   with its reason, and **model drift** (the tape has left the model's distribution; retrain).
   "Bearish"/"Bullish" describe each state's fitted drift, **not** a forecast — out of sample
-  the sessions read as High Volatility had the _highest_ forward returns. Display only:
-  nothing acts on it yet. The model card is [MARKET_REGIME_MODEL.md](MARKET_REGIME_MODEL.md).
+  the sessions read as High Volatility had the _highest_ forward returns. It acts on sizing
+  only when the **ML regime overlay** in the auto-trade config is on (off by default — see
+  the guardrails under Auto-trading); otherwise it is display only. The model card is
+  [MARKET_REGIME_MODEL.md](MARKET_REGIME_MODEL.md).
 - **Needs attention** panel — positions that hit their stop/target or option exit
   rules, plus any triggered symbol alerts, each linking to where you act. If the check
   itself **fails**, the panel says so and the tile reads `?` instead of `0` — an
@@ -1258,7 +1260,23 @@ equally-weighted cards in the order they happened to be built:
   leaving it untouched changes nothing regardless of the threshold's own value; setting
   the **threshold** itself to 0 likewise disables the cut entirely. **Live
   and paper only — no backtest equivalent**, same as max market ATR itself; watch
-  **Recent activity**'s risk-check entries to see it fire). Finally, **equity-curve
+  **Recent activity**'s risk-check entries to see it fire). The same regime cut has two
+  more triggers behind the **ML regime overlay** (2026-09-08, off by default): with the
+  overlay on, the **ML regime (HMM)** reading on the Today page's Market regime tile
+  sizes new positions down by the **ML regime size cut (%)** (default 35%) while it reads
+  High Volatility/Bearish, and the **shock day range ratio (× ATR)** (0 = off; 1.5
+  suggested) treats a session whose SPY range so far is that many times its 14-day ATR
+  as High Volatility on the spot — the day a model read from yesterday's close cannot
+  see. One cut, never three: when the ATR trigger and the overlay fire together the
+  deeper configured cut applies once (40% and 35% is 40%, not 61%); a cut of 100% skips
+  new entries in that regime outright (the `regime_sizing` line in Recent activity's
+  risk-check entries says so); a stale or unknown reading never cuts; a shock day
+  journals `market_shock_detected` once. The **ML regime switch threshold** (0–1,
+  default 0.6) is the reading's own sticky rule — the regime changes only when the new
+  state's probability reaches it — and applies whether or not the overlay is on. Leave
+  the overlay off until the enabling rules in the model card are met; the plain-English
+  walkthrough with worked numbers is [AUTOTRADE_RISK_SETTINGS.md](AUTOTRADE_RISK_SETTINGS.md)
+  §"Regime size cut — three triggers, one cut". Finally, **equity-curve
   de-risking** (2026-07-24, off by default) is the same idea keyed to your _own_
   results instead of the market: when the strategy's cumulative closed-P&L curve —
   tracked separately for paper and live — is below its **equity-curve lookback

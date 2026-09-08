@@ -8,6 +8,7 @@ import {
   RiskCheckContext,
   RiskCheckResult,
 } from './riskCheck';
+import { NO_TICK_REGIME, TickRegime, regimeStamp } from './effectiveRisk';
 import { computeStreaksAndDrawdown } from '../pnl';
 import { listAutotradeEvents, logAutotradeEvent } from '../../db/autotradeEvents';
 import {
@@ -342,9 +343,11 @@ export async function runPaperExecution(
    *  each opened position as at-entry context, never used for sizing here.
    *  Defaults to null for callers without one. */
   marketRegime: string | null = null,
-  /** The ML regime label the loop read this tick (2026-09-08), stamped on each
-   *  opened position beside marketRegime; null when unknown or stale. */
-  mlRegime: string | null = null,
+  /** What the loop knows about the regime this tick (2026-09-08,
+   *  effectiveRisk.ts's TickRegime): the ML reading and SPY's range for the
+   *  risk check's triggers, and the ONE effective regime stamped on each
+   *  opened position. Defaults to "nothing known" for a direct caller. */
+  regime: TickRegime = NO_TICK_REGIME,
 ): Promise<ExecutionOutcome[]> {
   const config = getAutotradeConfig();
   const equity = config.accountEquityUsd ?? 0;
@@ -430,6 +433,11 @@ export async function runPaperExecution(
       marketAtrPct,
       regimeAtrThresholdPct: config.regimeAtrThresholdPct,
       regimeSizeCutPct: config.regimeSizeCutPct,
+      mlRegime: regime.mlRegime,
+      mlRegimeEnabled: config.mlRegimeEnabled,
+      mlRegimeSizeCutPct: config.mlRegimeSizeCutPct,
+      todayRangePct: regime.todayRangePct,
+      regimeShockRangeRatio: config.regimeShockRangeRatio,
       equityCurveDeriskActive: snapshot.equityCurveDeriskActive,
       equityCurveDeriskCutPct: config.equityCurveDeriskCutPct,
       maxAdvParticipationPct: config.maxAdvParticipationPct,
@@ -466,7 +474,7 @@ export async function runPaperExecution(
       grade,
       marketRegime,
       marketAtrPct,
-      mlRegime,
+      regimeStamp(regime),
     );
     outcomes.push(outcome);
     if (outcome.ok && outcome.position) {

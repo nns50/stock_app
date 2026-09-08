@@ -182,6 +182,11 @@ const configBody = z.object({
   // --- Regime-aware sizing (live + paper only; 0 disables) -------------------
   regimeAtrThresholdPct: z.number().min(0).max(100).optional(),
   regimeSizeCutPct: z.number().min(0).max(100).optional(),
+  // --- The ML regime overlay (2026-09-08; live + paper; off by default) -------
+  mlRegimeEnabled: z.boolean().optional(),
+  mlRegimeSizeCutPct: z.number().min(0).max(100).optional(),
+  mlRegimeSwitchThreshold: z.number().min(0).max(1).optional(),
+  regimeShockRangeRatio: z.number().min(0).max(10).optional(),
   equityCurveDeriskEnabled: z.boolean().optional(),
   equityCurveLookbackDays: z.number().int().min(1).optional(),
   equityCurveDeriskCutPct: z.number().min(0).max(100).optional(),
@@ -471,6 +476,10 @@ autotradeRouter.put(
     if (body.maxTradesPerDay !== undefined) patch.maxTradesPerDay = body.maxTradesPerDay;
     if (body.regimeAtrThresholdPct !== undefined) patch.regimeAtrThresholdPct = body.regimeAtrThresholdPct;
     if (body.regimeSizeCutPct !== undefined) patch.regimeSizeCutPct = body.regimeSizeCutPct;
+    if (body.mlRegimeEnabled !== undefined) patch.mlRegimeEnabled = body.mlRegimeEnabled;
+    if (body.mlRegimeSizeCutPct !== undefined) patch.mlRegimeSizeCutPct = body.mlRegimeSizeCutPct;
+    if (body.mlRegimeSwitchThreshold !== undefined) patch.mlRegimeSwitchThreshold = body.mlRegimeSwitchThreshold;
+    if (body.regimeShockRangeRatio !== undefined) patch.regimeShockRangeRatio = body.regimeShockRangeRatio;
     if (body.equityCurveDeriskEnabled !== undefined) patch.equityCurveDeriskEnabled = body.equityCurveDeriskEnabled;
     if (body.equityCurveLookbackDays !== undefined) patch.equityCurveLookbackDays = body.equityCurveLookbackDays;
     if (body.equityCurveDeriskCutPct !== undefined) patch.equityCurveDeriskCutPct = body.equityCurveDeriskCutPct;

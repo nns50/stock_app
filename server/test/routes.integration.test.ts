@@ -5,7 +5,8 @@ import { app } from '../src/index';
 import { db } from '../src/db';
 import { addExclusion } from '../src/db/autotradeExclusions';
 import { config } from '../src/config';
-import { resetMlRegimeCache } from '../src/services/mlRegime';
+import { MlRegimeReading, resetMlRegimeCache } from '../src/services/mlRegime';
+import { saveMlRegimeReading } from '../src/db/mlRegimeReadings';
 import { totp } from '../src/services/totp';
 import { resetLoginThrottle } from '../src/services/auth';
 import { setSetting } from '../src/db/settings';
@@ -3388,5 +3389,133 @@ describe('ML market-regime reading (integration)', () => {
     expect(r).toMatchObject({ regime: 'high_vol_bearish', label: 'High Volatility/Bearish', source: 'override' });
     const dash = (await getJson('/api/autotrade/dashboard')) as { mlRegime: { regime: string; source: string } | null };
     expect(dash.mlRegime).toMatchObject({ regime: 'high_vol_bearish', source: 'override' });
+  });
+});
+
+describe('the ML regime overlay (integration, 2026-09-08)', () => {
+  const put = (path: string, body: unknown) =>
+    fetch(`${base}${path}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  const restore = {
+    mlRegimeEnabled: false,
+    mlRegimeSizeCutPct: 35,
+    mlRegimeSwitchThreshold: 0.6,
+    regimeShockRangeRatio: 0,
+    regimeAtrThresholdPct: 3,
+  };
+  afterEach(async () => {
+    resetMlRegimeCache();
+    db.exec('DELETE FROM ml_regime_readings');
+    await put('/api/autotrade/config', restore);
+  });
+
+  it('round-trips the four overlay fields and refuses out-of-range values', async () => {
+    const patch = {
+      mlRegimeEnabled: true,
+      mlRegimeSizeCutPct: 50,
+      mlRegimeSwitchThreshold: 0.7,
+      regimeShockRangeRatio: 1.5,
+    };
+    expect((await put('/api/autotrade/config', patch)).status).toBe(200);
+    expect((await getJson('/api/autotrade/config')) as Record<string, unknown>).toMatchObject(patch);
+    // A probability above 1, a ratio above 10 and a cut above 100 are 400s, not silent clamps.
+    expect((await put('/api/autotrade/config', { mlRegimeSwitchThreshold: 1.5 })).status).toBe(400);
+    expect((await put('/api/autotrade/config', { regimeShockRangeRatio: 11 })).status).toBe(400);
+    expect((await put('/api/autotrade/config', { mlRegimeSizeCutPct: 101 })).status).toBe(400);
+    expect((await getJson('/api/autotrade/config')) as Record<string, unknown>).toMatchObject(patch);
+  });
+
+  it('/risk-check sizes by the persisted High-Vol reading with the overlay on, names the trigger, and refuses at cut 100', async () => {
+    // Entry 100 / stop 95 / 1% of $100k → 200 shares at full size. The ATR
+    // trigger is switched off (threshold 0) so the synthetic provider's SPY
+    // candles cannot fire it; the shock nowcast stays off.
+    await put('/api/autotrade/config', {
+      accountEquityUsd: 100_000,
+      riskPerTradePct: 1,
+      regimeAtrThresholdPct: 0,
+      maxAdvParticipationPct: 0,
+      mlRegimeEnabled: true,
+      mlRegimeSizeCutPct: 50,
+    });
+    const today = etToday();
+    const reading: MlRegimeReading = {
+      regime: 'high_vol_bearish',
+      label: 'High Volatility/Bearish',
+      candidate: 'high_vol_bearish',
+      probabilities: { high_vol_bearish: 0.9, low_vol_bullish: 0.05, sideways: 0.05 },
+      predictedNext: null,
+      asOf: today,
+      etDate: today,
+      features: null,
+      source: 'fred',
+      stale: false,
+      drift: false,
+      driftScore: null,
+      driftP5: null,
+      modelVersion: 'test',
+      switched: false,
+      heldBelowThreshold: false,
+      threshold: 0.6,
+      previous: null,
+      rows: 250,
+      logLikelihood: null,
+      computedAt: Date.now(),
+    };
+    saveMlRegimeReading({ etDate: today, regime: 'high_vol_bearish', asOf: today, reading, modelVersion: 'test' });
+    resetMlRegimeCache(); // the preview peeks at the persisted row, never fetches
+    const signal = {
+      symbol: 'TEST',
+      side: 'buy',
+      entry: 100,
+      stop: 95,
+      target: 110,
+      rMultiple: 2,
+      rationale: 'overlay fixture',
+      score: 70,
+    };
+    type Result = {
+      ok: boolean;
+      sizing: { suggestedQuantity: number };
+      checks: { rule: string; passed: boolean; detail: string }[];
+    };
+    const check = async (): Promise<Result> => {
+      const res = await post('/api/autotrade/risk-check', { signals: [signal] });
+      expect(res.status).toBe(200);
+      return ((await res.json()) as { results: Result[] }).results[0];
+    };
+    const regimeRule = (r: Result) => r.checks.find((c) => c.rule === 'regime_sizing')!;
+
+    const cut = await check();
+    expect(cut.sizing.suggestedQuantity).toBe(100);
+    expect(regimeRule(cut).passed).toBe(true);
+    expect(regimeRule(cut).detail).toMatch(/^active — ML regime High Volatility\/Bearish \(50% cut/);
+
+    await put('/api/autotrade/config', { mlRegimeEnabled: false });
+    const off = await check();
+    expect(off.sizing.suggestedQuantity).toBe(200);
+    expect(regimeRule(off).detail).toMatch(/overlay off/);
+
+    await put('/api/autotrade/config', { mlRegimeEnabled: true, mlRegimeSizeCutPct: 100 });
+    const skipped = await check();
+    expect(skipped.ok).toBe(false);
+    expect(skipped.sizing.suggestedQuantity).toBe(0);
+    expect(regimeRule(skipped).passed).toBe(false);
+    expect(regimeRule(skipped).detail).toMatch(/entries skipped \(cut 100%\)/);
+
+    // A stale reading is no overlay, whatever it says.
+    saveMlRegimeReading({
+      etDate: today,
+      regime: 'unknown',
+      asOf: today,
+      reading: { ...reading, regime: 'unknown', stale: true, reason: 'stale' },
+      modelVersion: 'test',
+    });
+    resetMlRegimeCache();
+    const stale = await check();
+    expect(stale.sizing.suggestedQuantity).toBe(200);
+    expect(regimeRule(stale).detail).toMatch(/ML regime unknown/);
   });
 });

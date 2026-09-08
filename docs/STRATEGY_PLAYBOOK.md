@@ -673,6 +673,22 @@ environment, then encode that. It's opt-in and the presets default to your stand
 weights, so it changes nothing until you deliberately differentiate them — and like any
 scoring change, prove it forward (or in a backtest) before trusting it live.
 
+**Trade smaller in a high-volatility regime — by a written rule, not by feel.** The **ML
+regime overlay** (auto-trade config, off by default) lets the sizing regime cut read the
+Today page's ML regime (HMM) reading: while it reads High Volatility/Bearish, new positions
+size down by the ML regime size cut (35% by default, deliberately _below_ the 40% the
+extreme SPY-ATR trigger carries — a broad condition must never cut deeper than a rare one),
+and a shock day (SPY's range so far today already 1.5× a normal full day, if you set the
+ratio) is treated the same way on day one, which a model read from yesterday's close cannot
+see. It is a second layer on _dollar_ risk for what the per-trade ATR stop cannot price —
+gaps through stops, correlations going to one, a long-biased edge that weakens in bear tape
+— so the cut is moderate, applied once (the deeper of the triggers, never both), and a cut
+of 100% simply skips that regime. Turn it on only when the model card's pre-committed rules
+are met (a walk-forward grid picks the number, twenty journaled sessions with few switches,
+the Python and TypeScript readings agreeing), and read `regime_sizing` in Recent activity to
+see exactly what each entry was cut by and why. The plain-English walkthrough is
+[AUTOTRADE_RISK_SETTINGS.md](./AUTOTRADE_RISK_SETTINGS.md) §"Regime size cut".
+
 ---
 
 ## Is a backtested edge real, or noise?
@@ -916,8 +932,8 @@ Anything else that diverges is a bug, not a counterfactual.
 **A sizing rule that reasons about size must read the size that will be used.** The
 finish-line trim asks "would a full-size winner overshoot what is left to the goal?"
 — and its own answer is then one of six multipliers applied to the entry, beside the
-losing-streak step-down, the high-ATR regime cut and the two realized-edge
-multipliers. Given the *raw* risk-per-trade % it reasoned about a payoff the trade
+losing-streak step-down, the market-regime cut (SPY ATR, the ML regime reading, or a
+shock day — one cut, the deeper) and the two realized-edge multipliers. Given the *raw* risk-per-trade % it reasoned about a payoff the trade
 was never going to produce: it fired when it should not have, cut deeper when it did,
 and then multiplied with the very cut it had ignored. At a 1.25% risk, 2R target and
 a 50% step-down, an $80 gap against a real $64.51 payoff should leave the trim off

@@ -620,6 +620,40 @@ describe('autotrade config persistence', () => {
     });
   });
 
+  describe('the ML regime overlay (2026-09-08)', () => {
+    it('ships off, with the 35% cut, the 0.6 switch and the nowcast off', () => {
+      const d = defaultAutotradeConfig();
+      expect(d.mlRegimeEnabled).toBe(false);
+      expect(d.mlRegimeSizeCutPct).toBe(35);
+      expect(d.mlRegimeSwitchThreshold).toBe(0.6);
+      expect(d.regimeShockRangeRatio).toBe(0);
+    });
+
+    it('persists a patch and round-trips', () => {
+      const patch = {
+        mlRegimeEnabled: true,
+        mlRegimeSizeCutPct: 50,
+        mlRegimeSwitchThreshold: 0.7,
+        regimeShockRangeRatio: 1.5,
+      };
+      expect(setAutotradeConfig(patch)).toMatchObject(patch);
+      expect(getAutotradeConfig()).toMatchObject(patch);
+      expect(setAutotradeConfig({ riskProfile: 'AGGRESSIVE' })).toMatchObject(patch);
+    });
+
+    it('clamps: the cut to [0, 100], the switch to [0, 1], the ratio to [0, 10]; a non-number falls back', () => {
+      expect(setAutotradeConfig({ mlRegimeSizeCutPct: 150 }).mlRegimeSizeCutPct).toBe(100);
+      expect(setAutotradeConfig({ mlRegimeSizeCutPct: -5 }).mlRegimeSizeCutPct).toBe(0);
+      expect(setAutotradeConfig({ mlRegimeSwitchThreshold: 1.5 }).mlRegimeSwitchThreshold).toBe(1);
+      expect(setAutotradeConfig({ mlRegimeSwitchThreshold: -1 }).mlRegimeSwitchThreshold).toBe(0);
+      expect(setAutotradeConfig({ regimeShockRangeRatio: 25 }).regimeShockRangeRatio).toBe(10);
+      expect(setAutotradeConfig({ regimeShockRangeRatio: -1 }).regimeShockRangeRatio).toBe(0);
+      expect(setAutotradeConfig({ regimeShockRangeRatio: 1.25 }).regimeShockRangeRatio).toBe(1.25); // fractions survive
+      expect(setAutotradeConfig({ mlRegimeSizeCutPct: 'x' as never }).mlRegimeSizeCutPct).toBe(35);
+      expect(setAutotradeConfig({ mlRegimeEnabled: 'yes' as never }).mlRegimeEnabled).toBe(false);
+    });
+  });
+
   describe('earnings blackout', () => {
     it('defaults to 0 (disabled)', () => {
       expect(defaultAutotradeConfig().earningsBlackoutDays).toBe(0);

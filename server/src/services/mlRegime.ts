@@ -1,5 +1,6 @@
 import { config } from '../config';
 import { getProvider, getProviderStatus } from '../providers';
+import { getAutotradeConfig } from '../db/autotradeConfig';
 import { listAutotradeEvents, logAutotradeEvent } from '../db/autotradeEvents';
 import { getDailySeries, latestDailySeriesDate, upsertDailySeries } from '../db/dailySeries';
 import { getMlRegimeReading, getPreviousKnownMlRegime, saveMlRegimeReading } from '../db/mlRegimeReadings';
@@ -106,6 +107,18 @@ export interface MlRegimeTickSummary {
   drift: boolean;
   /** The acted-on regime's posterior (null when nothing was computed). */
   probability: number | null;
+}
+
+/**
+ * The regime a consumer may ACT on: the reading's regime when it is known and
+ * fresh, else null — never a guess. The one derivation the loop, both risk-check
+ * previews and every executor share (effectiveRisk.ts's regimeTriggers takes
+ * its output), so "stale reads as no overlay" cannot be true in one place and
+ * false in another. Drift does not zero it: the label stands and the drift flag
+ * is a retrain signal (see the header).
+ */
+export function actionableRegime(r: MlRegimeReading | null | undefined): MlRegime | null {
+  return r && !r.stale && r.regime !== 'unknown' ? r.regime : null;
 }
 
 export function summarizeMlRegime(r: MlRegimeReading): MlRegimeTickSummary {
@@ -232,6 +245,9 @@ export interface GetMarketRegimeOptions {
   devOverride?: string;
   model?: RegimeModel | null;
   fetchImpl?: typeof fetch;
+  /** Tests: the sticky switch's threshold; defaults to the auto-trade config's
+   *  mlRegimeSwitchThreshold (0.6, the artifact's own default). */
+  threshold?: number;
 }
 
 let cache: { etDate: string; reading: MlRegimeReading } | null = null;
@@ -441,7 +457,11 @@ export async function getMarketRegime(opts: GetMarketRegimeOptions = {}): Promis
 
   const rows = buildFeatures(series.sp500, series.vix);
   const previous = getPreviousKnownMlRegime(today);
-  const classification = classifyFromFeatures(model, rows, previous, model.switchThresholdDefault);
+  // The switch threshold is a config field (mlRegimeSwitchThreshold), read on
+  // every classification whether or not the overlay is on: it shapes the
+  // reading itself, which is displayed and stamped regardless.
+  const threshold = opts.threshold ?? getAutotradeConfig().mlRegimeSwitchThreshold;
+  const classification = classifyFromFeatures(model, rows, previous, threshold);
   let reading: MlRegimeReading;
   if (!classification) {
     reading = { ...unknownReading(today, series.reason ?? 'no_data', series.source, now, model), previous };
@@ -465,7 +485,7 @@ export async function getMarketRegime(opts: GetMarketRegimeOptions = {}): Promis
       modelVersion: model.version,
       switched: !stale && classification.switched,
       heldBelowThreshold: classification.heldBelowThreshold,
-      threshold: model.switchThresholdDefault,
+      threshold,
       previous,
       rows: classification.rows,
       logLikelihood: classification.logLikelihood,

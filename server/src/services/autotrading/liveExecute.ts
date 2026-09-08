@@ -61,7 +61,14 @@ import { activeSymbolCooldowns, journalEntrySkipOncePerDay } from './symbolCoold
 import { isUnparseableSymbolError, markUnplaceableSymbol, unplaceableReason } from './unplaceableSymbols';
 import { computeFinishLineFactor } from './finishLine';
 import { liveEntryScoreGate } from './entryScoreGate';
-import { cutFactor, preFinishLineFactors, preFinishLineRiskPct } from './effectiveRisk';
+import {
+  cutFactor,
+  NO_TICK_REGIME,
+  preFinishLineFactors,
+  preFinishLineRiskPct,
+  regimeStamp,
+  TickRegime,
+} from './effectiveRisk';
 import { evaluateStagnation } from './stagnationExit';
 import { evaluateEndOfDayFlatten, evaluateEntryCutoff } from './endOfDayFlatten';
 import { evaluateStopAdjust } from './stopAdjust';
@@ -974,8 +981,11 @@ export async function runLiveExecution(
    *  the entry order row and carried to the position at materialization as
    *  at-entry context; never used for sizing here. */
   marketRegime: string | null = null,
-  /** The ML regime label the loop read this tick (2026-09-08); null when unknown or stale. */
-  mlRegime: string | null = null,
+  /** What the loop knows about the regime this tick (2026-09-08,
+   *  effectiveRisk.ts's TickRegime) — the risk check's trigger inputs and the
+   *  ONE effective regime recorded on the entry order and carried to the
+   *  position at materialization. */
+  regime: TickRegime = NO_TICK_REGIME,
 ): Promise<LiveExecutionOutcome[]> {
   const cfg = getAutotradeConfig();
   const equity = cfg.accountEquityUsd ?? 0;
@@ -1363,6 +1373,11 @@ export async function runLiveExecution(
           marketAtrPct,
           regimeAtrThresholdPct: cfg.regimeAtrThresholdPct,
           regimeSizeCutPct: cfg.regimeSizeCutPct,
+          mlRegime: regime.mlRegime,
+          mlRegimeEnabled: cfg.mlRegimeEnabled,
+          mlRegimeSizeCutPct: cfg.mlRegimeSizeCutPct,
+          todayRangePct: regime.todayRangePct,
+          regimeShockRangeRatio: cfg.regimeShockRangeRatio,
           equityCurveDerisk: cutFactor(snapshot.equityCurveDeriskActive, cfg.equityCurveDeriskCutPct),
           expectancy: expectancyMultiplier,
           method: methodMultiplier,
@@ -1393,6 +1408,11 @@ export async function runLiveExecution(
       marketAtrPct,
       regimeAtrThresholdPct: cfg.regimeAtrThresholdPct,
       regimeSizeCutPct: cfg.regimeSizeCutPct,
+      mlRegime: regime.mlRegime,
+      mlRegimeEnabled: cfg.mlRegimeEnabled,
+      mlRegimeSizeCutPct: cfg.mlRegimeSizeCutPct,
+      todayRangePct: regime.todayRangePct,
+      regimeShockRangeRatio: cfg.regimeShockRangeRatio,
       equityCurveDeriskActive: snapshot.equityCurveDeriskActive,
       equityCurveDeriskCutPct: cfg.equityCurveDeriskCutPct,
       maxAdvParticipationPct: cfg.maxAdvParticipationPct,
@@ -1472,7 +1492,7 @@ export async function runLiveExecution(
         freshCfg,
         marketRegime,
         marketAtrPct,
-        mlRegime,
+        regimeStamp(regime),
       );
     } catch (err) {
       const reason = `Unexpected error placing order: ${(err as Error).message}`;

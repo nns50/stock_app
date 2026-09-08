@@ -2,6 +2,7 @@ import { AutotradeConfig, getAutotradeConfig, RiskProfileName } from '../../db/a
 import { convictionGrade } from './decide';
 import { OptionsTradeSignal } from './optionsDecide';
 import { evaluateOptionsRiskCheck, OptionsRiskCheckResult, optionsPositionNotionalUsd } from './optionsRiskCheck';
+import { NO_TICK_REGIME, TickRegime, regimeStamp } from './effectiveRisk';
 import { journalMethodMultipliers, methodOfOptionsSignal } from './methodSizing';
 import { correlatedNotional, sectorNotional, buildSectorOf, RiskCheckContext } from './riskCheck';
 import { getPaperPortfolioSnapshot, PaperPortfolioSeed } from './execute';
@@ -475,8 +476,10 @@ export async function runOptionsPaperExecution(
   /** Market regime label the loop read this cycle (2026-07-26) — stamped on
    *  each opened position as at-entry context, never used for sizing here. */
   marketRegime: string | null = null,
-  /** The ML regime label the loop read this tick (2026-09-08); null when unknown or stale. */
-  mlRegime: string | null = null,
+  /** What the loop knows about the regime this tick (2026-09-08,
+   *  effectiveRisk.ts's TickRegime) — the risk check's trigger inputs and the
+   *  ONE effective regime stamped on each opened position. */
+  regime: TickRegime = NO_TICK_REGIME,
 ): Promise<OptionsExecutionOutcome[]> {
   const config = getAutotradeConfig();
   const equity = config.accountEquityUsd ?? 0;
@@ -614,6 +617,11 @@ export async function runOptionsPaperExecution(
       marketAtrPct,
       regimeAtrThresholdPct: config.regimeAtrThresholdPct,
       regimeSizeCutPct: config.regimeSizeCutPct,
+      mlRegime: regime.mlRegime,
+      mlRegimeEnabled: config.mlRegimeEnabled,
+      mlRegimeSizeCutPct: config.mlRegimeSizeCutPct,
+      todayRangePct: regime.todayRangePct,
+      regimeShockRangeRatio: config.regimeShockRangeRatio,
       methodMultiplier: methodMultipliers[methodOfOptionsSignal(signal.side)] ?? 1,
     };
     const result = evaluateOptionsRiskCheck(signal, ctx);
@@ -642,7 +650,7 @@ export async function runOptionsPaperExecution(
       grade,
       marketRegime,
       marketAtrPct,
-      mlRegime,
+      regimeStamp(regime),
     );
     outcomes.push(outcome);
     if (outcome.ok && outcome.position) {

@@ -113,7 +113,10 @@ export default function AboutPage() {
           risk-per-trade <span className="tabular-nums">×</span> all six — they compound rather than the tightest one
           winning, so two reasons to size down both apply. In order: the{' '}
           <strong className="text-slate-200">consecutive-loss step-down</strong>, the{' '}
-          <strong className="text-slate-200">high-market-ATR regime cut</strong>,{' '}
+          <strong className="text-slate-200">market-regime cut</strong> (one factor with three triggers — SPY’s 14-day
+          ATR% above its threshold, the ML regime reading High Volatility/Bearish with the overlay on, or an intraday
+          shock day whose SPY range so far is a set multiple of that ATR; the deeper configured cut applies once, never
+          the product, and a cut of 100% skips the entry),{' '}
           <strong className="text-slate-200">equity-curve de-risking</strong>, the{' '}
           <strong className="text-slate-200">grade expectancy</strong> multiplier above, the{' '}
           <strong className="text-slate-200">method lean</strong> (the same idea per trade method rather than per
@@ -264,8 +267,13 @@ export default function AboutPage() {
           <span className="tabular-nums">0.6</span>. Data older than the third most recent session reads{' '}
           <strong className="text-slate-200">unknown (stale)</strong>; a trailing likelihood below the training 5th
           percentile raises a <strong className="text-slate-200">drift</strong> flag — a retrain signal, not a gate.
-          “Bearish” and “Bullish” describe fitted drift, not a forecast. Nothing acts on this reading yet; the model
-          card (docs/MARKET_REGIME_MODEL.md) has the data, the validation and what it does not do.
+          “Bearish” and “Bullish” describe fitted drift, not a forecast. With the auto-trade config’s{' '}
+          <strong className="text-slate-200">ML regime overlay</strong> on (off by default) the sizing regime cut above
+          reads it: new positions size down by the ML regime size cut while the reading is High Volatility/Bearish, and
+          an intraday <strong className="text-slate-200">shock day</strong> (SPY’s range so far today at or above a set
+          multiple of its ATR) is treated the same way on the spot; a stale or unknown reading never cuts. Nothing else
+          acts on it. The model card (docs/MARKET_REGIME_MODEL.md) has the data, the validation, the enabling rules and
+          what it does not do.
         </p>
       </Section>
 

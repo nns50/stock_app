@@ -138,6 +138,11 @@ describe('attemptOptionsPaperEntry', () => {
     marketAtrPct: null,
     regimeAtrThresholdPct: 3,
     regimeSizeCutPct: 0,
+    mlRegime: null,
+    mlRegimeEnabled: false,
+    mlRegimeSizeCutPct: 35,
+    todayRangePct: null,
+    regimeShockRangeRatio: 0,
   });
 
   it('fills at a freshly-fetched contract mark, not the signal premium', async () => {
@@ -229,6 +234,11 @@ describe('attemptOptionsPaperEntry', () => {
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      mlRegime: null,
+      mlRegimeEnabled: false,
+      mlRegimeSizeCutPct: 35,
+      todayRangePct: null,
+      regimeShockRangeRatio: 0,
     });
 
     it('opens both legs at freshly-fetched marks, not the signal premiums', async () => {
@@ -1004,6 +1014,11 @@ describe('short-dated options — the paper book', () => {
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      mlRegime: null,
+      mlRegimeEnabled: false,
+      mlRegimeSizeCutPct: 35,
+      todayRangePct: null,
+      regimeShockRangeRatio: 0,
     });
     const outcome = await attemptOptionsPaperEntry(optionSignal({ underlyingPrice: 143.2 }), risk, 'MODERATE');
     expect(outcome.ok).toBe(true);

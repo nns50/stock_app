@@ -1518,6 +1518,11 @@ export interface AutotradeConfig {
   // --- Regime-aware sizing (live + paper only; 0 disables) ---
   regimeAtrThresholdPct: number;
   regimeSizeCutPct: number;
+  // --- The ML regime overlay (2026-09-08; live + paper; off by default) ---
+  mlRegimeEnabled: boolean;
+  mlRegimeSizeCutPct: number;
+  mlRegimeSwitchThreshold: number;
+  regimeShockRangeRatio: number;
   equityCurveDeriskEnabled: boolean;
   equityCurveLookbackDays: number;
   equityCurveDeriskCutPct: number;
