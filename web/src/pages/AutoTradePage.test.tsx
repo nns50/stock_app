@@ -91,6 +91,8 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     optionsStagnationMinMovePct: 0.3,
     optionsDisasterStopPct: 70,
     minRelVolPace: 0,
+    relVolUsePaceScoring: false,
+    relVolPaceTarget: 2.5,
     minChangePct: 0,
     momentumIntradayOnly: false,
     endOfDayFlattenMinutes: 0,
@@ -504,6 +506,32 @@ describe('AutoTradePage', () => {
     await waitFor(() =>
       expect(setConfig).toHaveBeenCalledWith({ repeatEntrySizeCutPct: 25, confirmAggressive: undefined }),
     );
+  });
+
+  it('toggling pace scoring for relative volume saves immediately', async () => {
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /Score relative volume on PACE/ }));
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ relVolUsePaceScoring: true, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new rel-vol pace target', async () => {
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Rel-vol pace target (×)' }), { target: { value: '3' } });
+
+    const saveButton = screen.getByRole('button', { name: 'Save rel-vol pace target' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() => expect(setConfig).toHaveBeenCalledWith({ relVolPaceTarget: 3, confirmAggressive: undefined }));
   });
 
   it('toggling equity-curve de-risking saves immediately', async () => {

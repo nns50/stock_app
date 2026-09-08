@@ -5,11 +5,12 @@ import { Candle } from '../../providers/types';
 import {
   CandleIndicators,
   computeCandleIndicators,
+  computeIndicators,
   defaultScreenerConfig,
   Direction,
+  IndicatorSnapshot,
   lookbackReturnPct,
-  scoreSymbol,
-  scoreSymbolBothDirections,
+  scoreFromIndicators,
   ScreenerConfig,
   SymbolScore,
 } from '../../indicators/screener';
@@ -215,6 +216,60 @@ export function pickDirection(both: {
   return null;
 }
 
+type RejectedEntry = { symbol: string; direction: Direction; total: number; reasons: string[] };
+
+/**
+ * Score a snapshot and decide which direction (if either) qualifies.
+ *
+ * ONE implementation, called by both scoring passes below — the ordinary pass
+ * and the relative-volume PACE pass that re-scores the same snapshots once the
+ * universe median exists. Two copies that agree today is exactly what
+ * CLAUDE.md's "agree by construction" rule is about, and here the drift would
+ * be invisible in the worst way: flag-on and flag-off would differ for reasons
+ * having nothing to do with the flag, in the middle of the measurement meant
+ * to decide whether to keep the flag on.
+ */
+function selectFromSnapshot(
+  symbol: string,
+  ind: IndicatorSnapshot | null,
+  fallbackPrice: number,
+  cfg: ScreenerConfig,
+  directionMode: Direction | 'both',
+): {
+  picked: { direction: Direction; score: SymbolScore } | null;
+  rejected: RejectedEntry | null;
+  /** The score this selection judged — the chosen side, or the better side
+   *  when neither qualified. Returned so a comparison of two scorings can
+   *  cover EVERY scored symbol; reading only `picked` would restrict it to
+   *  the survivors of the very scoring under examination. */
+  best: SymbolScore;
+} {
+  if (directionMode === 'both') {
+    const both = {
+      long: scoreFromIndicators(symbol, ind, { ...cfg, direction: 'long' }, fallbackPrice),
+      short: scoreFromIndicators(symbol, ind, { ...cfg, direction: 'short' }, fallbackPrice),
+    };
+    const chosen = pickDirection(both);
+    if (chosen) return { picked: chosen, rejected: null, best: chosen.score };
+    // Neither direction passed. Report the side that scored higher, since that
+    // is the one the reader is asking about.
+    const best = both.long.total >= both.short.total ? both.long : both.short;
+    const dir: Direction = best === both.long ? 'long' : 'short';
+    return {
+      picked: null,
+      rejected: { symbol, direction: dir, total: best.total, reasons: best.filterReasons },
+      best,
+    };
+  }
+  const score = scoreFromIndicators(symbol, ind, { ...cfg, direction: directionMode }, fallbackPrice);
+  if (score.passedFilters) return { picked: { direction: directionMode, score }, rejected: null, best: score };
+  return {
+    picked: null,
+    rejected: { symbol, direction: directionMode, total: score.total, reasons: score.filterReasons },
+    best: score,
+  };
+}
+
 /** Whether `earningsDate` (YYYY-MM-DD) falls within `blackoutDays` calendar
  *  days from now, inclusive of today — a pure calendar-date comparison, not
  *  a fractional-hours one, so the window's meaning doesn't shift with what
@@ -336,6 +391,11 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
   // Every scored symbol's raw relVolume — pass or fail — so the universe median
   // below is the market's true current pace, not just the survivors'.
   const relVolSamples: (number | null)[] = [];
+  // Every scored symbol's snapshot, retained so the relative-volume PACE pass
+  // can re-score without a second fetch or a second indicator computation.
+  // Flat objects of ~17 numbers each; a 560-symbol universe is nothing next to
+  // the candle arrays already held during the fetch.
+  const scoredSnapshots: { symbol: string; ind: IndicatorSnapshot | null; fallbackPrice: number }[] = [];
   // candidate_found is journaled AFTER the pace filter, so the journal never
   // announces a candidate this screen then discards.
   const pendingCandidates: { symbol: string; candidate: ScreenCandidate }[] = [];
@@ -469,73 +529,33 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
       // single-direction behavior, just reading directionMode instead of
       // cfg.direction directly so a 'both' caller was never required to also
       // pick a meaningless single cfg.direction.
-      const picked =
-        directionMode === 'both'
-          ? (() => {
-              const both = scoreSymbolBothDirections(
-                symbol,
-                candles,
-                quote,
-                cfg,
-                cachedIndicators,
-                undefined,
-                weeklyIndicators,
-                benchmarkLookbackReturnPct,
-                sentimentNetScore,
-              );
-              // Sampled from the LONG score, but relVolume is direction-free —
-              // both directions read the same indicator computation.
-              relVolSamples.push(both.long.indicators.relVolume);
-              const chosen = pickDirection(both);
-              if (!chosen) {
-                // Neither direction passed. Report the side that scored higher,
-                // since that is the one the reader is asking about.
-                const best = both.long.total >= both.short.total ? both.long : both.short;
-                const dir: Direction = best === both.long ? 'long' : 'short';
-                rejected.push({ symbol, direction: dir, total: best.total, reasons: best.filterReasons });
-              }
-              return chosen;
-            })()
-          : (() => {
-              const score = scoreSymbol(
-                symbol,
-                candles,
-                quote,
-                { ...cfg, direction: directionMode },
-                cachedIndicators,
-                undefined,
-                weeklyIndicators,
-                benchmarkLookbackReturnPct,
-                sentimentNetScore,
-              );
-              // Sampled whether or not it passes: the median is the MARKET's
-              // pace, so it must come from the whole scored universe, not from
-              // the survivors of the very filter it feeds.
-              relVolSamples.push(score.indicators.relVolume);
-              if (!score.passedFilters) {
-                rejected.push({
-                  symbol,
-                  direction: directionMode,
-                  total: score.total,
-                  reasons: score.filterReasons,
-                });
-              }
-              return score.passedFilters ? { direction: directionMode, score } : null;
-            })();
-      if (picked) {
-        pendingCandidates.push({
-          symbol,
-          candidate: {
-            ...picked.score,
-            direction: picked.direction,
-            discoverySource: fromMovers.has(symbol) ? 'movers' : 'universe',
-            // Filled in below, once the universe median this tick is known.
-            relVolPace: null,
-          },
-        });
-      }
-      // Symbols that fail the score filters (not RE) are just omitted — logging
-      // every routine non-match would flood the journal every cycle.
+      // The indicator snapshot is computed ONCE and everything downstream
+      // scores from it — including the pace pass below, which re-scores the
+      // same snapshots after the universe median is known. Scoring twice from
+      // one snapshot is cheap arithmetic; recomputing indicators, or worse
+      // re-fetching, is not.
+      const ind = computeIndicators(
+        candles,
+        quote,
+        cfg,
+        cachedIndicators,
+        undefined,
+        weeklyIndicators,
+        benchmarkLookbackReturnPct,
+        sentimentNetScore,
+      );
+      const fallbackPrice = quote?.last ?? 0;
+      // Sampled whether or not it passes: the median is the MARKET's pace, so
+      // it must come from the whole scored universe, not from the survivors of
+      // the very filter it feeds.
+      relVolSamples.push(ind?.relVolume ?? null);
+      // SCORING happens after this loop, not here. The relative-volume
+      // component can be scored on PACE, which needs the universe median, and
+      // the median needs every symbol's relVolume — so no symbol can be scored
+      // until all of them have been read. Retaining the snapshot is what makes
+      // that orderable; it is also what lets both scorings be compared without
+      // a second fetch.
+      scoredSnapshots.push({ symbol, ind, fallbackPrice });
     } catch (err) {
       errors.push({ symbol, message: (err as Error).message });
     }
@@ -556,6 +576,111 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
   // unrelated filter's setting is how a value ends up silently null in
   // production. relVolMedian over the same samples is cheap.
   const median = relVolMedian(relVolSamples);
+
+  // ---------------------------------------------------------------------
+  // Relative-volume PACE *scoring* (2026-09-08) — the same replacement the
+  // gate above already made, applied to the SCORE component, which the gate
+  // change never touched.
+  //
+  // scoreRelVol reads raw relVolume: today's cumulative volume over an average
+  // FULL day. Before roughly midday almost nothing can reach relVolTarget, so
+  // the component scores 0 for a reason that has nothing to do with the stock
+  // — 8 of 15 live entries scored exactly 0 on it, and it carries 20% of the
+  // weight by default. Scoring on pace instead makes it mean the same thing
+  // at 10:00 and 15:30.
+  //
+  // Both scorings are computed every tick, and ONE aggregate row is journaled
+  // (not one per symbol — see the excluded_re volume problem). That is the
+  // point of the flag: the shift is measurable while the flag is still OFF,
+  // rather than only after it has already moved a live entry. Turning it on
+  // rescales the whole distribution, and liveMinSignalScore was fitted to the
+  // RAW distribution against realized P&L, so enabling it without re-fitting
+  // that floor silently moves the entry gate.
+  //
+  // Re-scores from the retained snapshots — no second fetch, no second
+  // indicator computation, and through the same selectFromSnapshot the first
+  // pass used, so the two passes cannot differ except in the component.
+  // ---------------------------------------------------------------------
+  const paceCfg: ScreenerConfig = { ...cfg, relVolUsePaceScoring: true };
+  const rawCfg: ScreenerConfig = { ...cfg, relVolUsePaceScoring: false };
+  const withPace = (ind: IndicatorSnapshot | null): IndicatorSnapshot | null =>
+    ind === null ? null : { ...ind, relVolPace: relVolPace(ind.relVolume, median) };
+
+  const shadow = { n: 0, rawZero: 0, paceZero: 0, totalDelta: 0, wouldPass: 0, wouldFail: 0 };
+  for (const { symbol, ind, fallbackPrice } of scoredSnapshots) {
+    const paced = withPace(ind);
+    const rawPick = selectFromSnapshot(symbol, ind, fallbackPrice, rawCfg, directionMode);
+    const pacePick = selectFromSnapshot(symbol, paced, fallbackPrice, paceCfg, directionMode);
+
+    // Whichever scoring is CONFIGURED is the one that decides what happens;
+    // the other exists only to be counted. Selected here, from the same two
+    // results the comparison below reads, so the journal can never describe a
+    // decision the screen did not actually make.
+    const chosen = cfg.relVolUsePaceScoring ? pacePick : rawPick;
+    if (chosen.rejected) rejected.push(chosen.rejected);
+    if (chosen.picked) {
+      pendingCandidates.push({
+        symbol,
+        candidate: {
+          ...chosen.picked.score,
+          direction: chosen.picked.direction,
+          discoverySource: fromMovers.has(symbol) ? 'movers' : 'universe',
+          // Filled in below, once the universe median this tick is known.
+          relVolPace: null,
+        },
+      });
+    }
+    // Symbols that fail the score filters (not RE) are just omitted — logging
+    // every routine non-match would flood the journal every cycle.
+
+    // Counted over EVERY scored symbol, not just the ones that passed — the
+    // component-zero rate this exists to measure is a property of the whole
+    // universe, and restricting it to survivors would measure it only where
+    // the rest of the score already carried the symbol through.
+    //
+    // The relative-volume component is direction-free (scoreRelVol never reads
+    // cfg.direction), so its two scores are comparable even when the better
+    // SIDE differs between the two scorings. The totals are compared on each
+    // scoring's own better side, which is the number the screen would act on.
+    const rawComponent = rawPick.best.components.find((c) => c.key === 'relativeVolume');
+    const paceComponent = pacePick.best.components.find((c) => c.key === 'relativeVolume');
+    if (rawComponent && paceComponent) {
+      shadow.n += 1;
+      if (rawComponent.score === 0) shadow.rawZero += 1;
+      if (paceComponent.score === 0) shadow.paceZero += 1;
+      shadow.totalDelta += pacePick.best.total - rawPick.best.total;
+    }
+    // A symbol that only ONE of the two scorings lets through is the thing
+    // that actually changes what gets traded, so it is counted separately
+    // from the average score move — an average can be flat while the set of
+    // candidates turns over completely.
+    if (!rawPick.picked && pacePick.picked) shadow.wouldPass += 1;
+    if (rawPick.picked && !pacePick.picked) shadow.wouldFail += 1;
+  }
+  logAutotradeEvent({
+    stage: 'screen',
+    action: 'relvol_pace_scoring_shadow',
+    detail: {
+      enabled: cfg.relVolUsePaceScoring,
+      universeMedian: median,
+      scored: scoredSnapshots.length,
+      // Across every scored symbol: how many score zero on this component
+      // under each scoring. The headline number this exists to track — 8 of
+      // 15 live ENTRIES scored zero on it, on 20% of the weight.
+      compared: shadow.n,
+      relVolComponentZeroRaw: shadow.rawZero,
+      relVolComponentZeroPace: shadow.paceZero,
+      meanTotalDelta: shadow.n > 0 ? Math.round((shadow.totalDelta / shadow.n) * 100) / 100 : null,
+      // The set change, which an average score move can completely hide.
+      wouldNewlyPass: shadow.wouldPass,
+      wouldNewlyFail: shadow.wouldFail,
+      relVolPaceTarget: cfg.relVolPaceTarget,
+      note: cfg.relVolUsePaceScoring
+        ? 'pace scoring is ACTIVE — the counts describe what raw scoring would have done instead'
+        : 'pace scoring is OFF — the counts describe what it would do if enabled',
+    },
+  });
+
   for (const { symbol, candidate } of pendingCandidates) {
     const pace = relVolPace(candidate.indicators.relVolume, median);
     if (paceFloor > 0 && pace !== null && pace < paceFloor) {

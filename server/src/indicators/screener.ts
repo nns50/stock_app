@@ -77,7 +77,36 @@ export interface ScreenerConfig {
    *  scoreMomentum for the double-count this removes. */
   momentumIntradayOnly?: boolean;
   /** Relative volume that maps to a full rel-vol sub-score. */
+  /** Full marks for the relative-volume component at this many times the
+   *  symbol's own 20-day average FULL-DAY volume. Units: raw relVolume. */
   relVolTarget: number;
+  /** Score the relative-volume component on PACE (relVolume ÷ the universe
+   *  median this tick) instead of raw relVolume. Default false.
+   *
+   *  Raw relVolume is cumulative-today over an average FULL day, so it climbs
+   *  mechanically through the session: before roughly midday almost nothing
+   *  can reach relVolTarget, and the component scores 0 for reasons that have
+   *  nothing to do with the stock. Measured on the live book: 8 of 15 entries
+   *  scored exactly 0 on this component, which carries 20% of the weight by
+   *  default. `minRelVolPace` already replaced the raw measure for the entry
+   *  GATE (indicators/relVolPace.ts) — this is the same replacement for the
+   *  SCORE, which the gate change never touched.
+   *
+   *  Off by default on purpose: turning it on rescales the whole score
+   *  distribution, and `liveMinSignalScore` (72) was fitted to the raw
+   *  distribution against realized P&L. Enabling it without re-fitting that
+   *  floor silently moves the entry gate. The screen journals the shift every
+   *  tick either way — see `relvol_pace_scoring_shadow`. */
+  relVolUsePaceScoring: boolean;
+  /** Full marks for the relative-volume component at this many times the
+   *  MARKET's current pace, when relVolUsePaceScoring is on. Units: pace
+   *  multiple, where 1.0 is the median stock — a different quantity from
+   *  relVolTarget above, which is why it is a separate setting rather than a
+   *  reused one. Default 2.5: at the 10:47 ET reading in relVolPace.ts's
+   *  header (median 0.10, p95 0.23) 2.5x pace is about the 95th percentile,
+   *  the same "clearly unusual, not merely above average" place relVolTarget
+   *  sits in its own units. */
+  relVolPaceTarget: number;
   /** RSI value that scores best for a LONG; mirrored for SHORT. */
   rsiSweetSpot: number;
   /** Half-width of the RSI "tent" scoring function. */
@@ -121,6 +150,18 @@ export interface IndicatorSnapshot {
   atr: number | null;
   atrPct: number | null;
   relVolume: number | null;
+  /** This symbol's relVolume over the UNIVERSE MEDIAN relVolume this tick —
+   *  "how fast is it trading relative to the median stock right now" (see
+   *  indicators/relVolPace.ts). Units: a multiple of the market's current
+   *  pace, NOT a multiple of the symbol's own 20-day average, which is what
+   *  `relVolume` above is. The two are never interchangeable in a comparison.
+   *
+   *  Null whenever it is unmeasurable, and null on every snapshot built by
+   *  computeIndicators, because the median needs the whole universe and this
+   *  function only ever sees one symbol. The screener fills it in on a second
+   *  pass once the median exists; anything scoring a lone snapshot leaves it
+   *  null and gets the raw-relVolume component. */
+  relVolPace: number | null;
   avgVolume: number | null;
   volume: number | null;
   gapPct: number | null;
@@ -189,6 +230,8 @@ export function defaultScreenerConfig(): ScreenerConfig {
     momentumScale: 5,
     momentumIntradayOnly: false,
     relVolTarget: 2,
+    relVolUsePaceScoring: false,
+    relVolPaceTarget: 2.5,
     rsiSweetSpot: 60,
     rsiWidth: 25,
     atrPctScale: 5,
@@ -401,6 +444,9 @@ export function computeIndicators(
     atr: atrVal,
     atrPct: atrVal !== null && price ? (atrVal / price) * 100 : null,
     relVolume: relVol,
+    // Always null here — see IndicatorSnapshot.relVolPace. The universe median
+    // it needs does not exist at single-symbol scope.
+    relVolPace: null,
     avgVolume,
     volume,
     gapPct: gap,
@@ -462,7 +508,34 @@ function scoreMomentum(ind: IndicatorSnapshot, cfg: ScreenerConfig): { score: nu
   return { score, note: `${cfg.direction} momentum from ${descr.join(', ') || 'n/a'}` };
 }
 
+/** Pace at which a stock is merely keeping up with the market — worth zero on
+ *  this component by definition, since half the universe is above it. The
+ *  raw-relVolume branch below uses 0.5 for the same "unremarkable" role in its
+ *  own units; these two floors are NOT the same number in the same unit and
+ *  must never be swapped. */
+const PACE_UNREMARKABLE = 1;
+
 function scoreRelVol(ind: IndicatorSnapshot, cfg: ScreenerConfig): { score: number; note: string } {
+  if (cfg.relVolUsePaceScoring) {
+    // Falls back to the raw measure rather than to 0 when the pace could not
+    // be computed (too few samples for a median, no relVolume for this
+    // symbol). Scoring 0 is what this whole change exists to stop doing, and
+    // a scorer that silently zeroes a fifth of the weight on a thin tick
+    // would reintroduce it under a different cause.
+    if (ind.relVolPace !== null) {
+      const score = scale01(ind.relVolPace, PACE_UNREMARKABLE, cfg.relVolPaceTarget);
+      return {
+        score,
+        note: `${ind.relVolPace.toFixed(2)}× the market's current pace (target ${cfg.relVolPaceTarget}×)`,
+      };
+    }
+    if (ind.relVolume === null) return { score: 0, note: 'no volume data (pace unmeasurable)' };
+    const score = scale01(ind.relVolume, 0.5, cfg.relVolTarget);
+    return {
+      score,
+      note: `pace unmeasurable this tick — scored on ${ind.relVolume.toFixed(2)}× avg volume (target ${cfg.relVolTarget}×)`,
+    };
+  }
   if (ind.relVolume === null) return { score: 0, note: 'no volume data' };
   const score = scale01(ind.relVolume, 0.5, cfg.relVolTarget);
   return { score, note: `${ind.relVolume.toFixed(2)}× avg volume (target ${cfg.relVolTarget}×)` };
@@ -659,7 +732,13 @@ export function scoreFromIndicators(
 
   const rawValues: Record<IndicatorKey, { value: number | null; display: string }> = {
     momentum: { value: ind.changePct, display: fmtPct(ind.changePct) },
-    relativeVolume: { value: ind.relVolume, display: ind.relVolume === null ? '—' : `${ind.relVolume.toFixed(2)}×` },
+    // Reports what was actually SCORED, not always the raw measure: a
+    // component whose displayed value cannot produce its own score is how a
+    // reader talks themselves out of a real finding.
+    relativeVolume:
+      cfg.relVolUsePaceScoring && ind.relVolPace !== null
+        ? { value: ind.relVolPace, display: `${ind.relVolPace.toFixed(2)}× pace` }
+        : { value: ind.relVolume, display: ind.relVolume === null ? '—' : `${ind.relVolume.toFixed(2)}×` },
     rsi: { value: ind.rsi, display: fmtNum(ind.rsi, 1) },
     volatility: { value: ind.atrPct, display: ind.atrPct === null ? '—' : `${ind.atrPct.toFixed(2)}%` },
     gap: { value: ind.gapPct, display: fmtPct(ind.gapPct) },
@@ -791,6 +870,7 @@ function emptySnapshot(price: number): IndicatorSnapshot {
     atr: null,
     atrPct: null,
     relVolume: null,
+    relVolPace: null,
     avgVolume: null,
     volume: null,
     gapPct: null,

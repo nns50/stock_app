@@ -909,3 +909,171 @@ describe('runAutotradeScreen — relative-volume pace gate', () => {
     expect(JSON.parse(ev!.detail!)).toHaveProperty('relVolPace');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Relative-volume PACE scoring (2026-09-08), asserted at the CANDIDATE.
+//
+// The unit tests in screener.test.ts prove scoreRelVol reads a pace when it is
+// handed one. That proves nothing about whether the screen ever hands it one:
+// the pace needs the universe median, which does not exist at single-symbol
+// scope, so `relVolPace` is null on every snapshot computeIndicators builds.
+// These drive runAutotradeScreen and read the component off the candidate it
+// produced — the same "assert at the consumer" rule the sizing factors follow.
+// ---------------------------------------------------------------------------
+// A filter rejection has to be RECORDED, not just acted on: the explain route
+// reads its reasons from a live screen, and until they were kept the answer to
+// "why didn't this trade" was silence. Both scoring paths must record —
+// single-direction and 'both' — and since 2026-09-08 both come from one
+// selectFromSnapshot, so this covers the unification too.
+describe('rejections are recorded in every direction mode', () => {
+  const unreachable = { filters: { minPrice: 0, minAvgVolume: 0, minRelVol: 0, minScore: 99.9 } };
+
+  it('records a reason in single-direction mode', async () => {
+    const result = await runAutotradeScreen({ symbols: ['SCRREJ1'], config: unreachable });
+    expect(result.candidates).toHaveLength(0);
+    expect(result.rejected).toHaveLength(1);
+    expect(result.rejected[0].symbol).toBe('SCRREJ1');
+    expect(result.rejected[0].reasons.length).toBeGreaterThan(0);
+  });
+
+  it("records a reason in 'both' mode, naming the side that scored higher", async () => {
+    const result = await runAutotradeScreen({ symbols: ['SCRREJ2'], config: unreachable, directionMode: 'both' });
+    expect(result.candidates).toHaveLength(0);
+    expect(result.rejected).toHaveLength(1);
+    expect(['long', 'short']).toContain(result.rejected[0].direction);
+    expect(result.rejected[0].reasons.length).toBeGreaterThan(0);
+  });
+});
+
+describe('relative-volume pace SCORING', () => {
+  // MIN_PACE_SAMPLES is 20: below that the median is too noisy to divide by
+  // and the pace stays null. So a fixture that exercises pace scoring at all
+  // needs a real universe, not two symbols.
+  const BACKGROUND = Array.from({ length: 20 }, (_, i) => `SCRPACE${i}`);
+  const MOVERS = ['SCRPACEM0', 'SCRPACEM1', 'SCRPACEM2', 'SCRPACEM3', 'SCRPACEM4'];
+  const ALL = [...BACKGROUND, ...MOVERS];
+
+  /** The 10:47 ET shape from relVolPace.ts's header, compressed: the market
+   *  has done a fifth of a normal day, and five names are running at twice
+   *  that. Every one of them is BELOW the 0.5 raw floor, so raw scoring gives
+   *  the whole universe — movers included — exactly 0 on 20% of the weight. */
+  function mockQuotes() {
+    return vi.spyOn(getProvider(), 'getQuote').mockImplementation(async (symbol: string) => {
+      const relVol = MOVERS.includes(symbol) ? 0.4 : 0.2;
+      return {
+        symbol,
+        last: 100,
+        volume: 1_000_000 * relVol,
+        avgVolume: 1_000_000,
+        timestamp: Date.now(),
+      } as never;
+    });
+  }
+
+  const relVolScoreOf = (result: Awaited<ReturnType<typeof runAutotradeScreen>>, symbol: string) =>
+    result.candidates.find((c) => c.symbol === symbol)?.components.find((c) => c.key === 'relativeVolume');
+
+  const shadowRow = () => {
+    const row = listAutotradeEvents({ stage: 'screen' }).find((e) => e.action === 'relvol_pace_scoring_shadow');
+    return row ? (JSON.parse(row.detail!) as Record<string, number | boolean | string | null>) : undefined;
+  };
+
+  it('scores every name at ZERO on raw relVolume before midday, movers included', async () => {
+    const spy = mockQuotes();
+    const result = await runAutotradeScreen({ symbols: ALL, config: { filters: RELAXED_FILTERS } });
+    expect(relVolScoreOf(result, MOVERS[0])!.score).toBe(0);
+    expect(relVolScoreOf(result, BACKGROUND[0])!.score).toBe(0);
+    spy.mockRestore();
+  });
+
+  it('separates the movers from the background once the component scores on pace', async () => {
+    const spy = mockQuotes();
+    const result = await runAutotradeScreen({
+      symbols: ALL,
+      config: { filters: RELAXED_FILTERS, relVolUsePaceScoring: true },
+    });
+    // Median relVolume is 0.2, so a mover at 0.4 is at 2.0x the market's pace:
+    // scale01(2, 1, 2.5) = 66.7. The background sits at 1.0x and still scores 0.
+    const mover = relVolScoreOf(result, MOVERS[0])!;
+    expect(mover.score).toBeGreaterThan(60);
+    expect(relVolScoreOf(result, BACKGROUND[0])!.score).toBe(0);
+    // And the whole point: the mover's TOTAL is higher than raw scoring gave it.
+    const raw = await runAutotradeScreen({ symbols: ALL, config: { filters: RELAXED_FILTERS } });
+    const rawTotal = raw.candidates.find((c) => c.symbol === MOVERS[0])!.total;
+    expect(result.candidates.find((c) => c.symbol === MOVERS[0])!.total).toBeGreaterThan(rawTotal);
+    spy.mockRestore();
+  });
+
+  it('journals the shift ONCE per tick while the flag is still OFF', async () => {
+    // This is what the flag is for. A setting that can only be evaluated by
+    // turning it on has already changed a live entry by the time anyone can
+    // judge it — and liveMinSignalScore was fitted to the raw distribution.
+    const spy = mockQuotes();
+    await runAutotradeScreen({ symbols: ALL, config: { filters: RELAXED_FILTERS } });
+    const rows = listAutotradeEvents({ stage: 'screen' }).filter((e) => e.action === 'relvol_pace_scoring_shadow');
+    expect(rows).toHaveLength(1); // one aggregate row, not one per symbol
+
+    const d = shadowRow()!;
+    expect(d.enabled).toBe(false);
+    expect(d.compared).toBe(ALL.length);
+    expect(d.relVolComponentZeroRaw).toBe(ALL.length); // every name, movers included
+    expect(d.relVolComponentZeroPace).toBe(BACKGROUND.length); // the movers are rescued
+    expect(d.meanTotalDelta).toBeGreaterThan(0);
+    expect(d.universeMedian).toBeCloseTo(0.2, 5);
+    spy.mockRestore();
+  });
+
+  it('reports the counts from the OTHER scoring once the flag is on', async () => {
+    const spy = mockQuotes();
+    await runAutotradeScreen({
+      symbols: ALL,
+      config: { filters: RELAXED_FILTERS, relVolUsePaceScoring: true },
+    });
+    const d = shadowRow()!;
+    expect(d.enabled).toBe(true);
+    // Same two counts either way — which scoring is live does not change what
+    // each one scores, only which one is acted on.
+    expect(d.relVolComponentZeroRaw).toBe(ALL.length);
+    expect(d.relVolComponentZeroPace).toBe(BACKGROUND.length);
+    spy.mockRestore();
+  });
+
+  it('measures every SCORED name, not just the ones that passed the filters', async () => {
+    // The distribution shift has to be read off the whole universe. Counting
+    // only survivors would measure the component exactly where the rest of the
+    // score already carried the symbol through — and would report a shrinking
+    // sample as the score floor rises, which is the moment the measurement
+    // matters most. A minScore nothing can reach makes every name a rejection.
+    const spy = mockQuotes();
+    const result = await runAutotradeScreen({
+      symbols: ALL,
+      config: { filters: { ...RELAXED_FILTERS, minScore: 99.9 } },
+    });
+    expect(result.candidates).toHaveLength(0);
+
+    const d = shadowRow()!;
+    expect(d.compared).toBe(ALL.length);
+    expect(d.relVolComponentZeroRaw).toBe(ALL.length);
+    expect(d.relVolComponentZeroPace).toBe(BACKGROUND.length);
+    spy.mockRestore();
+  });
+
+  it('falls back to raw scoring, not to zero, when there are too few names for a median', async () => {
+    // MIN_PACE_SAMPLES = 20. A thin tick must not zero a fifth of the weight.
+    const spy = vi
+      .spyOn(getProvider(), 'getQuote')
+      .mockImplementation(
+        async (symbol: string) =>
+          ({ symbol, last: 100, volume: 1_500_000, avgVolume: 1_000_000, timestamp: Date.now() }) as never,
+      );
+    const result = await runAutotradeScreen({
+      symbols: ['SCRTHIN1', 'SCRTHIN2'],
+      config: { filters: RELAXED_FILTERS, relVolUsePaceScoring: true },
+    });
+    const c = relVolScoreOf(result, 'SCRTHIN1')!;
+    expect(c.score).toBeGreaterThan(0); // scale01(1.5, 0.5, 2) = 66.7
+    expect(c.note).toMatch(/pace unmeasurable/);
+    expect(shadowRow()!.universeMedian).toBeNull();
+    spy.mockRestore();
+  });
+});

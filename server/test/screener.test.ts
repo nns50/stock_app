@@ -11,6 +11,7 @@ import {
   scoreSymbolBothDirections,
   scoreFromIndicators,
   type IndicatorSnapshot,
+  type ScreenerConfig,
 } from '../src/indicators/screener';
 
 /** A neutral indicator snapshot; each test overrides only what it exercises. */
@@ -25,6 +26,7 @@ const ind = (over: Partial<IndicatorSnapshot> = {}): IndicatorSnapshot => ({
   atr: 2,
   atrPct: 2,
   relVolume: 1,
+  relVolPace: null,
   avgVolume: 1_000_000,
   volume: 1_000_000,
   gapPct: 0,
@@ -639,5 +641,113 @@ describe('minChangePct filter', () => {
   it("does not reject on a guess when today's move is unmeasurable", () => {
     const r = scoreFromIndicators('X', ind({ price: 100, changePct: null }), cfgWith(0.5), 100);
     expect(r.filterReasons.join(' ')).not.toMatch(/today/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Relative-volume PACE scoring (2026-09-08).
+//
+// Raw relVolume is today's CUMULATIVE volume over an average FULL day, so it
+// climbs mechanically through the session: before roughly midday almost
+// nothing can reach relVolTarget and the component scores 0 for a reason that
+// has nothing to do with the stock. Measured on the live book: 8 of 15 entries
+// scored exactly 0 on this component, which carries 20% of the weight.
+//
+// minRelVolPace already replaced the raw measure for the entry GATE; this is
+// the same replacement for the SCORE, behind a flag that ships OFF.
+// ---------------------------------------------------------------------------
+describe('scoreRelVol — raw relVolume vs pace', () => {
+  const relVolComponent = (s: ReturnType<typeof scoreFromIndicators>) =>
+    s.components.find((c) => c.key === 'relativeVolume')!;
+
+  const cfg = (over: Partial<ScreenerConfig> = {}): ScreenerConfig => ({
+    ...defaultScreenerConfig(),
+    ...over,
+  });
+
+  it('ships OFF — the default config scores the raw measure, unchanged', () => {
+    expect(defaultScreenerConfig().relVolUsePaceScoring).toBe(false);
+    const c = relVolComponent(scoreFromIndicators('T', ind({ relVolume: 1.25, relVolPace: 4 }), cfg(), 100));
+    // scale01(1.25, 0.5, 2) = 50. The pace of 4 is present and ignored.
+    expect(c.score).toBe(50);
+  });
+
+  it('scores the morning problem case at ZERO on raw and rescues it on pace', () => {
+    // The shape that motivated this: at 10:47 ET the median symbol read 0.10
+    // relVolume, so a stock at 0.40 is trading at FOUR TIMES the market's
+    // current pace and still cannot reach a 0.5 raw floor.
+    const morning = ind({ relVolume: 0.4, relVolPace: 4 });
+    expect(relVolComponent(scoreFromIndicators('T', morning, cfg(), 100)).score).toBe(0);
+    // scale01(4, 1, 2.5) clamps to 100 — clearly unusual, and it says so.
+    expect(relVolComponent(scoreFromIndicators('T', morning, cfg({ relVolUsePaceScoring: true }), 100)).score).toBe(
+      100,
+    );
+  });
+
+  it('scores the stock trading at exactly the market pace at zero, by definition', () => {
+    // Half the universe is above the median every tick. A stock keeping up
+    // with it is unremarkable and must not be credited for it.
+    const c = relVolComponent(
+      scoreFromIndicators('T', ind({ relVolume: 0.2, relVolPace: 1 }), cfg({ relVolUsePaceScoring: true }), 100),
+    );
+    expect(c.score).toBe(0);
+  });
+
+  it('uses relVolPaceTarget, not relVolTarget — the two are different units', () => {
+    // relVolTarget is a multiple of the symbol's own 20-day average; the pace
+    // target is a multiple of the MARKET's current pace. Reading the wrong one
+    // is silent, since both are plain positive numbers.
+    const at2 = ind({ relVolume: 9, relVolPace: 2 });
+    const withDefault = relVolComponent(scoreFromIndicators('T', at2, cfg({ relVolUsePaceScoring: true }), 100)).score;
+    const withHigherPaceTarget = relVolComponent(
+      scoreFromIndicators('T', at2, cfg({ relVolUsePaceScoring: true, relVolPaceTarget: 5 }), 100),
+    ).score;
+    const withHigherRawTarget = relVolComponent(
+      scoreFromIndicators('T', at2, cfg({ relVolUsePaceScoring: true, relVolTarget: 50 }), 100),
+    ).score;
+    expect(withHigherPaceTarget).toBeLessThan(withDefault); // the pace target moved it
+    expect(withHigherRawTarget).toBe(withDefault); // the raw target did not
+  });
+
+  it('falls back to the RAW measure when the pace is unmeasurable, never to zero', () => {
+    // Too few samples for a universe median, or no relVolume for this symbol.
+    // Scoring 0 is the exact behaviour this change exists to stop, and a thin
+    // tick reintroducing it under a different cause would be no better.
+    const c = relVolComponent(
+      scoreFromIndicators('T', ind({ relVolume: 1.25, relVolPace: null }), cfg({ relVolUsePaceScoring: true }), 100),
+    );
+    expect(c.score).toBe(50);
+    expect(c.note).toMatch(/pace unmeasurable/);
+  });
+
+  it('scores zero only when there is genuinely no volume data at all', () => {
+    const c = relVolComponent(
+      scoreFromIndicators('T', ind({ relVolume: null, relVolPace: null }), cfg({ relVolUsePaceScoring: true }), 100),
+    );
+    expect(c.score).toBe(0);
+    expect(c.note).toMatch(/no volume data/);
+  });
+
+  it('DISPLAYS the quantity it actually scored', () => {
+    // A component whose shown value cannot produce its own score is how a
+    // reader talks themselves out of a real finding.
+    const both = ind({ relVolume: 0.4, relVolPace: 4 });
+    expect(relVolComponent(scoreFromIndicators('T', both, cfg(), 100)).display).toBe('0.40×');
+    const paced = relVolComponent(scoreFromIndicators('T', both, cfg({ relVolUsePaceScoring: true }), 100));
+    expect(paced.display).toBe('4.00× pace');
+    expect(paced.value).toBe(4);
+  });
+
+  it('is direction-free — the same snapshot scores this component identically long and short', () => {
+    // Relied on by the screen's shadow comparison, which compares the
+    // component across two scorings whose better SIDE may differ.
+    const snap = ind({ relVolume: 0.4, relVolPace: 3 });
+    const long = relVolComponent(
+      scoreFromIndicators('T', snap, cfg({ relVolUsePaceScoring: true, direction: 'long' }), 100),
+    );
+    const short = relVolComponent(
+      scoreFromIndicators('T', snap, cfg({ relVolUsePaceScoring: true, direction: 'short' }), 100),
+    );
+    expect(long.score).toBe(short.score);
   });
 });
