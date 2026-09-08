@@ -1958,6 +1958,12 @@ because the loop is the only caller that is always flat by the bell, so it is
   badges that position with a **+N add** count so a pyramid is visible at a glance. Like the
   rest of the live-order surface, treat the first few real adds as confirmation before trusting
   it with size — **validate in paper + backtest first.**
+- **What the broker holds** — `GET /api/autotrade/live/holdings` answers "does the broker
+  still hold this?" directly, reading the account and writing nothing. Add `?symbol=NOK`
+  for one name. A symbol the broker reported but the app could not parse comes back under
+  **unknownSymbols** (or `known: false`) — that means *held, quantity unknown*, *never*
+  flat, because an unparseable row still proves something is held there. An unreadable
+  broker is an error rather than an empty list, for the same reason.
 - **Stop-still-there check** — a bracket is submitted as one request (entry plus its
   stop/target), and the broker's reply doesn't say whether the *exit legs* were accepted, only
   that the request as a whole was. So if Webull ever takes the entry and drops the exits, the

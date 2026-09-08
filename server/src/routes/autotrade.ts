@@ -62,6 +62,7 @@ import { computeTargetTune, realizedBasisAvailability, resetToModerate } from '.
 import { collectBook, DEFAULT_LOOKBACK_SESSIONS, realizedEdgeOf } from '../services/autotrading/dailyTargetSweepData';
 import { runDailyTargetSweep } from '../services/autotrading/dailyTargetSweep';
 import { listUniverseSymbols } from '../db/universe';
+import { previewWebullPositions } from '../providers/webull/positions';
 import {
   committedProtectiveQuantity,
   listWebullOpenOrders,
@@ -2354,6 +2355,82 @@ autotradeRouter.get(
       count: open.orders.length,
       comboGroups: [...byCombo].map(([comboOrderId, legs]) => ({ comboOrderId, legs })),
       orders: open.orders,
+    });
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// WHAT DOES THE BROKER ACTUALLY HOLD? (2026-09-08)
+//
+// There was no read-only way to ask. The question came up three times in one
+// session — an adopted SMCI position, the FCX bracket probe, and a NOK
+// scale-out whose remainder looked naked — and each time the answer had to be
+// INFERRED from a side effect: a position_reconcile_skipped detail, or the
+// refusal message of the standalone-bracket route.
+//
+// Using an ORDER PLACEMENT endpoint as a read is the wrong shape and it showed:
+// the probe that finally answered the NOK question was a deliberately oversized
+// protective order, sent only so its own guard would refuse it and name the
+// held quantity. That is a read dressed as a write, and it deserved the
+// suspicion it got.
+//
+// It also matters for a specific, recurring confusion: zero resting exit legs
+// looks identical whether a stop was never accepted or has just FILLED. The
+// held quantity is what separates them (see checkLiveBracketProtection), and
+// until now nothing could ask it directly.
+//
+// WRITES NOTHING. previewWebullPositions fetches /openapi/assets/positions and
+// maps it; the import path is a different call.
+autotradeRouter.get(
+  '/live/holdings',
+  asyncHandler(async (req, res) => {
+    const cfg = getAutotradeConfig();
+    const accountId = cfg.liveAccountId;
+    if (!accountId) throw new HttpError(400, 'No live account is configured.');
+    const preview = await previewWebullPositions(accountId);
+    if (!preview.ok) throw new HttpError(502, `Could not read holdings: ${preview.error ?? 'unknown'}`);
+
+    // Equities only for the quantity roll-up: an option row's "quantity" is
+    // contracts on a specific contract, so summing it next to share counts
+    // would produce a number that means nothing.
+    const holdings = new Map<string, number>();
+    for (const p of preview.positions) {
+      if (p.assetType !== 'stock') continue;
+      const sym = p.symbol.toUpperCase();
+      const signed = p.side === 'short' ? -p.quantity : p.quantity;
+      holdings.set(sym, (holdings.get(sym) ?? 0) + signed);
+    }
+    // A row the mapper could not parse still PROVES the broker holds something
+    // in that symbol. Reporting such a symbol as "not held" would be exactly
+    // the false negative this endpoint exists to prevent, so it is surfaced
+    // separately and callers must treat it as "held, quantity unknown" — never
+    // as zero. The same reasoning already governs the close-detector's freeze
+    // list; see PositionsPreview.unmappedSymbols.
+    const unknown = preview.unmappedSymbols.map((s) => s.toUpperCase());
+
+    const wanted = typeof req.query.symbol === 'string' ? req.query.symbol.trim().toUpperCase() : null;
+    if (wanted) {
+      const isUnknown = unknown.includes(wanted);
+      res.json({
+        accountId,
+        symbol: wanted,
+        quantity: holdings.get(wanted) ?? 0,
+        // false means DO NOT trust the quantity: the broker returned a row for
+        // this symbol that could not be mapped.
+        known: !isUnknown,
+        unmapped: preview.unmapped,
+      });
+      return;
+    }
+    res.json({
+      accountId,
+      holdings: [...holdings]
+        .map(([symbol, quantity]) => ({ symbol, quantity }))
+        .sort((a, b) => a.symbol.localeCompare(b.symbol)),
+      /** Symbols the broker reported but the mapper could not parse. Held,
+       *  quantity unknown — NOT zero. */
+      unknownSymbols: unknown,
+      unmapped: preview.unmapped,
     });
   }),
 );
