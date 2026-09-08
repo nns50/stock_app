@@ -3,13 +3,19 @@ import {
   ALL_EXPERIMENT_NAMES,
   allZeroTrades,
   buildExperiments,
+  buildOverlayFloorStage,
   completeFilters,
   completeWeights,
   EQUITY_WALK_FORWARD_PATH,
   EXPERIMENT_NAMES,
   formatDataIssues,
+  formatOverlaySelection,
+  ML_REGIME_GRID,
   OPTIONS_WALK_FORWARD_PATH,
+  OverlayCell,
+  overlayCellLabel,
   rankResults,
+  selectOverlayCell,
   SweepBase,
   SweepResult,
 } from '../src/services/autotrading/researchSweep';
@@ -213,5 +219,191 @@ describe('data-issue surfacing', () => {
     expect(allZeroTrades([result(0, 0), result(1, 0)])).toBe(false);
     expect(allZeroTrades([result(0, 0, 'HTTP 500')])).toBe(false); // errors alone are not a zero-trades verdict
     expect(allZeroTrades([])).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The ML regime overlay grid (2026-09-08) — two stages, and the rule that
+// picks the cell, written before the run and pinned here so the choice is
+// reproducible from the results file.
+// ---------------------------------------------------------------------------
+describe('the ML regime overlay grid', () => {
+  it('stage 1 is the 15-cell cut × tighten grid; 0/0 is the baseline with the overlay OFF, byte-identical to every other baseline', () => {
+    const variants = buildExperiments(base, ['mlregime']);
+    expect(variants).toHaveLength(15);
+    expect(new Set(variants.map((v) => v.cell!.cut))).toEqual(new Set([0, 25, 35, 50, 100]));
+    expect(new Set(variants.map((v) => v.cell!.tighten))).toEqual(new Set([0, 15, 30]));
+    for (const v of variants) {
+      expect(v.cell!.floor).toBe(0);
+      expect(v.endpoint).toBe(EQUITY_WALK_FORWARD_PATH);
+      expect(v.experiment).toBe('mlregime');
+    }
+    const baseline = variants.find((v) => v.cell!.cut === 0 && v.cell!.tighten === 0)!;
+    expect(baseline.label).toBe('cut 0 / tighten 0 (baseline)');
+    const exitsBaseline = buildExperiments(base, ['exits'])[0].body;
+    expect(baseline.body).toEqual({
+      ...exitsBaseline,
+      mlRegimeEnabled: false,
+      mlRegimeSizeCutPct: 0,
+      mlRegimeTargetTightenPct: 0,
+      mlRegimeHighVolMinSignalScore: 0,
+    });
+    const cell = variants.find((v) => v.cell!.cut === 35 && v.cell!.tighten === 15)!;
+    expect(cell.body).toMatchObject({
+      mlRegimeEnabled: true,
+      mlRegimeSizeCutPct: 35,
+      mlRegimeTargetTightenPct: 15,
+      mlRegimeHighVolMinSignalScore: 0,
+    });
+    expect(cell.label).toBe('cut 35 / tighten 15');
+    expect(variants.find((v) => v.cell!.cut === 100 && v.cell!.tighten === 0)!.label).toBe(
+      'cut 100 / tighten 0 (skip High Vol)',
+    );
+  });
+
+  it('is opt-in — never in the default set — and stays on the equity endpoint', () => {
+    expect(buildExperiments(base, EXPERIMENT_NAMES).some((v) => v.experiment === 'mlregime')).toBe(false);
+    expect(ALL_EXPERIMENT_NAMES).toContain('mlregime');
+  });
+
+  it('stage 2 varies ONLY the High-Vol conviction bar at the chosen cell, floor 0 first as its baseline', () => {
+    const ladder = buildOverlayFloorStage(base, { cut: 35, tighten: 15 });
+    expect(ladder.map((v) => v.cell)).toEqual([
+      { cut: 35, tighten: 15, floor: 0 },
+      { cut: 35, tighten: 15, floor: 72 },
+      { cut: 35, tighten: 15, floor: 76 },
+    ]);
+    expect(ladder.map((v) => v.body.mlRegimeHighVolMinSignalScore)).toEqual([...ML_REGIME_GRID.floors]);
+    for (const v of ladder) {
+      expect(v.experiment).toBe('mlregime-floor');
+      expect(v.body).toMatchObject({ mlRegimeEnabled: true, mlRegimeSizeCutPct: 35, mlRegimeTargetTightenPct: 15 });
+      expect(v.endpoint).toBe(EQUITY_WALK_FORWARD_PATH);
+    }
+    expect(ladder[2].label).toBe('cut 35 / tighten 15 / floor 76');
+  });
+
+  describe('selectOverlayCell — the rule, written before the run', () => {
+    const B: OverlayCell = { cut: 0, tighten: 0, floor: 0 };
+    const res = (cell: OverlayCell, returnPct: number, maxDrawdown: number, regimeDayTrades = 10): SweepResult => ({
+      experiment: 'mlregime',
+      label: overlayCellLabel(cell),
+      cell,
+      inSample: null,
+      outOfSample: {
+        stats: { totalTrades: 40, winRate: 50, expectancy: 10, profitFactor: 1.5, returnPct, maxDrawdown, avgR: 0.2 },
+        significance: null,
+        report: { regimeDayTrades },
+      },
+    });
+    const EQUITY = 100_000; // maxDrawdown $5,000 = 5% of it
+
+    it('picks the highest OOS return ÷ max drawdown among cells keeping ≥ 75% of the baseline return', () => {
+      const sel = selectOverlayCell(
+        [
+          res(B, 10, 5_000), // ratio 2
+          res({ cut: 25, tighten: 0, floor: 0 }, 9, 3_000), // ratio 3, keeps 90% → eligible
+          res({ cut: 50, tighten: 30, floor: 0 }, 6, 1_000), // ratio 6, but keeps 60% → out
+          res({ cut: 35, tighten: 15, floor: 0 }, 8, 4_000), // ratio 2 — does not BEAT the baseline
+        ],
+        EQUITY,
+        { baseline: B },
+      );
+      expect(sel.chosen).toEqual({ cut: 25, tighten: 0, floor: 0 });
+      expect(sel.rows.find((r) => r.cell.cut === 50)!.eligible).toBe(false);
+      expect(sel.rows.find((r) => r.cell.cut === 50)!.note).toMatch(/keeps < 75%/);
+      expect(sel.rows.find((r) => r.cell.cut === 35)!.note).toMatch(/does not beat/);
+      expect(sel.reason).toMatch(/cut 25 \/ tighten 0: OOS return 9\.00% over a 3\.00% max drawdown \(ratio 3\.00\)/);
+    });
+
+    it('ties go to the smaller cut, then the smaller tighten, then the lower floor', () => {
+      const sel = selectOverlayCell(
+        [
+          res(B, 10, 5_000),
+          res({ cut: 50, tighten: 0, floor: 0 }, 9, 3_000),
+          res({ cut: 25, tighten: 15, floor: 0 }, 9, 3_000),
+          res({ cut: 25, tighten: 0, floor: 0 }, 9, 3_000),
+        ],
+        EQUITY,
+        { baseline: B },
+      );
+      expect(sel.chosen).toEqual({ cut: 25, tighten: 0, floor: 0 });
+      expect(sel.reason).toMatch(/ties break toward the smaller cut/);
+    });
+
+    it('keeps the overlay OFF when no cell beats the baseline on the ratio', () => {
+      const sel = selectOverlayCell(
+        [
+          res(B, 10, 5_000),
+          res({ cut: 35, tighten: 30, floor: 0 }, 9, 5_000),
+          res({ cut: 100, tighten: 0, floor: 0 }, 2, 500),
+        ],
+        EQUITY,
+        { baseline: B },
+      );
+      expect(sel.chosen).toBeNull();
+      expect(sel.reason).toMatch(/the overlay stays OFF/);
+    });
+
+    it('a non-positive baseline return makes the 75% clause vacuous — a cell must simply not be worse', () => {
+      const sel = selectOverlayCell(
+        [
+          res(B, -2, 4_000), // ratio −0.5
+          res({ cut: 35, tighten: 0, floor: 0 }, -1, 4_000), // −0.25 — better, eligible
+          res({ cut: 50, tighten: 0, floor: 0 }, -3, 2_000), // worse than the baseline return → out
+        ],
+        EQUITY,
+        { baseline: B },
+      );
+      expect(sel.chosen).toEqual({ cut: 35, tighten: 0, floor: 0 });
+      expect(sel.rows.find((r) => r.cell.cut === 50)!.note).toBe('worse than the baseline return');
+    });
+
+    it('a zero-drawdown positive return ranks above everything without producing NaN', () => {
+      const sel = selectOverlayCell(
+        [
+          res(B, 10, 5_000),
+          res({ cut: 25, tighten: 0, floor: 0 }, 8, 0),
+          res({ cut: 35, tighten: 0, floor: 0 }, 9, 100),
+        ],
+        EQUITY,
+        { baseline: B },
+      );
+      expect(sel.chosen).toEqual({ cut: 25, tighten: 0, floor: 0 });
+      expect(formatOverlaySelection('t', sel)).toMatch(/ratio\s+∞/);
+    });
+
+    it('needs the baseline row, and ignores errored or unanswered cells', () => {
+      const none = selectOverlayCell([res({ cut: 25, tighten: 0, floor: 0 }, 9, 3_000)], EQUITY, { baseline: B });
+      expect(none.chosen).toBeNull();
+      expect(none.reason).toMatch(/no baseline row/);
+      const errored: SweepResult = {
+        ...res({ cut: 25, tighten: 0, floor: 0 }, 99, 1),
+        outOfSample: null,
+        error: 'HTTP 500',
+      };
+      expect(selectOverlayCell([res(B, 10, 5_000), errored], EQUITY, { baseline: B }).rows).toHaveLength(1);
+    });
+
+    it('stage 2 judges the floors against the chosen cell itself as the baseline', () => {
+      const C = { cut: 35, tighten: 15, floor: 0 };
+      const sel = selectOverlayCell(
+        [res(C, 10, 5_000), res({ ...C, floor: 72 }, 9, 3_000), res({ ...C, floor: 76 }, 7, 2_000)],
+        EQUITY,
+        { baseline: C },
+      );
+      expect(sel.chosen).toEqual({ ...C, floor: 72 });
+    });
+
+    it('prints the grid with the regime-day fill share and the verdict', () => {
+      const text = formatOverlaySelection(
+        'stage 1',
+        selectOverlayCell([res(B, 10, 5_000, 0), res({ cut: 25, tighten: 0, floor: 0 }, 9, 3_000, 12)], EQUITY, {
+          baseline: B,
+        }),
+      );
+      expect(text).toMatch(/cut 0 \/ tighten 0 \(baseline\)/);
+      expect(text).toMatch(/regime-day fills\s+12\/40/);
+      expect(text).toMatch(/→ chosen: cut 25 \/ tighten 0/);
+    });
   });
 });

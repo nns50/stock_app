@@ -13,6 +13,10 @@ import { dailyReturns, pearsonCorrelation } from '../../indicators/indicators';
 import { reorderByCorrelation } from './correlationSelection';
 import { regimeLabelFromProxy, backtestRegimeWeights } from './regimeWeights';
 import { DecisionConfig, TradeSignal, defaultDecisionConfig, generateSignal } from './decide';
+import { loadRegimeHistory, MlRegime } from '../regimeModel';
+import { previousTradingSession } from '../trading/marketCalendar';
+import { regimeAdjustedTargets } from './regimeTargets';
+import { highVolScoreBar } from './entryScoreGate';
 import { computeScaleIn } from './scaleIn';
 import { evaluateRiskCheck, RiskCheckContext } from './riskCheck';
 import { RiskProfileName, RegimeWeightPresets } from '../../db/autotradeConfig';
@@ -105,6 +109,12 @@ const LEGACY_BACKTEST_RISK_DEFAULTS: Record<RiskProfileName, BacktestRiskParams>
     correlationLookbackDays: 30,
     correlationThreshold: 0.7,
     correlationAwareSelectionEnabled: false,
+    // The ML regime overlay (2026-09-08): off, with the live config's own
+    // defaults for the numbers a caller switches on without overriding.
+    mlRegimeEnabled: false,
+    mlRegimeSizeCutPct: 35,
+    mlRegimeTargetTightenPct: 30,
+    mlRegimeHighVolMinSignalScore: 0,
   },
   AGGRESSIVE: {
     riskPerTradePct: 1.5,
@@ -117,6 +127,10 @@ const LEGACY_BACKTEST_RISK_DEFAULTS: Record<RiskProfileName, BacktestRiskParams>
     correlationLookbackDays: 30,
     correlationThreshold: 0.7,
     correlationAwareSelectionEnabled: false,
+    mlRegimeEnabled: false,
+    mlRegimeSizeCutPct: 35,
+    mlRegimeTargetTightenPct: 30,
+    mlRegimeHighVolMinSignalScore: 0,
   },
 };
 
@@ -135,6 +149,21 @@ export interface BacktestRiskParams {
    *  are demoted behind diverse picks before the caps bind. Mirrors the live
    *  loop; default false so an unspecified backtest matches today's behavior. */
   correlationAwareSelectionEnabled: boolean;
+  /** The ML regime overlay (2026-09-08), replayed from the shipped walk-forward
+   *  regime history: each simulated day reads the PREVIOUS trading session's
+   *  regime — the reading the live loop could have had that morning (FRED
+   *  publishes a close the next morning), never that day's own. In High
+   *  Volatility/Bearish the size cut, the target tighten and the conviction
+   *  bar apply exactly as they do live (backtestDayRegime,
+   *  backtestDayDecisionConfig, withHighVolFloor below); the intraday shock
+   *  nowcast is excluded — a daily bar knows the full range only at the
+   *  close. Default off so an unspecified backtest is byte-identical. */
+  mlRegimeEnabled: boolean;
+  mlRegimeSizeCutPct: number;
+  mlRegimeTargetTightenPct: number;
+  /** The High-Vol conviction bar stands in for the live bar as a per-day
+   *  screen floor on regime days — the backtest is one book. 0 = off. */
+  mlRegimeHighVolMinSignalScore: number;
 }
 
 /** Resolves each risk param from an explicit override on `cfg`, falling back
@@ -156,7 +185,78 @@ export function resolveBacktestRiskParams(
     correlationLookbackDays: cfg.correlationLookbackDays ?? d.correlationLookbackDays,
     correlationThreshold: cfg.correlationThreshold ?? d.correlationThreshold,
     correlationAwareSelectionEnabled: cfg.correlationAwareSelectionEnabled ?? d.correlationAwareSelectionEnabled,
+    mlRegimeEnabled: cfg.mlRegimeEnabled ?? d.mlRegimeEnabled,
+    mlRegimeSizeCutPct: cfg.mlRegimeSizeCutPct ?? d.mlRegimeSizeCutPct,
+    mlRegimeTargetTightenPct: cfg.mlRegimeTargetTightenPct ?? d.mlRegimeTargetTightenPct,
+    mlRegimeHighVolMinSignalScore: cfg.mlRegimeHighVolMinSignalScore ?? d.mlRegimeHighVolMinSignalScore,
   };
+}
+
+// ---------------------------------------------------------------------------
+// The ML regime overlay in a backtest (2026-09-08) — three helpers both
+// engines (this one and combinedBacktest.ts's equity leg) call, so the
+// regime a day reads, the target it tightens to and the floor it screens at
+// have exactly one derivation each. The live loop's own consumers are the
+// same functions underneath (regimeTriggers via the risk check,
+// regimeAdjustedTargets, highVolScoreBar).
+// ---------------------------------------------------------------------------
+
+/** The regime the live loop could have read on `day`: the walk-forward
+ *  history's label for the PREVIOUS trading session (the history is keyed by
+ *  DATA date, and FRED publishes a close the next morning), so no day is
+ *  labelled by its own close. 'unknown' — fail-open, as live: no cut, no
+ *  tighten, no bar — when the overlay is off or the history has no such
+ *  date. */
+export function backtestDayRegime(day: string, enabled: boolean, byDate: Map<string, MlRegime> | undefined): MlRegime {
+  if (!enabled || !byDate) return 'unknown';
+  return byDate.get(previousTradingSession(day)) ?? 'unknown';
+}
+
+/** decide.ts's config for the day — the target tightened by the overlay in
+ *  High Volatility/Bearish, through the same helper the loop uses. */
+export function backtestDayDecisionConfig(
+  decisionCfg: DecisionConfig,
+  p: Pick<BacktestRiskParams, 'mlRegimeEnabled' | 'mlRegimeTargetTightenPct'>,
+  dayMl: MlRegime,
+): DecisionConfig {
+  const adjusted = regimeAdjustedTargets(
+    {
+      mlRegimeEnabled: p.mlRegimeEnabled,
+      mlRegimeTargetTightenPct: p.mlRegimeTargetTightenPct,
+      targetRMultiple: decisionCfg.targetRMultiple,
+      optionsTakeProfitPct: 0,
+    },
+    dayMl,
+  );
+  return adjusted.tightened ? { ...decisionCfg, targetRMultiple: adjusted.targetRMultiple } : decisionCfg;
+}
+
+/** The screen for the day — the High-Vol conviction bar as the floor on a
+ *  regime day, binding only when it is stricter than the configured
+ *  minScore (the same "strictest bar" rule as liveEntryScoreGate). */
+export function withHighVolFloor<T extends { filters: { minScore?: number } }>(
+  screenerCfg: T,
+  p: Pick<BacktestRiskParams, 'mlRegimeEnabled' | 'mlRegimeHighVolMinSignalScore'>,
+  dayMl: MlRegime,
+): T {
+  const bar = highVolScoreBar(p, dayMl);
+  if (bar <= (screenerCfg.filters.minScore ?? 0)) return screenerCfg;
+  return { ...screenerCfg, filters: { ...screenerCfg.filters, minScore: bar } };
+}
+
+/** The date → regime map the engines replay, from the shipped walk-forward
+ *  history (server/data/regimeHistory.json). Consulted only when the overlay
+ *  is on; a missing or invalid history is a loud error naming the fix rather
+ *  than a silently untouched run. */
+export function loadMlRegimeByDate(enabled: boolean | undefined): Map<string, MlRegime> | undefined {
+  if (!enabled) return undefined;
+  const history = loadRegimeHistory();
+  if (!history) {
+    throw new Error(
+      'The ML regime overlay needs server/data/regimeHistory.json — run `npm run regime:evaluate` to generate it.',
+    );
+  }
+  return new Map(Object.entries(history.days).map(([date, d]) => [date, d.regime as MlRegime]));
 }
 
 export interface BacktestConfig extends Partial<BacktestRiskParams> {
@@ -248,6 +348,10 @@ export interface BacktestReport {
    *  rate limit) — reported so one bad symbol doesn't fail the whole request;
    *  every other symbol's result is still simulated normally. */
   errors: { symbol: string; message: string }[];
+  /** Fills whose signal day read High Volatility/Bearish under the overlay
+   *  (2026-09-08) — the share of a run the overlay actually touched, which a
+   *  cut/tighten grid needs beside its return. 0 with the overlay off. */
+  regimeDayTrades: number;
 }
 
 interface OpenPosition {
@@ -289,6 +393,8 @@ interface PendingEntry {
   quantity: number;
   riskAmount: number;
   notional: number;
+  /** The regime the signal day read under the overlay ('unknown' when off). */
+  mlRegime: MlRegime;
 }
 
 /** Exported for reuse by optionsBacktest.ts — a plain YYYY-MM-DD formatter,
@@ -420,6 +526,10 @@ export function simulateBacktest(
   cfg: BacktestConfig,
   weeklyHistoryBySymbol?: Map<string, Candle[]>,
   benchmarkCandles?: Candle[],
+  /** The walk-forward regime history by DATA date (loadMlRegimeByDate) —
+   *  read one session behind each simulated day. Ignored unless the resolved
+   *  risk params have the overlay on. */
+  mlRegimeByDate?: Map<string, MlRegime>,
 ): BacktestReport {
   const riskParams = resolveBacktestRiskParams(cfg);
   const screenerCfg = { ...defaultAutotradeScreenerConfig(), ...cfg.screenerConfig };
@@ -445,6 +555,7 @@ export function simulateBacktest(
   let equity = cfg.startingEquity;
   let openPositions: OpenPosition[] = [];
   let pendingEntries: PendingEntry[] = [];
+  let regimeDayTrades = 0;
 
   // Per-symbol resume point for indexAsOf, so a growing history isn't
   // rescanned from index 0 on every one of the three lookups below, every
@@ -529,6 +640,7 @@ export function simulateBacktest(
           notional: p.notional,
         });
         filledToday += 1;
+        if (p.mlRegime === 'high_vol_bearish') regimeDayTrades += 1;
       } else if (idx < 0 || candles![idx].time < dayMs) {
         stillPending.push(p); // no bar yet today — keep waiting
       }
@@ -704,7 +816,19 @@ export function simulateBacktest(
           benchmarkCandles ? regimeLabelFromProxy(benchmarkCandles, benchmarkIdx) : null,
         )
       : screenerCfg.weights;
-    const dayScreenerCfg = dayWeights === screenerCfg.weights ? screenerCfg : { ...screenerCfg, weights: dayWeights };
+    const weightedScreenerCfg =
+      dayWeights === screenerCfg.weights ? screenerCfg : { ...screenerCfg, weights: dayWeights };
+
+    // The ML regime overlay (2026-09-08): the regime this morning's loop could
+    // have read is YESTERDAY's data date's label (backtestDayRegime), and in
+    // High Volatility/Bearish the target is tightened and the screen floor
+    // raised through the loop's own helpers; the size cut rides the risk
+    // check's regimeTriggers below. All three are no-ops with the overlay off
+    // — an unspecified run is byte-identical. The shock nowcast is not
+    // replayed: a daily bar knows its full range only at the close.
+    const dayMl = backtestDayRegime(day, riskParams.mlRegimeEnabled, mlRegimeByDate);
+    const dayDecisionCfg = backtestDayDecisionConfig(decisionCfg, riskParams, dayMl);
+    const dayScreenerCfg = withHighVolFloor(weightedScreenerCfg, riskParams, dayMl);
 
     const candidates: { score: SymbolScore; signal: TradeSignal }[] = [];
     for (const [symbol, candles] of historyBySymbol) {
@@ -763,7 +887,7 @@ export function simulateBacktest(
         // replayed, so the pace is genuinely unknown rather than zero — levelPlan
         // treats null as "no breakout evidence" and simply caps at the wall.
         { ...picked.score, discoverySource: 'universe', direction: picked.direction, relVolPace: null },
-        decisionCfg,
+        dayDecisionCfg,
       );
       if (signal) candidates.push({ score: picked.score, signal });
     }
@@ -857,12 +981,14 @@ export function simulateBacktest(
         marketAtrPct: null,
         regimeAtrThresholdPct: 0,
         regimeSizeCutPct: 0,
-        // The ML regime overlay's triggers (2026-09-08) are inert here too —
-        // null reading, overlay off, nowcast off — until the backtest parity
-        // change carries a date→regime map into the engines.
-        mlRegime: null,
-        mlRegimeEnabled: false,
-        mlRegimeSizeCutPct: 0,
+        // The ML regime overlay (2026-09-08): the previous session's reading
+        // and the run's own cut, through the same regimeTriggers the live
+        // risk check uses — a cut of 100 refuses the entry here exactly as
+        // it does live. The nowcast stays off (no intraday range on a daily
+        // bar).
+        mlRegime: dayMl === 'unknown' ? null : dayMl,
+        mlRegimeEnabled: riskParams.mlRegimeEnabled,
+        mlRegimeSizeCutPct: riskParams.mlRegimeSizeCutPct,
         todayRangePct: null,
         regimeShockRangeRatio: 0,
       };
@@ -875,6 +1001,7 @@ export function simulateBacktest(
         quantity: result.sizing.suggestedQuantity,
         riskAmount: result.approvedRiskAmount,
         notional: result.approvedNotional,
+        mlRegime: dayMl,
       });
       runningRisk += result.approvedRiskAmount;
       runningCount += 1;
@@ -921,6 +1048,7 @@ export function simulateBacktest(
     finalEquity: equity,
     excludedSymbols: [],
     errors: [],
+    regimeDayTrades,
   };
 }
 
@@ -1141,7 +1269,8 @@ export async function runBacktest(cfg: BacktestConfig): Promise<BacktestReport> 
     (cfg.screenerConfig?.weights?.relativeStrength ?? 0) || cfg.regimeAdaptiveWeightsEnabled
       ? await loadBenchmarkBacktestHistory(screenerCfg.benchmarkSymbol, cfg.from, cfg.to)
       : undefined;
-  const report = simulateBacktest(historyBySymbol, cfg, weeklyHistoryBySymbol, benchmarkCandles);
+  const mlRegimeByDate = loadMlRegimeByDate(resolveBacktestRiskParams(cfg).mlRegimeEnabled);
+  const report = simulateBacktest(historyBySymbol, cfg, weeklyHistoryBySymbol, benchmarkCandles, mlRegimeByDate);
   return { ...report, excludedSymbols, errors };
 }
 
@@ -1179,18 +1308,21 @@ export async function runWalkForwardBacktest(cfg: WalkForwardConfig): Promise<Wa
     (cfg.screenerConfig?.weights?.relativeStrength ?? 0) || cfg.regimeAdaptiveWeightsEnabled
       ? await loadBenchmarkBacktestHistory(screenerCfg.benchmarkSymbol, cfg.from, cfg.to)
       : undefined;
+  const mlRegimeByDate = loadMlRegimeByDate(resolveBacktestRiskParams(cfg).mlRegimeEnabled);
   const outOfSampleFrom = addDays(cfg.splitDate, 1);
   const inSample = simulateBacktest(
     historyBySymbol,
     { ...cfg, from: cfg.from, to: cfg.splitDate },
     weeklyHistoryBySymbol,
     benchmarkCandles,
+    mlRegimeByDate,
   );
   const outOfSample = simulateBacktest(
     historyBySymbol,
     { ...cfg, from: outOfSampleFrom, to: cfg.to },
     weeklyHistoryBySymbol,
     benchmarkCandles,
+    mlRegimeByDate,
   );
   return { inSample, outOfSample, excludedSymbols, errors };
 }

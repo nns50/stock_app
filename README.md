@@ -283,7 +283,7 @@ npm run research -- \
   --from 2024-08-01 --to 2026-07-01 --split 2025-12-01
 ```
 
-`--experiments exits,minscore,direction,weights,rshorizon,ivrv,optexits` picks a subset;
+`--experiments exits,minscore,direction,weights,rshorizon,ivrv,optexits,mlregime` picks a subset;
 `--password` logs in first when `APP_PASSWORD` is set (add `--code <TOTP>` if MFA is
 enforced); `--out` names the JSON results file. The first
 variant pays the provider fetches, then the bar cache makes the rest local compute.
@@ -293,6 +293,14 @@ take-profit / breakeven+trailing runner, in %-of-premium terms) — are **opt-in
 in the default set**: their first run fetches option contract references and
 per-contract price bars from Polygon, far heavier than equity daily bars, so run
 them explicitly over a handful of liquid names (they share one cache).
+`mlregime` — the **ML regime overlay grid** — is opt-in too: stage 1 sweeps the size cut
+{0, 25, 35, 50, 100 = skip High Vol} × the target tighten {0, 15, 30} on the equity
+walk-forward with the overlay replayed from `server/data/regimeHistory.json` (each day
+reads the _previous_ session's regime — no lookahead), stage 2 the High-Vol conviction bar
+{off, 72, 76} at the cell stage 1 chose, and the script applies the written rule
+(`docs/MARKET_REGIME_MODEL.md` §6a: highest out-of-sample return ÷ max drawdown among
+cells keeping ≥ 75% of the baseline's return; nothing beating the baseline → OFF) and
+prints the cell that ships ON — record it in the decision log before enabling anything.
 Read `docs/STRATEGY_PLAYBOOK.md`'s backtest-reality sections before acting on a
 winner — the engine models zero slippage/commissions, and a sweep is many looks at
 one history.

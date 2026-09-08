@@ -704,6 +704,18 @@ the Python and TypeScript readings agreeing), and read `regime_sizing` in Recent
 see exactly what each entry was cut by and why. The plain-English walkthrough is
 [AUTOTRADE_RISK_SETTINGS.md](./AUTOTRADE_RISK_SETTINGS.md) §"Regime size cut".
 
+**The grid that decides the numbers (2026-09-08).** The backtest can replay the overlay
+from the walk-forward regime history — each simulated day reads the _previous_ session's
+regime, never its own — so the cut, the tighten and the conviction bar are measured out of
+sample before any is trusted live. `npm run research -- --experiments mlregime` runs it in
+two stages: size cut {0, 25, 35, 50, 100 = skip High Vol} × target tighten {0, 15, 30},
+then the conviction bar {off, 72, 76} at the cell stage 1 chose, judged by a rule written
+before the run — the highest out-of-sample return ÷ max drawdown among cells that keep at
+least 75% of the baseline's return, ties toward the smaller cut, then tighten, then floor,
+and nothing beating the baseline means the overlay stays off. The script prints the
+verdict; the cell that ships on is written into the decision log first, and the grid runs
+again after every retrain.
+
 **"Did the tighter target bank wins or cost them?" → the regime-tighten ledger (2026-09-08).**
 Once the overlay is on, paper and live both trade the tightened target, so there is no book
 running the full one beside it — but every closed stock trade's **MFE** already says how far

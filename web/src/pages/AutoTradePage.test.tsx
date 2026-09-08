@@ -1835,6 +1835,7 @@ describe('AutoTradePage', () => {
       finalEquity: 100_300,
       excludedSymbols: [],
       errors: [],
+      regimeDayTrades: 0,
     },
     stats: {
       totalTrades: 1,
@@ -1916,6 +1917,7 @@ describe('AutoTradePage', () => {
         finalEquity: 100_000,
         excludedSymbols: [],
         errors: [],
+        regimeDayTrades: 0,
         optionsSkipped: [],
       },
       stats: btRun().stats,
@@ -1936,6 +1938,59 @@ describe('AutoTradePage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Run combined backtest' }));
     await waitFor(() => expect(combinedRun).toHaveBeenCalledWith(expect.objectContaining({ directionMode: 'both' })));
+  });
+
+  it('threads the ML regime overlay checkbox into the equity and combined runs, and says how many fills it touched', async () => {
+    const eqRun = vi.spyOn(client, 'runAutotradeBacktest').mockResolvedValue({
+      ...btRun(),
+      report: { ...btRun().report, regimeDayTrades: 1 },
+    });
+    const optRun = vi.spyOn(client, 'runOptionsBacktest').mockResolvedValue({
+      report: {
+        trades: [],
+        equityCurve: [],
+        startingEquity: 100_000,
+        finalEquity: 100_000,
+        excludedSymbols: [],
+        errors: [],
+        skipped: [],
+      },
+      stats: btRun().stats,
+    });
+    const combinedRun = vi.spyOn(client, 'runCombinedBacktest').mockResolvedValue({
+      report: {
+        equityTrades: [],
+        optionsTrades: [],
+        equityCurve: [],
+        startingEquity: 100_000,
+        finalEquity: 100_000,
+        excludedSymbols: [],
+        errors: [],
+        optionsSkipped: [],
+        regimeDayTrades: 0,
+      },
+      stats: btRun().stats,
+    });
+    renderDashboard();
+    await screen.findByText('Monitoring');
+
+    fireEvent.change(screen.getByPlaceholderText('AAPL, MSFT, NVDA'), { target: { value: 'aapl' } });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'ML regime overlay' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run backtest' }));
+    await waitFor(() => expect(eqRun).toHaveBeenCalledWith(expect.objectContaining({ mlRegimeEnabled: true })));
+    expect(await screen.findByTestId('bt-regime-day-trades')).toHaveTextContent(
+      /1 fill\(s\) on High Volatility\/Bearish regime days/,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run combined backtest' }));
+    await waitFor(() => expect(combinedRun).toHaveBeenCalledWith(expect.objectContaining({ mlRegimeEnabled: true })));
+
+    // The standalone options engine does not read the overlay, so the form
+    // does not pretend it does.
+    fireEvent.click(screen.getByRole('button', { name: 'Run options backtest' }));
+    await waitFor(() => expect(optRun).toHaveBeenCalled());
+    expect(optRun.mock.calls[0][0]).not.toHaveProperty('mlRegimeEnabled');
   });
 
   it('runs a walk-forward split once a split date is set, showing both windows and their significance stats', async () => {
@@ -1983,6 +2038,7 @@ describe('AutoTradePage', () => {
           finalEquity: 100_000,
           excludedSymbols: [],
           errors: [],
+          regimeDayTrades: 0,
         },
         stats: btRun().stats,
         significance: {
@@ -2003,6 +2059,7 @@ describe('AutoTradePage', () => {
           finalEquity: 100_000,
           excludedSymbols: [],
           errors: [],
+          regimeDayTrades: 0,
         },
         stats: btRun().stats,
         significance: {
@@ -2509,6 +2566,7 @@ describe('AutoTradePage', () => {
         finalEquity: 100_800,
         excludedSymbols: [],
         errors: [],
+        regimeDayTrades: 0,
         optionsSkipped: [],
       },
       stats: {

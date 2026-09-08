@@ -261,6 +261,33 @@ for when the overlay lands; until then this row stays in the report as the stand
 Drift inside the episodes: 94% of COVID-crash sessions (as it must — the tape left every calm
 model's distribution) and 5% of 2022 sessions.
 
+### 6a. Validating the overlay — the grid and its rule
+
+The size cut, the target tighten and the High-Vol conviction bar are not enabled on the
+model's own validation above; they are enabled only on a **walk-forward grid over the
+out-of-sample regime path** (`server/data/regimeHistory.json`, this section's own product),
+run by `npm run research -- --experiments mlregime` against a running instance. Each
+simulated day reads the **previous** session's regime — the reading the live loop could
+have had that morning — never its own (`backtestDayRegime`); the intraday nowcast is
+excluded (a daily bar knows its full range only at the close); the backtest is one book, so
+the conviction bar stands in for the live bar as a screen floor on regime days.
+
+**Stage 1** is cut ∈ {0, 25, 35, 50, 100 = skip High Vol} × tighten ∈ {0, 15, 30} — 15
+cells, 0/0 the baseline with the overlay off — each reported as out-of-sample return %,
+max drawdown as a % of starting equity, their ratio, expectancy, trades, and the share of
+fills taken on regime days. **Stage 2** is the conviction bar ∈ {off, 72, 76} at the cell
+stage 1 chose, judged by the same rule against that cell.
+
+**The rule, written before the run** (`selectOverlayCell`, with its own tests): the cell
+with the highest out-of-sample return ÷ max drawdown among cells that keep at least **75%**
+of the baseline's out-of-sample return (the overlay must not win as a plain de-leveraging;
+a non-positive baseline return makes that clause "must not be worse"); ties go to the
+smaller cut, then the smaller tighten, then the lower floor; no cell beating the baseline
+on the ratio → the overlay stays **OFF**. The chosen cell goes into the config through the
+decision log in `docs/AUTOTRADING_SPEC.md` — never this document's or the request's numbers
+on their own — and the grid re-runs after every retrain (section 10). The grid has not been
+run yet; every overlay field ships at its default, off.
+
 ## 7. What it does NOT do
 
 - **It is not a direction forecast.** "Bearish" is fitted drift over the training window;

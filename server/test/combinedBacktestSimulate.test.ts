@@ -7,6 +7,7 @@ import { simulateCombinedBacktest, CombinedBacktestConfig } from '../src/service
 import { OptionContractRef } from '../src/services/autotrading/polygonOptionsClient';
 import { Candle } from '../src/providers/types';
 import { bsPrice } from '../src/options/blackScholes';
+import type { MlRegime } from '../src/services/regimeModel';
 
 const mockGetHistoricalBars = vi.mocked(getHistoricalBars);
 
@@ -143,6 +144,38 @@ describe('simulateCombinedBacktest', () => {
     expect(report.equityTrades[0].symbol).toBe('AAA');
     expect(report.equityTrades[0].entryDate).toBe(entryDay);
     expect(report.optionsTrades).toEqual([]);
+  });
+
+  it('replays the ML regime overlay on the EQUITY leg one session behind — the same helpers as the equity engine (2026-09-08)', async () => {
+    const signalDay = '2024-03-01'; // Friday; the previous session is Thursday 2024-02-29
+    const entryDay = d(signalDay, 1);
+    const historyBySymbol = new Map([['AAA', [...warmupThrough(signalDay), equityBar(entryDay)]]]);
+    const run = (over: Partial<CombinedBacktestConfig>, map?: Map<string, MlRegime>) =>
+      simulateCombinedBacktest(
+        historyBySymbol,
+        new Map(),
+        baseConfig({ symbols: ['AAA'], from: signalDay, to: entryDay, ...over }),
+        undefined,
+        undefined,
+        map,
+      );
+    const baseline = await run({});
+    expect(baseline.equityTrades).toHaveLength(1);
+    expect(baseline.regimeDayTrades).toBe(0);
+
+    const cut = await run(
+      { mlRegimeEnabled: true, mlRegimeSizeCutPct: 50 },
+      new Map([['2024-02-29', 'high_vol_bearish']]),
+    );
+    expect(cut.equityTrades[0].quantity).toBe(Math.floor(baseline.equityTrades[0].quantity / 2));
+    expect(cut.regimeDayTrades).toBe(1);
+
+    // Keyed on the signal day itself: no lookahead, nothing changes.
+    const sameDay = await run(
+      { mlRegimeEnabled: true, mlRegimeSizeCutPct: 50 },
+      new Map([['2024-03-01', 'high_vol_bearish']]),
+    );
+    expect(sameDay).toEqual(baseline);
   });
 
   it('force-closes an EQUITY leg position at the bar close once maxHoldDays elapses with neither stop nor target hit', async () => {

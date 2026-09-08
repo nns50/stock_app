@@ -2152,6 +2152,9 @@ export interface BacktestReport {
   /** Symbols whose historical-bar fetch failed — every other symbol's result
    *  is still simulated normally. */
   errors: { symbol: string; message: string }[];
+  /** Fills whose signal day read High Volatility/Bearish under the ML regime
+   *  overlay — 0 with the overlay off. */
+  regimeDayTrades: number;
 }
 
 export interface BacktestStats {
@@ -2221,6 +2224,13 @@ export interface BacktestRiskParams {
   correlationLookbackDays?: number;
   correlationThreshold?: number;
   correlationAwareSelectionEnabled?: boolean;
+  /** The ML regime overlay (2026-09-08), replayed from the walk-forward regime
+   *  history one session behind (no lookahead). The flag alone uses the live
+   *  Configuration's cut/tighten/bar; the research grid sends explicit numbers. */
+  mlRegimeEnabled?: boolean;
+  mlRegimeSizeCutPct?: number;
+  mlRegimeTargetTightenPct?: number;
+  mlRegimeHighVolMinSignalScore?: number;
 }
 
 export interface BacktestRequest extends BacktestRiskParams {
@@ -2337,6 +2347,9 @@ export interface OptionsWalkForwardRequest extends OptionsBacktestRequest {
 export interface CombinedBacktestReport {
   equityTrades: SimulatedTrade[];
   optionsTrades: SimulatedOptionsTrade[];
+  /** Equity fills whose signal day read High Volatility/Bearish under the ML
+   *  regime overlay — 0 with the overlay off. */
+  regimeDayTrades: number;
   /** ONE curve — the combined account value, not two separate ones. */
   equityCurve: BacktestEquityPoint[];
   startingEquity: number;

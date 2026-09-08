@@ -1121,9 +1121,11 @@ export async function simulateOptionsBacktest(
         marketAtrPct: null,
         regimeAtrThresholdPct: 0,
         regimeSizeCutPct: 0,
-        // The ML regime overlay's triggers (2026-09-08) are inert here too —
-        // null reading, overlay off, nowcast off — until the backtest parity
-        // change carries a date→regime map into the engines.
+        // The ML regime overlay (2026-09-08) is inert in the STANDALONE
+        // options engine by design: the overlay's evidence is the equity
+        // walk-forward grid, and the combined engine's equity leg carries it
+        // (backtest.ts's backtestDayRegime). Null reading, overlay off,
+        // nowcast off.
         mlRegime: null,
         mlRegimeEnabled: false,
         mlRegimeSizeCutPct: 0,

@@ -12,8 +12,15 @@ vi.mock('../src/services/autotrading/realEstateClassifier', () => ({
   buildUniverseSectorMap: vi.fn(() => new Map()),
 }));
 vi.mock('../src/services/autotrading/historicalData', () => ({ getHistoricalBars: vi.fn() }));
+// The regime history loader alone — the rest of regimeModel (labels the risk
+// check's detail strings read) stays real.
+vi.mock('../src/services/regimeModel', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/services/regimeModel')>()),
+  loadRegimeHistory: vi.fn(),
+}));
 
 import { isExcluded } from '../src/db/autotradeExclusions';
+import { loadRegimeHistory, RegimeHistory } from '../src/services/regimeModel';
 import { classifySector } from '../src/services/autotrading/realEstateClassifier';
 import { getHistoricalBars } from '../src/services/autotrading/historicalData';
 import {
@@ -27,11 +34,13 @@ import { Candle } from '../src/providers/types';
 const mockIsExcluded = vi.mocked(isExcluded);
 const mockClassifySector = vi.mocked(classifySector);
 const mockGetBars = vi.mocked(getHistoricalBars);
+const mockLoadRegimeHistory = vi.mocked(loadRegimeHistory);
 
 beforeEach(() => {
   mockIsExcluded.mockReset().mockReturnValue(false);
   mockClassifySector.mockReset().mockResolvedValue({ outcome: 'clear', source: 'fundamentals' });
   mockGetBars.mockReset().mockResolvedValue([]);
+  mockLoadRegimeHistory.mockReset().mockReturnValue(null);
 });
 
 const RELAXED = { filters: { minPrice: 0, minAvgVolume: 0, minRelVol: 0 } };
@@ -218,5 +227,77 @@ describe('runWalkForwardBacktest', () => {
     expect(result.excludedSymbols).toEqual([{ symbol: 'RE1', reason: 'On the real-estate exclusion list' }]);
     expect(mockGetBars).toHaveBeenCalledTimes(1);
     expect(mockGetBars).toHaveBeenCalledWith('OK1', 'daily', expect.any(String), expect.any(String));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The ML regime overlay's history (2026-09-08): consulted only with the
+// overlay on, loud when missing, and actually fed into the simulation.
+// ---------------------------------------------------------------------------
+describe('runBacktest — the ML regime overlay history', () => {
+  const signalDay = '2024-03-01';
+  const entryDay = d(signalDay, 1);
+  const targetDay = d(signalDay, 2);
+  const bars = () => [
+    ...warmupThrough(signalDay),
+    bar(entryDay),
+    bar(targetDay, { open: 101, high: 107, low: 100, close: 106 }),
+  ];
+  const day = (regime: 'high_vol_bearish' | 'sideways' | 'low_vol_bullish'): RegimeHistory['days'][string] => ({
+    regime,
+    argmax: regime,
+    p: { high_vol_bearish: 0.9, low_vol_bullish: 0.05, sideways: 0.05 },
+    held: false,
+    switched: false,
+    drift: false,
+    driftScore: null,
+    refit: '2024-01-01',
+  });
+
+  it('never consults the history with the overlay off', async () => {
+    mockGetBars.mockResolvedValue(bars());
+    const report = await runBacktest(cfg({ symbols: ['OK1'], from: signalDay, to: targetDay }));
+    expect(report.trades).toHaveLength(1);
+    expect(mockLoadRegimeHistory).not.toHaveBeenCalled();
+  });
+
+  it('names the fix when the overlay is on and the history is missing', async () => {
+    await expect(runBacktest(cfg({ mlRegimeEnabled: true }))).rejects.toThrow(/npm run regime:evaluate/);
+  });
+
+  it('feeds the history into the simulation: a High-Vol previous session with a cut of 100 takes no trade', async () => {
+    mockLoadRegimeHistory.mockReturnValue({
+      version: 'fixture',
+      method: 'fixture',
+      from: '2024-02-29',
+      to: '2024-03-01',
+      // Both sessions the fixture's simulated days read back to (the
+      // calendar-day bars keep signalling through the weekend).
+      days: { '2024-02-29': day('high_vol_bearish'), '2024-03-01': day('high_vol_bearish') },
+    });
+    mockGetBars.mockResolvedValue(bars());
+    const report = await runBacktest(
+      cfg({ symbols: ['OK1'], from: signalDay, to: targetDay, mlRegimeEnabled: true, mlRegimeSizeCutPct: 100 }),
+    );
+    expect(report.trades).toEqual([]);
+    expect(mockLoadRegimeHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it('the walk-forward loads the history once and replays it in both windows', async () => {
+    mockLoadRegimeHistory.mockReturnValue({
+      version: 'fixture',
+      method: 'fixture',
+      from: '2024-02-29',
+      to: '2024-02-29',
+      days: { '2024-02-29': day('sideways') },
+    });
+    mockGetBars.mockResolvedValue(bars());
+    const wf = await runWalkForwardBacktest({
+      ...cfg({ symbols: ['OK1'], from: signalDay, to: targetDay, mlRegimeEnabled: true, mlRegimeSizeCutPct: 100 }),
+      splitDate: entryDay,
+    });
+    // Sideways yesterday: the cut never fires, so the in-sample trade is taken.
+    expect(wf.inSample.trades).toHaveLength(1);
+    expect(mockLoadRegimeHistory).toHaveBeenCalledTimes(1);
   });
 });

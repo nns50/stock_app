@@ -17,14 +17,21 @@
 //   --symbols  a,b,c        comma-separated (required; the API caps at 50)
 //   --from/--to YYYY-MM-DD  backtest window (required; span capped at 1095 days)
 //   --split    YYYY-MM-DD   walk-forward split (required; from <= split < to)
-//   --experiments list      subset of: exits,minscore,direction,weights,rshorizon,ivrv,optexits
+//   --experiments list      subset of: exits,minscore,direction,weights,rshorizon,ivrv,optexits,mlregime
 //                           (default: the five equity sets; `ivrv` and
 //                           `optexits` are OPT-IN — they run the OPTIONS
 //                           walk-forward, whose first run fetches option
 //                           contract references and per-contract bars from
 //                           Polygon, far heavier than equity daily bars. Run
 //                           them over a HANDFUL of liquid names; they share
-//                           one cache, so the second set is cheap.)
+//                           one cache, so the second set is cheap. `mlregime`
+//                           is OPT-IN too: the ML regime overlay grid — 15
+//                           cut × tighten cells on the equity walk-forward
+//                           with the overlay replayed from the walk-forward
+//                           regime history, then the High-Vol conviction bar
+//                           at the winning cell, chosen by the rule in
+//                           docs/MARKET_REGIME_MODEL.md §6a, which this
+//                           script applies and prints.)
 //   --equity   N            starting equity (default 100000)
 //   --risk     NAME         MODERATE | AGGRESSIVE (default MODERATE)
 //   --max-concurrent N      max concurrent positions (default 3)
@@ -44,13 +51,19 @@ import {
   ALL_EXPERIMENT_NAMES,
   allZeroTrades,
   buildExperiments,
+  buildOverlayFloorStage,
   EXPERIMENT_NAMES,
   ExperimentName,
   formatDataIssues,
+  formatOverlaySelection,
   formatResultRow,
+  overlayCellLabel,
+  OverlaySelection,
   rankResults,
+  selectOverlayCell,
   SweepDataIssues,
   SweepResult,
+  SweepVariant,
   SweepWindow,
 } from '../services/autotrading/researchSweep';
 
@@ -69,15 +82,17 @@ function requireArg(name: string): string {
 }
 
 const USAGE = `npm run research -- --symbols A,B,C --from YYYY-MM-DD --to YYYY-MM-DD --split YYYY-MM-DD
-  [--experiments exits,minscore,direction,weights,rshorizon,ivrv,optexits] [--equity 100000] [--risk MODERATE]
-  [--max-concurrent 3] [--base http://localhost:3001] [--password APP_PASSWORD] [--code TOTP]
-  [--out research-results.json]
+  [--experiments exits,minscore,direction,weights,rshorizon,ivrv,optexits,mlregime] [--equity 100000]
+  [--risk MODERATE] [--max-concurrent 3] [--base http://localhost:3001] [--password APP_PASSWORD]
+  [--code TOTP] [--out research-results.json]
 
 Requires a RUNNING server (npm run dev). Symbols cap at 50, window span at 1095 days,
 and from <= split < to. The default experiment set is the five equity ones; 'ivrv'
 (IV/RV cheapness-gate ladder) and 'optexits' (options exit shapes) are opt-in because
 they run the options engine, whose first run fetches option contract data from
-Polygon — run them over a few liquid names. See this file's header comment.`;
+Polygon — run them over a few liquid names. 'mlregime' (the ML regime overlay grid,
+two stages, the written rule applied and printed) is opt-in because it is 18 runs
+and needs server/data/regimeHistory.json. See this file's header comment.`;
 
 async function main(): Promise<void> {
   if (process.argv.includes('--help')) {
@@ -161,8 +176,11 @@ async function main(): Promise<void> {
   // abort left the server grinding on an abandoned request while the next
   // variant piled on. No timeouts: the server always answers eventually.
   const patientDispatcher = new Agent({ headersTimeout: 0, bodyTimeout: 0 });
-  for (const [i, v] of variants.entries()) {
-    process.stdout.write(`[${i + 1}/${variants.length}] ${v.experiment} · ${v.label} … `);
+  /** One POST, one result — pushed onto `results` and echoed to the console.
+   *  Shared by the main sweep and the overlay grid's second stage, which
+   *  cannot be built until the first stage has answered. */
+  const runVariant = async (v: SweepVariant, progress: string): Promise<void> => {
+    process.stdout.write(`${progress} ${v.experiment} · ${v.label} … `);
     const startedAt = Date.now();
     const elapsed = () => `${Math.round((Date.now() - startedAt) / 1000)}s`;
     try {
@@ -177,12 +195,13 @@ async function main(): Promise<void> {
         results.push({
           experiment: v.experiment,
           label: v.label,
+          cell: v.cell,
           outOfSample: null,
           inSample: null,
           error: `HTTP ${res.status}: ${text}`,
         });
         console.log(`HTTP ${res.status} (${elapsed()}): ${text.slice(0, 160)}`);
-        continue;
+        return;
       }
       const json = (await res.json()) as {
         inSample: SweepWindow;
@@ -197,6 +216,7 @@ async function main(): Promise<void> {
       results.push({
         experiment: v.experiment,
         label: v.label,
+        cell: v.cell,
         outOfSample: json.outOfSample,
         inSample: json.inSample,
         dataIssues,
@@ -215,12 +235,55 @@ async function main(): Promise<void> {
       results.push({
         experiment: v.experiment,
         label: v.label,
+        cell: v.cell,
         outOfSample: null,
         inSample: null,
         error: (err as Error).message,
       });
       console.log(`failed after ${elapsed()}: ${(err as Error).message}`);
     }
+  };
+  for (const [i, v] of variants.entries()) await runVariant(v, `[${i + 1}/${variants.length}]`);
+
+  // The ML regime overlay grid's second stage (2026-09-08): apply the written
+  // rule to stage 1, then run the conviction-bar ladder at the cell it chose
+  // and apply the same rule again with that cell as the baseline. Both
+  // verdicts are printed and written to the results file; the cell that ships
+  // ON goes into docs/AUTOTRADING_SPEC.md's decision log before any config
+  // changes — this script never writes config.
+  let overlaySelection: { stage1: OverlaySelection; stage2: OverlaySelection | null; final: string | null } | null =
+    null;
+  if (experimentsArg.includes('mlregime')) {
+    const sweepBase = { symbols, from, to, splitDate, riskProfile, startingEquity, maxConcurrentPositions };
+    const stage1 = selectOverlayCell(
+      results.filter((r) => r.experiment === 'mlregime'),
+      startingEquity,
+      { baseline: { cut: 0, tighten: 0, floor: 0 } },
+    );
+    console.log(formatOverlaySelection('ML regime overlay, stage 1 — size cut × target tighten', stage1));
+    let stage2: OverlaySelection | null = null;
+    let finalCell = stage1.chosen;
+    if (stage1.chosen) {
+      const ladder = buildOverlayFloorStage(sweepBase, stage1.chosen);
+      console.log(`\nStage 2 — the High-Vol conviction bar at ${overlayCellLabel(stage1.chosen)}:`);
+      for (const [i, v] of ladder.entries()) await runVariant(v, `[${i + 1}/${ladder.length}]`);
+      stage2 = selectOverlayCell(
+        results.filter((r) => r.experiment === 'mlregime-floor'),
+        startingEquity,
+        { baseline: { ...stage1.chosen, floor: 0 } },
+      );
+      console.log(formatOverlaySelection('ML regime overlay, stage 2 — the High-Vol conviction bar', stage2));
+      finalCell = stage2.chosen ?? stage1.chosen;
+    }
+    const final = finalCell ? overlayCellLabel(finalCell) : null;
+    overlaySelection = { stage1, stage2, final };
+    console.log(
+      finalCell
+        ? `\nThe cell that ships ON, by the written rule: ${final} → mlRegimeSizeCutPct ${finalCell.cut}, ` +
+            `mlRegimeTargetTightenPct ${finalCell.tighten}, mlRegimeHighVolMinSignalScore ${finalCell.floor}. ` +
+            `Record it in docs/AUTOTRADING_SPEC.md's decision log before enabling anything.`
+        : '\nNo cell beat the baseline by the written rule — the overlay stays OFF.',
+    );
   }
 
   for (const experiment of new Set(results.map((r) => r.experiment))) {
@@ -248,6 +311,7 @@ async function main(): Promise<void> {
         generatedAt: Date.now(),
         base: { symbols, from, to, splitDate, riskProfile, startingEquity, maxConcurrentPositions },
         results,
+        overlaySelection,
       },
       null,
       2,

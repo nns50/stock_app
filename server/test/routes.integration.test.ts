@@ -2354,6 +2354,29 @@ describe('autotrade backtest routes (integration)', () => {
     expect(res.status).toBe(400);
   });
 
+  it('accepts the ML regime overlay fields, replays the shipped regime history, and rejects out-of-range numbers', async () => {
+    // The overlay on loads server/data/regimeHistory.json (shipped with the
+    // model) — a 200 here proves the loader ran, and the report carries the
+    // regime-day fill count even when nothing traded (VNQ is excluded).
+    const on = await post('/api/autotrade/backtest', {
+      ...baseBody,
+      mlRegimeEnabled: true,
+      mlRegimeSizeCutPct: 50,
+      mlRegimeTargetTightenPct: 15,
+      mlRegimeHighVolMinSignalScore: 76,
+    });
+    expect(on.status).toBe(200);
+    const body = (await on.json()) as { report: { trades: unknown[]; regimeDayTrades: number } };
+    expect(body.report.trades).toEqual([]);
+    expect(body.report.regimeDayTrades).toBe(0);
+    // The flag alone runs the live config's numbers — still a valid body.
+    expect((await post('/api/autotrade/backtest', { ...baseBody, mlRegimeEnabled: true })).status).toBe(200);
+    expect((await post('/api/autotrade/backtest', { ...baseBody, mlRegimeSizeCutPct: 101 })).status).toBe(400);
+    expect((await post('/api/autotrade/backtest', { ...baseBody, mlRegimeHighVolMinSignalScore: -1 })).status).toBe(
+      400,
+    );
+  });
+
   it('runs a walk-forward split and reports both windows with the exclusion applied to each', async () => {
     const res = await post('/api/autotrade/backtest/walk-forward', { ...baseBody, splitDate: '2024-02-01' });
     expect(res.status).toBe(200);

@@ -2263,7 +2263,16 @@ because the loop is the only caller that is always flat by the bell, so it is
   yours to do, same as the eventual live-trading flag. At most 50 symbols per run and a
   3-year maximum date span; if one symbol's historical data can't be fetched (bad ticker,
   provider rate limit), it's called out separately and excluded — the rest of the run
-  still completes.
+  still completes. An **ML regime overlay** checkbox (2026-09-08) replays the
+  Configuration's ML regime size cut, target tighten and High-Vol conviction bar from the
+  shipped walk-forward regime history — each simulated day reads the _previous_ session's
+  regime, the reading the live loop could have had that morning, never its own — so the
+  overlay can be measured before it is trusted live; the equity result then says how many
+  fills fell on High Volatility/Bearish days. The standalone options run ignores it; the
+  combined run applies it to the equity leg and cuts (but does not tighten) the options
+  leg. Needs the regime history file (`npm run regime:evaluate`). The pre-registered grid
+  that actually decides the numbers is `npm run research -- --experiments mlregime`
+  (README), by a rule written before the run (the model card, §6a).
   **Run options backtest** / **Run options walk-forward** replays the identical
   symbols/dates/profile/equity through the options overlay instead — single leg or debit
   spread, whichever the **Options strategy** setting above is set to, gated by the same

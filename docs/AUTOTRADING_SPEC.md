@@ -6464,3 +6464,47 @@ re-derived.
 - It does not change any trade, target or setting — a report, read by a person.
 - It does not measure options trades or the size cut, and it has no control group.
 - It does not run on the dashboard poll: the count is cheap, the ledger is on demand.
+
+## 2026-09-08 — backtest parity for the overlay, and the grid that decides it
+
+**What shipped.** `BacktestRiskParams` carries the overlay's four fields (`mlRegimeEnabled`
+false, cut 35, tighten 30, bar 0 — the live defaults, inert), and both equity engines
+(`backtest.ts`, `combinedBacktest.ts`'s equity leg) replay it from the walk-forward regime
+history through three shared helpers: `backtestDayRegime` reads the PREVIOUS trading session's
+label (the history is keyed by data date; FRED publishes a close the next morning — no day is
+labelled by its own close), `backtestDayDecisionConfig` tightens the day's `targetRMultiple`
+through `regimeAdjustedTargets`, and `withHighVolFloor` raises the screen's `minScore` to the
+conviction bar on a regime day through `highVolScoreBar`; the size cut rides the risk check's
+own `regimeTriggers`, so a cut of 100 refuses the entry exactly as it does live. Unknown fails
+open, the nowcast is excluded (a daily bar knows its full range only at the close), the
+combined engine's options leg is cut but not tightened (its exit rule reads the config at exit,
+not a stamp), and the standalone options engine stays inert — the overlay's evidence is the
+equity grid. `loadMlRegimeByDate` is consulted only with the overlay on and fails loudly
+without the history (`npm run regime:evaluate`). Reports carry `regimeDayTrades` (fills whose
+signal day read High Vol). The routes accept the four fields; the flag alone runs the LIVE
+config's numbers (`mlRegimeBacktestFields`, the weight-preset convention), the research grid
+sends every number. The backtest form gained the checkbox.
+
+**The grid** (`researchSweep.ts`, `npm run research -- --experiments mlregime`, opt-in): stage 1
+cut × tighten (15 cells, 0/0 byte-identical to the baseline with the overlay OFF), stage 2 the
+conviction bar {off, 72, 76} at the chosen cell. `selectOverlayCell` is the rule as code:
+highest OOS return ÷ max drawdown (% of starting equity) among cells keeping ≥ 75% of the
+baseline's OOS return; ties → smaller cut, smaller tighten, lower floor; nothing beating the
+baseline's ratio → OFF. A non-positive baseline return makes the 75% clause vacuous — a cell
+must then simply not be worse. The script prints both stages and writes the selection into its
+results file; the cell that ships ON is recorded below, in a dated row, before the config
+changes.
+
+### What this does NOT do
+
+- It does not run the grid — that needs a running instance with historical bars and the
+  regime history, and it is the operator's step; no cell has been chosen yet, so every
+  overlay field stays at its shipped default (OFF).
+- It does not replay the nowcast, the daily goal, the ledger, or the standalone options
+  engine, and it does not tighten the combined engine's options leg.
+
+### The decision-log row (filled in by the first run)
+
+| date | window / split | symbols | chosen cell | baseline ret% / DD% / ratio | chosen ret% / DD% / ratio | note                                        |
+| ---- | -------------- | ------- | ----------- | --------------------------- | ------------------------- | ------------------------------------------- |
+| —    | —              | —       | not run yet | —                           | —                         | the overlay stays OFF until this row exists |

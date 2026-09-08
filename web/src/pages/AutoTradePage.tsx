@@ -3582,6 +3582,11 @@ export default function AutoTradePage() {
   // btRiskProfile being independent of the live risk profile. Shared by all
   // three run buttons below, same as every other field in this form.
   const [btDirectionMode, setBtDirectionMode] = useState<AutotradeTradeDirectionMode>('long');
+  // The ML regime overlay in a backtest (2026-09-08): the flag alone — the
+  // route fills in the Configuration's cut/tighten/bar, so the box validates
+  // what is configured. Threaded into the equity, sweep and combined runs;
+  // the standalone options engine does not read it.
+  const [btMlRegimeEnabled, setBtMlRegimeEnabled] = useState(false);
   const [btBusy, setBtBusy] = useState(false);
   const [btErr, setBtErr] = useState<string>();
   const [btResult, setBtResult] = useState<BacktestRunResponse>();
@@ -3628,6 +3633,7 @@ export default function AutoTradePage() {
         startingEquity: btEquity,
         maxConcurrentPositions: btMaxPositions,
         directionMode: btDirectionMode,
+        mlRegimeEnabled: btMlRegimeEnabled,
       };
       if (btSplitDate) {
         setBtWfResult(await client.runAutotradeWalkForward({ ...body, splitDate: btSplitDate }));
@@ -3700,6 +3706,7 @@ export default function AutoTradePage() {
           startingEquity: btEquity,
           maxConcurrentPositions: btMaxPositions,
           directionMode: btDirectionMode,
+          mlRegimeEnabled: btMlRegimeEnabled,
           splitDate: btSplitDate,
           riskPerTradePct: v,
         });
@@ -3808,6 +3815,7 @@ export default function AutoTradePage() {
         maxConcurrentPositions: btMaxPositions,
         optionsDecisionConfig: { strategyType: optionsStrategyType },
         directionMode: btDirectionMode,
+        mlRegimeEnabled: btMlRegimeEnabled,
       };
       if (btSplitDate) {
         setCombinedBtWfResult(await client.runCombinedWalkForward({ ...body, splitDate: btSplitDate }));
@@ -7134,6 +7142,21 @@ export default function AutoTradePage() {
                   <option value="both">Both</option>
                 </select>
               </Field>
+              <Field
+                label="ML regime overlay"
+                hint="Replays the Configuration's ML regime size cut, target tighten and High-Vol conviction bar from the shipped walk-forward regime history — each simulated day reads the PREVIOUS session's regime (the reading the live loop could have had that morning), never its own. Needs server/data/regimeHistory.json. The standalone options run ignores it; the combined run applies it to the equity leg."
+              >
+                <label className="flex items-start gap-2 text-sm text-slate-300">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    aria-label="ML regime overlay"
+                    checked={btMlRegimeEnabled}
+                    onChange={(e) => setBtMlRegimeEnabled(e.target.checked)}
+                  />
+                  <span>Replay the overlay one session behind (no lookahead)</span>
+                </label>
+              </Field>
               <Field label="Starting equity ($)">
                 <NumberInput value={btEquity} onChange={setBtEquity} placeholder="e.g. 100000" />
               </Field>
@@ -7183,6 +7206,12 @@ export default function AutoTradePage() {
                   </p>
                 )}
                 <BacktestStatsGrid stats={btResult.stats} />
+                {btResult.report.regimeDayTrades > 0 && (
+                  <p className="text-[11px] text-slate-500" data-testid="bt-regime-day-trades">
+                    {btResult.report.regimeDayTrades} fill(s) on High Volatility/Bearish regime days under the ML regime
+                    overlay — read one session behind, no lookahead.
+                  </p>
+                )}
                 <BacktestEquityChart equityCurve={btResult.report.equityCurve} gradientId="btEquityPlain" />
                 <BacktestTradesTable trades={btResult.report.trades} />
               </div>

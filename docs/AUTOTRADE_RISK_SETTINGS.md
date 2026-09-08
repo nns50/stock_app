@@ -297,8 +297,11 @@ trades (a counterfactual that beats realized R with a CI excluding zero means se
 to 0 and re-run the grid; one that cannot means the tighten stays). The Auto page's goal
 card points at it once ten tightened trades have closed.
 
-Everything here is **live + paper**, like the ATR trigger; the backtest engines carry
-the overlay inert until the parity change wires it. The whole group ships **off**: do
+Everything here is **live + paper**, like the ATR trigger, and since 2026-09-08 the equity
+backtest and the combined engine's equity leg replay it from the walk-forward regime
+history one session behind (the **ML regime overlay** checkbox on the backtest form; the
+standalone options engine does not, and the combined options leg is cut but not
+tightened). The whole group ships **off**: do
 not enable it before the pre-committed rules in
 [AUTOTRADING_SPEC.md](./AUTOTRADING_SPEC.md) ("the ML regime size cut, built and left
 OFF") are met — the grid picks the cut, twenty journaled sessions with few switches,

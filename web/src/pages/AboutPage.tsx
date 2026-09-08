@@ -292,9 +292,11 @@ export default function AboutPage() {
           <strong className="text-slate-200">High-Vol conviction bar</strong> set (0 = off), a new live equity entry
           must also clear that signal score while the effective regime is High Volatility/Bearish — the bar rises where
           the size falls, a third source in the one live score gate beside the live conviction floor and the armed-day
-          bar, the strictest binding; paper keeps screening at the screen minimum. Nothing else acts on the reading. The
-          model card (docs/MARKET_REGIME_MODEL.md) has the data, the validation, the enabling rules and what it does not
-          do.
+          bar, the strictest binding; paper keeps screening at the screen minimum. Nothing else acts on the reading,
+          except the backtest: it can replay the overlay from the walk-forward regime history — each simulated day reads
+          the previous session’s regime, never its own — so the cut, the tighten and the bar are measured out of sample
+          before any is trusted live, by a rule written before the run. The model card (docs/MARKET_REGIME_MODEL.md) has
+          the data, the validation, the enabling rules and what it does not do.
         </p>
       </Section>
 
