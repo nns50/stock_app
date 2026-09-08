@@ -358,6 +358,34 @@ export function paperRealizedR(p: PaperPosition): number | null {
   return paperRealizedPnl(p) / p.riskAmount;
 }
 
+/** The regime-tighten ledger's population predicate (2026-09-08) in SQL —
+ *  the twin of services/autotrading/regimeTightenLedger.ts's
+ *  isTightenedFactor. NULL fails both comparisons, so no IS NOT NULL is
+ *  needed. The list (the ledger's rows) and the count (the dashboard's
+ *  pointer) share it, and dbAutotradePaperPositions.test.ts pins it to the
+ *  TS predicate over the boundary set. */
+const TIGHTENED_FACTOR_SQL = 'regime_target_factor > 0 AND regime_target_factor < 1';
+
+/** Closed paper trades whose target was tightened at entry, newest first —
+ *  the counterfactual MFE ledger's paper book (routes/journal.ts). */
+export function listTightenedClosedPaperPositions(limit: number): PaperPosition[] {
+  const rows = db
+    .prepare(
+      `SELECT * FROM autotrade_paper_positions WHERE status = 'closed' AND ${TIGHTENED_FACTOR_SQL} ORDER BY id DESC LIMIT ?`,
+    )
+    .all(Math.min(Math.max(limit, 1), 1000)) as Row[];
+  return rows.map(map);
+}
+
+/** How many closed paper trades carry a tightened target — a COUNT, so the
+ *  dashboard poll never loads the rows. Same predicate as the list above. */
+export function countTightenedClosedPaperPositions(): number {
+  const row = db
+    .prepare(`SELECT COUNT(*) AS n FROM autotrade_paper_positions WHERE status = 'closed' AND ${TIGHTENED_FACTOR_SQL}`)
+    .get() as { n: number };
+  return row.n;
+}
+
 export interface AddToPaperPositionInput {
   /** Shares/units added at the current price. */
   addQty: number;

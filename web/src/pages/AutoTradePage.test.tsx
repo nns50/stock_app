@@ -251,6 +251,7 @@ function dashboardFixture(overrides: Partial<AutotradeDashboard> = {}): Autotrad
     equity: 100_000,
     dailyTarget: { active: false, reached: false, giveBackArmed: false, giveBackHalted: false, entriesHalted: false },
     mlRegime: null,
+    regimeTighten: { tightenedClosedTrades: 0, paper: 0, live: 0, minForReading: 30 },
     dailyGoalEvidence: {
       avgR: null,
       rTrades: 0,
@@ -3319,6 +3320,25 @@ describe('AutoTradePage', () => {
       expect(line).toHaveTextContent(/Daily goal: none set/);
       expect(line).toHaveTextContent(/Expected day at current sizing ≈ 0\.40%/);
       expect(line).toHaveTextContent(/thin record, 7 of 20 trades, 5 of 20 active sessions/);
+    });
+
+    it('points at the regime-tighten ledger once ten tightened trades have closed', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({ regimeTighten: { tightenedClosedTrades: 12, paper: 9, live: 3, minForReading: 30 } }),
+      );
+      renderDashboard();
+      const line = await screen.findByTestId('regime-tighten-evidence');
+      expect(line).toHaveTextContent(/12 closed stock trades carry a tightened target \(9 paper, 3 live\)/);
+      expect(line).toHaveTextContent(/Journal › Analytics › Regime tighten — the pre-committed reading needs 30/);
+    });
+
+    it('stays quiet below ten tightened trades — nothing to read yet', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({ regimeTighten: { tightenedClosedTrades: 3, paper: 3, live: 0, minForReading: 30 } }),
+      );
+      renderDashboard();
+      await screen.findByTestId('daily-goal-evidence');
+      expect(screen.queryByTestId('regime-tighten-evidence')).toBeNull();
     });
 
     it('shows "no candidate checked yet" for correlated exposure before any risk-check has run', async () => {

@@ -289,6 +289,14 @@ second stage (off / 72 / 76 on regime days), not from taste.
 *Example:* floor 72, High-Vol bar 78. A 75-score signal is taken on a Sideways morning and
 refused on a High-Vol one (journaled once for the day); an 80 is taken on both.
 
+**Measuring the tighten.** Every trade carries the factor its target was tightened by, and
+Journal › Analytics › **Regime tighten** joins each closed stock trade to its excursion to
+ask whether the full, untightened target would have been reached — a counterfactual that
+takes the most optimistic case for the full target, with a pre-committed reading after 30
+trades (a counterfactual that beats realized R with a CI excluding zero means set the tighten
+to 0 and re-run the grid; one that cannot means the tighten stays). The Auto page's goal
+card points at it once ten tightened trades have closed.
+
 Everything here is **live + paper**, like the ATR trigger; the backtest engines carry
 the overlay inert until the parity change wires it. The whole group ships **off**: do
 not enable it before the pre-committed rules in

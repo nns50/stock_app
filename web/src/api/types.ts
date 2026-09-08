@@ -707,6 +707,61 @@ export interface ExcursionReport {
   resolutionMix: { intraday: number; daily: number };
 }
 
+/** One closed stock trade whose target the ML regime overlay tightened at
+ *  entry, read against its own excursion: the target as traded and the full
+ *  (untightened) one in R, whether MFE reached each, and a counterfactual R
+ *  that takes the most optimistic case for the full target. */
+export interface TightenedTradeRow {
+  positionId: number;
+  symbol: string;
+  book: 'paper' | 'live';
+  side: 'long' | 'short';
+  entryDate: string;
+  factor: number;
+  tightenedTargetR: number;
+  fullTargetR: number;
+  mfeR: number;
+  realizedR: number;
+  tightenedReached: boolean;
+  fullReached: boolean;
+  /** A tightened hit whose MFE never reached the full target. */
+  bankedWin: boolean;
+  /** fullReached ? fullTargetR : realizedR. */
+  counterfactualR: number;
+  resolution: 'intraday' | 'daily';
+}
+
+export interface RegimeTightenCoverage {
+  /** Closed stock trades stamped with a tightened target, both books. */
+  tightenedTrades: number;
+  undated: number;
+  overCap: number;
+  unavailable: number;
+  /** Tightened OPTIONS trades — counted, not measurable (their excursion is
+   *  on the underlying, not the premium). Outside the identity. */
+  optionsExcluded: number;
+}
+
+/** The counterfactual MFE ledger. n + undated + overCap + unavailable ===
+ *  coverage.tightenedTrades. */
+export interface RegimeTightenLedger {
+  n: number;
+  byBook: { paper: number; live: number };
+  tightenedReached: number;
+  fullReached: number;
+  bankedWins: number;
+  meanRealizedR: number | null;
+  meanCounterfactualR: number | null;
+  difference: { meanR: number | null; ciLow: number | null; ciHigh: number | null; resamples: number };
+  /** The pre-committed reading — 'insufficient' below minTrades. */
+  reading: 'insufficient' | 'tighten_costs' | 'tighten_holds';
+  readingDetail: string;
+  minTrades: number;
+  rows: TightenedTradeRow[];
+  coverage: RegimeTightenCoverage;
+  resolutionMix: { intraday: number; daily: number };
+}
+
 /** One live-traded fill's execution quality vs. the order's limit price. */
 export interface SlippageRow {
   positionId: number;
@@ -2612,6 +2667,16 @@ export interface SymbolCooldownState {
   until: string;
 }
 
+/** The regime-tighten ledger's population: closed stock trades stamped with a
+ *  tightened target, both books — counted on the dashboard, measured on
+ *  demand in Journal › Analytics › Regime tighten. */
+export interface RegimeTightenPopulation {
+  tightenedClosedTrades: number;
+  paper: number;
+  live: number;
+  minForReading: number;
+}
+
 export interface AutotradeDashboard {
   enabled: boolean;
   killSwitch: boolean;
@@ -2625,6 +2690,8 @@ export interface AutotradeDashboard {
   /** The goal against the record: realized edge over recent sessions and the
    *  expected day it implies at the current sizing. */
   dailyGoalEvidence: DailyGoalEvidence;
+  /** How many closed stock trades the counterfactual MFE ledger has to read. */
+  regimeTighten: RegimeTightenPopulation;
   /** Today's ML market-regime reading as the loop last computed it (never a
    *  fetch) — null before the loop has read today. */
   mlRegime: MlRegimeReading | null;

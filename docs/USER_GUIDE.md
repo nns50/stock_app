@@ -886,6 +886,21 @@ tabs of one **Analytics** button (top right) — pick a tab, the report loads on
   reason never counts, even below the stop: a deliberate sale isn't a stop execution.
   Unlike Execution quality above, manual, imported, and paper-era trades all count —
   the comparison is against your own declared stop, not a broker order.
+- **Regime tighten** (2026-09-08) — for every closed *stock* trade whose profit target the
+  **ML regime overlay tightened** at entry (the factor is stamped on the trade), joins it to
+  its excursion and asks whether the **full**, untightened target would have been reached.
+  Per trade: the target as traded and the full one in R, MFE, realized R, and a
+  **counterfactual R** that takes the most optimistic case for the full target (reached →
+  banked there with no reversal; not reached → the untightened trade did as well as this
+  one). The card reports how many tightened targets were hit, how many full targets were
+  reached, the **banked wins** (tightened hits the full target would have missed), mean
+  realized vs counterfactual R with a 95% bootstrap CI on their difference, and the
+  **pre-committed reading** once 30 trades are in: a counterfactual that beats realized R
+  with a CI excluding zero means the tighten has a real cost (set it to 0 and re-run the
+  grid); one that cannot means it stays — never the reverse, because the bound only leans
+  one way. Both books count; a tightened *options* trade is counted but not measured (its
+  excursion is on the underlying, not the premium), and like Excursions it says what it
+  left out.
 
 ### Benchmark
 
@@ -1290,7 +1305,10 @@ equally-weighted cards in the order they happened to be built:
   all scaled by the same factor entries were cut by (3 / 2 / 1 reads 1.95 / 1.3 / 0.65
   at a 35% cut), so the goal is held constant in R — the goal card shows both numbers
   and the reason, `daily_goal_scaled` journals each change, and the scale locks once the
-  guard arms or the day banks ([TUNE_FROM_TARGET.md](TUNE_FROM_TARGET.md) §6c). Leave
+  guard arms or the day banks ([TUNE_FROM_TARGET.md](TUNE_FROM_TARGET.md) §6c). Once ten
+  closed stock trades carry a tightened target, the goal card adds a line pointing at the
+  **Regime tighten** ledger (Journal › Analytics), where the tighten's counterfactual is
+  measured by a rule written in advance. Leave
   the overlay off until the enabling rules in the model card are met; the plain-English
   walkthrough with worked numbers is [AUTOTRADE_RISK_SETTINGS.md](AUTOTRADE_RISK_SETTINGS.md)
   §"Regime size cut — three triggers, one cut". Finally, **equity-curve

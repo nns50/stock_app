@@ -704,6 +704,23 @@ the Python and TypeScript readings agreeing), and read `regime_sizing` in Recent
 see exactly what each entry was cut by and why. The plain-English walkthrough is
 [AUTOTRADE_RISK_SETTINGS.md](./AUTOTRADE_RISK_SETTINGS.md) §"Regime size cut".
 
+**"Did the tighter target bank wins or cost them?" → the regime-tighten ledger (2026-09-08).**
+Once the overlay is on, paper and live both trade the tightened target, so there is no book
+running the full one beside it — but every closed stock trade's **MFE** already says how far
+it ran, and the factor it was tightened by is stamped on it, so the full target's fate is
+recorded per trade rather than argued. Journal › Analytics › **Regime tighten** joins the two:
+for each tightened trade, the target as traded and the untightened one in R, whether the
+trade's best run reached each, and a **counterfactual R** that takes the most optimistic case
+for the full target (reached → banked at the full target with no reversal; not reached → the
+untightened trade did exactly as well as this one). Read it the way it is pre-committed: after
+**30** tightened trades, a counterfactual that beats realized R with a 95% CI excluding zero
+means the tighten has a real cost — set it to 0 and re-run the grid; one that cannot is strong
+evidence to keep it. Never the reverse ("the counterfactual lost, so the tighten helped by that
+much") — the bound only leans one way, and a same-session trade measured on a daily bar leans
+the same way. **Banked wins** (tightened hits whose MFE never reached the full target) are the
+trades the tighten demonstrably converted; the full target would have exited them somewhere at
+or below that peak.
+
 ---
 
 ## Is a backtested edge real, or noise?

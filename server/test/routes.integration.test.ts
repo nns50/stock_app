@@ -3363,6 +3363,163 @@ describe('journal analysis routes tell you what they could not cover (integratio
     expect(rep.startDate === null || typeof rep.startDate === 'string').toBe(true);
     expect(typeof rep.totalRealized).toBe('number');
   });
+
+  it('regime-tighten joins every tightened trade in both books to its excursion, and says what it could not measure', async () => {
+    // The consumer of PR 5's regime_target_factor stamp: the ledger reads the
+    // factor off the row, divides the traded target back out to the full one,
+    // and asks the excursion whether each was reached.
+    db.exec('DELETE FROM autotrade_paper_positions; DELETE FROM autotrade_options_paper_positions;');
+    // Live: 100 / 95 / 107 at 0.7 — 1.4R as traded, 2R untightened; ran to
+    // 112 (the full target reached) and exited at the tightened target.
+    const live = createPosition({
+      assetType: 'stock',
+      symbol: 'TGHL',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      stopPrice: 95,
+      targetPrice: 107,
+      entryDate: '2026-06-01',
+      tags: ['live', 'autotrade'],
+      regimeTargetFactor: 0.7,
+      mlRegime: 'high_vol_bearish',
+    });
+    addExit(live.id, { quantity: 10, exitPrice: 107, exitDate: '2026-06-02' });
+    // Paper: same geometry, ran to 108 — the tightened target hit, the full
+    // one never reached: a banked win.
+    const paper = openPaperPosition({
+      symbol: 'TGHP',
+      side: 'buy',
+      quantity: 10,
+      entryPrice: 100,
+      stopPrice: 95,
+      targetPrice: 107,
+      riskAmount: 50,
+      riskProfile: 'MODERATE',
+      rationale: 'fixture',
+      regimeTargetFactor: 0.7,
+      mlRegime: 'high_vol_bearish',
+    });
+    db.prepare(
+      "UPDATE autotrade_paper_positions SET status='closed', exit_price=107, exit_at=?, exit_reason='target', entry_at=? WHERE id=?",
+    ).run(Date.parse('2026-06-02T18:00:00Z'), Date.parse('2026-06-01T15:00:00Z'), paper.id);
+    // Untightened (factor 1): not in the population at all.
+    const plain = createPosition({
+      assetType: 'stock',
+      symbol: 'TGHU',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      stopPrice: 95,
+      targetPrice: 110,
+      entryDate: '2026-06-01',
+      tags: ['live', 'autotrade'],
+      regimeTargetFactor: 1,
+    });
+    addExit(plain.id, { quantity: 10, exitPrice: 110, exitDate: '2026-06-02' });
+    // A tightened OPTIONS trade: counted as excluded, never measured.
+    const opt = openOptionsPaperPosition({
+      symbol: 'TGHO',
+      side: 'call',
+      contractSymbol: 'TGHO-fixture',
+      strike: 100,
+      expiration: '2026-08-21',
+      quantity: 1,
+      entryPrice: 3,
+      riskAmount: 300,
+      riskProfile: 'MODERATE',
+      rationale: 'fixture',
+      regimeTargetFactor: 0.7,
+    });
+    db.prepare(
+      "UPDATE autotrade_options_paper_positions SET status='closed', exit_price=4.26, exit_at=?, exit_reason='take_profit' WHERE id=?",
+    ).run(Date.now(), opt.id);
+
+    const bars = (high: number) =>
+      ['2026-06-01', '2026-06-02'].map((d) => ({
+        time: Date.parse(`${d}T16:00:00Z`),
+        open: 100,
+        high,
+        low: 99,
+        close: 101,
+        volume: 1,
+      }));
+    const candles = vi
+      .spyOn(getProvider(), 'getCandles')
+      .mockImplementation(async (symbol: string) => bars(symbol === 'TGHL' ? 112 : 108));
+    try {
+      const rep = (await getJson('/api/journal/regime-tighten')) as {
+        n: number;
+        byBook: { paper: number; live: number };
+        tightenedReached: number;
+        fullReached: number;
+        bankedWins: number;
+        meanRealizedR: number;
+        meanCounterfactualR: number;
+        difference: { meanR: number };
+        reading: string;
+        rows: {
+          symbol: string;
+          book: string;
+          factor: number;
+          tightenedTargetR: number;
+          fullTargetR: number;
+          mfeR: number;
+          realizedR: number;
+          fullReached: boolean;
+          bankedWin: boolean;
+          counterfactualR: number;
+        }[];
+        coverage: {
+          tightenedTrades: number;
+          undated: number;
+          overCap: number;
+          unavailable: number;
+          optionsExcluded: number;
+        };
+      };
+      expect(rep.n).toBe(2);
+      expect(rep.byBook).toEqual({ paper: 1, live: 1 });
+      const liveRow = rep.rows.find((r) => r.symbol === 'TGHL')!;
+      expect(liveRow).toMatchObject({
+        book: 'live',
+        factor: 0.7,
+        tightenedTargetR: 1.4,
+        fullTargetR: 2,
+        mfeR: 2.4,
+        realizedR: 1.4,
+        fullReached: true,
+        bankedWin: false,
+        counterfactualR: 2,
+      });
+      const paperRow = rep.rows.find((r) => r.symbol === 'TGHP')!;
+      expect(paperRow).toMatchObject({
+        book: 'paper',
+        factor: 0.7,
+        tightenedTargetR: 1.4,
+        fullTargetR: 2,
+        mfeR: 1.6,
+        realizedR: 1.4,
+        fullReached: false,
+        bankedWin: true,
+        counterfactualR: 1.4,
+      });
+      expect(rep.tightenedReached).toBe(2);
+      expect(rep.fullReached).toBe(1);
+      expect(rep.bankedWins).toBe(1);
+      expect(rep.meanRealizedR).toBe(1.4);
+      expect(rep.meanCounterfactualR).toBe(1.7);
+      expect(rep.difference.meanR).toBe(0.3);
+      expect(rep.reading).toBe('insufficient');
+      expect(rep.coverage).toEqual({ tightenedTrades: 2, undated: 0, overCap: 0, unavailable: 0, optionsExcluded: 1 });
+      // The identity that makes the report checkable.
+      const c = rep.coverage;
+      expect(rep.n + c.undated + c.overCap + c.unavailable).toBe(c.tightenedTrades);
+    } finally {
+      candles.mockRestore();
+      db.exec('DELETE FROM autotrade_paper_positions; DELETE FROM autotrade_options_paper_positions;');
+    }
+  });
 });
 
 describe('ML market-regime reading (integration)', () => {

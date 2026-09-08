@@ -145,6 +145,84 @@ describe('JournalAnalyticsModal', () => {
     expect(overrunSpy).toHaveBeenCalled();
   });
 
+  it('switches to Regime tighten and fetches the counterfactual ledger', async () => {
+    vi.spyOn(client, 'journalExcursions').mockResolvedValue({
+      trades: 0,
+      avgMfeR: null,
+      avgMaeR: null,
+      avgRealizedR: null,
+      capturePct: null,
+      rows: [],
+      resolutionMix: { intraday: 0, daily: 0 },
+      coverage: { closedStockTrades: 0, undated: 0, overCap: 0, unavailable: 0 },
+    });
+    const ledgerSpy = vi.spyOn(client, 'journalRegimeTighten').mockResolvedValue({
+      n: 2,
+      byBook: { paper: 1, live: 1 },
+      tightenedReached: 2,
+      fullReached: 1,
+      bankedWins: 1,
+      meanRealizedR: 1.4,
+      meanCounterfactualR: 1.7,
+      difference: { meanR: 0.3, ciLow: 0, ciHigh: 0.6, resamples: 2000 },
+      reading: 'insufficient',
+      readingDetail: '2 of 30 tightened trades measured — the pre-committed reading waits for 30.',
+      minTrades: 30,
+      rows: [
+        {
+          positionId: 1,
+          symbol: 'TGHL',
+          book: 'live',
+          side: 'long',
+          entryDate: '2026-06-01',
+          factor: 0.7,
+          tightenedTargetR: 1.4,
+          fullTargetR: 2,
+          mfeR: 2.4,
+          realizedR: 1.4,
+          tightenedReached: true,
+          fullReached: true,
+          bankedWin: false,
+          counterfactualR: 2,
+          resolution: 'daily',
+        },
+        {
+          positionId: 1,
+          symbol: 'TGHP',
+          book: 'paper',
+          side: 'long',
+          entryDate: '2026-06-01',
+          factor: 0.7,
+          tightenedTargetR: 1.4,
+          fullTargetR: 2,
+          mfeR: 1.6,
+          realizedR: 1.4,
+          tightenedReached: true,
+          fullReached: false,
+          bankedWin: true,
+          counterfactualR: 1.4,
+          resolution: 'daily',
+        },
+      ],
+      coverage: { tightenedTrades: 3, undated: 0, overCap: 0, unavailable: 1, optionsExcluded: 1 },
+      resolutionMix: { intraday: 0, daily: 2 },
+    });
+
+    render(<JournalAnalyticsModal open onClose={() => {}} />);
+    fireEvent.click(await screen.findByRole('tab', { name: 'Regime tighten' }));
+
+    expect(await screen.findByText('TGHL')).toBeInTheDocument();
+    expect(screen.getByText('TGHP')).toBeInTheDocument();
+    expect(screen.getByTestId('regime-tighten-reading')).toHaveTextContent(/Reading pending: 2 of 30 tightened trades/);
+    expect(screen.getByTestId('regime-tighten-coverage')).toHaveTextContent(
+      /Over 2 of 3 tightened trades\. 1 had no candles, stop or target/,
+    );
+    expect(screen.getByTestId('regime-tighten-options')).toHaveTextContent(/1 closed options trade/);
+    expect(screen.getByText('full target reached')).toBeInTheDocument();
+    expect(screen.getByText('banked win')).toBeInTheDocument();
+    expect(ledgerSpy).toHaveBeenCalled();
+  });
+
   it('switches to Risk of ruin, seeds from journal stats, and runs a simulation', async () => {
     vi.spyOn(client, 'journalExcursions').mockResolvedValue({
       trades: 0,

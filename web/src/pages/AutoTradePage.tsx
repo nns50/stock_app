@@ -1756,6 +1756,12 @@ function MonitoringDashboard({
 
   const dt = dash.dailyTarget;
   const ev = dash.dailyGoalEvidence;
+  // The counterfactual MFE ledger's population (2026-09-08): once ten closed
+  // stock trades carry a tightened target there is something to read, and
+  // the reading lives in Journal › Analytics › Regime tighten — a pointer,
+  // never the per-trade candle fetch, on a polled card.
+  const rt = dash.regimeTighten;
+  const REGIME_TIGHTEN_EVIDENCE_MIN = 10;
   // The goal against the record (2026-09-07): the same identity the tune
   // inverts, applied forward at the current sizing — so the goal is never
   // shown without the day the loop actually produces beside it.
@@ -1849,6 +1855,13 @@ function MonitoringDashboard({
             {expectedDayLine}
           </p>
         </div>
+      )}
+      {rt.tightenedClosedTrades >= REGIME_TIGHTEN_EVIDENCE_MIN && (
+        <p className="text-[11px] text-slate-500" data-testid="regime-tighten-evidence">
+          <span className="text-slate-400">Regime tighten:</span> {rt.tightenedClosedTrades} closed stock trades carry a
+          tightened target ({rt.paper} paper, {rt.live} live). Whether the tighter target banked wins or cost them is in
+          Journal › Analytics › Regime tighten — the pre-committed reading needs {rt.minForReading}.
+        </p>
       )}
       {dash.symbolCooldowns.length > 0 && (
         <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">

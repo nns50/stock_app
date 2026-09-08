@@ -8,6 +8,7 @@ import type {
   EntryCandidate,
   EntryStrategyConfig,
   ExcursionReport,
+  RegimeTightenLedger,
   ExitCheckRow,
   ExitRulesConfig,
   Exposure,
@@ -365,6 +366,7 @@ export const client = {
   journalToday: (date: string) => api<DayStats>(`/journal/today?date=${encodeURIComponent(date)}`),
   journalSlippage: () => api<SlippageReport>('/journal/slippage'),
   journalStopOverrun: () => api<StopOverrunReport>('/journal/stop-overrun'),
+  journalRegimeTighten: () => api<RegimeTightenLedger>('/journal/regime-tighten'),
 
   // --- data export / restore ---
   importPositions: (positions: unknown[], mode: 'merge' | 'replace') =>

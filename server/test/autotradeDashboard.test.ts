@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 import { initDb, db } from '../src/db';
 import { setAutotradeConfig, setAutotradeKillSwitch } from '../src/db/autotradeConfig';
-import { openPaperPosition } from '../src/db/autotradePaperPositions';
+import { closePaperPosition, openPaperPosition } from '../src/db/autotradePaperPositions';
+import { addExit, createPosition } from '../src/db/positions';
+import { MIN_LEDGER_TRADES } from '../src/services/autotrading/regimeTightenLedger';
 import { openOptionsPaperPosition } from '../src/db/autotradeOptionsPaperPositions';
 import { logAutotradeEvent } from '../src/db/autotradeEvents';
 import { saveLastTick } from '../src/db/autotradeLastTick';
@@ -457,6 +459,54 @@ describe('dailyGoalEvidence', () => {
     expect(e.impliedDailyGainPct).toBeCloseTo(1, 2);
     expect(e.targetOverImplied).toBe(3);
     expect(e.reliable).toBe(false); // 3 of 20 trades, 2 of 20 sessions
+  });
+});
+
+describe('regimeTighten — the counterfactual ledger’s population, counted, never fetched', () => {
+  it('counts closed STOCK trades stamped with a tightened target in both books, and nothing else', () => {
+    expect(getAutotradeDashboard().regimeTighten).toEqual({
+      tightenedClosedTrades: 0,
+      paper: 0,
+      live: 0,
+      minForReading: MIN_LEDGER_TRADES,
+    });
+
+    closePaperPosition(openPos({ symbol: 'TGHA', regimeTargetFactor: 0.7 }).id, {
+      exitPrice: 107,
+      exitReason: 'target',
+    });
+    closePaperPosition(openPos({ symbol: 'TGHB', regimeTargetFactor: 1 }).id, { exitPrice: 107, exitReason: 'target' });
+    openPos({ symbol: 'TGHC', regimeTargetFactor: 0.7 }); // still open — not a closed trade yet
+    const live = createPosition({
+      assetType: 'stock',
+      symbol: 'TGHL',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      stopPrice: 95,
+      targetPrice: 107,
+      entryDate: '2026-06-01',
+      tags: ['live', 'autotrade'],
+      regimeTargetFactor: 0.7,
+    });
+    addExit(live.id, { quantity: 10, exitPrice: 107, exitDate: '2026-06-02' });
+    createPosition({
+      assetType: 'stock',
+      symbol: 'TGHU',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      entryDate: '2026-06-01',
+      tags: ['live', 'autotrade'],
+      regimeTargetFactor: 1,
+    });
+
+    expect(getAutotradeDashboard().regimeTighten).toEqual({
+      tightenedClosedTrades: 2,
+      paper: 1,
+      live: 1,
+      minForReading: MIN_LEDGER_TRADES,
+    });
   });
 });
 

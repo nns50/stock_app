@@ -6416,3 +6416,51 @@ regime days, at the chosen cut/tighten cell) is what decides whether the bar ear
 
 The overlay's rules apply; the bar's number is the grid's stage-2 cell, set only after stage 1
 has picked the cut/tighten cell, and reviewed with the cut on every retrain.
+
+## 2026-09-08 — the counterfactual MFE ledger: measuring the tighten without a control group
+
+**What shipped.** `services/autotrading/regimeTightenLedger.ts` (pure) and
+`GET /api/journal/regime-tighten` (Journal › Analytics › Regime tighten). Every closed stock
+trade stamped `regime_target_factor` in (0, 1), paper and live, is joined to its excursion
+(`services/excursion.ts` — the same per-trade candle fetch and 50-trade cap as `/excursions`)
+and read per trade: `tightenedTargetR` is the target as traded in R of the frozen stop,
+`fullTargetR = tightenedTargetR ÷ factor` is the untightened bracket, `tightenedReached = mfeR ≥
+tightenedTargetR`, `fullReached = mfeR ≥ fullTargetR`, a `bankedWin` is a tightened hit whose MFE
+never reached the full target, and `counterfactualR = fullReached ? fullTargetR : realizedR`. The
+ledger aggregates the counts, mean realized R against mean counterfactual R, and the bootstrap
+95% CI of their per-trade difference (`significance.ts`), says what it could not cover (undated,
+over the cap, unmeasurable, and tightened OPTIONS trades — their excursion is on the underlying,
+not the premium — as `optionsExcluded`), and carries each row's bar resolution. Paper's realized R
+is `paperRealizedR` (P&L over the original risk, the app's own paper R), so a scaled-out trade's
+remaining quantity never inflates it; MFE is per share, so it is exact either way. The dashboard
+counts the same population through the same predicate (`isTightenedFactor` and
+`tightenedStockPositions` for the journal's rows, `TIGHTENED_FACTOR_SQL` for the paper COUNT and
+list, pinned to the TS predicate by a boundary test) and the goal card points at the ledger once
+ten tightened trades have closed — a count, never the candle fetch.
+
+**Why a bound, and which way it leans.** With both books under the overlay nothing trades the
+untightened target beside it, so the tighten's cost cannot be read as a difference between two
+books the way the live conviction floor's can. The favorable excursion answers "would the full
+target have been reached?" per trade, but what happened after is unknowable, so the
+counterfactual takes the most optimistic case for the full target on both branches: reached →
+banked at the full target with no reversal; not reached → the untightened trade did exactly as
+well as the tightened one, although a banked win would in truth have stayed in and exited at no
+better than its MFE. A same-session trade measured on a daily bar leans the same way (its MFE is
+that day's high). Because the bound only ever favours the full target, exactly one inference is
+drawn from it.
+
+### The pre-committed reading
+
+After **30** measured tightened trades (`MIN_LEDGER_TRADES`): if the optimistic counterfactual
+beats realized R with a bootstrap 95% CI that excludes zero, the tighten has a real cost → set
+`mlRegimeTargetTightenPct` to 0 and re-run the walk-forward grid; if it does not, the tighten is
+kept — an optimistic counterfactual that cannot beat it is strong evidence for it. The reverse
+inference ("the counterfactual lost, so the tighten helped by that much") is never drawn. The
+route reports the reading in those words (`reading`, `readingDetail`) so it is read, not
+re-derived.
+
+### What this does NOT do
+
+- It does not change any trade, target or setting — a report, read by a person.
+- It does not measure options trades or the size cut, and it has no control group.
+- It does not run on the dashboard poll: the count is cheap, the ledger is on demand.

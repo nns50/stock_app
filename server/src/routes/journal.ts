@@ -5,7 +5,19 @@ import { listPositions, Position } from '../db/positions';
 import { getIntent } from '../db/orders';
 import { computeJournalStats, realizedPnlOf } from '../services/pnl';
 import { computeDayStats } from '../services/dayGuard';
-import { aggregateExcursions, excursionForTrade, TradeExcursion } from '../services/excursion';
+import { aggregateExcursions, excursionForTrade, ExcursionInput, TradeExcursion } from '../services/excursion';
+import {
+  buildRegimeTightenLedger,
+  isTightenedFactor,
+  tightenedStockPositions,
+  tightenedTradeRow,
+  TightenedTradeInput,
+  TightenedTradeRow,
+} from '../services/autotrading/regimeTightenLedger';
+import { listTightenedClosedPaperPositions, paperRealizedPnl, paperRealizedR } from '../db/autotradePaperPositions';
+import { listOptionsPaperPositions } from '../db/autotradeOptionsPaperPositions';
+import { listLiveOptionsPositions } from '../db/autotradeLiveOptionsPositions';
+import { etTimeOfDay, etToday } from '../util/marketDate';
 import { aggregateSlippage, computeSlippage, SlippageRow } from '../services/slippage';
 import { aggregateStopOverruns, classifyStopExit, computeStopOverrun, StopOverrunRow } from '../services/stopOverrun';
 import { computeBenchmark } from '../services/benchmark';
@@ -199,6 +211,154 @@ journalRouter.get(
         undated: closedStock.length - dated.length,
         overCap: dated.length - selected.length,
         unavailable,
+      }),
+    );
+  }),
+);
+
+// The counterfactual MFE ledger for the ML regime target tighten (2026-09-08):
+// every closed stock trade stamped regime_target_factor < 1, paper and live,
+// joined to its excursion and read per trade — see regimeTightenLedger.ts's
+// header for the bound it computes and the reading it is pre-committed to.
+// Same per-trade candle fetch and cap as /excursions, so the work is bounded
+// and what it could not cover is reported, not hidden.
+const REGIME_TIGHTEN_TRADE_CAP = 50;
+
+/** A tightened trade before its excursion is known: the ledger's input minus
+ *  the excursion fields, and the excursion fetch that fills them in. */
+interface TightenedCandidate {
+  entryDate: string;
+  input: Omit<TightenedTradeInput, 'mfeR' | 'realizedR' | 'resolution'>;
+  excursionInput: ExcursionInput;
+  /** Paper's realized R is the book's own (paperRealizedR — P&L over the
+   *  ORIGINAL risk); the journal's comes from the excursion. Null = use the
+   *  excursion's. */
+  realizedR: number | null;
+}
+
+journalRouter.get(
+  '/regime-tighten',
+  asyncHandler(async (_req, res) => {
+    const live = tightenedStockPositions(listPositions({ status: 'closed' }));
+    const paper = listTightenedClosedPaperPositions(1000);
+    // Tightened OPTIONS trades exist in both options books, but their
+    // excursion would be on the underlying, not the premium — counted so the
+    // population the ledger cannot see stays visible.
+    const optionsExcluded =
+      listOptionsPaperPositions({ status: 'closed' }).filter((p) => isTightenedFactor(p.regimeTargetFactor)).length +
+      listLiveOptionsPositions({ status: 'closed' }).filter((p) => isTightenedFactor(p.regimeTargetFactor)).length;
+
+    const candidates: TightenedCandidate[] = [];
+    let undated = 0;
+    for (const p of live) {
+      if (p.entryDate === null) {
+        undated++;
+        continue;
+      }
+      // The FROZEN stop — the ledger's target R and the excursion's mfeR
+      // must share one denominator, and the ratchet mutates p.stopPrice.
+      const stop = p.initialStopPrice ?? p.stopPrice;
+      candidates.push({
+        entryDate: p.entryDate,
+        input: {
+          positionId: p.id,
+          symbol: p.symbol,
+          book: 'live',
+          side: p.side,
+          entryDate: p.entryDate,
+          entryPrice: p.entryPrice,
+          stopPrice: stop,
+          targetPrice: p.targetPrice,
+          factor: p.regimeTargetFactor,
+        },
+        excursionInput: {
+          positionId: p.id,
+          symbol: p.symbol,
+          side: p.side,
+          entryPrice: p.entryPrice,
+          quantity: p.quantity,
+          multiplier: p.multiplier,
+          stopPrice: stop,
+          realizedPnl: realizedPnlOf(p),
+          entryDate: p.entryDate,
+          exitDate: lastExitDate(p),
+          entryTime: p.entryTime,
+          exitAt: lastExitAt(p),
+        },
+        realizedR: null,
+      });
+    }
+    for (const p of paper) {
+      const entryDate = etToday(p.entryAt);
+      const stop = p.initialStopPrice ?? p.stopPrice;
+      const side = p.side === 'buy' ? 'long' : 'short';
+      candidates.push({
+        entryDate,
+        input: {
+          positionId: p.id,
+          symbol: p.symbol,
+          book: 'paper',
+          side,
+          entryDate,
+          entryPrice: p.entryPrice,
+          stopPrice: stop,
+          targetPrice: p.targetPrice,
+          factor: p.regimeTargetFactor,
+        },
+        // The row's quantity is what REMAINS after a scale-out; mfeR is per
+        // share (the quantity cancels), so the excursion is exact regardless,
+        // and realized R comes from paperRealizedR below rather than from a
+        // denominator built on the remaining quantity.
+        excursionInput: {
+          positionId: p.id,
+          symbol: p.symbol,
+          side,
+          entryPrice: p.entryPrice,
+          quantity: p.quantity,
+          multiplier: 1,
+          stopPrice: stop,
+          realizedPnl: paperRealizedPnl(p),
+          entryDate,
+          exitDate: p.exitAt == null ? null : etToday(p.exitAt),
+          entryTime: etTimeOfDay(p.entryAt),
+          exitAt: p.exitAt,
+        },
+        realizedR: paperRealizedR(p),
+      });
+    }
+    candidates.sort((a, b) => b.entryDate.localeCompare(a.entryDate));
+    const selected = candidates.slice(0, REGIME_TIGHTEN_TRADE_CAP);
+
+    const provider = getProvider();
+    const rows: TightenedTradeRow[] = [];
+    let unavailable = 0;
+    await Promise.all(
+      selected.map(async (c) => {
+        try {
+          const ex = await excursionForTrade(provider, c.excursionInput);
+          const row = ex
+            ? tightenedTradeRow({
+                ...c.input,
+                mfeR: ex.mfeR,
+                realizedR: c.realizedR ?? ex.realizedR,
+                resolution: ex.resolution,
+              })
+            : null;
+          if (row) rows.push(row);
+          else unavailable++;
+        } catch {
+          unavailable++;
+        }
+      }),
+    );
+    rows.sort((a, b) => b.entryDate.localeCompare(a.entryDate) || a.book.localeCompare(b.book));
+    res.json(
+      buildRegimeTightenLedger(rows, {
+        tightenedTrades: live.length + paper.length,
+        undated,
+        overCap: candidates.length - selected.length,
+        unavailable,
+        optionsExcluded,
       }),
     );
   }),
