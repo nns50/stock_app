@@ -6269,12 +6269,71 @@ that works and the call that does not:
 | what the patch changes | price | quantity |
 | `client_combo_order_id` | not sent | **sent** |
 
-The combo id is the most promising and the cheapest to test: naming the group
-may be exactly what makes the broker validate the whole group's take-profit /
-stop-loss balance, at which point the request's two legs do not match the
-group's three. Send the same both-legs quantity patch *without* it and see. If
-that is the cause, the fix is a one-line deletion. Failing that, separate the
-leg count from the quantity change by patching a single leg's quantity.
+### What shipped instead: the ratchet's shape, whole
+
+Picking one of those three to change would have been the sixth guess in a row.
+Every earlier one shipped the same way — a plausible reason, a unit test
+asserting the new shape, and no check on what the broker did with it:
+
+| Date | Added | Result |
+|---|---|---|
+| 09-03 | quantity only, one leg per request | 9 refusals |
+| 09-04 | + the echoed defining price | refused |
+| 09-04 | + `combo_type` | refused |
+| 09-05 | + `order_type` | refused |
+| 09-04+ | both legs in one request, + `client_combo_order_id` | 46 refusals |
+
+So the resize now stops guessing and **copies the request that works**. The
+ratchet sends the client order id and the single field it is changing —
+`webullReplaceOrder(id, { stopPrice })` — and nothing else. The resize sends the
+client order ids and `quantity`, and nothing else. No `combo_type`, no
+`order_type`, no echoed price, no combo id. Two legs stay in one request,
+because single-leg quantity modifies are what drew the original 98 refusals and
+one leg alone genuinely does unbalance the pair the broker complains about.
+
+Dropping the echoed price has a second benefit worth naming: the old payload put
+a live protective price on the wire on every partial, to "identify" a leg the
+client order id already identifies. A stale read or a typo there would have
+moved a real stop.
+
+### And the check that had to ship with it
+
+`replaced.ok` means the broker ACCEPTED the request. It does not mean the
+resting legs changed — the same distinction `verifyLegsGone` exists for on the
+cancel side. The scale-out did not draw it: it went from a 200 straight to
+selling the difference. **Had a modify ever been accepted without being applied,
+that sale would have gone out against a full-size bracket still resting, and the
+surplus sell shares are a short.**
+
+That was latent only because the request was refused 148 times out of 148. The
+moment the payload changes it stops being latent, so `verifyLegsResized` lands in
+the same commit — it re-reads the book and confirms both legs carry the new size
+*and* still carry their original prices before anything sells:
+
+- **legs unchanged** → the broker no-opped. The bracket still covers the whole
+  position, so the partial is skipped and nothing is naked. Journals
+  `live_scale_out_blocked`.
+- **legs changed into something else** — a moved price, a vanished leg, one leg
+  applied and not the other → protection nobody chose. Journals
+  `live_position_unprotected`, which pages, and sells nothing.
+
+The price half also guards the one assumption the new payload rests on: that
+`/order/replace` patches only the fields it is given. The ratchet evidences that
+in one direction (it sends a price, no quantity, and the quantity survives); the
+converse is assumed here and **checked rather than trusted**.
+
+Cancel-and-replace is exempt, deliberately — it destroys those leg ids on
+purpose and does its own verification, so checking for the old ids would condemn
+its success as a vanished leg. That exemption was found by a consumer test, not
+by reading the code.
+
+### If this one also fails
+
+Then the remaining difference from the ratchet is only the leg count and
+quantity-vs-price, and the honest conclusion is that this broker does not
+support resizing a resting combo leg at all. At that point the choice is between
+cancel-and-replace's structural naked window and per-lot brackets at entry
+(#26) — and it is a decision about which risk to take, not another payload.
 
 The comment in `webullReplaceOrders` asserted the fix as settled fact. It has
 been corrected in place, because a future reader would otherwise re-derive the

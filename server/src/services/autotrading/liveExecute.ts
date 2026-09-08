@@ -66,7 +66,7 @@ import { evaluateStagnation } from './stagnationExit';
 import { evaluateEndOfDayFlatten, evaluateEntryCutoff } from './endOfDayFlatten';
 import { evaluateStopAdjust } from './stopAdjust';
 import { evaluateScaleOut } from './scaleOut';
-import { cancelOrderForLegs, stopWasCancelled, verifyLegsGone } from './cancelReplace';
+import { cancelOrderForLegs, stopWasCancelled, verifyLegsGone, verifyLegsResized } from './cancelReplace';
 import { attributeByEntryOrder, groupExitLegsByCombo, isSingleBracket, summarizeGroups } from './bracketGroups';
 import {
   resizeAttemptSignature,
@@ -3371,13 +3371,19 @@ export async function checkLiveEquityScaleOuts(): Promise<LiveScaleOutOutcome[]>
     // The combo group id, when we have one. Persisted at placement since
     // 2026-09-04; null for any bracket opened before that, which simply sends
     // the request without it exactly as before.
-    const comboId = getLiveEntryOrderForPosition(pos.id)?.clientComboOrderId ?? undefined;
+    // Looked up for the JOURNAL only — it is deliberately not sent (see the
+    // request below). Recorded so a refusal says which group the legs belong
+    // to without implying the id went on the wire.
+    const knownComboId = getLiveEntryOrderForPosition(pos.id)?.clientComboOrderId ?? null;
 
     // A refusal here is deterministic in the request, so retrying an IDENTICAL
     // one every tick adds a broker round-trip and a journal row and no
     // information. Skip only an exact repeat — any change to the patches or the
     // group id is attempted, so a payload experiment is never suppressed.
-    const signature = resizeAttemptSignature(patches, comboId);
+    // undefined, because that is what the request now carries. The signature
+    // must describe what is SENT — otherwise the latch could suppress a payload
+    // experiment as a duplicate of a request that no longer exists.
+    const signature = resizeAttemptSignature(patches, undefined);
     const repeat = shouldSkipResize(pos.id, signature);
     if (repeat.skip) {
       outcomes.push({
@@ -3389,7 +3395,10 @@ export async function checkLiveEquityScaleOuts(): Promise<LiveScaleOutOutcome[]>
       continue;
     }
 
-    const replaced = await webullReplaceOrders(accountId, patches, comboId);
+    // No client_combo_order_id. The ratchet — the only call this endpoint has
+    // ever accepted on a resting bracket leg — does not send one, and sending
+    // it here has now drawn 46 identical refusals. See buildBracketResizePatches.
+    const replaced = await webullReplaceOrders(accountId, patches);
     let reduceFailed = replaced.ok
       ? null
       : `${resting.map((l) => l.clientOrderId).join(', ')}: ${replaced.error ?? 'replace failed'}`;
@@ -3401,10 +3410,12 @@ export async function checkLiveEquityScaleOuts(): Promise<LiveScaleOutOutcome[]>
     // failure mode — between the cancel and the new bracket the position is
     // naked — so it is a separate, deliberate decision from liveScaleOutEnabled
     // and defaults off. See cancelReplace.ts for the ordering rule.
+    let usedCancelReplace = false;
     if (reduceFailed && cfg.liveScaleOutCancelReplaceEnabled) {
       const outcome = await cancelReplaceBracket(accountId, pos, resting, keepQty, cfg);
       if (outcome.ok) {
         reduceFailed = null;
+        usedCancelReplace = true;
       } else {
         reduceFailed = `${reduceFailed}; cancel-replace also failed: ${outcome.reason}`;
       }
@@ -3428,9 +3439,10 @@ export async function checkLiveEquityScaleOuts(): Promise<LiveScaleOutOutcome[]>
           // The shapes we sent, so a repeat refusal names the field the broker
           // is unhappy with instead of just repeating its message back at us.
           sent: patches,
-          // Which group id accompanied the request, so a repeat refusal says
-          // whether it was sent at all rather than leaving that to be inferred.
-          clientComboOrderId: comboId ?? null,
+          // NOT sent since 2026-09-08 — recorded so a reader can tell the two
+          // eras apart, and so a refusal still names the group.
+          clientComboOrderIdSent: null,
+          knownComboOrderId: knownComboId,
         },
         riskProfile: cfg.riskProfile,
       });
@@ -3438,9 +3450,43 @@ export async function checkLiveEquityScaleOuts(): Promise<LiveScaleOutOutcome[]>
       continue;
     }
 
-    // The resize was ACCEPTED, so the latch has nothing left to suppress. Clear
-    // it rather than leaving a stale signature that could skip a later partial
-    // on this same position.
+    // ACCEPTED IS NOT APPLIED. Re-read the book and confirm the legs actually
+    // carry the new size, and still carry their prices, before a single share
+    // is sold against them. A 200 from the broker with a full-size bracket
+    // still resting would turn this partial into a short.
+    // Only for the DIRECT resize. Cancel-and-replace deliberately destroys these
+    // leg ids and places a fresh bracket, so checking that the old ids came back
+    // resized would condemn its success as a vanished leg — it does its own
+    // verification (verifyLegsGone) and re-brackets before selling.
+    const after = usedCancelReplace ? null : await listWebullOpenOrders(accountId);
+    const verdict = usedCancelReplace
+      ? ({ ok: true } as const)
+      : verifyLegsResized(after && after.ok ? after.orders : null, resting, keepQty);
+    if (!verdict.ok) {
+      logAutotradeEvent({
+        symbol,
+        stage: 'execution',
+        // A bracket that MOVED into a shape nobody chose is a protection
+        // problem and pages; one that did not move at all is just a partial we
+        // decline to take, and the position keeps its full-size bracket.
+        action: verdict.applied ? 'live_position_unprotected' : 'live_scale_out_blocked',
+        detail: {
+          positionId: pos.id,
+          reason: `resize accepted but not verified: ${verdict.reason}`,
+          note: verdict.applied
+            ? 'The resting bracket changed into something this code did not ask for. NOTHING was sold. Check the broker.'
+            : 'The bracket is unchanged and still covers the whole position, so the partial was skipped and nothing is unprotected.',
+          sent: patches,
+        },
+        riskProfile: cfg.riskProfile,
+      });
+      outcomes.push({ symbol, positionId: pos.id, requested: false, reason: verdict.reason });
+      continue;
+    }
+
+    // The resize was ACCEPTED and CONFIRMED, so the latch has nothing left to
+    // suppress. Clear it rather than leaving a stale signature that could skip
+    // a later partial on this same position.
     clearResizeLatch(pos.id);
 
     // --- 3. and only now sell the difference -------------------------------
