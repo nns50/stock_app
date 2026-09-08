@@ -3360,3 +3360,68 @@ describe('journal analysis routes tell you what they could not cover (integratio
     expect(typeof rep.totalRealized).toBe('number');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Re-arm a protective bracket on shares already held.
+//
+// The naked-position alarm tells the operator to "re-arm protection by hand",
+// and until 2026-09-08 there was no hand to do it with — the no-MASTER
+// standalone bracket was reachable only from the scale-out's cancel-replace,
+// behind a flag that is off.
+//
+// The guard that matters is the LAST one: a protective sell larger than the
+// position is a naked short wearing protection's clothes, and the broker's own
+// held quantity is the only honest source for it.
+// ---------------------------------------------------------------------------
+describe('autotrade standalone bracket route (integration)', () => {
+  const post = (body: unknown) =>
+    fetch(`${base}/api/autotrade/live/standalone-bracket`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  const ok = { symbol: 'SMCI', quantity: 1, stopLossPrice: 30, takeProfitPrice: 60, confirmation: 'SMCI' };
+
+  beforeEach(() => {
+    setAutotradeConfig({ liveAccountId: 'ACC1' });
+    config.trading.placeEnabled = true;
+  });
+
+  it('refuses a confirmation that is not the symbol', async () => {
+    const r = await post({ ...ok, confirmation: 'yes' });
+    expect(r.status).toBe(400);
+    expect(((await r.json()) as { error: string }).error).toMatch(/Confirmation must be the symbol/);
+  });
+
+  it('refuses with neither a take-profit nor a stop', async () => {
+    const r = await post({ symbol: 'SMCI', quantity: 1, confirmation: 'SMCI' });
+    expect(r.status).toBe(400);
+    // buildStandaloneBracketRequest returns null here; posting zero orders would
+    // read as success, so the refusal has to happen before the provider.
+    expect(((await r.json()) as { error: string }).error).toMatch(/At least one of takeProfitPrice/);
+  });
+
+  it('refuses when order placement is disabled', async () => {
+    config.trading.placeEnabled = false;
+    const r = await post(ok);
+    expect(r.status).toBe(400);
+    expect(((await r.json()) as { error: string }).error).toMatch(/placement is disabled/);
+  });
+
+  it('refuses when no live account is configured', async () => {
+    setAutotradeConfig({ liveAccountId: null });
+    const r = await post(ok);
+    expect(r.status).toBe(400);
+    expect(((await r.json()) as { error: string }).error).toMatch(/No live account/);
+  });
+
+  it('FAILS CLOSED when the broker account cannot be read', async () => {
+    // Webull is unconfigured in this suite, so this is the real unreadable-account
+    // path. It must refuse rather than fall through to a placement it cannot size
+    // against — the held-quantity guard is the only thing standing between this
+    // route and a naked short, and it needs a number to work with.
+    const r = await post(ok);
+    expect(r.status).toBe(502);
+    expect(((await r.json()) as { error: string }).error).toMatch(/Could not read the account/);
+  });
+});
