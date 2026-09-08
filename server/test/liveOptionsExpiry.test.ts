@@ -60,7 +60,16 @@ beforeEach(() => {
   mockGetProvider.mockReset();
   mockDispatch.mockClear();
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  // These tests CLOSE options positions, and a closed position is realized P&L
+  // that realizedTodayFromBook() will hand to any later file's guardrails as a
+  // loss booked today. Clearing only in beforeEach protected this file from
+  // everyone else while leaving everyone else exposed to this one — which is
+  // exactly how livePreview.test.ts started failing on daily_loss_halt for
+  // $200 it never traded.
+  db.exec('DELETE FROM autotrade_live_options_positions; DELETE FROM autotrade_events;');
+});
 
 const reviewFlags = () => listAutotradeEvents({ stage: 'execution', actions: ['live_options_expired_needs_review'] });
 

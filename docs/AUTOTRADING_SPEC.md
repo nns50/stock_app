@@ -6170,3 +6170,136 @@ symmetric. That would pin risk wherever it happens to sit whenever the edge is
 unclear — which is most of the time. The safe direction should stay easy to
 take; the asymmetry is only a defect because the *increase* side was
 unreachable, and PR #523 is what addressed that.
+
+---
+
+## 2026-09-08 — the OTOCO probe: two findings, neither of them the one it was for
+
+The plan was narrow. Place a second, standalone bracket group on a symbol that
+already carried one, and count the resting combo groups. Four legs across two
+`combo_order_id` values would have proved per-lot brackets are placeable and
+settled a design question that had been open since 09-02.
+
+The probe never got that far, and what it hit instead is more useful.
+
+### Finding 1 — `held` was never the broker's bound
+
+FCX was open: 38 shares, one combo group, a stop at 77.34 and a target at 80.05.
+A **one share** protective bracket with deliberately unreachable prices was
+refused outright:
+
+```
+OPENAPI_ORDER_NOT_SUPPORT_REVERSE_OPTION
+This order cannot be entered because it will reverse an existing position.
+You may need to close an open position, or cancel an open order, before you
+can submit this order.
+```
+
+One share against thirty-eight held is not a reversal by any reading of the
+holding alone. *"or cancel an open order"* is the half that explains it: the
+broker compares a new protective order against the shares held **minus the
+shares already committed to resting exits**. FCX had a full-size bracket
+resting, so the available quantity was zero and no protective order of any size
+could be added.
+
+Two counting rules follow, and the same book evidences both:
+
+| Scope | Rule | Evidence |
+|---|---|---|
+| Within one combo group | take the **max** leg, not the sum | a 38-share stop and a 38-share target rest together over 38 held, accepted at entry |
+| Across combo groups | **sum** them | 38 committed plus a new 1-share group was refused as a reversal |
+
+`committedProtectiveQuantity` in `providers/webull/orders.ts` implements exactly
+that, and the standalone-bracket route now refuses against `held - committed`
+with both numbers named, rather than passing a doomed order to the broker and
+relaying a string that sounds like the position is wrong.
+
+Three consequences worth stating plainly, because they decide designs:
+
+- **You cannot place a replacement bracket before cancelling the old one.**
+  Cancel-then-place is not a stylistic preference, it is the only ordering this
+  broker permits. `cancelReplaceBracket` already does it in that order, so the
+  naked window between the two is **structural**, not an implementation flaw to
+  be engineered away.
+- **The two-lot design still fits — with zero headroom.** Nineteen plus
+  nineteen over thirty-eight held is exactly the bound, not comfortably inside
+  it. A partial fill, or a race where the entry is not yet booked when the
+  second bracket goes out, refuses that bracket and leaves those shares naked.
+  Any build of it needs the second placement's failure path designed first.
+- **The probe did not refute per-lot brackets.** It sent 39 shares of exits
+  against 38 held, which the design never would. The question of whether two
+  combo groups can coexist on one symbol is still open, and answering it needs
+  either an account holding shares with no resting bracket, or the design built
+  and tried at entry.
+
+### Finding 2 — the scale-out's "fix" did not work, and nobody looked for four days
+
+Chasing the refusal into the journal turned up something worse. The 144
+`live_scale_out_blocked` events split cleanly on the day the both-legs replace
+request shipped:
+
+| Window | Refusals | Request shape |
+|---|---|---|
+| 09-02 .. 09-03 | 98 | one leg per request (the original bug) |
+| 09-04 .. 09-08 | 46 | **both legs in one request** |
+
+Same broker message on both sides of the split, verbatim: *"The number of
+take-profit orders and the number of stop-loss orders must be the same."* The
+46 later attempts span SMCI, IOT, DELL and FCX over five sessions, and each one
+sends exactly one `STOP_LOSS` and one `STOP_PROFIT` — the balance the message
+asks for. Scale-out fills to date: still **zero**.
+
+The diagnosis was right and the remedy was wrong.
+
+**But the endpoint is not broken.** FCX's stop ratcheted three times in four
+minutes the same morning — 77.34 to 77.35 to 77.41 to 77.44, all inside the same
+combo group — and `live_stop_adjust_failed` has *never* been journalled, across
+DELL, SNDK, IOT, SMCI and FCX. That path calls `webullReplaceOrder` (singular),
+which delegates to this very function with a one-element array. So
+`/order/replace` works; it refuses this particular request.
+
+That also kills the first suspect. The resting group's **FILLED MASTER** leg
+looked like the obvious culprit, and it cannot be: the MASTER is equally present
+every time the stop ratchet succeeds. Three differences remain between the call
+that works and the call that does not:
+
+| | stop ratchet (works, always) | scale-out (refused, 46/46) |
+|---|---|---|
+| legs in `modify_orders` | one | two |
+| what the patch changes | price | quantity |
+| `client_combo_order_id` | not sent | **sent** |
+
+The combo id is the most promising and the cheapest to test: naming the group
+may be exactly what makes the broker validate the whole group's take-profit /
+stop-loss balance, at which point the request's two legs do not match the
+group's three. Send the same both-legs quantity patch *without* it and see. If
+that is the cause, the fix is a one-line deletion. Failing that, separate the
+leg count from the quantity change by patching a single leg's quantity.
+
+The comment in `webullReplaceOrders` asserted the fix as settled fact. It has
+been corrected in place, because a future reader would otherwise re-derive the
+wrong conclusion from it.
+
+**The process failure is the point.** The unit tests were green throughout, and
+they were always going to be: they assert the *request shape*, which was never
+in doubt. The broker's answer to that shape was the thing in question, and only
+production could give it. This is CLAUDE.md's rule verbatim — *if a change
+should move a user-visible number, go look at that number* — and the number
+here was "scale-out fills", which sat at zero for four days while the code said
+the problem was solved.
+
+### Where this leaves the scale-out
+
+Three candidate paths, and the probe removed one of them:
+
+1. **Modify the resting legs** — 144 refusals, 0 fills, dead unless the FILLED
+   MASTER theory pans out. Not to be re-enabled on hope.
+2. **Cancel then place** (`liveScaleOutCancelReplaceEnabled`, still off) — uses
+   the place path, so Finding 2 does not touch it, and Finding 1 confirms its
+   ordering is the only legal one. Its naked window is structural.
+3. **Two brackets at entry** — untested, fits the quantity bound exactly, and
+   needs the second-placement failure path designed before any build.
+
+No config was changed. The test order was refused, so nothing rested in the
+book and there was nothing to cancel; FCX finished the probe with its original
+three legs and its protection intact.

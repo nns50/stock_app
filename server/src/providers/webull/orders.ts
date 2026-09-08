@@ -1300,6 +1300,80 @@ export interface ReplaceOrderPatch extends ReplacePatch {
 }
 
 /**
+ * How much of a holding the broker already considers SPOKEN FOR by resting
+ * protective orders.
+ *
+ * Measured against the live account on 2026-09-08, not inferred from the docs.
+ * A standalone bracket for ONE share of FCX was refused while 38 were held:
+ *
+ *   OPENAPI_ORDER_NOT_SUPPORT_REVERSE_OPTION — "This order cannot be entered
+ *   because it will reverse an existing position. You may need to close an open
+ *   position, or cancel an open order, before you can submit this order."
+ *
+ * "or cancel an open order" is the operative half. The broker is not comparing
+ * the new order against the SHARES HELD (1 <= 38 comfortably); it is comparing
+ * it against the shares held MINUS what is already committed to resting sells.
+ * FCX had a full-size bracket resting, so the available quantity was zero and
+ * no protective order of any size could be added.
+ *
+ * Two counting rules follow, and today's book evidences both:
+ *
+ *   WITHIN a combo group, take the MAX leg, not the sum. FCX rested a 38-share
+ *   STOP_LOSS and a 38-share STOP_PROFIT over 38 held and the broker accepted
+ *   it at entry. An OCO pair can only ever sell the position once.
+ *
+ *   ACROSS combo groups, SUM. 38 already committed plus a new 1-share group was
+ *   refused as a reversal, which is only true if separate groups add up.
+ *
+ * The practical consequences are worth stating because they decide designs:
+ *
+ *   - You cannot PLACE a replacement bracket before CANCELLING the old one.
+ *     Cancel-then-place is not a preference, it is the only ordering the broker
+ *     permits, and the naked window in between is structural rather than a
+ *     flaw in cancelReplaceBracket.
+ *   - Splitting one position across two brackets at entry (19 + 19 over 38)
+ *     fits this arithmetic EXACTLY, with zero headroom. A partial fill, or a
+ *     race where the entry is not yet booked, refuses the second bracket and
+ *     leaves those shares naked.
+ *
+ * Returns null when a resting leg carries no quantity: the commitment cannot be
+ * computed, and guessing it low is the direction that submits a refused — or
+ * worse, an accepted — reversing order. Callers must fail closed on null.
+ */
+export function committedProtectiveQuantity(
+  orders: WebullOpenOrder[],
+  symbol: string,
+  /** The side the PROTECTIVE legs rest on: 'sell' guards a long. */
+  exitSide: 'buy' | 'sell',
+): number | null {
+  const want = symbol.trim().toUpperCase();
+  // A terminal leg commits nothing. PARTIAL_FILLED is deliberately absent: it
+  // still rests for the remainder, and counting its full size overstates the
+  // commitment, which is the safe direction to be wrong in.
+  const TERMINAL = new Set(['FILLED', 'CANCELLED', 'CANCELED', 'REJECTED', 'EXPIRED', 'FAILED']);
+  const byGroup = new Map<string, number>();
+  let unknown = false;
+  for (const [i, o] of orders.entries()) {
+    if ((o.symbol ?? '').trim().toUpperCase() !== want) continue;
+    if (o.side !== exitSide) continue;
+    if (TERMINAL.has((o.status ?? '').toUpperCase())) continue;
+    if (typeof o.quantity !== 'number' || !Number.isFinite(o.quantity) || o.quantity < 0) {
+      unknown = true;
+      continue;
+    }
+    // A leg with no combo id is its own group — a standalone order commits its
+    // own quantity and shares nothing with anyone. Keyed by index so two of
+    // them cannot collapse into one.
+    const key = o.comboOrderId ?? `(solo-${i})`;
+    byGroup.set(key, Math.max(byGroup.get(key) ?? 0, o.quantity));
+  }
+  if (unknown) return null;
+  let total = 0;
+  for (const q of byGroup.values()) total += q;
+  return total;
+}
+
+/**
  * Modify SEVERAL orders in a single replace request.
  *
  * `modify_orders` has always been an array in Webull's API; every caller just
@@ -1311,13 +1385,54 @@ export interface ReplaceOrderPatch extends ReplacePatch {
  *
  * Which is exactly what the live scale-out did — it looped the resting legs and
  * sent one replace each. Measured 2026-09-02: 89 attempts across DELL, GTLB and
- * HPQ, every one refused, and not a single scale-out has ever executed. Sending
- * both legs together satisfies the group check.
+ * HPQ, every one refused, and not a single scale-out has ever executed.
  *
- * It also closes a real hole in the loop it replaces. That loop broke on the
- * first failure WITHOUT rolling back legs it had already modified, so a partial
- * success would leave a bracket whose take-profit covers the reduced size and
- * whose stop still covers the full one. One request cannot half-apply that way.
+ * >>> THAT DIAGNOSIS WAS RIGHT AND THE FIX DID NOT WORK. <<<
+ *
+ * This comment used to end "Sending both legs together satisfies the group
+ * check." It does not. Re-measured 2026-09-08 against the deployed app, and the
+ * journal splits cleanly on the day the both-legs request shipped:
+ *
+ *   09-02 .. 09-03   98 refusals, ONE leg per request   (the original bug)
+ *   09-04 .. 09-08   46 refusals, BOTH legs per request (this function)
+ *
+ * Same broker message, verbatim, on both sides of the split — 46 attempts over
+ * five sessions across SMCI, IOT, DELL and FCX, each one sending exactly one
+ * STOP_LOSS and one STOP_PROFIT, which is the balance the message asks for. The
+ * scale-out fill count is still zero.
+ *
+ * THE ENDPOINT ITSELF IS FINE. webullReplaceOrder (singular) delegates straight
+ * to this function with a ONE-element array, and it has never once failed:
+ * `live_stop_adjust_failed` has never been journalled, across DELL, SNDK, IOT,
+ * SMCI and FCX. FCX ratcheted 77.34 -> 77.35 -> 77.41 -> 77.44 in four minutes
+ * on 2026-09-08, every one inside the resting combo group.
+ *
+ * So a FILLED MASTER in the group is NOT the culprit, however plausible it
+ * looked — it is equally present on every ratchet that works. Three differences
+ * remain between the call that always works and the call that never does:
+ *
+ *   legs in modify_orders   one        vs  two
+ *   what the patch changes  price      vs  quantity
+ *   client_combo_order_id   not sent   vs  SENT
+ *
+ * The combo id is the cheapest to test and the most likely: naming the group is
+ * plausibly what makes the broker validate the whole group's take-profit /
+ * stop-loss balance, and the request's two legs then do not match the group's
+ * three. Send the same both-legs quantity patch WITHOUT it. If that is the
+ * cause, the fix is deleting one argument. Failing that, separate the leg count
+ * from the quantity change by patching a single leg's quantity.
+ *
+ * Do not read a passing unit test here as evidence this path works. The tests
+ * assert the REQUEST SHAPE, which was never the thing in doubt — the broker's
+ * answer to it was, and only production could give that. CLAUDE.md's rule
+ * applies exactly: if a change should move a user-visible number, go look at
+ * that number. Nobody looked for four days.
+ *
+ * The one claim below is unaffected and still true. The loop this replaced
+ * broke on the first failure WITHOUT rolling back legs it had already modified,
+ * so a partial success would leave a bracket whose take-profit covers the
+ * reduced size and whose stop still covers the full one. One request cannot
+ * half-apply that way — it just fails whole, every time, so far.
  */
 export async function webullReplaceOrders(
   accountId: string,
