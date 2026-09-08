@@ -15,7 +15,7 @@ import {
 } from '../src/providers/webull/positions';
 import { priceMap } from '../src/services/quotes';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
-import { createIntent } from '../src/db/orders';
+import { createIntent, transitionIntent } from '../src/db/orders';
 import { recordLiveExitOrder, recordLiveOrder, setLiveOrderPositionId } from '../src/db/autotradeLiveOrders';
 import { etToday } from '../src/util/marketDate';
 
@@ -1281,6 +1281,151 @@ describe('syncClosedWebullPositions vs an autotrade close already in flight', ()
     expect(JSON.parse(skipped[0].detail!)).toMatchObject({ reason: 'autotrade_exit_in_flight' });
     // And it must NOT have been booked at a fabricated price.
     expect(listAutotradeEvents({ actions: ['position_reconciled_from_broker'] })).toHaveLength(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // A FILLED exit must stop pinning its position (2026-09-08).
+  //
+  // listPendingLiveOrders deliberately keeps a filled exit row alive while its
+  // position is open, so reconcileLiveOrders can still work with it. Reading
+  // that as "a close is in flight" is circular: the position stays open because
+  // this sync defers, the sync defers because the row is pending, and the row is
+  // pending because the position is open. This branch has no streak bound, so
+  // nothing breaks the cycle.
+  //
+  // It was unreachable until a PARTIAL exit existed. A FULL exit's reconcile
+  // closes the position, which drops the row out of the pending list. A partial
+  // books its slice and correctly leaves the position open — and pins it from
+  // then on. The first live cancel-and-replace scale-out ran on 2026-09-08 and
+  // NOK 600 was stuck within minutes: 80 shares stopped out at the broker,
+  // journal still showing them open an hour later, holding one of three
+  // concurrency slots.
+  // -------------------------------------------------------------------------
+  it('closes a position whose PARTIAL exit already filled — a booked exit is not in flight', async () => {
+    const p = createPosition({
+      assetType: 'stock',
+      symbol: 'NOK',
+      side: 'long',
+      quantity: 240,
+      entryPrice: 10.73,
+      entryDate: etToday(),
+      tags: ['live', 'autotrade'],
+      accountId: 'ACC1',
+    });
+    // The scale-out banked 160 and left 80 running — the exit is DONE, and the
+    // position is open for a legitimate reason.
+    addExit(p.id, { quantity: 160, exitPrice: 10.78, exitDate: etToday(), exitReason: 'partial' });
+    const intent = createIntent(
+      {
+        symbol: 'NOK',
+        assetKind: 'stock',
+        side: 'sell',
+        openClose: 'close',
+        quantity: 160,
+        orderType: 'limit',
+        limitPrice: 10.75,
+      },
+      'cid-nok-partial',
+    );
+    recordLiveExitOrder({ intentId: intent.id, symbol: 'NOK', riskProfile: 'MODERATE', positionId: p.id });
+    for (const st of ['validated', 'confirmed', 'submitted', 'acknowledged', 'filled'] as const)
+      transitionIntent(intent.id, st);
+    mockPositions([]); // the remaining 80 stopped out too — broker holds nothing
+
+    await syncClosedWebullPositions('ACC1'); // first miss
+    await syncClosedWebullPositions('ACC1'); // confirmed — must close HERE
+
+    expect(getPosition(p.id)!.status).toBe('closed');
+  });
+
+  it('still defers while that exit is genuinely IN FLIGHT — the 2026-08-24 guard is intact', async () => {
+    // The fix must not reopen the VALE bug: an exit the loop placed and the
+    // broker filled, before our own reconcile booked it, still belongs to
+    // whoever placed it.
+    const p = createPosition({
+      assetType: 'stock',
+      symbol: 'NOK',
+      side: 'long',
+      quantity: 240,
+      entryPrice: 10.73,
+      entryDate: etToday(),
+      tags: ['live', 'autotrade'],
+      accountId: 'ACC1',
+    });
+    const intent = createIntent(
+      {
+        symbol: 'NOK',
+        assetKind: 'stock',
+        side: 'sell',
+        openClose: 'close',
+        quantity: 240,
+        orderType: 'limit',
+        limitPrice: 10.75,
+      },
+      'cid-nok-inflight',
+    );
+    recordLiveExitOrder({ intentId: intent.id, symbol: 'NOK', riskProfile: 'MODERATE', positionId: p.id });
+    transitionIntent(intent.id, 'validated');
+    transitionIntent(intent.id, 'confirmed');
+    transitionIntent(intent.id, 'submitted'); // placed, NOT yet booked
+    mockPositions([]);
+
+    await syncClosedWebullPositions('ACC1');
+    await syncClosedWebullPositions('ACC1');
+
+    expect(getPosition(p.id)!.status).toBe('open');
+    expect(
+      listAutotradeEvents({ actions: ['position_reconcile_skipped'] }).some(
+        (e) => JSON.parse(e.detail!).reason === 'autotrade_exit_in_flight',
+      ),
+    ).toBe(true);
+  });
+
+  it('announces a defer that has run OVERDUE, once, instead of staying silent', async () => {
+    // justConfirmed fires only on the sync that first crosses the miss
+    // threshold. A position that spends its early syncs in the bracket branch
+    // and only later falls through to this one logs nothing here, ever — which
+    // is how NOK 600 sat deferred for an hour with a journal showing only a
+    // "streak 2" row written 60 minutes earlier.
+    const p = createPosition({
+      assetType: 'stock',
+      symbol: 'NOK',
+      side: 'long',
+      quantity: 240,
+      entryPrice: 10.73,
+      entryDate: etToday(),
+      tags: ['live', 'autotrade'],
+      accountId: 'ACC1',
+    });
+    const intent = createIntent(
+      {
+        symbol: 'NOK',
+        assetKind: 'stock',
+        side: 'sell',
+        openClose: 'close',
+        quantity: 240,
+        orderType: 'limit',
+        limitPrice: 10.75,
+      },
+      'cid-nok-overdue',
+    );
+    recordLiveExitOrder({ intentId: intent.id, symbol: 'NOK', riskProfile: 'MODERATE', positionId: p.id });
+    transitionIntent(intent.id, 'validated');
+    transitionIntent(intent.id, 'confirmed');
+    transitionIntent(intent.id, 'submitted'); // in flight, never books
+    mockPositions([]);
+
+    // Run well past the stuck threshold.
+    for (let i = 0; i < 14; i += 1) await syncClosedWebullPositions('ACC1');
+
+    const overdue = listAutotradeEvents({ actions: ['position_reconcile_skipped'] })
+      .map((e) => JSON.parse(e.detail!) as { reason: string; overdue?: boolean; streak?: number })
+      .filter((d) => d.reason === 'autotrade_exit_in_flight' && d.overdue);
+    // Exactly once — the streak passes THROUGH the value, it does not linger.
+    expect(overdue).toHaveLength(1);
+    expect(overdue[0].streak).toBe(10);
+    // And the position is still deferred: this reports, it does not act.
+    expect(getPosition(p.id)!.status).toBe('open');
   });
 
   // 2026-09-04: the guard above covers a closing order the loop PLACED
