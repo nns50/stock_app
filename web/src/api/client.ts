@@ -513,6 +513,8 @@ export const client = {
     repeatEntrySizeCutPct?: number;
     tradeDirection?: AutotradeTradeDirectionMode;
     minRelVol?: number;
+    relVolUsePaceScoring?: boolean;
+    relVolPaceTarget?: number;
     requireWeeklyTrendAlignment?: boolean;
     relativeStrengthWeight?: number;
     benchmarkSymbol?: string;

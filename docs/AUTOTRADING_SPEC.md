@@ -6620,3 +6620,97 @@ iterates.
 The live-path tests measure their own full-size baseline rather than hardcoding
 a share count: live probation is halving the same orders, and a literal would
 quietly start asserting the probation factor the day either number moves.
+
+---
+
+## Relative-volume PACE scoring (2026-09-08)
+
+`relVolUsePaceScoring` (default `false`) and `relVolPaceTarget` (default `2.5`).
+
+### The gap this closes
+
+`minRelVolPace` replaced raw relative volume for the entry **gate** on
+2026-08-25. The **score** was never touched, so `scoreRelVol` still reads raw
+`relVolume` — today's cumulative volume over an average FULL day, which climbs
+mechanically through the session.
+
+The consequence, measured on the live book: **8 of 15 entries scored exactly 0**
+on the relative-volume component, which carries **20% of the weight** by
+default. Not because those names were quiet — because before roughly midday
+almost nothing can reach `relVolTarget` (2×), so the component says
+"unremarkable" about every stock in the market at the same time. At 10:47 ET on
+2026-08-25 the median of 261 scored symbols read `0.10` and exactly one reached
+`1.0`.
+
+### The scoring
+
+`scale01(relVolPace, 1.0, relVolPaceTarget)`.
+
+The floor is **1.0 pace, not 0.5**. A stock at 1.0 is keeping up with the median
+stock, which half the universe does by definition, so it earns nothing. That is
+a different number in a different unit from the raw branch's 0.5 floor, and the
+two must never be swapped — hence `PACE_UNREMARKABLE` as a named constant beside
+a comment saying so.
+
+`relVolPaceTarget` is likewise **not** `relVolTarget`. One is a multiple of the
+market's current pace, the other a multiple of the symbol's own 20-day average;
+both are plain positive numbers, so reading the wrong one would be silent. The
+default 2.5 puts full marks at about the 95th percentile of the pace
+distribution — the same "clearly unusual, not merely above average" place
+`relVolTarget` occupies in its own units.
+
+**Falls back to the raw measure when the pace is unmeasurable** (fewer than
+`MIN_PACE_SAMPLES` = 20 usable symbols this tick, or no `relVolume` for this
+symbol) — never to 0. Scoring 0 is precisely what this change exists to stop
+doing, and a thin tick reintroducing it under a different cause would be no
+better.
+
+### Ordering: why the screen now scores after the fetch loop, not inside it
+
+The pace needs the universe median, and the median needs every symbol's
+`relVolume` — so **no symbol can be scored until all of them have been read**.
+`computeIndicators` therefore always sets `relVolPace: null` (it sees one symbol
+and cannot know better), the fetch loop retains each snapshot, and scoring runs
+once afterwards. Snapshots are flat objects of ~17 numbers; holding 560 of them
+is nothing next to the candle arrays already live during the fetch.
+
+`selectFromSnapshot` is the single implementation of "score this snapshot, pick
+a direction, else record a rejection", called for both scorings. Two copies that
+agree today would drift, and the drift would be invisible in the worst possible
+way: flag-on and flag-off differing for reasons unrelated to the flag, in the
+middle of the measurement meant to decide whether to keep the flag on.
+
+### Why a flag, and why it ships off
+
+Turning this on rescales the entire score distribution. `liveMinSignalScore`
+(72) was fitted to the **raw** distribution against realized P&L in PR #44 —
+enabling pace scoring without re-fitting that floor moves the live entry gate
+without anyone deciding to.
+
+So the flag is off **and both scorings are computed every tick**, with one
+aggregate row journaled as `relvol_pace_scoring_shadow`:
+
+| field | meaning |
+|---|---|
+| `enabled` | which scoring is live |
+| `universeMedian` | the denominator; `null` when unmeasurable |
+| `compared` | scored symbols, **including those that failed filters** |
+| `relVolComponentZeroRaw` / `…Pace` | the headline: how many score 0 on the component under each |
+| `meanTotalDelta` | mean change in total score |
+| `wouldNewlyPass` / `wouldNewlyFail` | the **set** change — an average can be flat while the candidate set turns over completely |
+
+One row per tick, not one per symbol: `excluded_re`'s per-tick volume is already
+an open question (task #43), and this must not add to it.
+
+The counts cover **every scored symbol, not just the survivors**. Restricting
+them to candidates would measure the component exactly where the rest of the
+score already carried the symbol through, and would report a shrinking sample as
+the score floor rises — the moment the measurement matters most.
+
+### Deciding it
+
+Read a few sessions of `relvol_pace_scoring_shadow`. If `wouldNewlyPass` and
+`wouldNewlyFail` are both small the change is cosmetic and the flag is not worth
+the risk. If the set turns over materially, then `liveMinSignalScore` has to be
+re-fitted against the pace-scored distribution **before** the flag goes on — not
+after.

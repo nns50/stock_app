@@ -447,6 +447,25 @@ export interface AutotradeConfig {
    *  mean the same thing at any hour, and cancels market-wide quiet/busy days.
    *  0 = off (raw minRelVol alone). */
   minRelVolPace: number;
+  /** Score the relative-volume COMPONENT on pace instead of raw relVolume
+   *  (indicators/screener.ts — ScreenerConfig.relVolUsePaceScoring). Default
+   *  false. minRelVolPace above replaced the raw measure for the entry GATE;
+   *  this is the same replacement for the SCORE, which that change never
+   *  touched — 8 of 15 live entries scored exactly 0 on a component carrying
+   *  20% of the weight, because before midday nothing can reach relVolTarget.
+   *
+   *  OFF by default because turning it on rescales the score distribution, and
+   *  liveMinSignalScore (72) was fitted to the RAW distribution against
+   *  realized P&L — enabling this without re-fitting that floor silently moves
+   *  the live entry gate. The screen journals the shift every tick either way
+   *  (`relvol_pace_scoring_shadow`), so the decision can be made on data
+   *  BEFORE the flag ever changes an entry. */
+  relVolUsePaceScoring: boolean;
+  /** Full marks for the relative-volume component at this multiple of the
+   *  MARKET's current pace, when relVolUsePaceScoring is on. Units: pace
+   *  multiple (1.0 = the median stock) — NOT the same unit as the screener's
+   *  relVolTarget, which is a multiple of the symbol's own 20-day average. */
+  relVolPaceTarget: number;
   /** Minimum move TODAY in the trade's direction, % (a long needs +this, a
    *  short -this). 0 = off. The screener is largely POSITIONAL — momentum
    *  averages today's change with distance from both MAs, and `trend` scores
@@ -1127,6 +1146,8 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     sessionBufferMinutes: 15,
     earningsBlackoutDays: 0,
     minRelVolPace: 0,
+    relVolUsePaceScoring: false,
+    relVolPaceTarget: 2.5,
     minChangePct: 0,
     momentumIntradayOnly: false,
     macroEventBlackoutHours: 0,
@@ -1389,6 +1410,9 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     sessionBufferMinutes: posInt(input.sessionBufferMinutes, d.sessionBufferMinutes),
     earningsBlackoutDays: posInt(input.earningsBlackoutDays, d.earningsBlackoutDays),
     minRelVolPace: nonNeg(input.minRelVolPace, d.minRelVolPace),
+    relVolUsePaceScoring:
+      typeof input.relVolUsePaceScoring === 'boolean' ? input.relVolUsePaceScoring : d.relVolUsePaceScoring,
+    relVolPaceTarget: nonNeg(input.relVolPaceTarget, d.relVolPaceTarget),
     minChangePct: nonNeg(input.minChangePct, d.minChangePct),
     momentumIntradayOnly:
       typeof input.momentumIntradayOnly === 'boolean' ? input.momentumIntradayOnly : d.momentumIntradayOnly,

@@ -604,6 +604,8 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
         },
         weights: resolveScoringWeights(config, regimeLabel),
         momentumIntradayOnly: config.momentumIntradayOnly,
+        relVolUsePaceScoring: config.relVolUsePaceScoring,
+        relVolPaceTarget: config.relVolPaceTarget,
         benchmarkSymbol: config.benchmarkSymbol,
         relativeStrengthLookbackDays: config.relativeStrengthLookbackDays,
       },

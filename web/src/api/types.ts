@@ -1421,6 +1421,14 @@ export interface AutotradeConfig {
   optionsStagnationMinMovePct: number;
   optionsDisasterStopPct: number;
   minRelVolPace: number;
+  /** Score the relative-volume COMPONENT on pace instead of raw relVolume.
+   *  Default false — turning it on rescales the score distribution that
+   *  liveMinSignalScore was fitted to. */
+  relVolUsePaceScoring: boolean;
+  /** Full marks for that component at this multiple of the MARKET's current
+   *  pace (1.0 = the median stock). A different unit from the screener's own
+   *  relVolTarget, which is a multiple of the symbol's 20-day average. */
+  relVolPaceTarget: number;
   minChangePct: number;
   momentumIntradayOnly: boolean;
   endOfDayFlattenMinutes: number;

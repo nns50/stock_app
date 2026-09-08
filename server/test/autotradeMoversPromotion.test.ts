@@ -39,6 +39,7 @@ function candidate(symbol: string, discoverySource: DiscoverySource = 'movers'):
       atr: 2,
       atrPct: 3,
       relVolume: null,
+      relVolPace: null,
       avgVolume: null,
       volume: null,
       gapPct: null,

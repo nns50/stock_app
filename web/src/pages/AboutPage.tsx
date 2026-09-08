@@ -29,7 +29,7 @@ const COMPONENTS: { name: string; weight: number; what: string }[] = [
   {
     name: 'Rel. Volume',
     weight: 20,
-    what: 'Today’s volume ÷ its recent average. 0.5× scores 0, the target (2×) scores 100 — unusual participation scores higher.',
+    what: 'Today’s volume ÷ its recent average. 0.5× scores 0, the target (2×) scores 100 — unusual participation scores higher. Optionally scored on PACE instead — see below.',
   },
   {
     name: 'RSI',
@@ -176,6 +176,34 @@ export default function AboutPage() {
         <p className="text-xs text-slate-500">
           Filters (price, average volume, RSI band, trend alignment — daily and weekly) are applied separately — a
           symbol can score well yet be flagged as not passing your filters, with the reasons shown.
+        </p>
+        <p className="mt-2">
+          <strong className="text-slate-200">Relative volume, or relative-volume PACE</strong> (auto-trade config, off
+          by default). Raw relative volume is today&rsquo;s <em>cumulative</em> volume over an average <em>full</em>{' '}
+          day, so it climbs through the session on its own: at 10:47 ET the median stock read{' '}
+          <span className="tabular-nums">0.10</span> and one symbol in 261 reached{' '}
+          <span className="tabular-nums">1.0</span>. A fixed target on it is therefore wrong at every hour but one, and
+          before roughly midday almost nothing can reach the <span className="tabular-nums">2×</span> target — the
+          component scores 0 for a reason that has nothing to do with the stock. On the live book, 8 of 15 entries
+          scored exactly 0 on it, on 20% of the weight.
+        </p>
+        <p className="mt-2">
+          Pace divides by the{' '}
+          <strong className="text-slate-200">universe&rsquo;s median relative volume this tick</strong>, which by
+          definition is the fraction of a normal day&rsquo;s volume elapsed. The component then scores{' '}
+          <span className="tabular-nums">1.0×</span> (keeping up with the market — unremarkable, half the universe is
+          above it) at 0 and the pace target (default <span className="tabular-nums">2.5×</span>) at 100, and means the
+          same thing at 10:00 as at 15:30. The two targets are in <em>different units</em> and are separate settings.
+          When the pace cannot be measured — fewer than 20 usable symbols this tick, or no volume for the symbol — it
+          falls back to the raw measure rather than to zero.
+        </p>
+        <p className="mt-2">
+          It ships <strong className="text-slate-200">off</strong>, and the screen journals a{' '}
+          <code>relvol_pace_scoring_shadow</code> row every tick regardless — how many names score zero under each
+          scoring, the mean change in total, and how many candidates each scoring lets through that the other does not.
+          The reason for measuring first rather than simply switching: turning it on rescales the whole score
+          distribution, and the live entry floor was fitted to the <em>raw</em> distribution against realized P&amp;L,
+          so enabling it without re-fitting that floor would move the entry gate silently.
         </p>
         <p className="mt-2">
           <strong className="text-slate-200">Regime-adaptive weights</strong> (auto-trade config, off by default) let

@@ -2854,6 +2854,8 @@ export default function AutoTradePage() {
   const [expectancyMinMultiplierDraft, setExpectancyMinMultiplierDraft] = useState<number | undefined>();
   const [expectancyMaxMultiplierDraft, setExpectancyMaxMultiplierDraft] = useState<number | undefined>();
   const [minRelVolDraft, setMinRelVolDraft] = useState<number | undefined>();
+  const [relVolUsePaceScoring, setRelVolUsePaceScoring] = useState(false);
+  const [relVolPaceTargetDraft, setRelVolPaceTargetDraft] = useState<number | undefined>();
   const [minPriceDraft, setMinPriceDraft] = useState<number | undefined>();
   const [minAvgVolumeDraft, setMinAvgVolumeDraft] = useState<number | undefined>();
   const [moversDiscoveryEnabled, setMoversDiscoveryEnabled] = useState(true);
@@ -2989,6 +2991,8 @@ export default function AutoTradePage() {
     sync('expectancyMinMultiplier', setExpectancyMinMultiplierDraft);
     sync('expectancyMaxMultiplier', setExpectancyMaxMultiplierDraft);
     sync('minRelVol', setMinRelVolDraft);
+    sync('relVolUsePaceScoring', setRelVolUsePaceScoring);
+    sync('relVolPaceTarget', setRelVolPaceTargetDraft);
     sync('minPrice', setMinPriceDraft);
     sync('minAvgVolume', setMinAvgVolumeDraft);
     sync('moversDiscoveryEnabled', setMoversDiscoveryEnabled);
@@ -3099,6 +3103,8 @@ export default function AutoTradePage() {
     expectancyMaxMultiplier?: number;
     tradeDirection?: AutotradeTradeDirectionMode;
     minRelVol?: number;
+    relVolUsePaceScoring?: boolean;
+    relVolPaceTarget?: number;
     minPrice?: number;
     minAvgVolume?: number;
     moversDiscoveryEnabled?: boolean;
@@ -5077,6 +5083,56 @@ export default function AutoTradePage() {
                         onClick={() => minRelVolDraft != null && saveConfig({ minRelVol: minRelVolDraft })}
                         disabled={
                           minRelVolDraft == null || minRelVolDraft < 0 || minRelVolDraft === config.data?.minRelVol
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <label className="flex items-start gap-2 text-sm sm:col-span-2">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={relVolUsePaceScoring}
+                      onChange={(e) => saveConfig({ relVolUsePaceScoring: e.target.checked })}
+                    />
+                    <span>
+                      Score relative volume on PACE
+                      <span className="block text-[11px] text-slate-500">
+                        Off by default. Raw relative volume is today&apos;s cumulative volume over an average FULL day,
+                        so it climbs through the session on its own — before about midday almost nothing can reach the
+                        target and the component scores 0 for reasons unrelated to the stock. On the live book 8 of 15
+                        entries scored exactly 0 on it, and it carries 20% of the score&apos;s weight. Pace divides by
+                        the universe&apos;s median relative volume this tick, so 2× means the same thing at 10:00 and
+                        15:30 — the same replacement the relative-volume pace FLOOR already made for the entry gate.
+                        Leave it off until you have read the shift: the screen journals a{' '}
+                        <code>relvol_pace_scoring_shadow</code> row every tick either way, and turning this on rescales
+                        the whole distribution that <strong>Live min signal score</strong> was fitted to.
+                      </span>
+                    </span>
+                  </label>
+                  <Field
+                    label="Rel-vol pace target (×)"
+                    hint="Full marks for the relative-volume component at this multiple of the market's current pace, when pace scoring is on. 1.0 is the median stock, which scores zero by definition. Default 2.5 — roughly the 95th percentile. Not the same unit as Min relative volume above, which is a multiple of the symbol's own average."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={relVolPaceTargetDraft}
+                        onChange={setRelVolPaceTargetDraft}
+                        min={0}
+                        step={0.1}
+                        ariaLabel="Rel-vol pace target (×)"
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save rel-vol pace target"
+                        onClick={() =>
+                          relVolPaceTargetDraft != null && saveConfig({ relVolPaceTarget: relVolPaceTargetDraft })
+                        }
+                        disabled={
+                          relVolPaceTargetDraft == null ||
+                          relVolPaceTargetDraft < 0 ||
+                          relVolPaceTargetDraft === config.data?.relVolPaceTarget
                         }
                       >
                         Save

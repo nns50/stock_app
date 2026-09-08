@@ -1347,6 +1347,23 @@ equally-weighted cards in the order they happened to be built:
   `excluded_rel_vol_pace` with the pace, the floor and the median it was divided
   by, so any figure can be checked rather than taken on faith; when too few
   symbols are scored to estimate a median it fails **open**),
+  **score relative volume on pace** (2026-09-08, off by default — the same
+  replacement, applied to the *score* rather than the entry gate. The
+  relative-volume scoring component reads raw relative volume, which is why it
+  scored **exactly 0 for 8 of 15 live entries** on 20% of the weight: before
+  roughly midday almost nothing can reach the 2× target, so the component says
+  "unremarkable" about every stock in the market at once. On pace it scores 1.0×
+  — keeping up with the market, which half the universe does by definition — at
+  0 and **rel-vol pace target (×)** (default 2.5, roughly the 95th percentile) at
+  100. The two targets are in different units and are separate settings. When the
+  pace can't be measured it falls back to the raw measure rather than to zero.
+  It ships **off** and the screen journals a `relvol_pace_scoring_shadow` row
+  every tick either way — how many names score zero under each scoring, the mean
+  change in total, and how many candidates each one lets through that the other
+  doesn't — so you can read the shift *before* enabling it. That matters because
+  turning it on rescales the whole score distribution, and **live min signal
+  score** was fitted to the raw distribution against realized P&L, so enabling it
+  without re-fitting that floor moves the live entry gate silently),
   **min move today (%)** (2026-08-25 — a candidate must have moved at least this far
   in the trade's own direction *today*: a long needs +this, a short −this. 0 = off. The
   rest of the screener is largely positional — momentum averages today's change with the
