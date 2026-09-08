@@ -1964,7 +1964,12 @@ because the loop is the only caller that is always flat by the bell, so it is
   position is unprotected while this app still shows a stop price against it. Every cycle the
   loop asks the one question the broker can answer — is there a resting exit-side order on that
   symbol? — for each live **stock** position opened with a bracket, and alerts on any that has
-  none. It only ever **reports**: placing a replacement stop automatically would risk a second
+  none. Before it alerts it asks a second question — **does the broker still hold the
+  shares?** — because a stop that has just *filled* leaves exactly the same empty book as a
+  stop that was never accepted. Zero held means the position closed and the alert is skipped;
+  any shares still held with no stop under them is the real thing and pages. If that account
+  read fails the alert still fires, but says the held count is unconfirmed rather than claiming
+  it. It only ever **reports**: placing a replacement stop automatically would risk a second
   stop on the same position if the check simply failed to see the first, and two stops on one
   position sell it twice. Re-arm by hand at the broker. (Options are excluded on purpose:
   Webull only allows DAY orders on the option sell side, so an option bracket's exits

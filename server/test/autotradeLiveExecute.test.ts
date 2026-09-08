@@ -1665,13 +1665,21 @@ describe('adoptOrphanedLivePositions', () => {
   // orders, so the precise question is answerable — and it matters, because a
   // bracket has TWO exit legs and only one of them is protection.
   // -------------------------------------------------------------------------
-  async function agedProtectionCandidate(symbol = 'AAPL') {
+  async function agedProtectionCandidate(symbol = 'AAPL', heldAtBroker = 10) {
     await pendingEntryFor(symbol);
     insertOrphan(symbol, ['webull']);
     adoptOrphanedLivePositions();
     const pos = listPositions({ status: 'open', symbol })[0];
     db.prepare('UPDATE positions SET created_at = ? WHERE id = ?').run(Date.now() - 60 * 60 * 1000, pos.id);
     setAutotradeConfig({ liveAccountId: 'ACC1' });
+    // From 2026-09-08 the alarm asks whether the shares are still HELD before
+    // it pages, so every protection test has to say what the broker holds.
+    // Defaulting to 10 keeps the existing cases meaning what they always meant:
+    // a position that is really there, really missing its stop.
+    mockAccountState.mockResolvedValue({
+      ...okAccountState,
+      state: { ...okAccountState.state, currentPositionQty: heldAtBroker },
+    } as Awaited<ReturnType<typeof webullAccountState>>);
     return pos;
   }
   const restingLeg = (over: Record<string, unknown>) => ({
@@ -1703,6 +1711,86 @@ describe('adoptOrphanedLivePositions', () => {
     const detail = JSON.parse(unprotectedEvents()[0].detail ?? '{}') as Record<string, unknown>;
     expect(detail.restingExitLegs).toBe(1);
     expect(String(detail.reason)).toMatch(/TAKE-PROFIT leg is still resting.*but its STOP is not/s);
+  });
+
+  // -------------------------------------------------------------------------
+  // NO RESTING STOP IS NOT THE SAME AS NAKED (2026-09-08).
+  //
+  // A bracket whose stop has just FILLED shows zero resting exit legs — exactly
+  // what a bracket that was never accepted shows. On 09-08 this alarm paged on
+  // SMCI at 13:52:45 telling the operator to re-arm protection by hand, and that
+  // position's stop was booked 75 seconds later at 40.77. Nothing had ever been
+  // unprotected.
+  //
+  // This is the pager. A false page on every stop fill trains the operator to
+  // ignore the one case it exists for.
+  // -------------------------------------------------------------------------
+  it('does NOT page when the broker holds nothing — the stop filled, it is not naked', async () => {
+    await agedProtectionCandidate('AAPL', 0);
+    vi.mocked(listWebullOpenOrders).mockResolvedValueOnce({ ok: true, orders: [] });
+
+    const outcomes = await checkLiveBracketProtection();
+
+    expect(outcomes[0]).toMatchObject({ symbol: 'AAPL', protectedAtBroker: false, heldAtBroker: 0 });
+    expect(String(outcomes[0].unknown)).toMatch(/the position is closed, not unprotected/);
+    expect(unprotectedEvents()).toHaveLength(0);
+  });
+
+  it('DOES page when the shares are still held and no stop rests', async () => {
+    // The case the alarm exists for, and it must survive the fix above.
+    await agedProtectionCandidate('AAPL', 10);
+    vi.mocked(listWebullOpenOrders).mockResolvedValueOnce({ ok: true, orders: [] });
+
+    const outcomes = await checkLiveBracketProtection();
+
+    expect(outcomes[0]).toMatchObject({ protectedAtBroker: false, heldAtBroker: 10 });
+    expect(unprotectedEvents()).toHaveLength(1);
+    const detail = JSON.parse(unprotectedEvents()[0].detail ?? '{}') as Record<string, unknown>;
+    expect(detail.heldAtBroker).toBe(10);
+    expect(String(detail.reason)).toMatch(/broker confirms 10 share\(s\) still held, so this is real/);
+  });
+
+  it('pages on a PARTIAL fill — the shares that remain really have no stop', async () => {
+    // 4 of 10 sold, 6 still held with nothing under them. Treating "quantity
+    // changed" as "position closed" would leave those 6 silently naked.
+    await agedProtectionCandidate('AAPL', 6);
+    vi.mocked(listWebullOpenOrders).mockResolvedValueOnce({ ok: true, orders: [] });
+
+    expect((await checkLiveBracketProtection())[0]).toMatchObject({ protectedAtBroker: false, heldAtBroker: 6 });
+    expect(unprotectedEvents()).toHaveLength(1);
+  });
+
+  it('pages FAIL-LOUD when the account cannot be read, and says the held count is unconfirmed', async () => {
+    // Not knowing is not the same as knowing it is fine. For a protection alarm
+    // the safe direction is to wake someone — but the message must not claim a
+    // confirmation it does not have.
+    await agedProtectionCandidate('AAPL', 10);
+    mockAccountState.mockResolvedValue({ ok: false, error: 'broker down' } as Awaited<
+      ReturnType<typeof webullAccountState>
+    >);
+    vi.mocked(listWebullOpenOrders).mockResolvedValueOnce({ ok: true, orders: [] });
+
+    const outcomes = await checkLiveBracketProtection();
+
+    expect(outcomes[0]).toMatchObject({ protectedAtBroker: false, heldAtBroker: null });
+    expect(unprotectedEvents()).toHaveLength(1);
+    expect(String(JSON.parse(unprotectedEvents()[0].detail ?? '{}').reason)).toMatch(
+      /account read FAILED, so it is NOT confirmed/,
+    );
+  });
+
+  it('never asks the account about a position that still HAS its stop', async () => {
+    // The read is lazy on purpose: one account call per position about to page,
+    // not one per position per tick. Every healthy position returns before it.
+    await agedProtectionCandidate('AAPL', 10);
+    mockAccountState.mockClear();
+    vi.mocked(listWebullOpenOrders).mockResolvedValueOnce({
+      ok: true,
+      orders: [restingLeg({ comboType: 'STOP_LOSS', orderType: 'STOP_LOSS', stopPrice: 95 })],
+    });
+
+    expect((await checkLiveBracketProtection())[0]).toMatchObject({ protectedAtBroker: true });
+    expect(mockAccountState).not.toHaveBeenCalled();
   });
 
   it('reports a resting STOP as protected', async () => {
