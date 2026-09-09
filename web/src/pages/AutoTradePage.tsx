@@ -2850,6 +2850,7 @@ export default function AutoTradePage() {
   const [liveMinSignalScoreDraft, setLiveMinSignalScoreDraft] = useState<number | undefined>();
   const [stagnationExitMinutesDraft, setStagnationExitMinutesDraft] = useState<number | undefined>();
   const [stagnationExitMinRDraft, setStagnationExitMinRDraft] = useState<number | undefined>();
+  const [stagnationExitRequiresScarcity, setStagnationExitRequiresScarcity] = useState(false);
   const [expectancyMinTradesDraft, setExpectancyMinTradesDraft] = useState<number | undefined>();
   const [expectancyMinMultiplierDraft, setExpectancyMinMultiplierDraft] = useState<number | undefined>();
   const [expectancyMaxMultiplierDraft, setExpectancyMaxMultiplierDraft] = useState<number | undefined>();
@@ -2987,6 +2988,7 @@ export default function AutoTradePage() {
     sync('liveMinSignalScore', setLiveMinSignalScoreDraft);
     sync('stagnationExitMinutes', setStagnationExitMinutesDraft);
     sync('stagnationExitMinR', setStagnationExitMinRDraft);
+    sync('stagnationExitRequiresScarcity', setStagnationExitRequiresScarcity);
     sync('expectancyMinTrades', setExpectancyMinTradesDraft);
     sync('expectancyMinMultiplier', setExpectancyMinMultiplierDraft);
     sync('expectancyMaxMultiplier', setExpectancyMaxMultiplierDraft);
@@ -3098,6 +3100,7 @@ export default function AutoTradePage() {
     liveMinSignalScore?: number;
     stagnationExitMinutes?: number;
     stagnationExitMinR?: number;
+    stagnationExitRequiresScarcity?: boolean;
     expectancyMinTrades?: number;
     expectancyMinMultiplier?: number;
     expectancyMaxMultiplier?: number;
@@ -5580,6 +5583,28 @@ export default function AutoTradePage() {
                       </button>
                     </div>
                   </Field>
+                  <label className="flex items-start gap-2 text-sm sm:col-span-2">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={stagnationExitRequiresScarcity}
+                      onChange={(e) => saveConfig({ stagnationExitRequiresScarcity: e.target.checked })}
+                    />
+                    <span>
+                      Only scratch when the slot is scarce
+                      <span className="block text-[11px] text-slate-500">
+                        Off by default. The stagnation exit&apos;s justification is &quot;recycle the slot for fresh
+                        signals&quot;, and on the live book that held in only 7 of 31 firings — the other 24 fired while
+                        the book was below <strong>Max concurrent positions</strong>, paying the spread to close a trade
+                        at flat when the next signal could have opened anyway. It was the dominant exit at 30 of 52
+                        closes, averaging −0.036R. With this on, a stagnant position is only scratched when the book is
+                        at the concurrency cap or the aggregate risk budget has no room for another full-size entry;
+                        otherwise it keeps its optionality and the journal records a{' '}
+                        <code>stagnation_exit_held_slot_free</code> row. Leave it off until the paper book — which has
+                        run without the stagnation exit since 2026-09-08 — has ~2 weeks of closes to compare.
+                      </span>
+                    </span>
+                  </label>
                   <Field
                     label="Breakeven trigger (R-multiple)"
                     hint="Once unrealized gain reaches this many R, move the stop to exactly the entry price — a one-time move, never applied if it would loosen the current stop. 0 disables it. Paper and backtest only; live positions are untouched."

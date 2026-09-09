@@ -221,6 +221,7 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     liveMinSignalScore: 0,
     stagnationExitMinutes: 0,
     stagnationExitMinR: 0.5,
+    stagnationExitRequiresScarcity: false,
     liveOptionsFatFingerPct: 10,
     liveOptionsProbationTrades: 20,
     liveOptionsProbationSizeMultiplier: 0.5,

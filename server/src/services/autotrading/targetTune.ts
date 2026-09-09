@@ -713,6 +713,9 @@ export const NEVER_TUNED_KEYS = [
   'finishLineMinSignalScore',
   'minRelVolPace',
   'relVolUsePaceScoring',
+  // Slot-scarcity gate on the stagnation exit — a policy question about WHEN a
+  // rule applies, not an aggressiveness dial the target solve should move.
+  'stagnationExitRequiresScarcity',
   'relVolPaceTarget',
   'minChangePct',
   'momentumIntradayOnly',

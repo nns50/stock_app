@@ -285,6 +285,69 @@ describe('checkLiveEquityTimeExits', () => {
   });
 
   // -------------------------------------------------------------------------
+  // The slot-scarcity gate (2026-09-09, task #41), asserted at the CONSUMER.
+  // stagnationExit.ts's own tests prove the decision; they prove nothing about
+  // whether this handler hands it the book's room, and a gate that never
+  // receives one is a gate that silently never fires — the exact shape of the
+  // four dead values found on 2026-08-27.
+  // -------------------------------------------------------------------------
+  it('holds a stagnant position when the slot is FREE, and journals that it did', async () => {
+    const { position } = await openAgedLivePosition(3);
+    setAutotradeConfig(
+      liveConfig({
+        maxHoldDays: 0,
+        endOfDayFlattenMinutes: 0,
+        stagnationExitMinutes: 90,
+        stagnationExitMinR: 0.5,
+        stagnationExitRequiresScarcity: true,
+        maxConcurrentPositions: 5, // one position open, four slots spare
+      }),
+    );
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+
+    expect(await checkLiveEquityTimeExits()).toEqual([]);
+    expect(mockCancelOrder).not.toHaveBeenCalled();
+
+    const held = listAutotradeEvents({ actions: ['stagnation_exit_held_slot_free'] });
+    expect(held).toHaveLength(1);
+    expect(JSON.parse(held[0].detail!)).toMatchObject({
+      positionId: position.id,
+      scarcity: { scarce: false },
+    });
+  });
+
+  it('scratches the SAME position once the book is at the concurrency cap', async () => {
+    const { position, quantity } = await openAgedLivePosition(3);
+    setAutotradeConfig(
+      liveConfig({
+        maxHoldDays: 0,
+        endOfDayFlattenMinutes: 0,
+        stagnationExitMinutes: 90,
+        stagnationExitMinR: 0.5,
+        stagnationExitRequiresScarcity: true,
+        maxConcurrentPositions: 1, // the one open position IS the cap
+      }),
+    );
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(accountStateWith(quantity) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-CLOSE' });
+    // The broker shows no resting legs, so the close path checks the combo
+    // itself before deciding nothing raced it.
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      legs: [{ comboType: 'MASTER', status: 'FILLED' }],
+    } as WebullOrderStatus);
+
+    const outcomes = await checkLiveEquityTimeExits();
+
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]).toMatchObject({ positionId: position.id, requested: true });
+    expect(listAutotradeEvents({ actions: ['stagnation_exit_held_slot_free'] })).toEqual([]);
+  });
+
+  // -------------------------------------------------------------------------
   // Adopted positions (2026-08-24). A position the generic Webull sync imported
   // before autotrade reconciled its own fill gets retagged and LINKED via
   // autotrade_live_orders.position_id, but never gets positions.source_intent_id

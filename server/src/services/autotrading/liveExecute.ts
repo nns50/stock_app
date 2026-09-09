@@ -62,7 +62,8 @@ import { isUnparseableSymbolError, markUnplaceableSymbol, unplaceableReason } fr
 import { computeFinishLineFactor } from './finishLine';
 import { liveEntryScoreGate } from './entryScoreGate';
 import { cutFactor, preFinishLineFactors, preFinishLineRiskPct } from './effectiveRisk';
-import { evaluateStagnation } from './stagnationExit';
+import { evaluateStagnation, type SlotPressure } from './stagnationExit';
+import { claimOncePerDay } from './oncePerDayEvents';
 import { evaluateEndOfDayFlatten, evaluateEntryCutoff } from './endOfDayFlatten';
 import { evaluateStopAdjust } from './stopAdjust';
 import { evaluateScaleOut } from './scaleOut';
@@ -3660,6 +3661,31 @@ export async function checkLiveEquityTimeExits(): Promise<LiveEquityTimeExitOutc
   // still gates the actual order either way).
   const sessionOpen = stagnationConfigured && checkSessionWindow(0).ok;
 
+  // The book's ROOM, read once per tick from the same two quantities the entry
+  // gate compares (task #41). Computed even when
+  // stagnationExitRequiresScarcity is OFF: a scratch that fired while the cap
+  // was binding and one that fired into three free slots are different events,
+  // and the journal could not tell them apart. That distinction is the whole
+  // question the paper experiment is running to answer, so it is recorded from
+  // now regardless of which way the flag is set.
+  //
+  // Once per tick, not per position: a close placed inside this loop does not
+  // relieve pressure until the fill is booked, which is equally true of the
+  // entry gate reading the same numbers.
+  const slotPressure: SlotPressure | undefined = sessionOpen
+    ? (() => {
+        const combined = combinedLiveOpenRisk();
+        const equity = cfg.accountEquityUsd ?? 0;
+        return {
+          openPositions: combined.count,
+          maxConcurrentPositions: cfg.maxConcurrentPositions,
+          openRiskUsd: combined.risk,
+          aggregateRiskCapUsd: (cfg.maxAggregateOpenRiskPct / 100) * equity,
+          nextTradeRiskUsd: (cfg.riskPerTradePct / 100) * equity,
+        };
+      })()
+    : undefined;
+
   const pendingExits = listPendingLiveOrders().filter((o) => o.role === 'exit' && o.positionId !== null);
   const pendingExitPositionIds = new Set(pendingExits.map((o) => o.positionId!));
   // A resting exit placed BEFORE the flatten window may be nowhere near the
@@ -3723,11 +3749,39 @@ export async function checkLiveEquityTimeExits(): Promise<LiveEquityTimeExitOutc
       } catch {
         continue;
       }
-      const decision = evaluateStagnation(pos, last, cfg, Date.now());
-      if (!decision.triggered) continue;
+      const decision = evaluateStagnation(pos, last, cfg, Date.now(), slotPressure);
+      if (!decision.triggered) {
+        // A trade that WOULD have been scratched and was kept because the slot
+        // was free is the gate's only observable effect, so it gets its own
+        // action rather than being invisible. Once per position per ET day:
+        // the condition persists across every tick until the position closes.
+        if (decision.heldForFreeSlot && claimOncePerDay('stagnation_exit_held_slot_free', String(pos.id))) {
+          logAutotradeEvent({
+            symbol: pos.symbol,
+            stage: 'execution',
+            action: 'stagnation_exit_held_slot_free',
+            detail: {
+              positionId: pos.id,
+              heldMinutes: decision.heldMinutes,
+              progressR: decision.progress,
+              scarcity: decision.scarcity,
+              reason: decision.detail,
+            },
+          });
+        }
+        continue;
+      }
       trigger = {
         kind: 'stagnation',
-        journal: { heldMinutes: decision.heldMinutes, progressR: decision.progress, reason: decision.detail },
+        journal: {
+          heldMinutes: decision.heldMinutes,
+          progressR: decision.progress,
+          // Recorded on the TRIGGER too, not only on the hold — "the cap was
+          // binding when this fired" is the half of the question a
+          // suppression-only record cannot answer.
+          scarcity: decision.scarcity,
+          reason: decision.detail,
+        },
         notice: `stagnant: ${decision.progress}R after ${decision.heldMinutes}m`,
       };
     }
