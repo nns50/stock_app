@@ -63,6 +63,7 @@ import { computeFinishLineFactor } from './finishLine';
 import { liveEntryScoreGate } from './entryScoreGate';
 import { cutFactor, preFinishLineFactors, preFinishLineRiskPct } from './effectiveRisk';
 import { evaluateStagnation, type SlotPressure } from './stagnationExit';
+import { classifySecondBracketRefusal, lotTargetPrice, splitEntryForPerLot } from './perLotBrackets';
 import { claimOncePerDay } from './oncePerDayEvents';
 import { evaluateEndOfDayFlatten, evaluateEntryCutoff } from './endOfDayFlatten';
 import { evaluateStopAdjust } from './stopAdjust';
@@ -756,16 +757,43 @@ export async function attemptLiveEntry(
   const buffer = 1 + (signal.side === 'buy' ? 1 : -1) * (MARKETABLE_LIMIT_BUFFER_PCT / 100);
   const limitPrice = Math.round(last * buffer * 100) / 100;
 
+  // PER-LOT BRACKETS (#26, off by default): spend the sized quantity across TWO
+  // bracketed entries rather than one, so a partial is just the smaller group's
+  // target filling — no modify, no cancel-and-replace, no naked window. Lot 1
+  // (the larger, see splitEntryForPerLot) is this order; lot 2 follows on a
+  // later tick as an add-on that merges into the same position.
+  //
+  // A null target price means the R geometry was unusable (zero-width risk), so
+  // the split is abandoned and this becomes an ordinary full-size entry —
+  // degrading to today's behaviour rather than to a half-built position.
+  const perLotSplit = autotradeCfg.livePerLotBracketsEnabled
+    ? splitEntryForPerLot({
+        filledQuantity: quantity,
+        partialExitPct: autotradeCfg.partialExitPct,
+        partialExitRMultiple: autotradeCfg.partialExitRMultiple,
+        targetRMultiple: autotradeCfg.targetRMultiple,
+      })
+    : null;
+  const firstLotTarget = perLotSplit
+    ? lotTargetPrice(signal.entry, signal.stop, signal.side, perLotSplit.first.targetR)
+    : null;
+  const secondLotTarget = perLotSplit
+    ? lotTargetPrice(signal.entry, signal.stop, signal.side, perLotSplit.second.targetR)
+    : null;
+  const perLot = perLotSplit && firstLotTarget !== null && secondLotTarget !== null ? perLotSplit : null;
+  const quantityToOrder = perLot ? perLot.first.quantity : quantity;
+  const targetToBracket = perLot ? (firstLotTarget as number) : signal.target;
+
   const intent: OrderIntent = {
     symbol,
     assetKind: 'stock',
     side: signal.side,
     openClose: 'open',
-    quantity,
+    quantity: quantityToOrder,
     orderType: 'limit',
     limitPrice,
     referencePrice: last,
-    bracket: { takeProfitPrice: signal.target, stopLossPrice: signal.stop },
+    bracket: { takeProfitPrice: targetToBracket, stopLossPrice: signal.stop },
   };
 
   const liveCfg = buildLiveTradingConfig(autotradeCfg);
@@ -919,15 +947,48 @@ export async function attemptLiveEntry(
     action: 'live_order_placed',
     detail: {
       side: signal.side,
-      quantity,
+      quantity: quantityToOrder,
       limitPrice,
       stop: signal.stop,
-      target: signal.target,
+      target: targetToBracket,
       orderId: broker.orderId,
       entryVwap,
+      // Present only on a per-lot entry, so the journal distinguishes "a
+      // deliberately smaller first lot" from "a smaller position than the risk
+      // check sized", which otherwise look identical here.
+      ...(perLot ? { perLotRole: perLot.first.role, perLotOf: quantity } : {}),
     },
     riskProfile,
   });
+  // THE SECOND LOT'S PLAN, written where checkLivePerLotSecondLots can find it.
+  //
+  // Journal-as-state, deliberately and with its limits known: the plan needs to
+  // outlive this call (lot 2 goes on a later tick, after this fill
+  // materializes) and there is no column on autotrade_live_orders for it. A
+  // migration is the right home if this flag ever ships ON — recorded here so
+  // that is a decision someone makes rather than a gap someone finds. The event
+  // is wanted as evidence regardless: without it, a position that never got its
+  // second lot is indistinguishable from one that was never meant to have one.
+  if (perLot) {
+    logAutotradeEvent({
+      symbol,
+      stage: 'execution',
+      action: 'per_lot_entry_planned',
+      detail: {
+        entryIntentId: intentRec.id,
+        sizedQuantity: quantity,
+        first: { quantity: perLot.first.quantity, targetR: perLot.first.targetR, role: perLot.first.role },
+        second: {
+          quantity: perLot.second.quantity,
+          targetR: perLot.second.targetR,
+          role: perLot.second.role,
+          targetPrice: secondLotTarget,
+        },
+        stopPrice: signal.stop,
+      },
+      riskProfile,
+    });
+  }
   // Best-effort — a real order was already placed and journaled above
   // regardless of whether anyone's actually configured a webhook to hear
   // about it (dispatchNotifications() itself is a no-op with zero channels
@@ -3263,6 +3324,13 @@ export async function checkLiveEquityScaleOuts(): Promise<LiveScaleOutOutcome[]>
   if (!config.trading.placeEnabled) return [];
   const cfg = getAutotradeConfig();
   if (!cfg.liveScaleOutEnabled || !cfg.liveAccountId) return [];
+  // Per-lot brackets REPLACE this path (#26). They are two answers to one
+  // question — how to bank a partial — and running both would have the
+  // scale-out cancel-and-replace a bracket whose near target is already
+  // resting, reopening the exact naked window per-lot brackets exist to remove.
+  // Mutually exclusive by construction rather than by the operator remembering
+  // to turn one off.
+  if (cfg.livePerLotBracketsEnabled) return [];
   // Never into pre/after-hours liquidity: this is opportunistic profit-taking,
   // not a protective exit, so it has no business paying a wide spread.
   if (!checkSessionWindow(0).ok) return [];
@@ -4348,6 +4416,240 @@ export async function checkLiveEquityStopAdjusts(): Promise<LiveStopAdjustOutcom
       kind: decision.kind ?? undefined,
       rMultiple: decision.rMultiple,
     });
+  }
+  return outcomes;
+}
+
+// ---------------------------------------------------------------------------
+// PER-LOT BRACKETS: place the SECOND lot (2026-09-09, task #26).
+//
+// attemptLiveEntry placed the first (larger) lot with its own bracket and
+// journaled the plan. This adds the second lot as a bracketed ADD-ON, so its
+// fill merges into the same position (materializeAddOnFill's blended entry) and
+// everything downstream still sees ONE trade: one concurrency slot, one
+// cooldown, one exit path.
+//
+// Each OTOCO is atomic — entry plus its own exits — so neither lot is ever
+// unprotected, at any ordering. What the 2026-09-09 probe could NOT show is the
+// steady state this creates: both groups' exits ACTIVE over one holding,
+// summing to exactly what is held. That is what the first live entry under this
+// flag settles, which is why the flag ships off and why every outcome here is
+// journaled rather than only returned.
+//
+// IT PLACES AT MOST ONE ADD-ON PER POSITION, and the add-on row itself is the
+// marker: countLiveAddOns(pos.id) > 0 means the second lot has been sent. That
+// also means this path and the scale-in share a counter — a position cannot be
+// both pyramided into and per-lot split, which is the correct exclusion rather
+// than an accident (both would add shares against one plan's arithmetic).
+// ---------------------------------------------------------------------------
+
+export interface LivePerLotOutcome {
+  symbol: string;
+  positionId: number;
+  requested: boolean;
+  quantity?: number;
+  reason?: string;
+}
+
+/** The second lot's plan, as journaled at entry. Null when this position never
+ *  had one, or its event has aged out of the scan window. */
+function perLotPlanFor(entryIntentId: number | null): {
+  quantity: number;
+  targetPrice: number;
+  targetR: number;
+} | null {
+  if (entryIntentId === null) return null;
+  for (const e of listAutotradeEvents({ stage: 'execution', actions: ['per_lot_entry_planned'], limit: 400 })) {
+    try {
+      const d = JSON.parse(e.detail ?? '{}') as {
+        entryIntentId?: number;
+        second?: { quantity?: number; targetPrice?: number; targetR?: number };
+      };
+      if (d.entryIntentId !== entryIntentId) continue;
+      const q = d.second?.quantity;
+      const t = d.second?.targetPrice;
+      const r = d.second?.targetR;
+      if (typeof q === 'number' && q >= 1 && typeof t === 'number' && t > 0 && typeof r === 'number') {
+        return { quantity: q, targetPrice: t, targetR: r };
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+export async function checkLivePerLotSecondLots(): Promise<LivePerLotOutcome[]> {
+  if (!config.trading.placeEnabled) return []; // server master (TRADING_ENABLED)
+  const cfg = getAutotradeConfig();
+  if (!cfg.liveAccountId) return [];
+  if (!cfg.livePerLotBracketsEnabled) return [];
+  // Same reasoning as checkLiveScaleIns: this places a real marketable order
+  // that ADDS shares, and the guardrail layer only WARNS on a closed market.
+  const session = checkSessionWindow(cfg.sessionBufferMinutes);
+  if (!session.ok) return [];
+
+  const open = listAutotradeLivePositions({ status: 'open' }).filter((p) => p.assetType === 'stock');
+  if (open.length === 0) return [];
+
+  // Skip a symbol with any UNMATERIALIZED order in flight — a first lot still
+  // working, or a second lot from a previous tick that has not merged yet.
+  // Placing into that races the merge and can double the second lot.
+  const inFlightSymbols = new Set(
+    listPendingLiveOrders()
+      .filter((o) => o.positionId === null)
+      .map((o) => o.symbol),
+  );
+
+  const accountId = cfg.liveAccountId;
+  const outcomes: LivePerLotOutcome[] = [];
+  for (const pos of open) {
+    try {
+      if (inFlightSymbols.has(pos.symbol)) continue;
+      if (countLiveAddOns(pos.id) > 0) continue; // already sent, or scaled in
+      const plan = perLotPlanFor(pos.sourceIntentId);
+      if (!plan) continue;
+
+      const entryOrder =
+        pos.sourceIntentId !== null ? getLiveOrder(pos.sourceIntentId) : getLiveEntryOrderForPosition(pos.id);
+      // Both lots share ONE stop — the position has a single risk level, and two
+      // stops would be two ideas about where the trade is wrong. The FROZEN
+      // entry stop, not the ratcheted one: the second lot is part of the
+      // original plan, not a re-entry at a new level.
+      const stopPrice = pos.initialStopPrice ?? entryOrder?.stopPrice ?? null;
+      if (stopPrice === null || !(stopPrice > 0)) continue;
+
+      const symbol = pos.symbol.toUpperCase();
+      let last: number;
+      try {
+        last = (await getProvider().getQuote(symbol)).last;
+      } catch {
+        continue; // transient — the next tick tries again
+      }
+      if (!Number.isFinite(last) || last <= 0) continue;
+
+      const side: 'buy' | 'sell' = pos.side === 'long' ? 'buy' : 'sell';
+      const buffer = 1 + (side === 'buy' ? 1 : -1) * (MARKETABLE_LIMIT_BUFFER_PCT / 100);
+      const limitPrice = Math.round(last * buffer * 100) / 100;
+      const intent: OrderIntent = {
+        symbol,
+        assetKind: 'stock',
+        side,
+        openClose: 'open',
+        quantity: plan.quantity,
+        orderType: 'limit',
+        limitPrice,
+        referencePrice: last,
+        bracket: { takeProfitPrice: plan.targetPrice, stopLossPrice: stopPrice },
+      };
+
+      const liveCfg = buildLiveTradingConfig(cfg);
+      const acct = await webullAccountState(accountId, symbol);
+      if (!acct.ok || !acct.state) {
+        outcomes.push({
+          symbol,
+          positionId: pos.id,
+          requested: false,
+          reason: acct.error ?? 'Could not load account state',
+        });
+        continue;
+      }
+      const accountState: AccountState = { ...acct.state, ordersToday: countTodaysOrders() };
+      const guardrails = evaluateGuardrails(intent, accountState, liveCfg, { marketOpen: marketOpenContext(intent) });
+      const isShort = wouldOpenShort(intent, accountState);
+
+      const clientOrderId = newClientOrderId();
+      const intentRec = createIntent(intent, clientOrderId);
+      if (!guardrails.ok) {
+        const reasons = blockingFailures(guardrails)
+          .map((c) => `${c.rule}: ${c.detail}`)
+          .join('; ');
+        transitionIntent(intentRec.id, 'rejected', { detail: `blocked: ${reasons}` });
+        // Its OWN action, not live_entry_blocked: a refused second lot leaves a
+        // real position at the first lot's size and target, which is a
+        // different fact from an entry that never happened, and #53's lesson is
+        // that two gates sharing one action cannot be counted apart.
+        logAutotradeEvent({
+          symbol,
+          stage: 'execution',
+          action: 'per_lot_second_lot_blocked',
+          detail: { reasons, positionId: pos.id, quantity: plan.quantity },
+          riskProfile: cfg.riskProfile,
+        });
+        outcomes.push({ symbol, positionId: pos.id, requested: false, reason: `Guardrails blocked: ${reasons}` });
+        continue;
+      }
+
+      transitionIntent(intentRec.id, 'validated', { detail: 'guardrails passed (per-lot second bracket)' });
+      transitionIntent(intentRec.id, 'confirmed', { detail: 'autotrade per-lot — no per-order confirmation' });
+      transitionIntent(intentRec.id, 'submitted', { detail: `submitting second lot (cid ${clientOrderId})` });
+
+      const broker = await webullPlaceOrder(accountId, intent, clientOrderId, isShort);
+      const row = {
+        intentId: intentRec.id,
+        symbol,
+        stopPrice,
+        targetPrice: plan.targetPrice,
+        riskAmount: Math.abs(limitPrice - stopPrice) * plan.quantity,
+        riskProfile: cfg.riskProfile,
+        addonOfPositionId: pos.id,
+        accountId,
+      };
+
+      if (!broker.ok && broker.ambiguous) {
+        // Unknown outcome — record the row so the next tick's countLiveAddOns
+        // stops a second attempt, exactly as the scale-in path does.
+        recordLiveAddOnOrder(row);
+        logAutotradeEvent({
+          symbol,
+          stage: 'execution',
+          action: 'live_order_outcome_unknown',
+          detail: { reason: broker.error, clientOrderId, positionId: pos.id, perLotSecondLot: true },
+          riskProfile: cfg.riskProfile,
+        });
+        outcomes.push({ symbol, positionId: pos.id, requested: false, reason: 'Broker outcome unknown' });
+        continue;
+      }
+      if (!broker.ok) {
+        transitionIntent(intentRec.id, 'rejected', { detail: `broker refused: ${broker.error}` });
+        // No add-on row: the order does not exist, so the next tick may retry.
+        // classifySecondBracketRefusal's premise changed with the 2026-09-09
+        // probe (see perLotBrackets.ts) but its rule did not — a
+        // reverse-position refusal means the broker counts shares differently
+        // than this plan assumed, which retrying cannot fix.
+        const verdict = classifySecondBracketRefusal(broker.error, 1);
+        logAutotradeEvent({
+          symbol,
+          stage: 'execution',
+          action: 'per_lot_second_lot_failed',
+          detail: { reason: broker.error, positionId: pos.id, quantity: plan.quantity, verdict },
+          riskProfile: cfg.riskProfile,
+        });
+        outcomes.push({ symbol, positionId: pos.id, requested: false, reason: broker.error ?? 'Broker refused' });
+        continue;
+      }
+
+      recordLiveAddOnOrder(row);
+      logAutotradeEvent({
+        symbol,
+        stage: 'execution',
+        action: 'per_lot_second_lot_placed',
+        detail: {
+          positionId: pos.id,
+          quantity: plan.quantity,
+          targetPrice: plan.targetPrice,
+          targetR: plan.targetR,
+          stopPrice,
+          limitPrice,
+          orderId: broker.orderId,
+        },
+        riskProfile: cfg.riskProfile,
+      });
+      outcomes.push({ symbol, positionId: pos.id, requested: true, quantity: plan.quantity });
+    } catch (err) {
+      outcomes.push({ symbol: pos.symbol, positionId: pos.id, requested: false, reason: (err as Error).message });
+    }
   }
   return outcomes;
 }

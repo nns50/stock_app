@@ -694,6 +694,8 @@ export const NEVER_TUNED_KEYS = [
   'addOnSizePct',
   'maxAddOns',
   'liveScaleInEnabled',
+  // Per-lot brackets: a protective-order SHAPE, not an aggressiveness dial.
+  'livePerLotBracketsEnabled',
   'liveMaxAddOns',
   'optionsBreakevenTriggerPct',
   'optionsTrailStartPct',

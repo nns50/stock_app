@@ -2357,6 +2357,7 @@ export interface LoopTickSummary {
   liveTimeExitsRequested: number;
   /** Live scale-in add-ons placed at the broker this tick. */
   liveScaleInsRequested: number;
+  perLotSecondLotsRequested: number;
   /** Live equity scale-out orders placed this tick. */
   liveScaleOutsRequested: number;
   /** Live stops moved by breakeven/trailing this tick (stopAdjust.ts). */

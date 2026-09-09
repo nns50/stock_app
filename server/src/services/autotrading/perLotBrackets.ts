@@ -211,3 +211,64 @@ export function planRollbackToSingle(restingClientOrderIds: string[], fullQuanti
     reopensNakedWindow: restingClientOrderIds.length > 0,
   };
 }
+
+// ---------------------------------------------------------------------------
+// SPLITTING THE ENTRY (2026-09-09 wiring).
+//
+// The risk check sizes ONE quantity. Per-lot brackets spend it across two
+// bracketed entries, because an OTOCO's exits are children of its own entry and
+// cannot be split from it — so "two brackets" necessarily means "two entries".
+//
+// WHICH LOT GOES FIRST, and why it matters more than it looks. Lot 2 is placed
+// on a later tick, so between the two the position is UNDER-SIZED, and if lot 2
+// never fills it stays that way permanently. The first lot is therefore the
+// LARGER one: the failure mode becomes "most of the intended size, capped at
+// the near target" rather than "a third of the intended size". Both failures
+// are fully protected — each OTOCO is atomic — so this is a choice about
+// P&L, not about safety.
+//
+// On a tie (a 50% split) the RUNNER goes first, because an uncapped small trade
+// beats a capped one of the same size.
+// ---------------------------------------------------------------------------
+
+export interface EntrySplit {
+  /** Placed WITH the entry, at its own target. The larger lot. */
+  first: BracketLot;
+  /** Placed on a later tick as a bracketed ADD-ON that merges into the same
+   *  position (autotrade_live_orders.addon_of_position_id). */
+  second: BracketLot;
+}
+
+/**
+ * Split a sized entry into the two lots that will carry it, or null when the
+ * plan does not split — in which case the caller places one ordinary bracketed
+ * entry, which is today's behaviour.
+ */
+export function splitEntryForPerLot(input: LotPlanInput): EntrySplit | null {
+  const lots = planLotBrackets(input);
+  if (lots.length !== 2) return null;
+  const [partial, runner] = lots as [BracketLot, BracketLot];
+  // Larger first; the runner wins a tie.
+  const first = runner.quantity >= partial.quantity ? runner : partial;
+  const second = first === runner ? partial : runner;
+  return { first, second };
+}
+
+/**
+ * The price this lot takes profit at, `targetR` R from entry.
+ *
+ * Derived from the SIGNAL's own entry and stop, which is where every other R in
+ * this path comes from — `signal.target` is exactly this function at
+ * `cfg.targetRMultiple`, so the near target and the full one cannot drift onto
+ * two different definitions of R.
+ */
+export function lotTargetPrice(entry: number, stop: number, side: 'buy' | 'sell', targetR: number): number | null {
+  const risk = Math.abs(entry - stop);
+  if (!(risk > 0) || !Number.isFinite(entry) || !Number.isFinite(targetR)) return null;
+  const raw = side === 'buy' ? entry + targetR * risk : entry - targetR * risk;
+  // The broker rejects any bracket leg that is not an exact cent (see
+  // providers/webull/orders.ts's tick note), so round HERE rather than leaving
+  // each call site to remember.
+  const cents = Math.round(raw * 100) / 100;
+  return cents > 0 ? cents : null;
+}

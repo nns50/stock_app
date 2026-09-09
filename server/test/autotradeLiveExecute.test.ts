@@ -540,6 +540,86 @@ describe('attemptLiveEntry', () => {
     expect(isShort).toBe(true);
   });
 
+  // -------------------------------------------------------------------------
+  // PER-LOT BRACKETS (#26), asserted at the ENTRY — the flag has to change what
+  // is actually ordered, not just what a planner returns.
+  // -------------------------------------------------------------------------
+  it('orders only the LARGER lot, at the NEAR target, when per-lot brackets are on', async () => {
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-LOT1' });
+
+    const r = await attemptLiveEntry(
+      signal(),
+      okResult,
+      'MODERATE',
+      liveConfig({
+        livePerLotBracketsEnabled: true,
+        partialExitPct: 67,
+        partialExitRMultiple: 0.25,
+        targetRMultiple: 2,
+      }),
+    );
+    expect(r.ok).toBe(true);
+
+    const [, placedIntent] = mockPlaceOrder.mock.calls[0];
+    // Signal is entry 100 / stop 95, so 1R = $5: the near target is 101.25 and
+    // the full one is the signal's own 110. Asserting the PRICE, not the R,
+    // because a bracket leg is a price and that is where a unit slip would land.
+    expect(placedIntent.bracket).toEqual({ takeProfitPrice: 101.25, stopLossPrice: 95 });
+
+    const planned = listAutotradeEvents({ stage: 'execution', actions: ['per_lot_entry_planned'] });
+    expect(planned).toHaveLength(1);
+    const plan = JSON.parse(planned[0].detail!) as {
+      sizedQuantity: number;
+      first: { quantity: number };
+      second: { quantity: number; targetPrice: number };
+    };
+    // Derived, never hardcoded: the two lots must add back to what the risk
+    // check sized, and the one ordered now must be the larger.
+    expect(placedIntent.quantity).toBe(plan.first.quantity);
+    expect(plan.first.quantity + plan.second.quantity).toBe(plan.sizedQuantity);
+    expect(plan.first.quantity).toBeGreaterThanOrEqual(plan.second.quantity);
+    expect(plan.second.targetPrice).toBe(110);
+  });
+
+  it('is exactly today’s entry when the flag is off', async () => {
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-FULL' });
+
+    const cfg = liveConfig({ partialExitPct: 67 });
+    const r = await attemptLiveEntry(signal(), okResult, 'MODERATE', cfg);
+
+    expect(r.ok).toBe(true);
+    const [, placedIntent] = mockPlaceOrder.mock.calls[0];
+    // Derived through probation, not hardcoded: live probation HALVES orders,
+    // and six tests in this file once asserted a raw 200 and all failed at 100.
+    const full = Math.floor(okResult.sizing.suggestedQuantity * getProbationStatus(cfg).multiplier);
+    expect(placedIntent.quantity).toBe(full);
+    expect(placedIntent.bracket).toEqual({ takeProfitPrice: 110, stopLossPrice: 95 });
+    expect(listAutotradeEvents({ stage: 'execution', actions: ['per_lot_entry_planned'] })).toEqual([]);
+  });
+
+  it('falls back to a full-size entry when the R geometry cannot price a near target', async () => {
+    // Zero-width risk: entry == stop. lotTargetPrice returns null, and a
+    // half-built position is worse than today's behaviour, so the split is
+    // abandoned rather than half-applied.
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-DEGENERATE' });
+
+    const cfg = liveConfig({ livePerLotBracketsEnabled: true, partialExitPct: 67, partialExitRMultiple: 0.25 });
+    const r = await attemptLiveEntry(signal({ entry: 100, stop: 100, target: 110 }), okResult, 'MODERATE', cfg);
+
+    expect(r.ok).toBe(true);
+    const [, placedIntent] = mockPlaceOrder.mock.calls[0];
+    const full = Math.floor(okResult.sizing.suggestedQuantity * getProbationStatus(cfg).multiplier);
+    expect(placedIntent.quantity).toBe(full);
+    expect(placedIntent.bracket).toEqual({ takeProfitPrice: 110, stopLossPrice: 100 });
+    expect(listAutotradeEvents({ stage: 'execution', actions: ['per_lot_entry_planned'] })).toEqual([]);
+  });
+
   it('places a plain long entry with isShort false (never SHORT for a buy)', async () => {
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
     mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);

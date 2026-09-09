@@ -1493,7 +1493,19 @@ equally-weighted cards in the order they happened to be built:
   recycled too, and a position with no stop is never scratched on a guess. Every
   scratch journals its held time and R (`live_time_exit_placed` with
   `trigger: "stagnation"`), so you can audit whether it's cutting losers or
-  winners. A separate **Only scratch when the slot is scarce** toggle (2026-09-09,
+  winners. A separate **per-lot brackets** setting (`livePerLotBracketsEnabled`,
+  2026-09-09, default off, visible under **All settings**) offers a different way
+  to take a partial: instead of resizing a resting bracket, the position is built
+  from **two bracketed entries**, so banking the partial is just the smaller
+  group's target filling. The larger lot enters first, the smaller follows a tick
+  later and merges into the same position, and each carries its own stop and
+  target from the moment it exists — so there is no moment where anything is
+  unprotected. With it on, the cancel-and-replace scale-out is switched off
+  automatically, since the two are different answers to the same question. It
+  costs a second entry order per trade (halving the daily order allowance for
+  entries) and leaves the position smaller than intended if the second lot never
+  fills. Leave it off until a first live entry has been watched. A separate
+  **Only scratch when the slot is scarce** toggle (2026-09-09,
   default off) narrows it to the case its own justification describes: with it on,
   a stagnant position is scratched only when the book is at **Max concurrent
   positions** or the aggregate risk budget has no room for another full-size

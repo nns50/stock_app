@@ -7325,23 +7325,61 @@ with every other guardrail untouched. Unwind: OTOCO #2 cancelled (cascaded),
 OTOCO #1's take-profit cancelled first and its stop last, 1 share sold @ 28.74,
 broker quantity 0, zero working orders, intent reconciled to `cancelled`.
 
-### What the full wiring costs, measured before starting it
+### The wiring, and why it turned out small — `livePerLotBracketsEnabled`
 
-The entry path is `one intent → one broker order → one fill → one
-createPosition`. Per-lot brackets need **two bracketed entry orders per signal**,
-so the cost is not the placement — it is that one signal becomes **two
-positions**, and a position is the unit every downstream consumer counts:
+The first estimate here was that one signal becomes **two positions**, breaking
+six consumers that count a position as a trade. That was wrong, and the reason
+is worth recording: **the merge already exists.**
 
-| consumer | what breaks |
+```
+autotrade_live_orders.addon_of_position_id
+  -- scale-in add-on: the already-open position this order pyramids into.
+  -- Its fill MERGES into that position (blended entry) rather than creating a new one.
+```
+
+`materializeAddOnFill()` sets the order's position id, blends the entry price,
+sums the quantity and journals it — live code, on the scale-in path. Per-lot
+brackets ride it, so the two lots become **one position** and concurrency, the
+cooldown and every exit path still see one trade.
+
+| | |
 |---|---|
-| `maxConcurrentPositions` (3) | one signal consumes **two** slots |
-| re-entry cooldown | the second lot reads as a repeat entry on the same symbol |
-| stagnation exit / time exit | evaluates each lot separately, on its own clock |
-| `checkLiveBracketProtection` | two groups on one symbol is now normal, not an alarm |
-| scale-out (cancel-and-replace) | would fire on a lot that is already the partial |
-| `liveMaxOrdersPerDay` (20) | halves to 10 entries a day |
+| **Lot 1** | the LARGER lot, entered normally with its own bracket at its own target |
+| **Lot 2** | placed on a later tick as a bracketed ADD-ON, merging into the same position |
 
-So the wiring needs a position model that maps two entry orders to one logical
-trade, or teaches all six consumers to treat the pair as one. That is the real
-scope, and it is a change to the live money path's core invariant — not
-something to slip in behind a flag and discover from a fill.
+**Neither lot is ever unprotected, at any ordering** — each OTOCO is atomic,
+entry plus its own exits. Simultaneity was never what protection needed; that
+was the standalone bound's problem, not this design's.
+
+**Which lot goes first is a P&L choice, not a safety one.** Between the two the
+position is under-sized, and if lot 2 never fills it stays that way. The larger
+lot therefore goes first, so the failure mode is "most of the intended size,
+capped at the near target" rather than "a third of the size". A 50/50 tie breaks
+toward the runner — an uncapped small trade beats a capped one.
+
+**What actually changed, beyond the placement:**
+
+- The **scale-out is turned off entirely** while this flag is on. They are two
+  answers to one question, and running both would have the scale-out
+  cancel-and-replace a bracket whose near target is already resting — reopening
+  the very window per-lot brackets remove. Mutually exclusive in code, not by
+  the operator remembering.
+- `liveMaxOrdersPerDay` (20) is effectively **halved for entries**.
+- The position row carries ONE `targetPrice` while the two groups have two. The
+  runner's goes on the position, the partial's on the order row — a genuine
+  modelling mismatch, named rather than hidden.
+- The second lot's plan is journaled as `per_lot_entry_planned` and read back by
+  the placer. **Journal-as-state**, deliberately: the plan must outlive the
+  entry call and there is no column for it. A migration is the right home if
+  this flag ever ships ON, and the event is wanted as evidence regardless —
+  without it a position that never got its second lot is indistinguishable from
+  one that was never meant to have one.
+
+**Still off by default.** The probe proved two groups can be *submitted*; the
+steady state — both groups' exits ACTIVE over one holding, summing to held — is
+what the first live entry under this flag settles. Every outcome is journaled
+(`per_lot_second_lot_placed` / `_blocked` / `_failed`) rather than only
+returned, so that first entry can be read rather than reconstructed.
+
+No bespoke settings control: `AllSettingsSection` renders every config field, and
+the sibling flag `liveScaleOutEnabled` has no hand-written toggle either.

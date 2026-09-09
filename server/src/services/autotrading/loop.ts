@@ -24,6 +24,7 @@ import {
   checkLiveEquityScaleOuts,
   checkLiveEquityStopAdjusts,
   checkLiveScaleIns,
+  checkLivePerLotSecondLots,
   adoptOrphanedLivePositions,
   checkLiveBracketProtection,
 } from './liveExecute';
@@ -127,6 +128,8 @@ export interface LoopTickSummary {
   /** Live scale-in add-ons actually placed at the broker this tick (0 unless
    *  liveScaleInEnabled and a position hit its add-on trigger). */
   liveScaleInsRequested: number;
+  /** Second lots of a per-lot bracketed entry actually sent this tick (#26). */
+  perLotSecondLotsRequested: number;
   /** Live equity scale-out orders newly PLACED this tick (0 unless
    *  liveScaleOutEnabled and a position reached the R trigger). */
   liveScaleOutsRequested: number;
@@ -225,6 +228,7 @@ function emptySummary(skippedReason?: string): LoopTickSummary {
     liveOptionsExitsRequested: 0,
     liveTimeExitsRequested: 0,
     liveScaleInsRequested: 0,
+    perLotSecondLotsRequested: 0,
     liveScaleOutsRequested: 0,
     liveStopsRatcheted: 0,
     candidatesScreened: 0,
@@ -432,6 +436,17 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     }
     const liveScaleInOutcomes =
       isLiveEntryActive(getAutotradeConfig()) && !dailyTarget.entriesHalted ? await checkLiveScaleIns() : [];
+    // The SECOND lot of a per-lot bracketed entry (#26). Gated exactly like a
+    // scale-in and for the same reason — it adds real shares — with its own
+    // flag, session check and one-add-on-per-position rule inside. It is NOT a
+    // scale-in: the shares were already sized and risk-checked at entry, and
+    // this only completes a position the loop deliberately entered in two
+    // pieces. Runs after the scale-in so the shared add-on counter is read
+    // consistently within a tick.
+    const perLotSecondLotOutcomes =
+      isLiveEntryActive(getAutotradeConfig()) && !dailyTarget.entriesHalted
+        ? await runStage('per-lot second bracket', checkLivePerLotSecondLots, [])
+        : [];
     // Reconcile before checking for NEW triggers: catches up on anything an
     // earlier cycle already placed (an entry that filled, an exit that
     // filled) so a position closed by reconcile this same tick is already
@@ -536,6 +551,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       liveOptionsExitsRequested: liveOptionsExitOutcomes.filter((o) => o.requested).length,
       liveTimeExitsRequested: liveEquityTimeExitOutcomes.filter((o) => o.requested).length,
       liveScaleInsRequested: liveScaleInOutcomes.filter((o) => o.requested).length,
+      perLotSecondLotsRequested: perLotSecondLotOutcomes.filter((o) => o.requested).length,
       liveScaleOutsRequested: liveScaleOutOutcomes.filter((o) => o.requested).length,
       liveStopsRatcheted: liveStopAdjustOutcomes.filter((o) => o.adjusted).length,
     };
