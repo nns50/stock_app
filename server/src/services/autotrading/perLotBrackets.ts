@@ -13,23 +13,41 @@
 //                             live today and disclosed, not fixed.
 //   two brackets at entry     this module.
 //
-// THE BROKER BOUND, learned from the 2026-09-08 FCX probe and now encoded in
-// providers/webull/orders.ts's committedProtectiveQuantity: a new protective
-// order is compared against shares HELD MINUS what is already committed to
-// resting exits. Within one combo group the MAX leg counts (a 38 stop and a 38
-// target rest together over 38 held); ACROSS groups they SUM. So two lots of 19
-// over 38 held sits EXACTLY on the bound with zero headroom, and anything that
-// makes the held count smaller than expected at the moment the second bracket
-// goes out — a partial fill, or an entry not yet booked — refuses it.
+// THE STANDALONE BOUND, learned from the 2026-09-08 FCX probe and encoded in
+// providers/webull/orders.ts's committedProtectiveQuantity: a new STANDALONE
+// protective order (exits only, no MASTER) is compared against shares HELD
+// MINUS what is already committed to resting exits. Within one combo group the
+// MAX leg counts (a 38 stop and a 38 target rest together over 38 held); ACROSS
+// groups they SUM.
 //
-// WHAT IS STILL UNKNOWN. Whether two combo groups may coexist on one symbol AT
-// ALL. The probe sent 39 shares of exits against 38 held, so its refusal is
-// fully explained by the quantity bound; it says nothing about the group count.
-// The error text conflates the two. That is why classifySecondBracketRefusal
-// below treats a reverse-position refusal ON THE SECOND BRACKET as a permanent
-// answer rather than something to retry: if it fires when the arithmetic fits,
-// the only remaining explanation is the group count, and no number of retries
-// changes it.
+// THAT BOUND DOES NOT GOVERN THIS DESIGN — probe, 2026-09-09, SIRI, live.
+// Answered with one share and six cents:
+//
+//   OTOCO #1  BUY 1 @ 28.95, stop 28.26 / target 29.99 -> FILLED @ 28.80, both
+//             exit legs resting. State: 1 held, 1 committed, available = 0.
+//   OTOCO #2  BUY 1 @ 24.50 (15% below market, unfillable), own stop/target,
+//             SAME symbol -> ACCEPTED. Two combo groups rested simultaneously,
+//             the second carrying TWO SELL exit legs against a single share
+//             already fully committed to the first.
+//
+// So: (1) an OTOCO's CONTINGENT exit legs are NOT counted against holdings, and
+// (2) two OTOCO combo groups DO coexist on one symbol — the question the FCX
+// probe structurally could not answer, since its refusal was fully explained by
+// quantity and the error text conflates the two.
+//
+// lotsFitProtectiveBound therefore encodes the STANDALONE rule and MUST NOT
+// gate the OTOCO path. It is still correct for the re-arm endpoint, which
+// really does place exits over shares already held.
+//
+// WHAT THE PROBE DID NOT SHOW, and it matters. OTOCO #2's entry never filled,
+// so its exits were contingent-pending throughout — never ACTIVE protective
+// orders over held shares. The design's steady state (both entries filled, both
+// groups' exits live, summing to exactly the held quantity: 60 + 40 over 100)
+// was not observed. The arithmetic fits by construction — each group's exits
+// cover only its own lot — but "fits by construction" is the same class of
+// claim that the FCX bound turned out to be, so the wiring must submit BOTH
+// entries before either fills (the shape the probe did validate) rather than
+// adding the second group against an already-filled first.
 // ---------------------------------------------------------------------------
 
 /** One lot's protective bracket. Both lots share the STOP — the position has
@@ -97,7 +115,13 @@ export interface ProtectiveBoundVerdict {
 }
 
 /**
- * Will the broker accept this plan, by the rule the FCX probe established?
+ * Will the broker accept a STANDALONE protective order, by the rule the FCX
+ * probe established?
+ *
+ * NOT FOR THE OTOCO PATH. The 2026-09-09 SIRI probe showed contingent exits are
+ * not counted against holdings, so gating a per-lot ENTRY plan on this would
+ * refuse plans the broker demonstrably accepts. This governs the re-arm
+ * endpoint and anything else placing exits over shares already held.
  *
  * `committedProtective` is committedProtectiveQuantity's answer — NULL when it
  * could not be determined (an open order with an unreadable quantity). Null is
@@ -141,11 +165,14 @@ export type SecondBracketVerdict =
 /**
  * What to do when the SECOND bracket is refused.
  *
- * The distinction the probe bought: a reverse-position refusal on the second
- * bracket, when lotsFitProtectiveBound already said the arithmetic fits, can
- * only mean the broker is counting the FIRST bracket against us — i.e. two
- * groups do not coexist on one symbol. That is a fact about the account, not a
- * transient, and retrying cannot change it. Anything else (a timeout, a rate
+ * BEHAVIOUR UNCHANGED, PREMISE REPLACED (2026-09-09). This used to reason: a
+ * reverse-position refusal on the second bracket can only mean two groups do
+ * not coexist. The SIRI probe showed they DO coexist, so that reading is dead —
+ * and the rule survives it. A reverse-position refusal now means the broker is
+ * counting shares differently than the plan assumed (a partial fill, an entry
+ * not yet booked, a lot size that does not sum to what is held). Every one of
+ * those is a fact about the current state, not a transient, and placing the
+ * same order again cannot fix any of them. Anything else (a timeout, a rate
  * limit, an unrecognised message) might be transient and is worth one retry.
  *
  * `attempt` is 1-based. The second failure falls back whatever the reason:
