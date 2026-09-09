@@ -349,6 +349,31 @@ export interface AutotradeConfig {
    *  has been 1.5 since the paper-only implementation, so reusing it alone
    *  would have switched live scale-outs on the moment this deployed. */
   liveScaleOutEnabled: boolean;
+  /** PER-LOT BRACKETS (2026-09-09, task #26,
+   *  services/autotrading/perLotBrackets.ts): build a live position out of TWO
+   *  bracketed entries instead of one, so taking a partial is just the smaller
+   *  group's target filling. No modify, no cancel-then-replace, and therefore
+   *  none of the scale-out's structural naked window.
+   *
+   *  Lot 1 is the LARGER lot and enters normally. Lot 2 is placed on a later
+   *  tick as a bracketed ADD-ON (autotrade_live_orders.addon_of_position_id),
+   *  so its fill MERGES into the same position — downstream sees one trade,
+   *  one concurrency slot, one cooldown. Each OTOCO is atomic (entry plus its
+   *  own exits), so neither lot is ever unprotected.
+   *
+   *  FAILURE MODE, accepted deliberately: if lot 2 never fills the position is
+   *  smaller than intended and capped at the near target — a smaller trade that
+   *  takes profit early, fully protected. That is why lot 1 is the larger lot.
+   *
+   *  Costs an extra entry order per signal, so liveMaxOrdersPerDay is
+   *  effectively halved for entries.
+   *
+   *  OFF by default. The 2026-09-09 SIRI probe proved two OTOCO groups coexist
+   *  on one symbol, but it could not show both groups' exits ACTIVE over one
+   *  holding at once — that is what the first live entry under this flag
+   *  settles. Suppresses the scale-out on positions it builds (their partial
+   *  target is already resting; cancel-and-replace would fight it). */
+  livePerLotBracketsEnabled: boolean;
   /** LAST-RESORT scale-out route: CANCEL the resting bracket, sell the partial,
    *  then place a fresh bracket for the remainder.
    *
@@ -1153,6 +1178,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     stopAtrMultiple: 1.5,
     maxStopDistancePct: 0,
     liveScaleOutEnabled: false,
+    livePerLotBracketsEnabled: false,
     liveScaleOutCancelReplaceEnabled: false,
     liveTrailingEnabled: false,
     dayProtectiveStopEnabled: false,
@@ -1406,6 +1432,10 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     maxStopDistancePct: nonNeg(input.maxStopDistancePct, d.maxStopDistancePct),
     liveScaleOutEnabled:
       typeof input.liveScaleOutEnabled === 'boolean' ? input.liveScaleOutEnabled : d.liveScaleOutEnabled,
+    livePerLotBracketsEnabled:
+      typeof input.livePerLotBracketsEnabled === 'boolean'
+        ? input.livePerLotBracketsEnabled
+        : d.livePerLotBracketsEnabled,
     liveScaleOutCancelReplaceEnabled:
       typeof input.liveScaleOutCancelReplaceEnabled === 'boolean'
         ? input.liveScaleOutCancelReplaceEnabled

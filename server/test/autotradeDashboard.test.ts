@@ -120,6 +120,7 @@ describe('getAutotradeDashboard', () => {
       liveOptionsPositionsClosed: 0,
       liveOptionsExitsRequested: 0,
       liveTimeExitsRequested: 0,
+      perLotSecondLotsRequested: 0,
       liveScaleInsRequested: 0,
       liveScaleOutsRequested: 0,
       liveStopsRatcheted: 0,

@@ -1352,6 +1352,25 @@ short of room to trade. If you set a hold limit and a flatten because your edge 
 intraday, they have to bind on calls and puts too, or the book quietly drifts back to
 being a swing book with a day-trading label on it.
 
+**Per-lot brackets (`livePerLotBracketsEnabled`, off by default, 2026-09-09).** An
+alternative way to bank a partial that does not touch a resting bracket at all:
+the position is built from **two bracketed entries** instead of one, so taking
+the partial is simply the smaller group's target filling. The larger lot enters
+first and the smaller follows a tick later as an add-on that merges into the
+same position — one trade, one concurrency slot, one cooldown — and each order
+carries its own stop and target from the moment it exists, so neither lot is
+ever unprotected.
+
+It **replaces** the scale-out rather than complementing it: with this on, the
+cancel-and-replace scale-out is turned off in code, because running both would
+have it cancel a bracket whose near target is already resting. The costs are an
+extra entry order per signal (so the 20/day order cap is effectively 10 entries)
+and a window between the two lots where the position is smaller than intended —
+if the second lot never fills, it stays that way, capped at the near target.
+That is why the larger lot goes first. Leave it off until a first live entry has
+been watched: a 2026-09-09 probe proved the broker accepts two bracket groups on
+one symbol, but not yet that both sets of exits sit happily over one holding.
+
 Two exceptions worth being deliberate about. A **stagnation** scratch does not
 transfer: a stock that goes nowhere is holding a slot for free, while a long option that
 goes nowhere is already paying for its slot through theta and has %-of-premium rules of

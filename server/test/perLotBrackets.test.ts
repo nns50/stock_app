@@ -6,6 +6,8 @@ import {
   planRollbackToSingle,
   REVERSE_POSITION_CODE,
   type BracketLot,
+  splitEntryForPerLot,
+  lotTargetPrice,
 } from '../src/services/autotrading/perLotBrackets';
 
 const plan = (over: Partial<Parameters<typeof planLotBrackets>[0]> = {}) =>
@@ -207,5 +209,72 @@ describe('the standalone bound does not govern the OTOCO path (2026-09-09 probe)
         `qty ${qty}`,
       ).toBe(qty);
     }
+  });
+});
+
+describe('splitEntryForPerLot', () => {
+  const base = { partialExitPct: 67, partialExitRMultiple: 0.25, targetRMultiple: 2 };
+
+  it('places the LARGER lot first, so a failed second lot leaves most of the size', () => {
+    // 67% partial of 100 = 67 partial / 33 runner. The partial is larger, so it
+    // enters first and the failure mode is "67 shares capped at the near
+    // target" rather than "33 shares".
+    const split = splitEntryForPerLot({ filledQuantity: 100, ...base });
+    expect(split?.first).toEqual({ quantity: 67, targetR: 0.25, role: 'partial' });
+    expect(split?.second).toEqual({ quantity: 33, targetR: 2, role: 'runner' });
+  });
+
+  it('places the RUNNER first when it is the larger lot', () => {
+    // 30% partial of 100 = 30 partial / 70 runner.
+    const split = splitEntryForPerLot({ filledQuantity: 100, ...base, partialExitPct: 30 });
+    expect(split?.first.role).toBe('runner');
+    expect(split?.first.quantity).toBe(70);
+    expect(split?.second.role).toBe('partial');
+  });
+
+  it('breaks a tie toward the RUNNER — an uncapped small trade beats a capped one', () => {
+    const split = splitEntryForPerLot({ filledQuantity: 100, ...base, partialExitPct: 50 });
+    expect(split?.first.quantity).toBe(50);
+    expect(split?.second.quantity).toBe(50);
+    expect(split?.first.role).toBe('runner');
+  });
+
+  it('returns null wherever planLotBrackets would not split, so the caller enters normally', () => {
+    expect(splitEntryForPerLot({ filledQuantity: 1, ...base })).toBeNull(); // too small
+    expect(splitEntryForPerLot({ filledQuantity: 100, ...base, partialExitPct: 0 })).toBeNull();
+    expect(splitEntryForPerLot({ filledQuantity: 100, ...base, partialExitRMultiple: 0 })).toBeNull();
+    // A near target at or beyond the full one is not a scale-out.
+    expect(splitEntryForPerLot({ filledQuantity: 100, ...base, partialExitRMultiple: 2 })).toBeNull();
+  });
+
+  it('never loses or invents a share', () => {
+    for (const qty of [2, 5, 33, 47, 91, 100, 199]) {
+      const split = splitEntryForPerLot({ filledQuantity: qty, ...base });
+      if (!split) continue;
+      expect(split.first.quantity + split.second.quantity, `qty ${qty}`).toBe(qty);
+      expect(split.first.quantity, `qty ${qty}`).toBeGreaterThanOrEqual(split.second.quantity);
+    }
+  });
+});
+
+describe('lotTargetPrice', () => {
+  it('is the SAME definition of R the signal itself uses', () => {
+    // entry 100, stop 95 => 1R = $5. The full 2R target is the signal's own
+    // 110, which is the check that the near target below is on one scale with
+    // it rather than a second, quietly different one.
+    expect(lotTargetPrice(100, 95, 'buy', 2)).toBe(110);
+    expect(lotTargetPrice(100, 95, 'buy', 0.25)).toBe(101.25);
+    // Short: mirrored.
+    expect(lotTargetPrice(100, 105, 'sell', 2)).toBe(90);
+    expect(lotTargetPrice(100, 105, 'sell', 0.25)).toBe(98.75);
+  });
+
+  it('rounds to an exact cent, because the broker refuses anything else', () => {
+    // 1R = 3.33; 0.25R = 0.8325 => 100.8325, which Webull rejects outright.
+    expect(lotTargetPrice(100, 96.67, 'buy', 0.25)).toBe(100.83);
+  });
+
+  it('returns null on a zero-width risk rather than a target equal to entry', () => {
+    expect(lotTargetPrice(100, 100, 'buy', 2)).toBeNull();
   });
 });

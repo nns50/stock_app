@@ -49,7 +49,7 @@ import { setTradingConfig } from '../src/db/trading';
 import { createPosition, listPositions } from '../src/db/positions';
 import { createIntent, getIntent, listIntents, type OrderIntentRecord } from '../src/db/orders';
 import { listPendingLiveOrders, getLiveOrder, recordLiveExitOrder } from '../src/db/autotradeLiveOrders';
-import { listAutotradeEvents } from '../src/db/autotradeEvents';
+import { listAutotradeEvents, logAutotradeEvent } from '../src/db/autotradeEvents';
 import { checkSessionWindow } from '../src/services/autotrading/executionGuards';
 import { evaluateRiskCheck } from '../src/services/autotrading/riskCheck';
 import { TradeSignal } from '../src/services/autotrading/decide';
@@ -59,6 +59,7 @@ import {
   attemptLiveEntry,
   reconcileLiveOrders,
   checkLiveEquityTimeExits,
+  checkLivePerLotSecondLots,
   cancelLiveBracketExitLegs,
   checkLiveBracketProtection,
 } from '../src/services/autotrading/liveExecute';
@@ -1135,6 +1136,24 @@ describe('checkLiveEquityScaleOuts', () => {
       expect(mockPlaceOrder.mock.invocationCallOrder[0]).toBeGreaterThan(mockOpenOrders.mock.invocationCallOrder[1]!);
     });
 
+    // PER-LOT BRACKETS REPLACE THIS PATH (#26). Same setup as 'sells once the
+    // re-read CONFIRMS both legs carry the new size' below, which is the proof
+    // this fixture really would scale out — so the only thing stopping it here is
+    // the flag. Running both designs would have this cancel-and-replace a bracket
+    // whose near target is already resting, reopening the very naked window
+    // per-lot brackets exist to remove.
+    it('is turned OFF entirely while per-lot brackets are on, even at the trigger', async () => {
+      const { quantity } = await armed(200);
+      const keep = quantity - Math.floor(quantity / 2);
+      mockOpenOrders.mockResolvedValueOnce(bothLegsQty(quantity)).mockResolvedValueOnce(bothLegsQty(keep));
+      mockReplaceOrders.mockResolvedValue({ ok: true });
+      setAutotradeConfig({ livePerLotBracketsEnabled: true });
+
+      expect(await checkLiveEquityScaleOuts()).toEqual([]);
+      expect(mockReplaceOrders).not.toHaveBeenCalled();
+      expect(mockPlaceOrder).not.toHaveBeenCalled();
+    });
+
     it('SELLS NOTHING when the broker accepts a resize it did not apply', async () => {
       // The dangerous case, and the reason this check exists: a 200 with the
       // full-size bracket still resting. Selling here puts more sell shares in
@@ -1762,5 +1781,87 @@ describe('checkLiveEquityStopAdjusts', () => {
     expect(mockReplaceOrder).not.toHaveBeenCalled();
     expect(listPositions({ status: 'open', symbol: 'AAPL' })[0].stopPrice).toBe(afterFirst);
     expect(position.id).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PER-LOT BRACKETS: the SECOND lot (#26), asserted at the CONSUMER.
+//
+// perLotBrackets.ts's own tests prove the split arithmetic. They prove nothing
+// about whether this handler ever sends the second order, which is the failure
+// mode the 2026-08-27 dead values were all instances of.
+// ---------------------------------------------------------------------------
+describe('checkLivePerLotSecondLots', () => {
+  /** Seed the plan attemptLiveEntry would have journaled for `intentId`. */
+  function planFor(intentId: number, second: { quantity: number; targetR: number; targetPrice: number }) {
+    logAutotradeEvent({
+      symbol: 'AAPL',
+      stage: 'execution',
+      action: 'per_lot_entry_planned',
+      detail: {
+        entryIntentId: intentId,
+        sizedQuantity: 999,
+        first: { quantity: 1, targetR: 0.25, role: 'partial' },
+        second: { ...second, role: 'runner' },
+      },
+    });
+  }
+
+  it('places the planned second lot as a bracketed ADD-ON, at the runner target', async () => {
+    const { position, entryIntentId } = await openAgedLivePosition(0);
+    setAutotradeConfig(liveConfig({ livePerLotBracketsEnabled: true, maxHoldDays: 0 }));
+    planFor(entryIntentId, { quantity: 5, targetR: 2, targetPrice: 110 });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(accountStateWith(0) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-LOT2' });
+
+    const outcomes = await checkLivePerLotSecondLots();
+
+    expect(outcomes).toEqual([{ symbol: 'AAPL', positionId: position.id, requested: true, quantity: 5 }]);
+    const [, placedIntent] = mockPlaceOrder.mock.calls[0];
+    expect(placedIntent.quantity).toBe(5);
+    // Both lots share ONE stop — the position has a single risk level — and the
+    // second lot carries the RUNNER's target, not the first lot's near one.
+    expect(placedIntent.bracket).toEqual({
+      takeProfitPrice: 110,
+      stopLossPrice: position.initialStopPrice ?? position.stopPrice,
+    });
+    // Recorded as an add-on, which is what makes its fill MERGE into this
+    // position instead of creating a second one.
+    const addOn = listPendingLiveOrders().find((o) => o.addonOfPositionId === position.id);
+    expect(addOn).toBeDefined();
+  });
+
+  it('never sends the second lot twice', async () => {
+    const { entryIntentId } = await openAgedLivePosition(0);
+    setAutotradeConfig(liveConfig({ livePerLotBracketsEnabled: true, maxHoldDays: 0 }));
+    planFor(entryIntentId, { quantity: 5, targetR: 2, targetPrice: 110 });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(accountStateWith(0) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-LOT2' });
+
+    await checkLivePerLotSecondLots();
+    // The add-on row it just wrote is the marker; a second tick must find it.
+    const again = await checkLivePerLotSecondLots();
+
+    expect(again).toEqual([]);
+    expect(mockPlaceOrder).toHaveBeenCalledTimes(1);
+  });
+
+  it('does nothing at all while the flag is off', async () => {
+    const { entryIntentId } = await openAgedLivePosition(0);
+    setAutotradeConfig(liveConfig({ maxHoldDays: 0 })); // flag defaults off
+    planFor(entryIntentId, { quantity: 5, targetR: 2, targetPrice: 110 });
+
+    expect(await checkLivePerLotSecondLots()).toEqual([]);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('leaves a position with no plan alone, rather than inventing a lot', async () => {
+    await openAgedLivePosition(0);
+    setAutotradeConfig(liveConfig({ livePerLotBracketsEnabled: true, maxHoldDays: 0 }));
+    // No per_lot_entry_planned event: this position was entered whole.
+    expect(await checkLivePerLotSecondLots()).toEqual([]);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
   });
 });

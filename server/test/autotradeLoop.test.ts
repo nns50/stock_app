@@ -22,6 +22,7 @@ vi.mock('../src/services/autotrading/liveExecute', () => ({
   syncAccountEquityFromBroker: vi.fn(),
   checkLiveEquityTimeExits: vi.fn(),
   checkLiveScaleIns: vi.fn(),
+  checkLivePerLotSecondLots: vi.fn().mockResolvedValue([]),
 }));
 vi.mock('../src/services/autotrading/liveOptionsExecute', () => ({
   runLiveOptionsExecution: vi.fn(),
@@ -88,6 +89,7 @@ import {
   syncAccountEquityFromBroker,
   checkLiveEquityTimeExits,
   checkLiveScaleIns,
+  checkLivePerLotSecondLots,
 } from '../src/services/autotrading/liveExecute';
 import {
   runLiveOptionsExecution,
@@ -125,6 +127,7 @@ const mockReconcileLive = vi.mocked(reconcileLiveOrders);
 const mockSyncEquity = vi.mocked(syncAccountEquityFromBroker);
 const mockCheckLiveTimeExits = vi.mocked(checkLiveEquityTimeExits);
 const mockCheckLiveScaleIns = vi.mocked(checkLiveScaleIns);
+const mockCheckPerLotSecondLots = vi.mocked(checkLivePerLotSecondLots);
 const mockLiveOptionsExecute = vi.mocked(runLiveOptionsExecution);
 const mockCheckLiveOptionsExits = vi.mocked(checkLiveOptionsExits);
 const mockReconcileLiveOptions = vi.mocked(reconcileLiveOptionsOrders);
@@ -240,6 +243,7 @@ beforeEach(() => {
   mockReconcileLive.mockReset().mockResolvedValue([]);
   mockCheckLiveTimeExits.mockReset().mockResolvedValue([]);
   mockCheckLiveScaleIns.mockReset().mockResolvedValue([]);
+  mockCheckPerLotSecondLots.mockReset().mockResolvedValue([]);
   mockSyncEquity.mockReset().mockResolvedValue({ ok: false, error: 'No liveAccountId configured' });
   mockPositionsSync.mockReset().mockResolvedValue({
     ok: true,
@@ -1333,6 +1337,24 @@ describe('runAutotradeLoopTick', () => {
       });
       mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
     }
+
+    // The second lot of a per-lot bracketed entry has to be REACHED by the loop.
+    // Nothing else calls it, so without this the whole feature could ship,
+    // configure, journal its plan and never place a single second order —
+    // exactly the shape of the four dead values found on 2026-08-27.
+    it('reaches the per-lot second-bracket check whenever live entries are active', async () => {
+      setAutotradeConfig({ enabled: false, liveTradingEnabled: true, liveAccountId: 'ACC1' });
+      setTradingConfig({ enabled: true, killSwitch: false });
+      armScreenAndDecide();
+      mockLiveExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
+      mockCheckPerLotSecondLots.mockResolvedValue([{ symbol: 'AAPL', positionId: 7, requested: true, quantity: 5 }]);
+
+      const summary = await runAutotradeLoopTick();
+
+      expect(mockCheckPerLotSecondLots).toHaveBeenCalledTimes(1);
+      // And its outcome is CONSUMED, not just produced.
+      expect(summary.perLotSecondLotsRequested).toBe(1);
+    });
 
     it('runs live entries when paper is disabled but live is active', async () => {
       setAutotradeConfig({ enabled: false, liveTradingEnabled: true, liveAccountId: 'ACC1' });
