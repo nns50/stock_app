@@ -4,6 +4,7 @@ import {
   ShortDatedExitConfig,
   ShortDatedExitPosition,
 } from '../src/services/autotrading/shortDatedOptionsExit';
+import { withRegimeAdjustedTargets } from '../src/services/autotrading/regimeTargets';
 
 const cfg: ShortDatedExitConfig = {
   shortDatedOptionsEnabled: true,
@@ -192,6 +193,23 @@ describe('evaluateShortDatedExit', () => {
     it('fires at the configured premium gain', () => {
       const d = evaluateShortDatedExit(pos({ peakPremium: 0.68 }), 0.68, 100.9, cfg, MID); // +66%
       expect(d).toMatchObject({ exit: true, rule: 'take_profit' });
+    });
+  });
+
+  describe('4a. the ML regime target tighten (2026-09-08)', () => {
+    const base = { ...cfg, mlRegimeEnabled: true, mlRegimeTargetTightenPct: 30, targetRMultiple: 2 };
+
+    it('fires at +42% under a High-Vol stamp with a 30% tighten, and not at the same gain under Sideways', () => {
+      const highVol = withRegimeAdjustedTargets(base, 'high_vol_bearish');
+      expect(highVol.optionsTakeProfitPct).toBe(42);
+      // 0.41 → 0.59 is +43.9%: past the tightened 42%, short of the full 60%.
+      expect(evaluateShortDatedExit(pos({ peakPremium: 0.59 }), 0.59, 100.9, highVol, MID)).toMatchObject({
+        exit: true,
+        rule: 'take_profit',
+      });
+      const sideways = withRegimeAdjustedTargets(base, 'sideways');
+      expect(sideways.optionsTakeProfitPct).toBe(60);
+      expect(evaluateShortDatedExit(pos({ peakPremium: 0.59 }), 0.59, 100.9, sideways, MID).exit).toBe(false);
     });
   });
 

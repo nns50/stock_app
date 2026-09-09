@@ -530,8 +530,13 @@ average rather than more 3% days; if anything it makes a 3% session rarer, becau
 need a fat tail and this trims the number of shots. It ships at **0 (off)** and is set
 deliberately, never by a default.
 
-On an armed day the finish-line ramp raises the bar further; the two compose, and whichever
-is stricter at that moment is the one that decides.
+On an armed day the finish-line ramp raises the bar further, and with the ML regime overlay
+on, the **High-Vol conviction bar** raises it again while the effective regime is High
+Volatility/Bearish — the bar rises where the size falls, because the same score carries less
+edge in a High-Vol tape and a slot spent on a 74 there is a slot the next 82 cannot have. The
+three compose, and whichever is strictest at that moment is the one that decides. The bar
+ships at 0 (off) and gets its number from the walk-forward grid's second stage (off / 72 /
+76 on regime days), never from taste.
 
 One mechanical thing worth knowing, because it decides whether an exit is placeable at
 all: **an option under $3 of premium can only be priced in nickels.** Webull rejects
@@ -723,6 +728,61 @@ Report loop above _within each regime_ to learn which weights actually earned in
 environment, then encode that. It's opt-in and the presets default to your standard
 weights, so it changes nothing until you deliberately differentiate them — and like any
 scoring change, prove it forward (or in a backtest) before trusting it live.
+
+**Trade smaller in a high-volatility regime — by a written rule, not by feel.** The **ML
+regime overlay** (auto-trade config, off by default) lets the sizing regime cut read the
+Today page's ML regime (HMM) reading: while it reads High Volatility/Bearish, new positions
+size down by the ML regime size cut (35% by default, deliberately _below_ the 40% the
+extreme SPY-ATR trigger carries — a broad condition must never cut deeper than a rare one),
+and a shock day (SPY's range so far today already 1.5× a normal full day, if you set the
+ratio) is treated the same way on day one, which a model read from yesterday's close cannot
+see. It is a second layer on _dollar_ risk for what the per-trade ATR stop cannot price —
+gaps through stops, correlations going to one, a long-biased edge that weakens in bear tape
+— so the cut is moderate, applied once (the deeper of the triggers, never both), and a cut
+of 100% simply skips that regime. The daily goal follows the cut: on a regime day the goal,
+arm and floor scale by the same factor entries were cut by, so the goal is held constant in
+R rather than becoming 1/f harder on the one day more entries is the wrong answer
+([TUNE_FROM_TARGET.md](./TUNE_FROM_TARGET.md) §6c). The same switch brings the profit
+target in by the ML regime target tighten (30% by default: 2R → 1.4R, a 60% options
+take-profit → 42%), at
+entry, from the regime stamped on the position — a breakout has less room before the next
+reversal in that tape, and a target that is reached beats one that was nearly reached. The
+factor is stamped on every trade, so whether the tighten banked wins or cost them is
+measurable against the favorable excursion later, not argued. Turn it on only when the
+model card's pre-committed rules
+are met (a walk-forward grid picks the number, twenty journaled sessions with few switches,
+the Python and TypeScript readings agreeing), and read `regime_sizing` in Recent activity to
+see exactly what each entry was cut by and why. The plain-English walkthrough is
+[AUTOTRADE_RISK_SETTINGS.md](./AUTOTRADE_RISK_SETTINGS.md) §"Regime size cut".
+
+**The grid that decides the numbers (2026-09-08).** The backtest can replay the overlay
+from the walk-forward regime history — each simulated day reads the _previous_ session's
+regime, never its own — so the cut, the tighten and the conviction bar are measured out of
+sample before any is trusted live. `npm run research -- --experiments mlregime` runs it in
+two stages: size cut {0, 25, 35, 50, 100 = skip High Vol} × target tighten {0, 15, 30},
+then the conviction bar {off, 72, 76} at the cell stage 1 chose, judged by a rule written
+before the run — the highest out-of-sample return ÷ max drawdown among cells that keep at
+least 75% of the baseline's return, ties toward the smaller cut, then tighten, then floor,
+and nothing beating the baseline means the overlay stays off. The script prints the
+verdict; the cell that ships on is written into the decision log first, and the grid runs
+again after every retrain.
+
+**"Did the tighter target bank wins or cost them?" → the regime-tighten ledger (2026-09-08).**
+Once the overlay is on, paper and live both trade the tightened target, so there is no book
+running the full one beside it — but every closed stock trade's **MFE** already says how far
+it ran, and the factor it was tightened by is stamped on it, so the full target's fate is
+recorded per trade rather than argued. Journal › Analytics › **Regime tighten** joins the two:
+for each tightened trade, the target as traded and the untightened one in R, whether the
+trade's best run reached each, and a **counterfactual R** that takes the most optimistic case
+for the full target (reached → banked at the full target with no reversal; not reached → the
+untightened trade did exactly as well as this one). Read it the way it is pre-committed: after
+**30** tightened trades, a counterfactual that beats realized R with a 95% CI excluding zero
+means the tighten has a real cost — set it to 0 and re-run the grid; one that cannot is strong
+evidence to keep it. Never the reverse ("the counterfactual lost, so the tighten helped by that
+much") — the bound only leans one way, and a same-session trade measured on a daily bar leans
+the same way. **Banked wins** (tightened hits whose MFE never reached the full target) are the
+trades the tighten demonstrably converted; the full target would have exited them somewhere at
+or below that peak.
 
 ---
 
@@ -977,8 +1037,9 @@ Anything else that diverges is a bug, not a counterfactual.
 
 **A sizing rule that reasons about size must read the size that will be used.** The
 finish-line trim asks "would a full-size winner overshoot what is left to the goal?"
-— and its own answer is then one of six multipliers applied to the entry, beside the
-losing-streak step-down, the high-ATR regime cut and the two realized-edge
+— and its own answer is then one of seven multipliers applied to the entry, beside the
+losing-streak step-down, the market-regime cut (SPY ATR, the ML regime reading, or a
+shock day — one cut, the deeper), the same-day re-entry cut and the two realized-edge
 multipliers. Given the *raw* risk-per-trade % it reasoned about a payoff the trade
 was never going to produce: it fired when it should not have, cut deeper when it did,
 and then multiplied with the very cut it had ignored. At a 1.25% risk, 2R target and
@@ -1544,7 +1605,8 @@ Spend 20 minutes every weekend in the **Journal**:
 - [ ] **By grade** — are your A-setups actually your best results? If not, your grading
       criteria need work.
 - [ ] **The bot's at-entry context (2026-07-26)** — auto-traded rows now carry the raw
-      screener score, the market-regime label, market ATR%, an ET entry time, and (on
+      screener score, the market-regime label, the ML regime label (2026-09-08), market
+      ATR%, an ET entry time, and (on
       live bracket exits) the exit reason. Export the journal to CSV and ask: do
       higher-score entries actually earn more? Does the system bleed in one regime and
       earn in another? Are stops doing all the closing while targets never hit? A month

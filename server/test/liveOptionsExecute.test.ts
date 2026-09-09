@@ -203,6 +203,11 @@ const okResult = (signal: SingleLegOptionsSignal | DebitSpreadOptionsSignal): Op
     marketAtrPct: null,
     regimeAtrThresholdPct: 3,
     regimeSizeCutPct: 0,
+    mlRegime: null,
+    mlRegimeEnabled: false,
+    mlRegimeSizeCutPct: 35,
+    todayRangePct: null,
+    regimeShockRangeRatio: 0,
     priorSameDayExits: 0,
     repeatEntrySizeCutPct: 0,
   });
@@ -1960,6 +1965,31 @@ describe('checkLiveOptionsExits — price-based exits (2026-07-26)', () => {
     const outcomes = await checkLiveOptionsExits();
     expect(outcomes[0]).toMatchObject({ symbol: 'AAPL', requested: true });
     expect(getLiveOptionsOrder(outcomes[0].intentId!)).toMatchObject({ exitReason: 'take_profit' });
+  });
+
+  it('places the take-profit close at the tightened % for a position stamped High Vol with the overlay on (2026-09-08)', async () => {
+    // 80% × (1 − 30%) = 56%: a +60% mark fires for a High-Vol stamp, not for a Sideways one.
+    setAutotradeConfig(liveConfig({ optionsTakeProfitPct: 80, mlRegimeEnabled: true, mlRegimeTargetTightenPct: 30 }));
+    const pos = openLivePosition({ entryPrice: 3, mlRegime: 'high_vol_bearish' });
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4.8 } }) as never); // +60%
+    mockAccountState.mockResolvedValue(
+      holdingAccountState(pos.quantity) as Awaited<ReturnType<typeof webullAccountState>>,
+    );
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-TP-ML' });
+
+    const tightened = await checkLiveOptionsExits();
+    expect(tightened[0]).toMatchObject({ symbol: 'AAPL', requested: true });
+    expect(getLiveOptionsOrder(tightened[0].intentId!)).toMatchObject({ exitReason: 'take_profit' });
+
+    db.exec(
+      'DELETE FROM autotrade_live_options_positions; DELETE FROM autotrade_live_options_orders; DELETE FROM order_intents;',
+    );
+    const calm = openLivePosition({ entryPrice: 3, mlRegime: 'sideways' });
+    mockAccountState.mockResolvedValue(
+      holdingAccountState(calm.quantity) as Awaited<ReturnType<typeof webullAccountState>>,
+    );
+    const untouched = await checkLiveOptionsExits();
+    expect(untouched.some((o) => o.requested)).toBe(false);
   });
 
   it('fetches a quote but places nothing while the position sits inside both thresholds', async () => {

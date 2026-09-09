@@ -34,8 +34,12 @@ import { evaluateExit, unrealizedReturnPct } from '../../options/exitRules';
 import {
   addDays,
   backtestCorrelatedNotional,
+  backtestDayDecisionConfig,
+  backtestDayRegime,
   BacktestRiskParams,
   closedWeeklyIndexAsOf,
+  loadMlRegimeByDate,
+  withHighVolFloor,
   EquityPoint,
   indexAsOf,
   loadBacktestHistory,
@@ -47,6 +51,7 @@ import {
   toISO,
   WARMUP_PADDING_DAYS,
 } from './backtest';
+import { MlRegime } from '../regimeModel';
 import {
   intrinsicAtExpiry,
   pickReferenceContract,
@@ -190,6 +195,9 @@ export interface CombinedBacktestReport {
   excludedSymbols: { symbol: string; reason: string }[];
   errors: { symbol: string; message: string }[];
   optionsSkipped: { symbol: string; date: string; reason: string }[];
+  /** Equity fills whose signal day read High Volatility/Bearish under the
+   *  overlay (2026-09-08) — mirrors BacktestReport.regimeDayTrades. */
+  regimeDayTrades: number;
 }
 
 interface OpenEquityPosition {
@@ -223,6 +231,8 @@ interface PendingEquityEntry {
   quantity: number;
   riskAmount: number;
   notional: number;
+  /** The regime the signal day read under the overlay ('unknown' when off). */
+  mlRegime: MlRegime;
 }
 
 interface OpenOptionPosition {
@@ -293,6 +303,9 @@ export async function simulateCombinedBacktest(
   cfg: CombinedBacktestConfig,
   weeklyHistoryBySymbol?: Map<string, Candle[]>,
   benchmarkCandles?: Candle[],
+  /** The walk-forward regime history by DATA date (backtest.ts's
+   *  loadMlRegimeByDate) — read one session behind each simulated day. */
+  mlRegimeByDate?: Map<string, MlRegime>,
 ): Promise<CombinedBacktestReport> {
   const riskParams = resolveBacktestRiskParams(cfg);
   const screenerCfg = { ...defaultAutotradeScreenerConfig(), ...cfg.screenerConfig };
@@ -349,6 +362,7 @@ export async function simulateCombinedBacktest(
   let equity = cfg.startingEquity;
   let openEquity: OpenEquityPosition[] = [];
   let pendingEquity: PendingEquityEntry[] = [];
+  let regimeDayTrades = 0;
   let openOptions: OpenOptionPosition[] = [];
   let pendingOptions: PendingOptionEntry[] = [];
 
@@ -434,6 +448,7 @@ export async function simulateCombinedBacktest(
           notional: p.notional,
         });
         equityFilledToday += 1;
+        if (p.mlRegime === 'high_vol_bearish') regimeDayTrades += 1;
       } else if (idx < 0 || candles![idx].time < dayMs) {
         stillPendingEquity.push(p);
       }
@@ -860,7 +875,18 @@ export async function simulateCombinedBacktest(
           benchmarkCandles ? regimeLabelFromProxy(benchmarkCandles, benchmarkIdx) : null,
         )
       : screenerCfg.weights;
-    const dayScreenerCfg = dayWeights === screenerCfg.weights ? screenerCfg : { ...screenerCfg, weights: dayWeights };
+    const weightedScreenerCfg =
+      dayWeights === screenerCfg.weights ? screenerCfg : { ...screenerCfg, weights: dayWeights };
+
+    // The ML regime overlay (2026-09-08), mirroring simulateBacktest: the
+    // previous session's regime, the tightened equity target and the High-Vol
+    // screen floor through backtest.ts's own helpers; both legs' risk checks
+    // carry the size cut below. The options leg's take-profit is NOT
+    // tightened here — its exit rule reads the config at exit rather than a
+    // stamp, and the overlay's evidence is the equity grid (docs).
+    const dayMl = backtestDayRegime(day, riskParams.mlRegimeEnabled, mlRegimeByDate);
+    const dayDecisionCfg = backtestDayDecisionConfig(decisionCfg, riskParams, dayMl);
+    const dayScreenerCfg = withHighVolFloor(weightedScreenerCfg, riskParams, dayMl);
 
     // 6) Score every symbol ONCE per day (asset-agnostic) — filtered
     // separately below per instrument type's own "already open" exclusion.
@@ -982,7 +1008,7 @@ export async function simulateCombinedBacktest(
         // relVolPace null: a backtest has no universe-wide median for the bar
         // being replayed, so the pace is genuinely unknown rather than zero.
         { ...candidate.score, discoverySource: 'universe', direction: candidate.direction, relVolPace: null },
-        decisionCfg,
+        dayDecisionCfg,
       );
       if (!signal) continue;
       const correlated = backtestCorrelatedNotional(
@@ -1017,6 +1043,15 @@ export async function simulateCombinedBacktest(
         marketAtrPct: null,
         regimeAtrThresholdPct: 0,
         regimeSizeCutPct: 0,
+        // The ML regime overlay (2026-09-08): the previous session's reading
+        // and the run's own cut, through the same regimeTriggers the live
+        // risk checks use. The nowcast stays off (no intraday range on a
+        // daily bar).
+        mlRegime: dayMl === 'unknown' ? null : dayMl,
+        mlRegimeEnabled: riskParams.mlRegimeEnabled,
+        mlRegimeSizeCutPct: riskParams.mlRegimeSizeCutPct,
+        todayRangePct: null,
+        regimeShockRangeRatio: 0,
       };
       const result = evaluateRiskCheck(signal, ctx);
       if (!result.ok) continue;
@@ -1027,6 +1062,7 @@ export async function simulateCombinedBacktest(
         quantity: result.sizing.suggestedQuantity,
         riskAmount: result.approvedRiskAmount,
         notional: result.approvedNotional,
+        mlRegime: dayMl,
       });
       runningRisk += result.approvedRiskAmount;
       runningCount += 1;
@@ -1247,6 +1283,15 @@ export async function simulateCombinedBacktest(
         marketAtrPct: null,
         regimeAtrThresholdPct: 0,
         regimeSizeCutPct: 0,
+        // The ML regime overlay (2026-09-08): the previous session's reading
+        // and the run's own cut, through the same regimeTriggers the live
+        // risk checks use. The nowcast stays off (no intraday range on a
+        // daily bar).
+        mlRegime: dayMl === 'unknown' ? null : dayMl,
+        mlRegimeEnabled: riskParams.mlRegimeEnabled,
+        mlRegimeSizeCutPct: riskParams.mlRegimeSizeCutPct,
+        todayRangePct: null,
+        regimeShockRangeRatio: 0,
       };
       const result = evaluateOptionsRiskCheck(
         shortRef
@@ -1409,6 +1454,7 @@ export async function simulateCombinedBacktest(
     excludedSymbols: [],
     errors: Array.from(barErrors, ([symbol, message]) => ({ symbol, message })),
     optionsSkipped,
+    regimeDayTrades,
   };
 }
 
@@ -1439,12 +1485,14 @@ export async function runCombinedBacktest(cfg: CombinedBacktestConfig): Promise<
       contractsBySymbol.set(symbol, []);
     }
   }
+  const mlRegimeByDate = loadMlRegimeByDate(resolveBacktestRiskParams(cfg).mlRegimeEnabled);
   const report = await simulateCombinedBacktest(
     historyBySymbol,
     contractsBySymbol,
     cfg,
     weeklyHistoryBySymbol,
     benchmarkCandles,
+    mlRegimeByDate,
   );
   return { ...report, excludedSymbols, errors: [...errors, ...report.errors] };
 }
@@ -1488,6 +1536,7 @@ export async function runCombinedWalkForwardBacktest(
       contractsBySymbol.set(symbol, []);
     }
   }
+  const mlRegimeByDate = loadMlRegimeByDate(resolveBacktestRiskParams(cfg).mlRegimeEnabled);
   const outOfSampleFrom = addDays(cfg.splitDate, 1);
   const inSample = await simulateCombinedBacktest(
     historyBySymbol,
@@ -1495,6 +1544,7 @@ export async function runCombinedWalkForwardBacktest(
     { ...cfg, from: cfg.from, to: cfg.splitDate },
     weeklyHistoryBySymbol,
     benchmarkCandles,
+    mlRegimeByDate,
   );
   const outOfSample = await simulateCombinedBacktest(
     historyBySymbol,
@@ -1502,6 +1552,7 @@ export async function runCombinedWalkForwardBacktest(
     { ...cfg, from: outOfSampleFrom, to: cfg.to },
     weeklyHistoryBySymbol,
     benchmarkCandles,
+    mlRegimeByDate,
   );
   // Both windows' own bar-fetch errors join the loader's — deduped, same as
   // optionsBacktest.ts's walk-forward wrapper.

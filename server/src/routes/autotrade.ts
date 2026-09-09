@@ -25,6 +25,8 @@ import { DecisionConfig, runAutotradeDecision } from '../services/autotrading/de
 import { OptionsDecisionConfig, runOptionsDecision } from '../services/autotrading/optionsDecide';
 import { runAutotradeRiskCheck } from '../services/autotrading/riskCheck';
 import { runOptionsRiskCheck } from '../services/autotrading/optionsRiskCheck';
+import { regimeAdjustedTargets } from '../services/autotrading/regimeTargets';
+import { actionableRegime, peekMarketRegime } from '../services/mlRegime';
 import { ScreenerConfig } from '../indicators/screener';
 import { computeMarketRegime, RegimeLabel } from '../services/marketRegime';
 import { resolveScoringWeights } from '../services/autotrading/regimeWeights';
@@ -192,6 +194,13 @@ const configBody = z.object({
   regimeAtrThresholdPct: z.number().min(0).max(100).optional(),
   regimeSizeCutPct: z.number().min(0).max(100).optional(),
   repeatEntrySizeCutPct: z.number().min(0).max(100).optional(),
+  // --- The ML regime overlay (2026-09-08; live + paper; off by default) -------
+  mlRegimeEnabled: z.boolean().optional(),
+  mlRegimeSizeCutPct: z.number().min(0).max(100).optional(),
+  mlRegimeSwitchThreshold: z.number().min(0).max(1).optional(),
+  regimeShockRangeRatio: z.number().min(0).max(10).optional(),
+  mlRegimeTargetTightenPct: z.number().min(0).max(100).optional(),
+  mlRegimeHighVolMinSignalScore: z.number().min(0).max(100).optional(),
   equityCurveDeriskEnabled: z.boolean().optional(),
   equityCurveLookbackDays: z.number().int().min(1).optional(),
   equityCurveDeriskCutPct: z.number().min(0).max(100).optional(),
@@ -488,6 +497,13 @@ autotradeRouter.put(
     if (body.regimeAtrThresholdPct !== undefined) patch.regimeAtrThresholdPct = body.regimeAtrThresholdPct;
     if (body.regimeSizeCutPct !== undefined) patch.regimeSizeCutPct = body.regimeSizeCutPct;
     if (body.repeatEntrySizeCutPct !== undefined) patch.repeatEntrySizeCutPct = body.repeatEntrySizeCutPct;
+    if (body.mlRegimeEnabled !== undefined) patch.mlRegimeEnabled = body.mlRegimeEnabled;
+    if (body.mlRegimeSizeCutPct !== undefined) patch.mlRegimeSizeCutPct = body.mlRegimeSizeCutPct;
+    if (body.mlRegimeSwitchThreshold !== undefined) patch.mlRegimeSwitchThreshold = body.mlRegimeSwitchThreshold;
+    if (body.regimeShockRangeRatio !== undefined) patch.regimeShockRangeRatio = body.regimeShockRangeRatio;
+    if (body.mlRegimeTargetTightenPct !== undefined) patch.mlRegimeTargetTightenPct = body.mlRegimeTargetTightenPct;
+    if (body.mlRegimeHighVolMinSignalScore !== undefined)
+      patch.mlRegimeHighVolMinSignalScore = body.mlRegimeHighVolMinSignalScore;
     if (body.equityCurveDeriskEnabled !== undefined) patch.equityCurveDeriskEnabled = body.equityCurveDeriskEnabled;
     if (body.equityCurveLookbackDays !== undefined) patch.equityCurveLookbackDays = body.equityCurveLookbackDays;
     if (body.equityCurveDeriskCutPct !== undefined) patch.equityCurveDeriskCutPct = body.equityCurveDeriskCutPct;
@@ -986,9 +1002,17 @@ async function currentRegimeLabel(config: AutotradeConfig): Promise<RegimeLabel 
   return (await computeMarketRegime().catch(() => null))?.label ?? null;
 }
 
-/** Same reasoning as screenerConfigOverride, for stopAtrMultiple/targetRMultiple. */
+/** Same reasoning as screenerConfigOverride, for stopAtrMultiple/targetRMultiple.
+ *  The target is the EFFECTIVE one — tightened by the ML regime overlay under
+ *  today's persisted reading (a peek, never a fetch), as the loop's own decide
+ *  is. The preview reads the model's label only; the loop's shock nowcast is
+ *  intraday and has no persisted reading to peek at. */
 function decisionConfigOverride(config: AutotradeConfig, requested?: Partial<DecisionConfig>): Partial<DecisionConfig> {
-  return { stopAtrMultiple: config.stopAtrMultiple, targetRMultiple: config.targetRMultiple, ...requested };
+  return {
+    stopAtrMultiple: config.stopAtrMultiple,
+    targetRMultiple: regimeAdjustedTargets(config, actionableRegime(peekMarketRegime())).targetRMultiple,
+    ...requested,
+  };
 }
 
 const screenBody = z.object({
@@ -1331,7 +1355,34 @@ const backtestRiskParamsSchema = {
   // Scoring flag (not a risk param), accepted on every backtest body via the
   // shared spread; the presets it uses are pulled from the live config.
   regimeAdaptiveWeightsEnabled: z.boolean().optional(),
+  // The ML regime overlay (2026-09-08), replayed from the walk-forward regime
+  // history one session behind. The flag alone switches it on with the LIVE
+  // config's cut/tighten/bar (see mlRegimeBacktestFields); the research grid
+  // sends every number explicitly.
+  mlRegimeEnabled: z.boolean().optional(),
+  mlRegimeSizeCutPct: z.number().min(0).max(100).optional(),
+  mlRegimeTargetTightenPct: z.number().min(0).max(100).optional(),
+  mlRegimeHighVolMinSignalScore: z.number().min(0).max(100).optional(),
 };
+/** The overlay's numbers for a backtest: the request's own when given, else
+ *  — with the flag on — the live config's, so the UI checkbox validates the
+ *  configured cut/tighten/bar without re-sending them (the same convention
+ *  regimeBacktestFields uses for the weight presets). With the flag off the
+ *  engine's own defaults stand and are inert. */
+function mlRegimeBacktestFields(body: {
+  mlRegimeEnabled?: boolean;
+  mlRegimeSizeCutPct?: number;
+  mlRegimeTargetTightenPct?: number;
+  mlRegimeHighVolMinSignalScore?: number;
+}) {
+  const live = body.mlRegimeEnabled ? getAutotradeConfig() : null;
+  return {
+    mlRegimeEnabled: body.mlRegimeEnabled,
+    mlRegimeSizeCutPct: body.mlRegimeSizeCutPct ?? live?.mlRegimeSizeCutPct,
+    mlRegimeTargetTightenPct: body.mlRegimeTargetTightenPct ?? live?.mlRegimeTargetTightenPct,
+    mlRegimeHighVolMinSignalScore: body.mlRegimeHighVolMinSignalScore ?? live?.mlRegimeHighVolMinSignalScore,
+  };
+}
 /** Pulls the optional risk-param overrides off an already-parsed backtest
  *  body, for spreading into a runXBacktest({...}) call — avoids repeating all
  *  the field names at each of the six call sites below. */
@@ -1346,6 +1397,10 @@ function backtestRiskParamsFrom(body: {
   correlationLookbackDays?: number;
   correlationThreshold?: number;
   correlationAwareSelectionEnabled?: boolean;
+  mlRegimeEnabled?: boolean;
+  mlRegimeSizeCutPct?: number;
+  mlRegimeTargetTightenPct?: number;
+  mlRegimeHighVolMinSignalScore?: number;
 }) {
   return {
     riskPerTradePct: body.riskPerTradePct,
@@ -1358,6 +1413,7 @@ function backtestRiskParamsFrom(body: {
     correlationLookbackDays: body.correlationLookbackDays,
     correlationThreshold: body.correlationThreshold,
     correlationAwareSelectionEnabled: body.correlationAwareSelectionEnabled,
+    ...mlRegimeBacktestFields(body),
   };
 }
 

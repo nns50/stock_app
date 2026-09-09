@@ -101,6 +101,11 @@ function baseCtx(overrides: Partial<RiskCheckContext> = {}): RiskCheckContext {
     marketAtrPct: null,
     regimeAtrThresholdPct: 3,
     regimeSizeCutPct: 0,
+    mlRegime: null,
+    mlRegimeEnabled: false,
+    mlRegimeSizeCutPct: 35,
+    todayRangePct: null,
+    regimeShockRangeRatio: 0,
     priorSameDayExits: 0,
     repeatEntrySizeCutPct: 0,
     ...overrides,
@@ -310,6 +315,46 @@ describe('evaluateOptionsRiskCheck — pure evaluator', () => {
       expect(result.regimeActive).toBe(true);
       // 0.7% of 100,000 = $700 budget / $200 per spread = 3 spreads (floor(3.5))
       expect('suggestedContracts' in result.sizing && result.sizing.suggestedContracts).toBe(3);
+    });
+  });
+
+  describe('the ML regime overlay (2026-09-08) — the options book, the same factor', () => {
+    const highVol = (over: Partial<RiskCheckContext> = {}) =>
+      baseCtx({ mlRegimeEnabled: true, mlRegime: 'high_vol_bearish', marketAtrPct: 0.9, ...over });
+
+    it('cuts premium sizing by the ML cut, and by the DEEPER of the two when both fire', () => {
+      // 1% × (1 − 50%) = 0.5% of 100,000 = $500 budget / $300 per contract = 1 contract (3 at full size)
+      const ml = evaluateOptionsRiskCheck(optionSignal(), highVol({ mlRegimeSizeCutPct: 50 }));
+      expect(ml.regimeActive).toBe(true);
+      expect(sz(ml).suggestedQuantity).toBe(1);
+      expect(findCheck(ml, 'regime_sizing').detail).toMatch(/^active — ML regime High Volatility\/Bearish \(50% cut/);
+      // ATR 30 + ML 50 is 50 (still $500 → 1), not 30 ($700 → 2) and not 65.
+      const both = evaluateOptionsRiskCheck(
+        optionSignal(),
+        highVol({ marketAtrPct: 6, regimeAtrThresholdPct: 3, regimeSizeCutPct: 30, mlRegimeSizeCutPct: 50 }),
+      );
+      expect(sz(both).suggestedQuantity).toBe(1);
+      expect(findCheck(both, 'regime_sizing').detail).toMatch(/deeper of ATR 30% \/ ML 50%/);
+    });
+
+    it('a cut of 100 refuses the entry; the overlay off changes nothing', () => {
+      const skip = evaluateOptionsRiskCheck(optionSignal(), highVol({ mlRegimeSizeCutPct: 100 }));
+      expect(skip.ok).toBe(false);
+      expect(findCheck(skip, 'regime_sizing').passed).toBe(false);
+      expect(findCheck(skip, 'regime_sizing').detail).toMatch(/entries skipped \(cut 100%\)/);
+      expect(sz(skip).suggestedQuantity).toBe(0);
+      const off = evaluateOptionsRiskCheck(
+        optionSignal(),
+        baseCtx({ mlRegimeEnabled: false, mlRegime: 'high_vol_bearish', mlRegimeSizeCutPct: 100 }),
+      );
+      expect(off.regimeActive).toBe(false);
+      expect(sz(off).suggestedQuantity).toBe(3);
+    });
+
+    it('cuts a debit spread exactly like a single leg', () => {
+      const result = evaluateOptionsRiskCheck(spreadSignal(), highVol({ mlRegimeSizeCutPct: 50 }));
+      // 0.5% of 100,000 = $500 budget / $200 per spread = 2 spreads (3 at the ATR test's 0.7%)
+      expect('suggestedContracts' in result.sizing && result.sizing.suggestedContracts).toBe(2);
     });
   });
 

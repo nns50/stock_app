@@ -6171,6 +6171,343 @@ unclear — which is most of the time. The safe direction should stay easy to
 take; the asymmetry is only a defect because the *increase* side was
 unreachable, and PR #523 is what addressed that.
 
+## 2026-09-08 — an HMM market-regime reading, as an observer
+
+**What shipped.** A three-state Gaussian hidden Markov model over daily S&P 500 log returns,
+ln(VIX) and ln of the 20-day realized volatility, trained offline in Python on five years of
+FRED closes and shipped as `server/data/regimeModel.json`; a TypeScript forward filter held to
+the Python reference by a fixture of real rows (`server/test/regimeModelParity.test.ts`); and
+the **reading** — `services/mlRegime.ts`, `GET /api/market/regime-ml`, the ML block of the
+Today page's Market regime tile, the loop's once-per-tick read mirrored on the tick summary
+and the Auto-Trade page's _Last cycle_ card, and the journal actions `ml_regime_read`,
+`ml_regime_changed`, `ml_regime_drift`, `ml_regime_fetch_failed`, `ml_regime_override`. The
+model card is `docs/MARKET_REGIME_MODEL.md`; the walk-forward evidence is in `ml/reports/`.
+
+**Why an observer first.** The reading has to be watched before anything is allowed to act on
+it: the model is read one to two sessions behind (FRED's publication lag), a two-session
+spike is invisible to a 20-day feature (Aug-2024 in the walk-forward), and the drift flag is a
+retrain signal rather than a gate (a drift-as-unknown rule would have switched an overlay
+off on 92% of the COVID-crash sessions). Twenty sessions of journaled readings are the
+minimum before the enabling rules below can even be evaluated.
+
+**Two findings recorded here because they changed the design.** (1) The third feature is the
+_log_ of the 20-day standard deviation: on the raw scale the COVID crash defined the high-vol
+state and the 2022 bear market read as Sideways (33% High Vol out of sample); on the log
+scale it reads 67%. (2) States are labeled by their fitted VIX ordering, with the drift
+ordering of the high- and low-vol states asserted and the two calm states' drifts only
+reported; the earlier rule refused a valid 2020-04 refit.
+
+### What this does NOT do
+
+- It does not size, gate, tighten or stamp anything. Every consumer of the reading is a
+  later, separately gated change that ships OFF, with its own evidence and its own rows here.
+- It is not a direction forecast. "Bearish" and "Bullish" are the states' fitted drifts over
+  the training window; out of sample, the sessions read as High Volatility/Bearish had the
+  _highest_ next-20-day returns (the post-stress bounce). What it separates is volatility:
+  next-20-day realized vol 1.51% [1.43, 1.60] in High Vol against 0.75% [0.73, 0.76] in Low Vol.
+- It cannot see today or intraday. Day one of a shock is never in the data; the intraday
+  range nowcast planned beside the overlay covers that case.
+- A stale or missing reading is `unknown`, and `unknown` is what every future consumer must
+  treat as "no overlay" — nothing is ever cut, tightened or gated on a guess.
+
+### Pre-committed enabling rules for anything that acts on the reading
+
+1. A walk-forward grid on the out-of-sample regime path picks the cut/tighten cell by a rule
+   written before the run (the backtest step), never a hand-chosen number.
+2. At least 20 sessions of `ml_regime_read` with no more than 2 `ml_regime_changed` per week.
+3. `npm run regime:predict` and `GET /api/market/regime-ml` agree on every one of those
+   sessions (same `asOf`, same probabilities to 1e-6).
+4. Revert to OFF after 5 stale sessions in a row; retrain quarterly (`training.retrainBy`)
+   and re-run rule 1.
+
+## 2026-09-08 — the ML regime label is stamped at entry
+
+Every position the loop opens now carries the HMM reading's regime as at-entry context, the
+way the 2026-07-26 trio (raw score, market-regime label, market ATR%) already does: a
+nullable `ml_regime` column on `positions`, `autotrade_paper_positions`,
+`autotrade_options_paper_positions`, `autotrade_live_options_positions` and the two live
+**order** tables — the order row is where a live position's context lives until the fill
+materializes it, so the column has to exist there or the position would never get it. The
+loop hands each executor the label once per tick; the journal export gains `mlRegime`.
+
+**NULL means unknown, stale, or not read — never a guess.** The label is stamped only from a
+reading that is known and fresh; a stale morning, a missing model, or a source switched off
+stamps nothing. Capture-only: nothing about entries, sizing or exits changes. It exists so
+realized results can be sliced by the regime they were entered under before anything is
+allowed to act on that regime, and so the later options-exit tighten can read the regime a
+position was *opened* under rather than today's.
+
+## 2026-09-08 — the ML regime size cut, built and left OFF
+
+**What shipped.** The regime sizing factor (`server/src/services/autotrading/effectiveRisk.ts`)
+now has three triggers and one cut. `regimeTriggers()` reads SPY's 14-day ATR above
+`regimeAtrThresholdPct` (the 2026-07-16 trigger, which has never fired on this book), the HMM
+reading High Volatility/Bearish with `mlRegimeEnabled`, and an intraday **shock day** — SPY's
+range so far today at or above `regimeShockRangeRatio` × that ATR, from the quote's high/low
+(`executionGuards.getMarketRangePct`: null without a real high, low and previous close, and
+refused on the synthetic provider). It returns the deeper configured cut (never the product:
+ATR 40 + ML 35 is 40), a `skip` for a cut of 100 or more (a FAILING `regime_sizing` rule through
+the normal refusal path, so the journal names it), and the one `effectiveRegime` every consumer
+reads. The loop derives it once per tick and hands each executor a `TickRegime` — the two
+inputs and the effective regime; each executor feeds the inputs to its risk check, which calls
+the same function per candidate for the sizing line, and stamps the effective regime on what it
+opens, so a shock day is cut AND stamped High Vol, or neither. Both risk-check previews peek at
+today's persisted reading (never a fetch). Four config fields, all `NEVER_TUNED`, with the
+About page, the User Guide and `docs/AUTOTRADE_RISK_SETTINGS.md` ("Regime size cut — three
+triggers, one cut") describing them: `mlRegimeEnabled` (false), `mlRegimeSizeCutPct` (35),
+`mlRegimeSwitchThreshold` (0.6 — read by the reading itself on every classification, overlay on
+or off), `regimeShockRangeRatio` (0). A shock day journals `market_shock_detected` once.
+
+**Why 35, not the request's 50.** Cuts must be monotone in severity. The ATR trigger fires on
+SPY ATR above 3% — a few weeks a decade — and carries the operator's 40%; the HMM's High-Vol
+state is a broad condition, roughly one session in four over the training window, and a broad
+trigger must not cut deeper than the extreme one. The per-trade ATR stop already vol-normalizes
+share count, so this is a second layer on dollar risk for what a stop cannot see (gaps through
+stops, correlations going to one, a long-biased edge weakening in bear tape); after the stop's
+share, 30–40% is the residual. 50 stays available in the UI and in the grid, and the number
+that ships ON is the walk-forward grid's cell, by its written rule — never this default.
+
+**Why a nowcast.** A model read through FRED labels the morning after a shock; day one is
+always missed, and the Aug-2024 spike was too short for a 20-day feature to see at all. SPY's
+range so far today against the same ATR the ATR trigger uses is a nowcast of the same state,
+so it takes the same cut and stamps the same regime by construction. It cannot be backtested
+without foresight (a daily bar knows the full range only at the close), so it ships at 0 and
+is judged on its first three live shock days against the model's next-session label.
+
+### What this does NOT do
+
+- It does not tighten targets, scale the daily goal, or raise the conviction bar. Those are the
+  next changes behind the same switch, each with its own row here.
+- It does not run in a backtest: the three engines write the overlay inert (`mlRegime: null`,
+  overlay off, nowcast off) until the parity change carries the out-of-sample regime path in.
+- It does not fire on a stale or unknown reading, on the synthetic provider's quote, or on a
+  quote without a real high, low and previous close — null is "no trigger", never a guess.
+- It never compounds with the ATR cut, and it never changes an open position.
+
+### Enabling rules
+
+The observer section's pre-committed rules apply unchanged: the walk-forward grid picks the
+cell by its written rule; at least 20 sessions of `ml_regime_read` with no more than 2
+`ml_regime_changed` per week; `regime:predict` and `GET /api/market/regime-ml` agreeing on every
+one of them. Then set `mlRegimeSizeCutPct` to the grid's cell — not to 35, not to 50 — and
+switch `mlRegimeEnabled` on; revert to OFF after 5 stale sessions; retrain quarterly and re-run
+the grid. The nowcast has its own gate: `regimeShockRangeRatio` stays 0 until three
+`market_shock_detected` days have been compared with the model's next-session label.
+
+## 2026-09-08 — the ML regime target tighten, built and left OFF
+
+**What shipped.** `services/autotrading/regimeTargets.ts`: `regimeAdjustedTargets(cfg, regime)`
+multiplies `targetRMultiple` and `optionsTakeProfitPct` by `1 − mlRegimeTargetTightenPct/100`
+(never below 0.1) while the overlay is on and `regime` is High Volatility/Bearish, and returns
+the factor. Three consumers, one helper: (1) the loop's decide call and the `/decide` preview
+(from today's persisted reading) hand `decide.ts` the effective `targetRMultiple`, so every
+signal's `rMultiple` is the tightened one; (2) both live books' finish-line trim reasons about
+the tightened payoff (`rewardMultiple`), guarded by the wiring scan; (3) the options exit rules
+— the short-dated ladder and the %-of-premium take-profit, paper and live — read the regime
+STAMPED on the position (`ml_regime`, which since the size cut is the tick's effective regime,
+nowcast included), so a High-Vol entry keeps its tighter target through a calm afternoon and a
+calm-tape entry is never tightened by a later switch. Equity targets are fixed at entry by the
+bracket, so both instruments tighten at entry. The applied factor is stamped as
+`regime_target_factor` on the same six tables as `ml_regime` (1 = untightened; NULL predates
+the column), copied from the order row at live materialization, exported as
+`regimeTargetFactor`. One config field, `mlRegimeTargetTightenPct` (30, `NEVER_TUNED`).
+
+**Why at entry, and why the goal is not scaled.** A target moved after entry would either
+loosen a bracket the broker already holds or tighten a position that was sized for the wider
+one; at entry the trade's geometry, its size and its journal line agree. The daily goal is
+scaled by the size cut (its own row), not by the tighten: the tighten changes the R
+distribution — smaller wins, more of them — which the walk-forward grid measures rather than
+assumes, and the counterfactual ledger (next) records per trade whether the full target would
+have been reached.
+
+**Interaction with the exit tune.** Auto-tune's exit tune moves the BASE `targetRMultiple`; the
+tighten multiplies whatever it set (a tuned 1.75R reads 1.225R on a High-Vol morning). The tune
+journal reports the untightened base.
+
+### What this does NOT do
+
+- It does not change an open position's target, and it never widens one.
+- It does not scale the daily goal, raise the conviction bar, or run in a backtest — each is
+  its own change with its own row.
+- It does not tighten on a stale or unknown reading, or with the overlay off: factor 1, and
+  the stamp says so.
+- It does not read today's regime at an options exit — only the one the position was opened
+  under.
+
+### Enabling rules
+
+The size cut's rules apply unchanged; the tighten shares `mlRegimeEnabled`. The number that
+ships on is the walk-forward grid's tighten cell (0 / 15 / 30), by the written rule, and the
+counterfactual ledger's pre-committed reading after 30 tightened trades decides whether it
+stays: an optimistic full-target counterfactual that beats realized R with a CI excluding zero
+sets the tighten to 0 for that regime and re-runs the grid.
+
+## 2026-09-08 — the daily goal follows the regime cut: held constant in R
+
+**What shipped.** The baseline row (`autotrade_daily_baseline`) carries a nullable
+`goal_scale` and `goal_scale_reason`. Once per in-session tick the loop hands
+`updateDailyGoalScale()` the SAME `regimeTriggers` result the executors size by — one factor,
+one derivation — and the row takes its factor while the day has no gain to protect;
+`setDailyGoalScale` writes only `WHERE give_back_armed_at IS NULL AND reached_at IS NULL`, so
+the line freezes the moment the guard arms or the day banks (derived from the two sticky
+timestamps the row already has, no third flag). `evaluateDailyTarget` applies the scale before
+anything else: `targetPct`, the arm and the floor are the EFFECTIVE numbers, with
+`configuredTargetPct` and `goalScale` beside them, so every consumer — the entry gates, the
+finish line, the score gate, the dashboard and the goal card — reads the scaled goal without
+knowing it was scaled. The one consumer that did not read the status, `stopAdjust.ts`'s
+day-protective stop, read `cfg.giveBackFloorPct` raw; it reads the status's floor now, so the
+guard and the protective stop use one floor by construction rather than by coincidence. A
+skip (cut 100) does not scale the goal: nothing opens, and a day with no entries must not bank
+at +0%. `daily_goal_scaled` journals each change; `daily_target_reached`,
+`daily_give_back_halted` and the pending-confirmation event carry the scale.
+
+**Why in R.** `expected day % = entries/session × risk % × avg R`, and the tune solved the risk %
+from it for a calm day. Cut every entry by _f_ and a fixed % goal becomes _1/f_ harder in R,
+reachable only through more entries — in the one regime where more entries is the wrong
+answer — while the bank line and the arm come later or never. Scaling the triple by the same
+_f_ keeps the identity on both kinds of day (`entries × (risk × f) × avg R = f × goal`) and
+every mechanism's meaning at the scaled line. The tighten does not scale the goal (it changes
+the R distribution, which the grid measures); the tune, the goal evidence, the preview and the
+sweep are scale-invariant; `targetDailyGainPct` never moves.
+
+**The ordering it needed.** The regime inputs (SPY ATR, the range nowcast, the triggers and
+the shock journal) now run right after the session and macro checks, before the screen, so the
+goal is scaled before this tick's entry gates read it; they used to run after the screen. Same
+tick, seconds earlier, no extra provider call: the ATR read is the one the volatility filter
+already made, and out of session the tick still returns before it.
+
+### What this does NOT do
+
+- It does not move the stored goal, arm or floor, and it does not scale anything when the
+  overlay is off (the factor is 1 and the row stays NULL — byte-identical to before).
+- It does not follow a reading after the guard has armed or the day has banked.
+- It does not scale for the tighten, or for a skip.
+- Paper has no goal; nothing here touches the paper book.
+
+## 2026-09-08 — the High-Vol conviction bar, built and left OFF
+
+**What shipped.** `mlRegimeHighVolMinSignalScore` (0 = off, `NEVER_TUNED`) is a third source in
+the one live score gate (`entryScoreGate.ts`): while the overlay is on and the tick's EFFECTIVE
+regime — the same `regimeTriggers` derivation that cut the size and tightened the target — is
+High Volatility/Bearish, a new live equity entry must clear it. Composed exactly as the
+armed-day ramp already is: the strictest bar binds, `source` names it, and a skip journals
+`regime_score_floor_skipped` through the once-per-day throttle. Ties go to the rule whose
+journal action already has a history (armed day, then the everyday floor), so the tuning
+plan's counts keep their meaning. `liveExecute.ts` hands the gate `regime.effectiveRegime`;
+the source scan pins it. Live only, like `liveMinSignalScore` and for the same reason: paper
+keeps screening at `minSignalScore` and stays the control group. The live options book has its
+own conviction path (`optionsDecide.ts`) and is left alone.
+
+**Why the bar rises where the size falls.** Across the 57 closed live trades that carry a score
+every dollar came from scores 76–94 (+0.501R; the two thirds below lost $247 between them),
+and the fitted live floor is the lever with the most evidence behind it. The same score
+carries less edge in a High-Vol tape — a long-biased breakout edge weakens exactly there — and
+a slot spent on a 74 in that regime is a slot the next 82 cannot have. Trading fewer names is
+the complement of trading smaller; the walk-forward grid's second stage (off / 72 / 76 on
+regime days, at the chosen cut/tighten cell) is what decides whether the bar earns its place.
+
+### What this does NOT do
+
+- It does not gate paper, options, or any entry outside a High-Vol effective regime.
+- It does not replace the everyday floor or the armed-day ramp: it composes with them.
+- It does not fire with the overlay off, on an unknown reading, or at 0.
+
+### Enabling rules
+
+The overlay's rules apply; the bar's number is the grid's stage-2 cell, set only after stage 1
+has picked the cut/tighten cell, and reviewed with the cut on every retrain.
+
+## 2026-09-08 — the counterfactual MFE ledger: measuring the tighten without a control group
+
+**What shipped.** `services/autotrading/regimeTightenLedger.ts` (pure) and
+`GET /api/journal/regime-tighten` (Journal › Analytics › Regime tighten). Every closed stock
+trade stamped `regime_target_factor` in (0, 1), paper and live, is joined to its excursion
+(`services/excursion.ts` — the same per-trade candle fetch and 50-trade cap as `/excursions`)
+and read per trade: `tightenedTargetR` is the target as traded in R of the frozen stop,
+`fullTargetR = tightenedTargetR ÷ factor` is the untightened bracket, `tightenedReached = mfeR ≥
+tightenedTargetR`, `fullReached = mfeR ≥ fullTargetR`, a `bankedWin` is a tightened hit whose MFE
+never reached the full target, and `counterfactualR = fullReached ? fullTargetR : realizedR`. The
+ledger aggregates the counts, mean realized R against mean counterfactual R, and the bootstrap
+95% CI of their per-trade difference (`significance.ts`), says what it could not cover (undated,
+over the cap, unmeasurable, and tightened OPTIONS trades — their excursion is on the underlying,
+not the premium — as `optionsExcluded`), and carries each row's bar resolution. Paper's realized R
+is `paperRealizedR` (P&L over the original risk, the app's own paper R), so a scaled-out trade's
+remaining quantity never inflates it; MFE is per share, so it is exact either way. The dashboard
+counts the same population through the same predicate (`isTightenedFactor` and
+`tightenedStockPositions` for the journal's rows, `TIGHTENED_FACTOR_SQL` for the paper COUNT and
+list, pinned to the TS predicate by a boundary test) and the goal card points at the ledger once
+ten tightened trades have closed — a count, never the candle fetch.
+
+**Why a bound, and which way it leans.** With both books under the overlay nothing trades the
+untightened target beside it, so the tighten's cost cannot be read as a difference between two
+books the way the live conviction floor's can. The favorable excursion answers "would the full
+target have been reached?" per trade, but what happened after is unknowable, so the
+counterfactual takes the most optimistic case for the full target on both branches: reached →
+banked at the full target with no reversal; not reached → the untightened trade did exactly as
+well as the tightened one, although a banked win would in truth have stayed in and exited at no
+better than its MFE. A same-session trade measured on a daily bar leans the same way (its MFE is
+that day's high). Because the bound only ever favours the full target, exactly one inference is
+drawn from it.
+
+### The pre-committed reading
+
+After **30** measured tightened trades (`MIN_LEDGER_TRADES`): if the optimistic counterfactual
+beats realized R with a bootstrap 95% CI that excludes zero, the tighten has a real cost → set
+`mlRegimeTargetTightenPct` to 0 and re-run the walk-forward grid; if it does not, the tighten is
+kept — an optimistic counterfactual that cannot beat it is strong evidence for it. The reverse
+inference ("the counterfactual lost, so the tighten helped by that much") is never drawn. The
+route reports the reading in those words (`reading`, `readingDetail`) so it is read, not
+re-derived.
+
+### What this does NOT do
+
+- It does not change any trade, target or setting — a report, read by a person.
+- It does not measure options trades or the size cut, and it has no control group.
+- It does not run on the dashboard poll: the count is cheap, the ledger is on demand.
+
+## 2026-09-08 — backtest parity for the overlay, and the grid that decides it
+
+**What shipped.** `BacktestRiskParams` carries the overlay's four fields (`mlRegimeEnabled`
+false, cut 35, tighten 30, bar 0 — the live defaults, inert), and both equity engines
+(`backtest.ts`, `combinedBacktest.ts`'s equity leg) replay it from the walk-forward regime
+history through three shared helpers: `backtestDayRegime` reads the PREVIOUS trading session's
+label (the history is keyed by data date; FRED publishes a close the next morning — no day is
+labelled by its own close), `backtestDayDecisionConfig` tightens the day's `targetRMultiple`
+through `regimeAdjustedTargets`, and `withHighVolFloor` raises the screen's `minScore` to the
+conviction bar on a regime day through `highVolScoreBar`; the size cut rides the risk check's
+own `regimeTriggers`, so a cut of 100 refuses the entry exactly as it does live. Unknown fails
+open, the nowcast is excluded (a daily bar knows its full range only at the close), the
+combined engine's options leg is cut but not tightened (its exit rule reads the config at exit,
+not a stamp), and the standalone options engine stays inert — the overlay's evidence is the
+equity grid. `loadMlRegimeByDate` is consulted only with the overlay on and fails loudly
+without the history (`npm run regime:evaluate`). Reports carry `regimeDayTrades` (fills whose
+signal day read High Vol). The routes accept the four fields; the flag alone runs the LIVE
+config's numbers (`mlRegimeBacktestFields`, the weight-preset convention), the research grid
+sends every number. The backtest form gained the checkbox.
+
+**The grid** (`researchSweep.ts`, `npm run research -- --experiments mlregime`, opt-in): stage 1
+cut × tighten (15 cells, 0/0 byte-identical to the baseline with the overlay OFF), stage 2 the
+conviction bar {off, 72, 76} at the chosen cell. `selectOverlayCell` is the rule as code:
+highest OOS return ÷ max drawdown (% of starting equity) among cells keeping ≥ 75% of the
+baseline's OOS return; ties → smaller cut, smaller tighten, lower floor; nothing beating the
+baseline's ratio → OFF. A non-positive baseline return makes the 75% clause vacuous — a cell
+must then simply not be worse. The script prints both stages and writes the selection into its
+results file; the cell that ships ON is recorded below, in a dated row, before the config
+changes.
+
+### What this does NOT do
+
+- It does not run the grid — that needs a running instance with historical bars and the
+  regime history, and it is the operator's step; no cell has been chosen yet, so every
+  overlay field stays at its shipped default (OFF).
+- It does not replay the nowcast, the daily goal, the ledger, or the standalone options
+  engine, and it does not tighten the combined engine's options leg.
+
+### The decision-log row (filled in by the first run)
+
+| date | window / split | symbols | chosen cell | baseline ret% / DD% / ratio | chosen ret% / DD% / ratio | note                                        |
+| ---- | -------------- | ------- | ----------- | --------------------------- | ------------------------- | ------------------------------------------- |
+| —    | —              | —       | not run yet | —                           | —                         | the overlay stays OFF until this row exists |
 ---
 
 ## 2026-09-08 — the OTOCO probe: two findings, neither of them the one it was for

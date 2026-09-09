@@ -52,10 +52,18 @@ vi.mock('../src/providers/webull/positions', () => ({ runWebullPositionsSync: vi
 vi.mock('../src/services/marketRegime', () => ({
   computeMarketRegime: vi.fn(async () => ({ label: 'neutral' })),
 }));
+// The ML regime reading (services/mlRegime.ts) has its own end-to-end coverage
+// (mlRegime.test.ts); here it is a stub the tick mirrors, so the tests below
+// assert the WIRING — the summary carries what the read returned, and a read
+// that throws costs the tick nothing but a journaled stage failure.
+vi.mock('../src/services/mlRegime', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/services/mlRegime')>();
+  return { ...actual, getMarketRegime: vi.fn(async () => actual.getMarketRegime({ source: 'off' })) };
+});
 vi.mock('../src/services/autotrading/moversPromotion', () => ({ processMoversForPromotion: vi.fn() }));
 vi.mock('../src/services/autotrading/executionGuards', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/services/autotrading/executionGuards')>();
-  return { ...actual, checkSessionWindow: vi.fn(), getMarketAtrPct: vi.fn() };
+  return { ...actual, checkSessionWindow: vi.fn(), getMarketAtrPct: vi.fn(), getMarketRangePct: vi.fn() };
 });
 vi.mock('../src/db/autotradeEvents', () => ({
   logAutotradeEvent: vi.fn(),
@@ -99,17 +107,23 @@ import {
 } from '../src/services/autotrading/liveOptionsExecute';
 import { runWebullPositionsSync } from '../src/providers/webull/positions';
 import { processMoversForPromotion } from '../src/services/autotrading/moversPromotion';
-import { checkSessionWindow, getMarketAtrPct } from '../src/services/autotrading/executionGuards';
+import { checkSessionWindow, getMarketAtrPct, getMarketRangePct } from '../src/services/autotrading/executionGuards';
 import { logAutotradeEvent } from '../src/db/autotradeEvents';
 import { runAutotradeLoopTick, startAutotradeLoop, stopAutotradeLoop } from '../src/services/autotrading/loop';
 import { getLastTick } from '../src/db/autotradeLastTick';
+import { getMarketRegime, MlRegimeReading } from '../src/services/mlRegime';
 import { ScreenCandidate } from '../src/services/autotrading/screen';
 import { TradeSignal } from '../src/services/autotrading/decide';
 import { initDb, db } from '../src/db';
 import { addMacroEvent } from '../src/db/macroEvents';
 import { setAutotradeConfig } from '../src/db/autotradeConfig';
 import { setTradingConfig } from '../src/db/trading';
-import { saveDailyBaseline, markDailyTargetReached } from '../src/db/dailyBaseline';
+import {
+  getDailyBaseline,
+  markGiveBackArmed,
+  saveDailyBaseline,
+  markDailyTargetReached,
+} from '../src/db/dailyBaseline';
 import { etToday } from '../src/util/marketDate';
 import { config } from '../src/config';
 
@@ -136,7 +150,9 @@ const mockPositionsSync = vi.mocked(runWebullPositionsSync);
 const mockMoversPromotion = vi.mocked(processMoversForPromotion);
 const mockSessionWindow = vi.mocked(checkSessionWindow);
 const mockMarketAtr = vi.mocked(getMarketAtrPct);
+const mockMarketRange = vi.mocked(getMarketRangePct);
 const mockLogEvent = vi.mocked(logAutotradeEvent);
+const mockGetMarketRegime = vi.mocked(getMarketRegime);
 
 function candidate(symbol: string, atrPct: number | null): ScreenCandidate {
   return {
@@ -214,6 +230,10 @@ const emptySeed = {
   positions: [],
 };
 
+/** What every executor is handed on a tick with nothing known about the regime
+ *  (effectiveRisk.ts's NO_TICK_REGIME): the test suite's source is `off`. */
+const noRegime = { mlRegime: null, todayRangePct: null, effectiveRegime: 'unknown' };
+
 const origPlaceEnabled = config.trading.placeEnabled;
 
 beforeAll(() => initDb());
@@ -261,6 +281,7 @@ beforeEach(() => {
   mockMoversPromotion.mockReset().mockReturnValue({ recorded: [], promoted: [], atCap: [] });
   mockSessionWindow.mockReset().mockReturnValue({ ok: true });
   mockMarketAtr.mockReset().mockResolvedValue(2);
+  mockMarketRange.mockReset().mockResolvedValue(null);
   mockLogEvent.mockReset();
   // runAutotradeLoopTick's own gates (unlike everything else in this file)
   // hit the REAL db/autotradeConfig and db/trading, not a mock — default to
@@ -794,7 +815,7 @@ describe('runAutotradeLoopTick', () => {
       targetRMultiple: 2,
       maxStopDistancePct: 0,
     });
-    expect(mockExecute).toHaveBeenCalledWith([{ signal: signal('AAPL') }], emptySeed, 2, 'neutral');
+    expect(mockExecute).toHaveBeenCalledWith([{ signal: signal('AAPL') }], emptySeed, 2, 'neutral', noRegime);
     expect(summary.ranEntries).toBe(true);
     expect(summary.candidatesScreened).toBe(1);
     expect(summary.candidatesPassedVolatility).toBe(1);
@@ -822,7 +843,7 @@ describe('runAutotradeLoopTick', () => {
     // Not re-fetched a second time for sizing — the SAME reading already
     // computed for the volatility filter is threaded through to execution.
     expect(mockMarketAtr).toHaveBeenCalledTimes(1);
-    expect(mockExecute).toHaveBeenCalledWith([{ signal: signal('AAPL') }], emptySeed, 2, 'neutral');
+    expect(mockExecute).toHaveBeenCalledWith([{ signal: signal('AAPL') }], emptySeed, 2, 'neutral', noRegime);
   });
 
   it('threads the configured screening/decision thresholds through, not the hardcoded legacy defaults', async () => {
@@ -943,6 +964,328 @@ describe('runAutotradeLoopTick', () => {
     expect(getLastTick()?.summary.skippedReason).toBe('Neither paper nor live auto-trading is active');
   });
 
+  it('mirrors the ML regime reading on the tick summary and the persisted last tick', async () => {
+    // The read runs before the entry gates, so even a skipped tick carries it.
+    setAutotradeConfig({ enabled: false, liveTradingEnabled: false });
+    const reading: MlRegimeReading = {
+      regime: 'high_vol_bearish',
+      label: 'High Volatility/Bearish',
+      candidate: 'high_vol_bearish',
+      probabilities: { high_vol_bearish: 0.91, low_vol_bullish: 0.02, sideways: 0.07 },
+      predictedNext: null,
+      asOf: '2026-09-03',
+      etDate: '2026-09-04',
+      features: null,
+      source: 'fred',
+      stale: false,
+      drift: false,
+      driftScore: -2,
+      driftP5: -4.7,
+      modelVersion: 'test',
+      switched: false,
+      heldBelowThreshold: false,
+      threshold: 0.6,
+      previous: null,
+      rows: 250,
+      logLikelihood: -70,
+      computedAt: 0,
+    };
+    mockGetMarketRegime.mockResolvedValueOnce(reading);
+
+    const summary = await runAutotradeLoopTick();
+
+    expect(summary.mlRegime).toEqual({
+      regime: 'high_vol_bearish',
+      label: 'High Volatility/Bearish',
+      source: 'fred',
+      asOf: '2026-09-03',
+      stale: false,
+      drift: false,
+      probability: 0.91,
+    });
+    expect(getLastTick()?.summary.mlRegime).toEqual(summary.mlRegime);
+  });
+
+  it('hands the executors the ML regime label when the reading is known and fresh, null when stale (2026-09-08)', async () => {
+    const reading: MlRegimeReading = {
+      regime: 'high_vol_bearish',
+      label: 'High Volatility/Bearish',
+      candidate: 'high_vol_bearish',
+      probabilities: { high_vol_bearish: 0.91, low_vol_bullish: 0.02, sideways: 0.07 },
+      predictedNext: null,
+      asOf: '2026-09-03',
+      etDate: '2026-09-04',
+      features: null,
+      source: 'fred',
+      stale: false,
+      drift: false,
+      driftScore: -2,
+      driftP5: -4.7,
+      modelVersion: 'test',
+      switched: false,
+      heldBelowThreshold: false,
+      threshold: 0.6,
+      previous: null,
+      rows: 250,
+      logLikelihood: -70,
+      computedAt: 0,
+    };
+    const screenResult = {
+      generatedAt: Date.now(),
+      candidates: [candidate('AAPL', 2)],
+      excluded: [],
+      skipped: [],
+      errors: [],
+      rejected: [],
+      relVolMedian: null,
+      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
+    };
+    mockScreen.mockResolvedValue(screenResult);
+    mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
+    mockExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
+
+    mockGetMarketRegime.mockResolvedValueOnce(reading);
+    await runAutotradeLoopTick();
+    expect(mockExecute).toHaveBeenLastCalledWith([{ signal: signal('AAPL') }], emptySeed, 2, 'neutral', {
+      mlRegime: 'high_vol_bearish',
+      todayRangePct: null,
+      effectiveRegime: 'high_vol_bearish',
+    });
+
+    // A stale reading stamps nothing — never a guess.
+    mockGetMarketRegime.mockResolvedValueOnce({
+      ...reading,
+      regime: 'unknown',
+      label: 'Unknown',
+      stale: true,
+      reason: 'stale',
+    });
+    await runAutotradeLoopTick();
+    expect(mockExecute).toHaveBeenLastCalledWith([{ signal: signal('AAPL') }], emptySeed, 2, 'neutral', noRegime);
+  });
+
+  it('a shock day promotes the tick to High Vol for every executor and journals market_shock_detected once (2026-09-08)', async () => {
+    setAutotradeConfig({ mlRegimeEnabled: true, regimeShockRangeRatio: 1.5, mlRegimeSizeCutPct: 35 });
+    mockScreen.mockResolvedValue({
+      generatedAt: Date.now(),
+      candidates: [candidate('AAPL', 2)],
+      excluded: [],
+      skipped: [],
+      errors: [],
+      rejected: [],
+      relVolMedian: null,
+      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
+    });
+    mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
+    mockExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
+    mockMarketAtr.mockResolvedValue(1);
+    mockMarketRange.mockResolvedValue(3.2); // 3.2× a normal full day, on a 1.5 ratio
+
+    await runAutotradeLoopTick();
+    // The model read nothing (source off) — the nowcast alone makes the tick High Vol,
+    // and the executors get the SAME inputs the loop derived it from.
+    const promoted = { mlRegime: null, todayRangePct: 3.2, effectiveRegime: 'high_vol_bearish' };
+    expect(mockExecute).toHaveBeenLastCalledWith([{ signal: signal('AAPL') }], emptySeed, 1, 'neutral', promoted);
+    expect(mockOptionsExecute).toHaveBeenLastCalledWith([], 1, 'neutral', promoted);
+    const shocks = () => mockLogEvent.mock.calls.filter((c) => c[0].action === 'market_shock_detected');
+    expect(shocks()).toHaveLength(1);
+    expect(shocks()[0][0]).toMatchObject({
+      stage: 'execution',
+      detail: { rangePct: 3.2, marketAtrPct: 1, ratio: 1.5, modelRegime: 'unknown', cutPct: 35 },
+    });
+
+    // A second tick the same day is promoted again but journaled once.
+    await runAutotradeLoopTick();
+    expect(mockExecute).toHaveBeenLastCalledWith([{ signal: signal('AAPL') }], emptySeed, 1, 'neutral', promoted);
+    expect(shocks()).toHaveLength(1);
+
+    // With the nowcast off the range is not even fetched, and nothing is promoted.
+    setAutotradeConfig({ regimeShockRangeRatio: 0 });
+    mockMarketRange.mockClear();
+    await runAutotradeLoopTick();
+    expect(mockMarketRange).not.toHaveBeenCalled();
+    expect(mockExecute).toHaveBeenLastCalledWith([{ signal: signal('AAPL') }], emptySeed, 1, 'neutral', noRegime);
+  });
+
+  it('hands decide the regime-tightened target under a fresh High-Vol reading with the overlay on, and the full one otherwise (2026-09-08)', async () => {
+    setAutotradeConfig({ mlRegimeEnabled: true, mlRegimeTargetTightenPct: 30, targetRMultiple: 2 });
+    const reading: MlRegimeReading = {
+      regime: 'high_vol_bearish',
+      label: 'High Volatility/Bearish',
+      candidate: 'high_vol_bearish',
+      probabilities: { high_vol_bearish: 0.91, low_vol_bullish: 0.02, sideways: 0.07 },
+      predictedNext: null,
+      asOf: '2026-09-03',
+      etDate: '2026-09-04',
+      features: null,
+      source: 'fred',
+      stale: false,
+      drift: false,
+      driftScore: -2,
+      driftP5: -4.7,
+      modelVersion: 'test',
+      switched: false,
+      heldBelowThreshold: false,
+      threshold: 0.6,
+      previous: null,
+      rows: 250,
+      logLikelihood: -70,
+      computedAt: 0,
+    };
+    mockScreen.mockResolvedValue({
+      generatedAt: Date.now(),
+      candidates: [candidate('AAPL', 2)],
+      excluded: [],
+      skipped: [],
+      errors: [],
+      rejected: [],
+      relVolMedian: null,
+      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
+    });
+    mockDecide.mockReturnValue({ signals: [], skipped: [] });
+    mockExecute.mockResolvedValue([]);
+
+    mockGetMarketRegime.mockResolvedValueOnce(reading);
+    await runAutotradeLoopTick();
+    expect(mockDecide).toHaveBeenLastCalledWith(expect.anything(), {
+      stopAtrMultiple: 1.5,
+      maxStopDistancePct: 0,
+      targetRMultiple: 1.4,
+    });
+
+    // Stale → unknown → the full target.
+    mockGetMarketRegime.mockResolvedValueOnce({
+      ...reading,
+      regime: 'unknown',
+      label: 'Unknown',
+      stale: true,
+      reason: 'stale',
+    });
+    await runAutotradeLoopTick();
+    expect(mockDecide).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ targetRMultiple: 2 }));
+
+    // Overlay off → the full target, whatever the model reads.
+    setAutotradeConfig({ mlRegimeEnabled: false });
+    mockGetMarketRegime.mockResolvedValueOnce(reading);
+    await runAutotradeLoopTick();
+    expect(mockDecide).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ targetRMultiple: 2 }));
+  });
+
+  it("scales the day's goal by the sizer's own factor, journals once, and freezes once the guard arms (2026-09-08)", async () => {
+    setAutotradeConfig({
+      mlRegimeEnabled: true,
+      mlRegimeSizeCutPct: 35,
+      targetDailyGainPct: 3,
+      giveBackArmPct: 2,
+      giveBackFloorPct: 1,
+      accountEquityUsd: 10_000,
+    });
+    const reading: MlRegimeReading = {
+      regime: 'high_vol_bearish',
+      label: 'High Volatility/Bearish',
+      candidate: 'high_vol_bearish',
+      probabilities: { high_vol_bearish: 0.91, low_vol_bullish: 0.02, sideways: 0.07 },
+      predictedNext: null,
+      asOf: '2026-09-03',
+      etDate: '2026-09-04',
+      features: null,
+      source: 'fred',
+      stale: false,
+      drift: false,
+      driftScore: -2,
+      driftP5: -4.7,
+      modelVersion: 'test',
+      switched: false,
+      heldBelowThreshold: false,
+      threshold: 0.6,
+      previous: null,
+      rows: 250,
+      logLikelihood: -70,
+      computedAt: 0,
+    };
+    mockScreen.mockResolvedValue({
+      generatedAt: Date.now(),
+      candidates: [candidate('AAPL', 2)],
+      excluded: [],
+      skipped: [],
+      errors: [],
+      rejected: [],
+      relVolMedian: null,
+      discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
+    });
+    mockDecide.mockReturnValue({ signals: [], skipped: [] });
+    mockExecute.mockResolvedValue([]);
+    const scaledEvents = () => mockLogEvent.mock.calls.filter((c) => c[0].action === 'daily_goal_scaled');
+
+    // A fresh High-Vol reading with the overlay on: the goal follows the 35% cut.
+    mockGetMarketRegime.mockResolvedValueOnce(reading);
+    await runAutotradeLoopTick();
+    expect(getDailyBaseline()).toMatchObject({ goalScale: 0.65 });
+    expect(getDailyBaseline()?.goalScaleReason).toMatch(/ML regime High Volatility\/Bearish \(35% cut/);
+    expect(scaledEvents()).toHaveLength(1);
+    expect(scaledEvents()[0][0].detail).toMatchObject({
+      factor: 0.65,
+      effective: { targetPct: 1.95, giveBackArmPct: 1.3, giveBackFloorPct: 0.65 },
+    });
+
+    // Same reading next tick: no second write, no second event.
+    mockGetMarketRegime.mockResolvedValueOnce(reading);
+    await runAutotradeLoopTick();
+    expect(scaledEvents()).toHaveLength(1);
+
+    // The guard arms; a switch to Sideways no longer moves the line.
+    markGiveBackArmed(Date.now());
+    mockGetMarketRegime.mockResolvedValueOnce({
+      ...reading,
+      regime: 'sideways',
+      label: 'Sideways',
+      candidate: 'sideways',
+    });
+    await runAutotradeLoopTick();
+    expect(getDailyBaseline()).toMatchObject({ goalScale: 0.65 });
+    expect(scaledEvents()).toHaveLength(1);
+  });
+
+  it('leaves the goal unscaled under an unknown reading or with the overlay off (2026-09-08)', async () => {
+    setAutotradeConfig({ targetDailyGainPct: 3, accountEquityUsd: 10_000 });
+    mockScreen.mockResolvedValue({
+      generatedAt: Date.now(),
+      candidates: [],
+      excluded: [],
+      skipped: [],
+      errors: [],
+      rejected: [],
+      relVolMedian: null,
+      discovery: { universeCount: 0, moversCount: 0, scannedCount: 0, moversError: null },
+    });
+    mockDecide.mockReturnValue({ signals: [], skipped: [] });
+    mockExecute.mockResolvedValue([]);
+    await runAutotradeLoopTick(); // source off -> unknown
+    expect(getDailyBaseline()?.goalScale).toBeNull();
+    expect(mockLogEvent.mock.calls.some((c) => c[0].action === 'daily_goal_scaled')).toBe(false);
+  });
+
+  it('a regime read that throws is journaled as a stage failure and the tick carries null', async () => {
+    setAutotradeConfig({ enabled: false, liveTradingEnabled: false });
+    mockGetMarketRegime.mockRejectedValueOnce(new Error('FRED is down'));
+
+    const summary = await runAutotradeLoopTick();
+
+    expect(summary.mlRegime).toBeNull();
+    const stages = mockLogEvent.mock.calls
+      .filter((c) => c[0].action === 'loop_stage_failed')
+      .map((c) => (c[0].detail as { loopStage: string }).loopStage);
+    expect(stages).toContain('ml regime read');
+  });
+
+  it('with the source off (the test suite), the tick reads unknown/source_off without I/O', async () => {
+    setAutotradeConfig({ enabled: false, liveTradingEnabled: false });
+
+    const summary = await runAutotradeLoopTick();
+
+    expect(summary.mlRegime).toMatchObject({ regime: 'unknown', source: 'off', probability: null });
+  });
+
   it('runs options paper execution alongside equity, seeding equity with options’ own pre-existing snapshot', async () => {
     mockScreen.mockResolvedValue({
       generatedAt: Date.now(),
@@ -967,9 +1310,9 @@ describe('runAutotradeLoopTick', () => {
 
     // Equity's batch is seeded from options' pre-existing snapshot...
     expect(mockOptionsSeed).toHaveBeenCalledWith(optSnapshot);
-    expect(mockExecute).toHaveBeenCalledWith([{ signal: signal('AAPL') }], seed, 2, 'neutral');
+    expect(mockExecute).toHaveBeenCalledWith([{ signal: signal('AAPL') }], seed, 2, 'neutral', noRegime);
     // ...and options execution runs too, on its own decided signals.
-    expect(mockOptionsExecute).toHaveBeenCalledWith([{ signal: optionSignal('AAPL') }], 2, 'neutral');
+    expect(mockOptionsExecute).toHaveBeenCalledWith([{ signal: optionSignal('AAPL') }], 2, 'neutral', noRegime);
     expect(summary.optionsEntriesOpened).toBe(1);
   });
 
@@ -1451,6 +1794,7 @@ describe('runAutotradeLoopTick', () => {
           tradesToday: 0,
         },
         'neutral',
+        noRegime,
       );
       expect(summary.ranEntries).toBe(true);
       expect(summary.entriesOpened).toBe(0);
@@ -1599,7 +1943,7 @@ describe('runAutotradeLoopTick', () => {
 
       const summary = await runAutotradeLoopTick();
 
-      expect(mockLiveOptionsExecute).toHaveBeenCalledWith([{ signal: optionSignal('AAPL') }], 2, 'neutral');
+      expect(mockLiveOptionsExecute).toHaveBeenCalledWith([{ signal: optionSignal('AAPL') }], 2, 'neutral', noRegime);
       expect(summary.liveOptionsEntriesOpened).toBe(1);
     });
 

@@ -1,10 +1,12 @@
+import { MlRegimeReading, peekMarketRegime } from '../mlRegime';
 import { getDailyBaseline } from '../../db/dailyBaseline';
 import { MethodStats, computeMethodPerformance } from './methodSizing';
 import { SymbolCooldownState, activeSymbolCooldowns } from './symbolCooldown';
 import { listPositions } from '../../db/positions';
 import { DailyTargetStatus, evaluateDailyTarget } from './dailyTarget';
 import { getAutotradeConfig, RiskProfileName } from '../../db/autotradeConfig';
-import { PaperPosition } from '../../db/autotradePaperPositions';
+import { countTightenedClosedPaperPositions, PaperPosition } from '../../db/autotradePaperPositions';
+import { MIN_LEDGER_TRADES, tightenedStockPositions } from './regimeTightenLedger';
 import { OptionsPaperPosition } from '../../db/autotradeOptionsPaperPositions';
 import { Position } from '../../db/positions';
 import { getPaperPortfolioSnapshot } from './execute';
@@ -74,6 +76,18 @@ export interface LastCorrelatedExposureCheck {
   correlatedNotional: number | null;
 }
 
+/** The regime-tighten ledger's population (2026-09-08): closed stock trades
+ *  stamped with a tightened target, both books — a COUNT, never the per-trade
+ *  candle fetch the ledger itself needs (GET /api/journal/regime-tighten, on
+ *  demand). The goal card points at the ledger once there is something to
+ *  read; `minForReading` is the ledger's own MIN_LEDGER_TRADES. */
+export interface RegimeTightenPopulation {
+  tightenedClosedTrades: number;
+  paper: number;
+  live: number;
+  minForReading: number;
+}
+
 export interface AutotradeDashboard {
   enabled: boolean;
   killSwitch: boolean;
@@ -97,6 +111,17 @@ export interface AutotradeDashboard {
    *  shown without "expected day ≈ 0.6%" beside it. No bootstrap on this
    *  polled path — the sweep route owns the confidence intervals. */
   dailyGoalEvidence: DailyGoalEvidence;
+
+  /** How many closed stock trades the counterfactual MFE ledger has to read
+   *  (regimeTightenLedger.ts) — the same population, through the same
+   *  predicate, as the ledger route; counted here, measured there. */
+  regimeTighten: RegimeTightenPopulation;
+
+  /** Today's ML market-regime reading (services/mlRegime.ts) as the loop last
+   *  computed it — the cache, then the persisted row; never a fetch, so a
+   *  dashboard poll costs nothing and can never be the first to hit FRED.
+   *  Null before the loop has read today. */
+  mlRegime: MlRegimeReading | null;
 
   /** Per-method recent realized performance and the sizing multiplier each
    *  method currently carries (methodSizing.ts) — the "which methods are
@@ -293,7 +318,10 @@ export function getAutotradeDashboard(): AutotradeDashboard {
   const now = new Date();
   // One read of each closed list, shared by the method ledger and the goal
   // evidence — both are per-poll, and both want the same rows.
-  const closedAutotrade = listPositions({ status: 'closed' }).filter((p) => p.tags.includes('autotrade'));
+  const closedAll = listPositions({ status: 'closed' });
+  const closedAutotrade = closedAll.filter((p) => p.tags.includes('autotrade'));
+  const tightenedLive = tightenedStockPositions(closedAll).length;
+  const tightenedPaper = countTightenedClosedPaperPositions();
   const liveOptionsClosed = listLiveOptionsPositions({ status: 'closed' });
 
   return {
@@ -309,6 +337,13 @@ export function getAutotradeDashboard(): AutotradeDashboard {
       config.riskPerTradePct,
       config.targetDailyGainPct,
     ),
+    mlRegime: peekMarketRegime(),
+    regimeTighten: {
+      tightenedClosedTrades: tightenedLive + tightenedPaper,
+      paper: tightenedPaper,
+      live: tightenedLive,
+      minForReading: MIN_LEDGER_TRADES,
+    },
     methodPerformance: computeMethodPerformance(closedAutotrade, config, liveOptionsClosed),
     symbolCooldowns: [...activeSymbolCooldowns(config).values()].sort((a, b) => a.symbol.localeCompare(b.symbol)),
     lastTick: getLastTick(),

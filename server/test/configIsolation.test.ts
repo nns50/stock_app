@@ -68,6 +68,8 @@ describe('shared BOOK isolation between test files', () => {
     'autotrade_live_orders',
     'autotrade_live_options_orders',
     'autotrade_live_options_positions',
+    'daily_series',
+    'ml_regime_readings',
   ];
 
   it('starts with an EMPTY book, however many positions the files before it opened', () => {

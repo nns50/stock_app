@@ -31,6 +31,13 @@ export interface DailyBaseline {
   /** Epoch ms the target was first SEEN met, or null. Not a halt — a reach
    *  still standing on the NEXT tick is what banks the day. */
   reachCandidateAt: number | null;
+  /** The regime overlay's goal scale for the day (2026-09-08, dailyTarget.ts):
+   *  the factor the sizer cut entries by, applied to the % goal, arm and floor
+   *  so the goal is held constant in R. Null = 1 = unscaled. Written per tick
+   *  until the guard arms or the day banks, then frozen. */
+  goalScale: number | null;
+  /** Why (the trigger line), for the goal card and the journal. */
+  goalScaleReason: string | null;
 }
 
 interface Row {
@@ -40,12 +47,15 @@ interface Row {
   give_back_armed_at: number | null;
   give_back_halted_at: number | null;
   reach_candidate_at: number | null;
+  goal_scale: number | null;
+  goal_scale_reason: string | null;
 }
 
 export function getDailyBaseline(): DailyBaseline | null {
   const row = db
     .prepare(
-      `SELECT et_date, equity_usd, reached_at, give_back_armed_at, give_back_halted_at, reach_candidate_at
+      `SELECT et_date, equity_usd, reached_at, give_back_armed_at, give_back_halted_at, reach_candidate_at,
+              goal_scale, goal_scale_reason
        FROM autotrade_daily_baseline WHERE id = 1`,
     )
     .get() as Row | undefined;
@@ -57,6 +67,8 @@ export function getDailyBaseline(): DailyBaseline | null {
     giveBackArmedAt: row.give_back_armed_at,
     giveBackHaltedAt: row.give_back_halted_at,
     reachCandidateAt: row.reach_candidate_at,
+    goalScale: row.goal_scale,
+    goalScaleReason: row.goal_scale_reason,
   };
 }
 
@@ -69,9 +81,37 @@ export function saveDailyBaseline(etDate: string, equityUsd: number): DailyBasel
      VALUES (1, ?, ?, NULL, NULL, NULL)
      ON CONFLICT(id) DO UPDATE SET et_date = excluded.et_date, equity_usd = excluded.equity_usd,
        reached_at = NULL, give_back_armed_at = NULL, give_back_halted_at = NULL,
-       reach_candidate_at = NULL`,
+       reach_candidate_at = NULL, goal_scale = NULL, goal_scale_reason = NULL`,
   ).run(etDate, equityUsd);
-  return { etDate, equityUsd, reachedAt: null, giveBackArmedAt: null, giveBackHaltedAt: null, reachCandidateAt: null };
+  return {
+    etDate,
+    equityUsd,
+    reachedAt: null,
+    giveBackArmedAt: null,
+    giveBackHaltedAt: null,
+    reachCandidateAt: null,
+    goalScale: null,
+    goalScaleReason: null,
+  };
+}
+
+/**
+ * Write the regime overlay's goal scale for today — only while the day has no
+ * gain to protect yet. Once the give-back guard has armed or the day has
+ * banked, the row is FROZEN: the bank line and the floor must not move under a
+ * gain that already touched them (a moving line is exactly the flap
+ * dailyTarget.ts's header exists to prevent). The freeze is derived from the
+ * two sticky timestamps the row already carries, not a third flag. Returns
+ * whether a row was written.
+ */
+export function setDailyGoalScale(scale: number, reason: string | null): boolean {
+  const res = db
+    .prepare(
+      `UPDATE autotrade_daily_baseline SET goal_scale = ?, goal_scale_reason = ?
+       WHERE id = 1 AND give_back_armed_at IS NULL AND reached_at IS NULL`,
+    )
+    .run(scale, reason);
+  return res.changes > 0;
 }
 
 /** Mark today's target reached (first time only — the caller checks). */

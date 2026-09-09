@@ -113,7 +113,10 @@ export default function AboutPage() {
           risk-per-trade <span className="tabular-nums">×</span> all seven — they compound rather than the tightest one
           winning, so two reasons to size down both apply. In order: the{' '}
           <strong className="text-slate-200">consecutive-loss step-down</strong>, the{' '}
-          <strong className="text-slate-200">high-market-ATR regime cut</strong>, the{' '}
+          <strong className="text-slate-200">market-regime cut</strong> (one factor with three triggers — SPY’s 14-day
+          ATR% above its threshold, the ML regime reading High Volatility/Bearish with the overlay on, or an intraday
+          shock day whose SPY range so far is a set multiple of that ATR; the deeper configured cut applies once, never
+          the product, and a cut of 100% skips the entry), the{' '}
           <strong className="text-slate-200">same-day re-entry cut</strong>,{' '}
           <strong className="text-slate-200">equity-curve de-risking</strong>, the{' '}
           <strong className="text-slate-200">grade expectancy</strong> multiplier above, the{' '}
@@ -123,11 +126,15 @@ export default function AboutPage() {
           is premium paid while its grade is scored from the <em>underlying's</em> screener total. Finish-line sizing is
           live-only on both instruments, because the daily goal is a percentage of the real account; and because its own
           answer is one of these seven, it measures a "full-size win" against the risk % left after the other six, not
-          against the raw configured percentage. The daily goal those live-only rules serve is itself checked against
-          the record: <span className="tabular-nums">expected day % = entries/session × risk % × avg R</span>, the
-          loop's realized average R and median entries per session over its last 40 sessions at the current risk — the
-          same identity the tune inverts to solve a risk % from a target — and the Auto page shows that expected day
-          beside the goal, with a warning once the goal is more than 2× it.
+          against the raw configured percentage. On a day the regime cut fires, the daily goal, the give-back arm and
+          the floor are all scaled by the same factor entries were cut by (3 / 2 / 1 reads 1.95 / 1.3 / 0.65 at a 35%
+          cut), so the goal is held constant in R rather than becoming harder on the one day more entries is the wrong
+          answer; the scale locks once the guard arms or the day banks. The daily goal those live-only rules serve is
+          itself checked against the record:{' '}
+          <span className="tabular-nums">expected day % = entries/session × risk % × avg R</span>, the loop's realized
+          average R and median entries per session over its last 40 sessions at the current risk — the same identity the
+          tune inverts to solve a risk % from a target — and the Auto page shows that expected day beside the goal, with
+          a warning once the goal is more than 2× it.
         </p>
         <p className="mt-2">
           The <strong className="text-slate-200">same-day re-entry cut</strong> trims the size of an entry into a name
@@ -148,10 +155,13 @@ export default function AboutPage() {
           <strong className="text-slate-200">market regime</strong> label at entry (risk-on / neutral / risk-off, from
           the same gauge the Today page shows — best-effort, blank if the read failed), the{' '}
           <strong className="text-slate-200">market ATR%</strong> reading that cycle, the entry’s ET wall-clock time,
-          and — for options — the <strong className="text-slate-200">IV rank</strong> the decision gated on. Live
-          bracket exits additionally record <em>why</em> they closed (stop / target / time-exit). None of it changes any
-          decision; it exists so realized results can later be sliced by score band, regime, session, and exit mechanism
-          instead of guessed at.
+          for options the <strong className="text-slate-200">IV rank</strong> the decision gated on, and — since
+          2026-09-08 — the <strong className="text-slate-200">ML regime</strong> label the HMM read that day (High
+          Volatility/Bearish, Low Volatility/Bullish or Sideways; blank when the reading was unknown or stale, never
+          guessed) and the <strong className="text-slate-200">regime target factor</strong> its target was built with (1
+          when untightened). Live bracket exits additionally record <em>why</em> they closed (stop / target /
+          time-exit). None of it changes any decision; it exists so realized results can later be sliced by score band,
+          regime, session, and exit mechanism instead of guessed at.
         </p>
         <div className="mt-2 overflow-x-auto">
           <table className="w-full text-sm">
@@ -288,6 +298,47 @@ export default function AboutPage() {
           leave neutral. A signal whose data can’t be fetched reads{' '}
           <strong className="text-slate-200">“no data”</strong> and is dropped from the sum entirely, never counted as a
           fake neutral in any regime’s favor. The read is cached for an hour, since it turns on the daily close.
+        </p>
+        <p className="mt-3">
+          <strong className="text-slate-200">The ML regime reading</strong> beneath it comes from a three-state{' '}
+          <strong className="text-slate-200">Gaussian hidden Markov model</strong> trained offline on five years of
+          daily S&amp;P 500 data (FRED) — three features in a fixed order: the day’s log return, ln(VIX), and ln of the
+          20-day realized volatility of those returns — standardized with the training set’s mean and scale. Each day
+          the app runs a <strong className="text-slate-200">forward filter</strong> over the last 250 sessions (never a
+          smoother, which would label a day with its own future) and reads the last posterior:{' '}
+          <strong className="text-slate-200">High Volatility/Bearish</strong>,{' '}
+          <strong className="text-slate-200">Low Volatility/Bullish</strong> or{' '}
+          <strong className="text-slate-200">Sideways</strong>, named by a written rule from the states’ fitted means
+          (highest VIX and realized vol → High Vol; lowest → Low Vol; the third → Sideways). The label is{' '}
+          <strong className="text-slate-200">sticky</strong>: it changes only when the new state’s probability reaches{' '}
+          <span className="tabular-nums">0.6</span>. Data older than the third most recent session reads{' '}
+          <strong className="text-slate-200">unknown (stale)</strong>; a trailing likelihood below the training 5th
+          percentile raises a <strong className="text-slate-200">drift</strong> flag — a retrain signal, not a gate.
+          “Bearish” and “Bullish” describe fitted drift, not a forecast. With the auto-trade config’s{' '}
+          <strong className="text-slate-200">ML regime overlay</strong> on (off by default) the sizing regime cut above
+          reads it: new positions size down by the ML regime size cut while the reading is High Volatility/Bearish, and
+          an intraday <strong className="text-slate-200">shock day</strong> (SPY’s range so far today at or above a set
+          multiple of its ATR) is treated the same way on the spot; a stale or unknown reading never cuts. The same
+          switch <strong className="text-slate-200">tightens the profit target</strong> in that regime by the ML regime
+          target tighten % (default 30): the equity target R-multiple and the options take-profit % are both multiplied
+          by <span className="tabular-nums">1 − tighten/100</span> at entry (a 2R target becomes 1.4R, a 60% take-profit
+          42%), the finish-line trim reasons about that same tightened payoff, and the options exit rules read the
+          regime stamped on the position rather than today’s — so a High-Vol entry keeps its tighter target through a
+          calm afternoon and a calm-tape entry is never tightened later. The applied factor is stamped on every
+          position, and that stamp feeds the <strong className="text-slate-200">regime-tighten ledger</strong> (Journal
+          › Analytics): each closed stock trade’s MFE says whether the full, untightened target would have been reached,
+          and a counterfactual R takes the most optimistic case for the full target — reached means banked there with no
+          reversal, not reached means the untightened trade did as well as this one — read against realized R with a
+          bootstrap CI by a rule written before the first trade (30 trades; a counterfactual that beats realized R with
+          a CI excluding zero retires the tighten, one that cannot keeps it). With a{' '}
+          <strong className="text-slate-200">High-Vol conviction bar</strong> set (0 = off), a new live equity entry
+          must also clear that signal score while the effective regime is High Volatility/Bearish — the bar rises where
+          the size falls, a third source in the one live score gate beside the live conviction floor and the armed-day
+          bar, the strictest binding; paper keeps screening at the screen minimum. Nothing else acts on the reading,
+          except the backtest: it can replay the overlay from the walk-forward regime history — each simulated day reads
+          the previous session’s regime, never its own — so the cut, the tighten and the bar are measured out of sample
+          before any is trusted live, by a rule written before the run. The model card (docs/MARKET_REGIME_MODEL.md) has
+          the data, the validation, the enabling rules and what it does not do.
         </p>
       </Section>
 

@@ -93,8 +93,10 @@ export interface TradeSignal {
   stop: number;
   target: number;
   /** (target - entry) / (entry - stop) for a long, mirrored for a short. Always
-   *  equal to cfg.targetRMultiple by construction — carried on the signal so
-   *  downstream consumers (risk check, journal, UI) don't need the config too. */
+   *  equal to the EFFECTIVE multiple the caller passed as cfg.targetRMultiple —
+   *  the config's value, tightened by the ML regime overlay on a High-Vol tick
+   *  (regimeTargets.ts) — by construction; carried on the signal so downstream
+   *  consumers (risk check, journal, UI) don't need the config too. */
   rMultiple: number;
   rationale: string;
   /** The screener's 0..100 total score, carried over for sorting/display. */

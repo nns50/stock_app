@@ -14,7 +14,6 @@ const cfg = {
   // Off in the baseline fixture, so every existing case still describes the
   // breakeven/trail rules alone. Its own describe block turns it on.
   dayProtectiveStopEnabled: false,
-  giveBackFloorPct: 1,
 };
 
 /** Long: entry 100, stop 96 => $4 of risk per share, so 1R = $4. */
@@ -248,10 +247,12 @@ describe('initial stop seeding — the adoption path', () => {
 // that dips and recovers.
 // ---------------------------------------------------------------------------
 describe('day-protective stop', () => {
-  const dpCfg = { ...cfg, dayProtectiveStopEnabled: true, giveBackFloorPct: 1 };
+  const dpCfg = { ...cfg, dayProtectiveStopEnabled: true };
 
-  /** A day up `gainPct` on a 2103.43 baseline, guard armed. */
-  const day = (gainPct: number, armed = true): DailyTargetStatus => ({
+  /** A day up `gainPct` on a 2103.43 baseline, guard armed, with the guard's
+   *  EFFECTIVE levels on the status (arm 2, floor 1 — the rule reads the floor
+   *  from here, never from the config, since 2026-09-08). */
+  const day = (gainPct: number, armed = true, floorPct = 1): DailyTargetStatus => ({
     active: true,
     reached: false,
     giveBackArmed: armed,
@@ -259,6 +260,8 @@ describe('day-protective stop', () => {
     entriesHalted: false,
     baselineEquityUsd: 2103.43,
     currentEquityUsd: 2103.43 * (1 + gainPct / 100),
+    giveBackArmPct: floorPct * 2,
+    giveBackFloorPct: floorPct,
   });
 
   /** ANF as it actually was. 1R = 3.78/share. */
@@ -318,10 +321,24 @@ describe('day-protective stop', () => {
     expect(evaluateStopAdjust(anf(), 146.5, dpCfg, day(1.0)).adjust).toBe(false);
   });
 
-  it('is off unless its own flag is set, and needs a measurable day', () => {
+  it('is off unless its own flag is set, and needs a measurable day with a floor', () => {
     expect(evaluateStopAdjust(anf(), 146.5, cfg, day(1.6)).adjust).toBe(false); // flag off
     expect(evaluateStopAdjust(anf(), 146.5, dpCfg, undefined).adjust).toBe(false); // no day
-    expect(evaluateStopAdjust(anf(), 146.5, { ...dpCfg, giveBackFloorPct: 0 }, day(1.6)).adjust).toBe(false);
+    expect(evaluateStopAdjust(anf(), 146.5, dpCfg, { ...day(1.6), giveBackFloorPct: undefined }).adjust).toBe(false);
+    expect(evaluateStopAdjust(anf(), 146.5, dpCfg, day(1.6, true, 0)).adjust).toBe(false);
+  });
+
+  it('protects the floor the DAY carries — a regime-scaled 0.65% floor, not the configured 1% (2026-09-08)', () => {
+    // Same ANF day (+1.6%). At the scaled floor there is more headroom
+    // ($2137.08 − $2117.10 = $19.98 over 9 shares = $2.22/share), so the
+    // required stop is LOOSER (≈142.89) than the ≈143.72 a 1% floor demands.
+    const scaled = evaluateStopAdjust(anf(), 146.5, dpCfg, day(1.6, true, 0.65));
+    const configured = evaluateStopAdjust(anf(), 146.5, dpCfg, day(1.6, true, 1));
+    expect(scaled.adjust).toBe(true);
+    expect(configured.adjust).toBe(true);
+    expect(scaled.newStop!).toBeCloseTo(142.89, 1);
+    expect(configured.newStop!).toBeCloseTo(143.72, 1);
+    expect(scaled.newStop!).toBeLessThan(configured.newStop!);
   });
 
   it('never loosens, and yields to a tighter breakeven or trail', () => {

@@ -1756,6 +1756,12 @@ function MonitoringDashboard({
 
   const dt = dash.dailyTarget;
   const ev = dash.dailyGoalEvidence;
+  // The counterfactual MFE ledger's population (2026-09-08): once ten closed
+  // stock trades carry a tightened target there is something to read, and
+  // the reading lives in Journal › Analytics › Regime tighten — a pointer,
+  // never the per-trade candle fetch, on a polled card.
+  const rt = dash.regimeTighten;
+  const REGIME_TIGHTEN_EVIDENCE_MIN = 10;
   // The goal against the record (2026-09-07): the same identity the tune
   // inverts, applied forward at the current sizing — so the goal is never
   // shown without the day the loop actually produces beside it.
@@ -1814,7 +1820,8 @@ function MonitoringDashboard({
             ) : null}
           </div>
           <p className="text-xs text-slate-300">
-            {fmtPct(dt.gainPct ?? 0, 2)} of the {fmtPct(dt.targetPct ?? 0, 1, false)} goal — day started at{' '}
+            {fmtPct(dt.gainPct ?? 0, 2)} of the{' '}
+            {fmtPct(dt.targetPct ?? 0, dt.goalScale != null && dt.goalScale < 1 ? 2 : 1, false)} goal — day started at{' '}
             {fmtUsd(dt.baselineEquityUsd ?? 0)}, banks at {fmtUsd(dt.targetEquityUsd ?? 0)}
             {dt.reached
               ? '. New live entries are halted until the next trading day; exits and paper keep running.'
@@ -1832,10 +1839,29 @@ function MonitoringDashboard({
                     )} halts new live entries for the day.`
                   : '.'}
           </p>
+          {dt.goalScale != null && dt.goalScale < 1 && (
+            <p className="text-[11px] text-amber-300/90 mt-1" data-testid="daily-goal-scale">
+              Today's goal is scaled: {fmtPct(dt.targetPct ?? 0, 2, false)} ={' '}
+              {fmtPct(dt.configuredTargetPct ?? 0, 1, false)} × {dt.goalScale.toFixed(2)}, the same factor the regime
+              cut sizes entries by, so the goal is held constant in R
+              {dt.giveBackArmPct != null && dt.giveBackFloorPct != null
+                ? ` (arm ${fmtPct(dt.giveBackArmPct, 2, false)}, floor ${fmtPct(dt.giveBackFloorPct, 2, false)})`
+                : ''}
+              {dt.goalScaleReason ? ` — ${dt.goalScaleReason}` : ''}
+              {dt.giveBackArmed || dt.reached ? '. Locked for the day.' : '.'}
+            </p>
+          )}
           <p className="text-[11px] text-slate-500 mt-1" data-testid="daily-goal-evidence">
             {expectedDayLine}
           </p>
         </div>
+      )}
+      {rt.tightenedClosedTrades >= REGIME_TIGHTEN_EVIDENCE_MIN && (
+        <p className="text-[11px] text-slate-500" data-testid="regime-tighten-evidence">
+          <span className="text-slate-400">Regime tighten:</span> {rt.tightenedClosedTrades} closed stock trades carry a
+          tightened target ({rt.paper} paper, {rt.live} live). Whether the tighter target banked wins or cost them is in
+          Journal › Analytics › Regime tighten — the pre-committed reading needs {rt.minForReading}.
+        </p>
       )}
       {dash.symbolCooldowns.length > 0 && (
         <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">
@@ -1911,6 +1937,18 @@ function MonitoringDashboard({
               {dash.lastTick.summary.moversAutoPromoted > 0 &&
                 ` · ${dash.lastTick.summary.moversAutoPromoted} movers promoted`}
             </p>
+            {/* The ML market-regime reading this tick saw (services/mlRegime.ts).
+                Older persisted ticks predate the field, so it is guarded. */}
+            {dash.lastTick.summary.mlRegime && (
+              <p data-testid="last-cycle-ml-regime">
+                ML regime: {dash.lastTick.summary.mlRegime.label}
+                {dash.lastTick.summary.mlRegime.probability !== null &&
+                  ` (p=${dash.lastTick.summary.mlRegime.probability.toFixed(2)})`}{' '}
+                · {dash.lastTick.summary.mlRegime.source}
+                {dash.lastTick.summary.mlRegime.stale ? ' · stale' : ''}
+                {dash.lastTick.summary.mlRegime.drift ? ' · drift' : ''}
+              </p>
+            )}
             {/* The LIVE side of the tick. Every number below was already
                 computed, stored and served — and rendered nowhere, so this
                 panel showed a live cycle as if only its paper half had
@@ -2834,6 +2872,12 @@ export default function AutoTradePage() {
   const [regimeAtrThresholdPctDraft, setRegimeAtrThresholdPctDraft] = useState<number | undefined>();
   const [regimeSizeCutPctDraft, setRegimeSizeCutPctDraft] = useState<number | undefined>();
   const [repeatEntrySizeCutPctDraft, setRepeatEntrySizeCutPctDraft] = useState<number | undefined>();
+  const [mlRegimeEnabled, setMlRegimeEnabled] = useState(false);
+  const [mlRegimeSizeCutPctDraft, setMlRegimeSizeCutPctDraft] = useState<number | undefined>();
+  const [mlRegimeSwitchThresholdDraft, setMlRegimeSwitchThresholdDraft] = useState<number | undefined>();
+  const [regimeShockRangeRatioDraft, setRegimeShockRangeRatioDraft] = useState<number | undefined>();
+  const [mlRegimeTargetTightenPctDraft, setMlRegimeTargetTightenPctDraft] = useState<number | undefined>();
+  const [mlRegimeHighVolMinSignalScoreDraft, setMlRegimeHighVolMinSignalScoreDraft] = useState<number | undefined>();
   const [equityCurveDeriskEnabled, setEquityCurveDeriskEnabled] = useState(false);
   const [equityCurveLookbackDaysDraft, setEquityCurveLookbackDaysDraft] = useState<number | undefined>();
   const [equityCurveDeriskCutPctDraft, setEquityCurveDeriskCutPctDraft] = useState<number | undefined>();
@@ -2972,6 +3016,12 @@ export default function AutoTradePage() {
     sync('regimeAtrThresholdPct', setRegimeAtrThresholdPctDraft);
     sync('regimeSizeCutPct', setRegimeSizeCutPctDraft);
     sync('repeatEntrySizeCutPct', setRepeatEntrySizeCutPctDraft);
+    sync('mlRegimeEnabled', setMlRegimeEnabled);
+    sync('mlRegimeSizeCutPct', setMlRegimeSizeCutPctDraft);
+    sync('mlRegimeSwitchThreshold', setMlRegimeSwitchThresholdDraft);
+    sync('regimeShockRangeRatio', setRegimeShockRangeRatioDraft);
+    sync('mlRegimeTargetTightenPct', setMlRegimeTargetTightenPctDraft);
+    sync('mlRegimeHighVolMinSignalScore', setMlRegimeHighVolMinSignalScoreDraft);
     sync('equityCurveDeriskEnabled', setEquityCurveDeriskEnabled);
     sync('equityCurveLookbackDays', setEquityCurveLookbackDaysDraft);
     sync('equityCurveDeriskCutPct', setEquityCurveDeriskCutPctDraft);
@@ -3084,6 +3134,12 @@ export default function AutoTradePage() {
     regimeAtrThresholdPct?: number;
     regimeSizeCutPct?: number;
     repeatEntrySizeCutPct?: number;
+    mlRegimeEnabled?: boolean;
+    mlRegimeSizeCutPct?: number;
+    mlRegimeSwitchThreshold?: number;
+    regimeShockRangeRatio?: number;
+    mlRegimeTargetTightenPct?: number;
+    mlRegimeHighVolMinSignalScore?: number;
     equityCurveDeriskEnabled?: boolean;
     equityCurveLookbackDays?: number;
     equityCurveDeriskCutPct?: number;
@@ -3538,6 +3594,11 @@ export default function AutoTradePage() {
   // btRiskProfile being independent of the live risk profile. Shared by all
   // three run buttons below, same as every other field in this form.
   const [btDirectionMode, setBtDirectionMode] = useState<AutotradeTradeDirectionMode>('long');
+  // The ML regime overlay in a backtest (2026-09-08): the flag alone — the
+  // route fills in the Configuration's cut/tighten/bar, so the box validates
+  // what is configured. Threaded into the equity, sweep and combined runs;
+  // the standalone options engine does not read it.
+  const [btMlRegimeEnabled, setBtMlRegimeEnabled] = useState(false);
   const [btBusy, setBtBusy] = useState(false);
   const [btErr, setBtErr] = useState<string>();
   const [btResult, setBtResult] = useState<BacktestRunResponse>();
@@ -3584,6 +3645,7 @@ export default function AutoTradePage() {
         startingEquity: btEquity,
         maxConcurrentPositions: btMaxPositions,
         directionMode: btDirectionMode,
+        mlRegimeEnabled: btMlRegimeEnabled,
       };
       if (btSplitDate) {
         setBtWfResult(await client.runAutotradeWalkForward({ ...body, splitDate: btSplitDate }));
@@ -3656,6 +3718,7 @@ export default function AutoTradePage() {
           startingEquity: btEquity,
           maxConcurrentPositions: btMaxPositions,
           directionMode: btDirectionMode,
+          mlRegimeEnabled: btMlRegimeEnabled,
           splitDate: btSplitDate,
           riskPerTradePct: v,
         });
@@ -3764,6 +3827,7 @@ export default function AutoTradePage() {
         maxConcurrentPositions: btMaxPositions,
         optionsDecisionConfig: { strategyType: optionsStrategyType },
         directionMode: btDirectionMode,
+        mlRegimeEnabled: btMlRegimeEnabled,
       };
       if (btSplitDate) {
         setCombinedBtWfResult(await client.runCombinedWalkForward({ ...body, splitDate: btSplitDate }));
@@ -4640,6 +4704,176 @@ export default function AutoTradePage() {
                           repeatEntrySizeCutPctDraft < 0 ||
                           repeatEntrySizeCutPctDraft > 100 ||
                           repeatEntrySizeCutPctDraft === config.data?.repeatEntrySizeCutPct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <label className="flex items-start gap-2 text-sm sm:col-span-2">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={mlRegimeEnabled}
+                      onChange={(e) => saveConfig({ mlRegimeEnabled: e.target.checked })}
+                    />
+                    <span>
+                      ML regime overlay
+                      <span className="block text-[11px] text-slate-500">
+                        Lets the SAME regime cut above read the Today page's ML regime (HMM) reading: while it reads
+                        High Volatility/Bearish, new positions size down by the ML regime size cut below, and a shock
+                        day (the ratio below) is treated the same way. One cut, never two — when the ATR trigger and
+                        this fire together the deeper configured cut applies once. A stale or unknown reading never
+                        cuts. Off by default: leave it off until the enabling rules in the model card are met. Live +
+                        paper only.
+                      </span>
+                    </span>
+                  </label>
+                  <Field
+                    label="ML regime size cut (%)"
+                    hint="% cut to risk-per-trade while the effective regime is High Volatility/Bearish (the model's reading, or a shock day). Default 35 — below the ATR trigger's cut on purpose: the model's High-Vol state is a broad condition and cuts must be monotone in severity. 100 skips every new entry in that regime. Needs ML regime overlay on."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={mlRegimeSizeCutPctDraft}
+                        onChange={setMlRegimeSizeCutPctDraft}
+                        min={0}
+                        max={100}
+                        step={1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save ML regime size cut"
+                        onClick={() =>
+                          mlRegimeSizeCutPctDraft != null && saveConfig({ mlRegimeSizeCutPct: mlRegimeSizeCutPctDraft })
+                        }
+                        disabled={
+                          mlRegimeSizeCutPctDraft == null ||
+                          mlRegimeSizeCutPctDraft < 0 ||
+                          mlRegimeSizeCutPctDraft > 100 ||
+                          mlRegimeSizeCutPctDraft === config.data?.mlRegimeSizeCutPct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="ML regime switch threshold"
+                    hint="The reading's own sticky rule, not a cut: the ML regime changes only when the new state's filtered probability reaches this (0–1; the model's default is 0.6). Higher = calmer, later switches. Applies whether or not the overlay is on — the reading is displayed and stamped on every entry regardless."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={mlRegimeSwitchThresholdDraft}
+                        onChange={setMlRegimeSwitchThresholdDraft}
+                        min={0}
+                        max={1}
+                        step={0.05}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save ML regime switch threshold"
+                        onClick={() =>
+                          mlRegimeSwitchThresholdDraft != null &&
+                          saveConfig({ mlRegimeSwitchThreshold: mlRegimeSwitchThresholdDraft })
+                        }
+                        disabled={
+                          mlRegimeSwitchThresholdDraft == null ||
+                          mlRegimeSwitchThresholdDraft < 0 ||
+                          mlRegimeSwitchThresholdDraft > 1 ||
+                          mlRegimeSwitchThresholdDraft === config.data?.mlRegimeSwitchThreshold
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Shock day range ratio (× ATR)"
+                    hint="The intraday nowcast: when SPY's range so far today (high − low, % of yesterday's close) reaches this many times its 14-day ATR%, the tick is treated as High Volatility/Bearish — same cut — covering the day a model read from yesterday's close cannot see. 0 = off (default); 1.5 is a suggested start, not a fitted number. Journals market_shock_detected once per shock day. Needs ML regime overlay on."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={regimeShockRangeRatioDraft}
+                        onChange={setRegimeShockRangeRatioDraft}
+                        min={0}
+                        max={10}
+                        step={0.1}
+                        placeholder="0 (off)"
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save shock day range ratio"
+                        onClick={() =>
+                          regimeShockRangeRatioDraft != null &&
+                          saveConfig({ regimeShockRangeRatio: regimeShockRangeRatioDraft })
+                        }
+                        disabled={
+                          regimeShockRangeRatioDraft == null ||
+                          regimeShockRangeRatioDraft < 0 ||
+                          regimeShockRangeRatioDraft > 10 ||
+                          regimeShockRangeRatioDraft === config.data?.regimeShockRangeRatio
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="ML regime target tighten (%)"
+                    hint="While the effective regime is High Volatility/Bearish, the profit target is brought in by this % — the equity target R-multiple and the options take-profit % are both multiplied by (1 − this/100), at entry: a 2R target becomes 1.4R and a 60% take-profit 42% at the default 30. The options exit rules read the regime stamped on the position, so a High-Vol entry keeps its tighter target through a calm afternoon. Does not change the daily goal. 90+ is clamped to a 0.1× target. Needs ML regime overlay on."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={mlRegimeTargetTightenPctDraft}
+                        onChange={setMlRegimeTargetTightenPctDraft}
+                        min={0}
+                        max={100}
+                        step={5}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save ML regime target tighten"
+                        onClick={() =>
+                          mlRegimeTargetTightenPctDraft != null &&
+                          saveConfig({ mlRegimeTargetTightenPct: mlRegimeTargetTightenPctDraft })
+                        }
+                        disabled={
+                          mlRegimeTargetTightenPctDraft == null ||
+                          mlRegimeTargetTightenPctDraft < 0 ||
+                          mlRegimeTargetTightenPctDraft > 100 ||
+                          mlRegimeTargetTightenPctDraft === config.data?.mlRegimeTargetTightenPct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="High-Vol conviction bar"
+                    hint="Minimum signal score a new LIVE EQUITY entry must clear while the effective regime is High Volatility/Bearish — the bar rises where the size falls, because the same score carries less edge in a High-Vol tape (every live dollar so far came from scores 76–94). A third source in the one live score gate beside the live conviction floor and the armed-day bar; the strictest binds and a skip journals regime_score_floor_skipped. Live only — paper keeps screening at the screen minimum and stays the control group. 0 = off. Needs ML regime overlay on."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={mlRegimeHighVolMinSignalScoreDraft}
+                        onChange={setMlRegimeHighVolMinSignalScoreDraft}
+                        min={0}
+                        max={100}
+                        step={1}
+                        placeholder="0 (no bar)"
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save High-Vol conviction bar"
+                        onClick={() =>
+                          mlRegimeHighVolMinSignalScoreDraft != null &&
+                          saveConfig({ mlRegimeHighVolMinSignalScore: mlRegimeHighVolMinSignalScoreDraft })
+                        }
+                        disabled={
+                          mlRegimeHighVolMinSignalScoreDraft == null ||
+                          mlRegimeHighVolMinSignalScoreDraft < 0 ||
+                          mlRegimeHighVolMinSignalScoreDraft > 100 ||
+                          mlRegimeHighVolMinSignalScoreDraft === config.data?.mlRegimeHighVolMinSignalScore
                         }
                       >
                         Save
@@ -7025,6 +7259,21 @@ export default function AutoTradePage() {
                   <option value="both">Both</option>
                 </select>
               </Field>
+              <Field
+                label="ML regime overlay"
+                hint="Replays the Configuration's ML regime size cut, target tighten and High-Vol conviction bar from the shipped walk-forward regime history — each simulated day reads the PREVIOUS session's regime (the reading the live loop could have had that morning), never its own. Needs server/data/regimeHistory.json. The standalone options run ignores it; the combined run applies it to the equity leg."
+              >
+                <label className="flex items-start gap-2 text-sm text-slate-300">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    aria-label="ML regime overlay"
+                    checked={btMlRegimeEnabled}
+                    onChange={(e) => setBtMlRegimeEnabled(e.target.checked)}
+                  />
+                  <span>Replay the overlay one session behind (no lookahead)</span>
+                </label>
+              </Field>
               <Field label="Starting equity ($)">
                 <NumberInput value={btEquity} onChange={setBtEquity} placeholder="e.g. 100000" />
               </Field>
@@ -7074,6 +7323,12 @@ export default function AutoTradePage() {
                   </p>
                 )}
                 <BacktestStatsGrid stats={btResult.stats} />
+                {btResult.report.regimeDayTrades > 0 && (
+                  <p className="text-[11px] text-slate-500" data-testid="bt-regime-day-trades">
+                    {btResult.report.regimeDayTrades} fill(s) on High Volatility/Bearish regime days under the ML regime
+                    overlay — read one session behind, no lookahead.
+                  </p>
+                )}
                 <BacktestEquityChart equityCurve={btResult.report.equityCurve} gradientId="btEquityPlain" />
                 <BacktestTradesTable trades={btResult.report.trades} />
               </div>

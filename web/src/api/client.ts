@@ -8,12 +8,14 @@ import type {
   EntryCandidate,
   EntryStrategyConfig,
   ExcursionReport,
+  RegimeTightenLedger,
   ExitCheckRow,
   ExitRulesConfig,
   Exposure,
   StressResult,
   PortfolioCorrelation,
   MarketRegime,
+  MlRegimeReading,
   SectorRotation,
   IvContext,
   OptionsIv,
@@ -217,6 +219,7 @@ export const client = {
     api<ProviderTestResult>(`/provider/test${symbol ? `?symbol=${encodeURIComponent(symbol)}` : ''}`),
   refresh: () => api<{ ok: boolean }>('/refresh', { method: 'POST' }),
   marketRegime: (force?: boolean) => api<MarketRegime>(`/market/regime${force ? '?force=true' : ''}`),
+  marketRegimeMl: (force?: boolean) => api<MlRegimeReading>(`/market/regime-ml${force ? '?force=true' : ''}`),
 
   // --- tools ---
   positionSize: (body: {
@@ -363,6 +366,7 @@ export const client = {
   journalToday: (date: string) => api<DayStats>(`/journal/today?date=${encodeURIComponent(date)}`),
   journalSlippage: () => api<SlippageReport>('/journal/slippage'),
   journalStopOverrun: () => api<StopOverrunReport>('/journal/stop-overrun'),
+  journalRegimeTighten: () => api<RegimeTightenLedger>('/journal/regime-tighten'),
 
   // --- data export / restore ---
   importPositions: (positions: unknown[], mode: 'merge' | 'replace') =>
@@ -511,6 +515,12 @@ export const client = {
     regimeAtrThresholdPct?: number;
     regimeSizeCutPct?: number;
     repeatEntrySizeCutPct?: number;
+    mlRegimeEnabled?: boolean;
+    mlRegimeSizeCutPct?: number;
+    mlRegimeSwitchThreshold?: number;
+    regimeShockRangeRatio?: number;
+    mlRegimeTargetTightenPct?: number;
+    mlRegimeHighVolMinSignalScore?: number;
     tradeDirection?: AutotradeTradeDirectionMode;
     minRelVol?: number;
     relVolUsePaceScoring?: boolean;

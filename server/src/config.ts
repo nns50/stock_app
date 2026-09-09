@@ -108,6 +108,21 @@ export const config = {
   polygon: {
     apiKey: process.env.POLYGON_API_KEY || '',
   },
+  /**
+   * The market-regime reading (services/mlRegime.ts, docs/MARKET_REGIME_MODEL.md).
+   * `source` picks where the daily closes come from: `fred` (the default —
+   * the series the model was trained on), `provider` (the configured market
+   * data provider's ^GSPC/^VIX candles, the fallback FRED would have used
+   * anyway; never the Mock provider), or `off` (no I/O at all — every reading
+   * is `unknown`; the test suite runs this way). `devOverride` forces a
+   * regime label for local end-to-end checks and is REFUSED in production so
+   * it can never lie to the deployed box.
+   */
+  mlRegime: {
+    source: oneOf(process.env.ML_REGIME_SOURCE, ['fred', 'provider', 'off'] as const, 'fred'),
+    devOverride:
+      process.env.NODE_ENV === 'production' ? '' : (process.env.ML_REGIME_DEV_OVERRIDE || '').trim().toLowerCase(),
+  },
 };
 
 export type AppConfig = typeof config;

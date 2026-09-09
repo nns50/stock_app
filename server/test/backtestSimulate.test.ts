@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { simulateBacktest, BacktestConfig } from '../src/services/autotrading/backtest';
 import { Candle } from '../src/providers/types';
+import type { MlRegime } from '../src/services/regimeModel';
 
 // Fully relaxed filters so a signal fires on the very first eligible day
 // (once ATR has its 14-day warmup) regardless of the exact price action —
@@ -666,5 +667,102 @@ describe('simulateBacktest', () => {
       const report = simulateBacktest(historyWithGapUpEntry(), cfg); // no 4th arg
       expect(report.trades).toHaveLength(1);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The ML regime overlay (2026-09-08), replayed ONE SESSION BEHIND through the
+// loop's own helpers. The history is keyed by data date and FRED publishes a
+// close the next morning, so a simulated day reads the previous trading
+// session's regime — never its own close. 2024-03-01 is a Friday; its
+// previous session is Thursday 2024-02-29.
+// ---------------------------------------------------------------------------
+describe('the ML regime overlay — replayed one session behind, no lookahead', () => {
+  const signalDay = '2024-03-01';
+  const entryDay = d(signalDay, 1);
+  const targetDay = d(signalDay, 2);
+  const history = () =>
+    new Map([
+      [
+        'TEST',
+        [...warmupThrough(signalDay), bar(entryDay), bar(targetDay, { open: 101, high: 107, low: 100, close: 106 })],
+      ],
+    ]);
+  const cfgWith = (over: Partial<BacktestConfig> = {}) => baseConfig({ from: signalDay, to: targetDay, ...over });
+  const highVolYesterday = new Map<string, MlRegime>([['2024-02-29', 'high_vol_bearish']]);
+  // The fixture's calendar-day bars keep signalling on 03-02 and 03-03 (whose
+  // previous session is Friday 03-01), so a test that must refuse EVERY day
+  // marks that session too — otherwise the refused Friday signal is simply
+  // replaced by Saturday's, read against an unknown (fail-open) session.
+  const highVolAllWeek = new Map<string, MlRegime>([
+    ['2024-02-29', 'high_vol_bearish'],
+    ['2024-03-01', 'high_vol_bearish'],
+  ]);
+  const overlay = { mlRegimeEnabled: true, mlRegimeSizeCutPct: 50, mlRegimeTargetTightenPct: 30 };
+
+  it('cuts the size and tightens the target when the PREVIOUS session read High Vol: 333 → 166 shares, 106 → 104.2', () => {
+    const report = simulateBacktest(history(), cfgWith(overlay), undefined, undefined, highVolYesterday);
+    expect(report.trades).toHaveLength(1);
+    const t = report.trades[0];
+    expect(t.quantity).toBe(166); // floor(333 × 0.5): the size cut, through the risk check's own regimeTriggers
+    expect(t.exitReason).toBe('target');
+    expect(t.exitPrice).toBeCloseTo(104.2, 5); // 1.4R × 3 above 100 — the tightened bracket, through regimeAdjustedTargets
+    expect(t.rMultiple).toBeCloseTo(1.4, 5);
+    expect(report.regimeDayTrades).toBe(1);
+  });
+
+  it('a history keyed on the signal day ITSELF changes nothing — the one-session shift is the no-lookahead rule', () => {
+    const sameDay = new Map<string, MlRegime>([['2024-03-01', 'high_vol_bearish']]);
+    const withMap = simulateBacktest(history(), cfgWith(overlay), undefined, undefined, sameDay);
+    expect(withMap).toEqual(simulateBacktest(history(), cfgWith()));
+    expect(withMap.trades[0].quantity).toBe(333);
+    expect(withMap.regimeDayTrades).toBe(0);
+  });
+
+  it('is byte-identical to the baseline with the overlay off, whatever the history says', () => {
+    const off = simulateBacktest(
+      history(),
+      cfgWith({ mlRegimeEnabled: false, mlRegimeSizeCutPct: 100, mlRegimeTargetTightenPct: 30 }),
+      undefined,
+      undefined,
+      highVolYesterday,
+    );
+    expect(off).toEqual(simulateBacktest(history(), cfgWith()));
+    expect(off.regimeDayTrades).toBe(0);
+  });
+
+  it('a cut of 100 skips the regime day entirely, and is byte-identical to the baseline on a calm one', () => {
+    const skip = cfgWith({ mlRegimeEnabled: true, mlRegimeSizeCutPct: 100 });
+    expect(simulateBacktest(history(), skip, undefined, undefined, highVolAllWeek).trades).toEqual([]);
+    const calm = new Map<string, MlRegime>([['2024-02-29', 'sideways']]);
+    expect(simulateBacktest(history(), skip, undefined, undefined, calm)).toEqual(
+      simulateBacktest(history(), cfgWith()),
+    );
+  });
+
+  it('the High-Vol conviction bar raises the screen floor on a regime day only', () => {
+    const barred = cfgWith({
+      mlRegimeEnabled: true,
+      mlRegimeSizeCutPct: 0,
+      mlRegimeTargetTightenPct: 0,
+      mlRegimeHighVolMinSignalScore: 100,
+    });
+    expect(simulateBacktest(history(), barred, undefined, undefined, highVolAllWeek).trades).toEqual([]);
+    const calm = new Map<string, MlRegime>([['2024-02-29', 'low_vol_bullish']]);
+    expect(simulateBacktest(history(), barred, undefined, undefined, calm).trades).toHaveLength(1);
+  });
+
+  it('an unknown reading (no history for the previous session) fails open — no cut, no tighten, no bar', () => {
+    const elsewhere = new Map<string, MlRegime>([['2024-02-01', 'high_vol_bearish']]);
+    const r = simulateBacktest(
+      history(),
+      cfgWith({ ...overlay, mlRegimeHighVolMinSignalScore: 100 }),
+      undefined,
+      undefined,
+      elsewhere,
+    );
+    expect(r.trades[0].quantity).toBe(333);
+    expect(r.trades[0].exitPrice).toBe(106);
+    expect(r.regimeDayTrades).toBe(0);
   });
 });

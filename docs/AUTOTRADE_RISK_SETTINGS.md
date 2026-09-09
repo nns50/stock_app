@@ -53,6 +53,11 @@ header if it's collapsed). Top to bottom, you'll find:
   **correlation lookback (days)** and **correlation threshold (|r|)** — they define
   *how* two tickers count as "correlated" for that cap, rather than adding a new cap
   of their own.
+- The **regime sizing** group: **regime ATR threshold (%)**, **regime size cut (%)**,
+  and — since 2026-09-08 — the **ML regime overlay** switch with its **ML regime size
+  cut (%)**, **ML regime switch threshold**, **shock day range ratio (× ATR)** and **ML
+  regime target tighten (%)**. Covered together in
+  [§4](#regime-size-cut--three-triggers-one-cut).
 - A **Daily goal** card (2026-09-07, right below **Tune from target daily gain**)
   holding the three day-level stopping rules the tune otherwise stamps: **daily gain
   goal %**, **give-back arm %**, **give-back floor %**. Covered at the end of
@@ -77,10 +82,19 @@ and the two correlation-methodology fields) has its own input box and its own
 | **Max trades per day** | How many new positions can open in one day? | 6 | count |
 | **Correlation lookback (days)** | How many days of price history define "correlated"? | 30 | trading days |
 | **Correlation threshold (\|r\|)** | How similar do two tickers' moves have to be to count as "correlated"? | 0.7 | Pearson r (0-1) |
+| **Regime ATR threshold (%)** | Above what SPY 14-day ATR% do new trades size down? | 3% | % (0 = off) |
+| **Regime size cut (%)** | How much smaller while that ATR trigger is active? | 0% (off) | % cut |
+| **ML regime overlay** | May the ML regime reading and the shock nowcast cut size too? | off | on/off |
+| **ML regime size cut (%)** | How much smaller while the effective regime is High Volatility/Bearish? | 35% | % cut (100 = skip) |
+| **ML regime switch threshold** | How sure must the model be before the reading changes regime? | 0.6 | probability (0–1) |
+| **Shock day range ratio (× ATR)** | How many normal days of range, so far today, make a shock day? | 0 (off) | multiple of SPY ATR |
+| **ML regime target tighten (%)** | How much closer is the profit target while the regime is High Volatility/Bearish? | 30% | % tighter |
+| **High-Vol conviction bar** | What signal score must a live entry clear while the regime is High Volatility/Bearish? | 0 (off) | score (0–100) |
 
-Every default above matches the app's original `MODERATE` preset, so if you've never
-touched these fields, nothing about how the loop behaves has changed — they're just
-editable now instead of baked into a dropdown.
+Every default in the first ten rows matches the app's original `MODERATE` preset, so if
+you've never touched these fields, nothing about how the loop behaves has changed —
+they're just editable now instead of baked into a dropdown. The regime rows are later
+additions whose defaults are inert: no ATR cut at 0%, the overlay off, the nowcast off.
 
 ## 3. The big picture: how one trade gets approved
 
@@ -181,6 +195,117 @@ sizing goes back to normal (1%, 500 shares) on the trade after that.
 
 The idea: after a losing streak, trade smaller until you've proven you're back on
 track — a much gentler response than the hard stop the daily-drawdown halt applies.
+
+### Regime size cut — three triggers, one cut
+
+**One mechanism, three ways to fire, one number applied.** The regime cut sizes new
+trades down when the *market* (not your streak) says to. It fires on any of:
+
+1. **Regime ATR threshold (%)** — SPY's 14-day ATR%, the same reading max market ATR
+   blocks on, above this threshold (3% by default; 0 turns this trigger off). In
+   practice that is a few weeks a decade: across every entry this book has recorded,
+   market ATR ran 0.8–1.2%.
+2. **ML regime overlay** *on* and the Today page's **ML regime (HMM)** reading is
+   **High Volatility/Bearish** — a broad condition, roughly one session in four over the
+   model's training window (2022 nearly whole, the Aug-2024 and Apr-2025 spikes, every
+   VIX-25 correction). A **stale** or **unknown** reading never fires this.
+3. **ML regime overlay** *on* and a **shock day**: SPY's range so far today (high − low,
+   as a % of yesterday's close) is at least **shock day range ratio** × its 14-day ATR%.
+   0 = off; 1.5 is the suggested start — a day that has already covered one and a half
+   normal *full* days by mid-morning is a shock day, an ordinary day never trips it.
+   This is the one trigger that can see day one of a shock: the model reads yesterday's
+   close, so it labels the morning *after*.
+
+Whichever fired, **the deeper configured cut applies, once.** The ATR trigger carries
+**regime size cut (%)**; the other two carry **ML regime size cut (%)**. They never
+multiply.
+
+*Example:* $100,000 account, 1% risk per trade, a $100 stock with a $95 stop → 200
+shares normally. Overlay on, reading High Volatility/Bearish, ML regime size cut 35% →
+risk 0.65% → **130 shares**. Set the cut to 50% → 100 shares. Now suppose the same
+morning SPY's ATR also crosses the 3% threshold with regime size cut 40%: the trade
+sizes at **0.6%, 120 shares** — the deeper of 40% and 35%, not 61% (which would be 78
+shares). Set either cut to **100%** and the trade is refused outright: the
+`regime_sizing` line reads "entries skipped (cut 100%)" instead of building a
+zero-share order, and Recent activity's risk-check entry names it.
+
+*Why 35% and not 50%.* Cuts should be monotone in severity: the ATR trigger is the
+extreme case and carries 40%, so the broad ML condition must not cut deeper. And the
+per-trade ATR stop already halves the share count when ranges double (shares = risk ÷
+(ATR multiple × ATR)); this cut is a second layer on *dollar* risk for what a stop
+cannot see — gaps through stops, correlations going to one, a long-biased edge that
+weakens in bear tape. A 30–40% cut on dollar risk is the residual after the stop's
+share. 50 stays available, and the walk-forward grid (the model card's "validating the
+overlay" step) chooses the number that ships on — not this default, not the original
+request's 50.
+
+*The nowcast has no backtest.* A daily bar knows the full range only at the close, so a
+backtest cannot validate a mid-morning trigger without foresight. Its evidence is live:
+every shock day journals `market_shock_detected` once (range, ATR, ratio, what the model
+read); after the first three, compare them with the model's next-session label before
+trusting the ratio.
+
+**ML regime switch threshold** (0–1, default 0.6) is not a cut — it is the reading's
+own sticky rule: the regime changes only when the new state's filtered probability
+reaches this. Higher = calmer, later switches. It applies whether or not the overlay is
+on, because the reading is displayed and stamped on every entry regardless.
+
+**ML regime target tighten (%)** (default 30) is the overlay's second act: in a High
+Volatility/Bearish tape a breakout has less room before the next reversal, so the
+profit target is brought in. While the effective regime is High Vol, the **target
+R-multiple** and the **options take-profit %** are both multiplied by (1 − tighten/100)
+— at the default, a 2R target becomes **1.4R** and a 60% take-profit **42%**. It applies
+**at entry**: the equity bracket's target is fixed when the order is built, and the
+options exit rules read the regime *stamped on the position* rather than today's, so a
+High-Vol entry keeps its tighter target through a calm afternoon and a calm-tape entry
+is never tightened by a later switch. The finish-line trim reasons about the same
+tightened payoff (a smaller win overshoots the bank line less, so it trims less), and
+the factor is stamped on every position (`regimeTargetFactor`, 1 when untightened) so
+the counterfactual ledger can measure what the full target would have done. A tighten
+of 90 or more is clamped to a 0.1× target. It does **not** change the daily goal — a
+tighter target changes the shape of the R distribution (smaller wins, more of them),
+which the walk-forward grid measures rather than assumes. The *size cut* does: the day's
+goal, arm and floor scale by the cut's factor so the goal stays constant in R (see the
+daily-goal section below and [TUNE_FROM_TARGET.md](./TUNE_FROM_TARGET.md) §6c).
+
+*Example:* $100 stock, $95 stop, 2R target → a $110 target normally. Overlay on, reading
+High Volatility/Bearish, tighten 30 → the bracket's target is **$107** (1.4 × $5 above
+the entry). An options position opened that morning at $3.00 premium with a 60%
+take-profit closes at **$4.26** (+42%) instead of $4.80 (+60%); the same position opened
+on a Sideways morning keeps $4.80 whatever today reads.
+
+**High-Vol conviction bar** (default 0 = off) is the overlay's third act, and the one that
+trades *fewer* rather than *smaller*: while the effective regime is High Volatility/Bearish,
+a new **live equity** entry must clear this signal score. The bar rises where the size
+falls — across the 57 closed live trades that carry a score, every dollar came from scores
+76–94, and the same score carries less edge in a High-Vol tape; a slot spent on a 74 there
+is a slot the next 82 cannot have. It is a third source in the one live score gate beside
+the live conviction floor and the armed-day bar: the strictest binds, and a skip is
+journaled as `regime_score_floor_skipped` with the bar and the regime. Live only, exactly
+like the live conviction floor and for the same reason — paper keeps screening at the
+screen minimum and stays the control group. The number comes from the walk-forward grid's
+second stage (off / 72 / 76 on regime days), not from taste.
+
+*Example:* floor 72, High-Vol bar 78. A 75-score signal is taken on a Sideways morning and
+refused on a High-Vol one (journaled once for the day); an 80 is taken on both.
+
+**Measuring the tighten.** Every trade carries the factor its target was tightened by, and
+Journal › Analytics › **Regime tighten** joins each closed stock trade to its excursion to
+ask whether the full, untightened target would have been reached — a counterfactual that
+takes the most optimistic case for the full target, with a pre-committed reading after 30
+trades (a counterfactual that beats realized R with a CI excluding zero means set the tighten
+to 0 and re-run the grid; one that cannot means the tighten stays). The Auto page's goal
+card points at it once ten tightened trades have closed.
+
+Everything here is **live + paper**, like the ATR trigger, and since 2026-09-08 the equity
+backtest and the combined engine's equity leg replay it from the walk-forward regime
+history one session behind (the **ML regime overlay** checkbox on the backtest form; the
+standalone options engine does not, and the combined options leg is cut but not
+tightened). The whole group ships **off**: do
+not enable it before the pre-committed rules in
+[AUTOTRADING_SPEC.md](./AUTOTRADING_SPEC.md) ("the ML regime size cut, built and left
+OFF") are met — the grid picks the cut, twenty journaled sessions with few switches,
+and the Python and TypeScript readings agreeing on every one of them.
 
 ### Max aggregate open risk (%)
 
@@ -323,6 +448,13 @@ other setting in this guide reacts to losses; these three react to gains.
 **$103,000** → banked. Or it reaches $102,000 (armed) and slides back to **$101,000**
 → halted, keeping most of the morning. Below +2% nothing arms, so ordinary chop
 never locks the day out.
+
+*On a regime day* (2026-09-08, the ML regime overlay's size cut firing — [§4](#regime-size-cut--three-triggers-one-cut)),
+all three are scaled by the same factor entries were cut by, so the goal is held constant
+in R: at the default 35% cut, 3 / 2 / 1 reads **1.95 / 1.3 / 0.65** for the day. The goal
+card shows both numbers and why; the scale locks once the guard arms or the day banks,
+and clears on the next day. The stored goal never moves. Details in
+[Tune from target daily gain](./TUNE_FROM_TARGET.md) §6c.
 
 Blank = off, for all three; the guard needs the goal set to run at all. A save is
 refused (400) if the arm is not strictly above the floor, or not below the goal —

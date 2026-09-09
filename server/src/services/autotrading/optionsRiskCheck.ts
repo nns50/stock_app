@@ -1,7 +1,7 @@
 import { computeRiskSizing, computeSpreadSizing, RiskSizingResult, SpreadSizingResult } from '../riskSizing';
 import { getAutotradeConfig } from '../../db/autotradeConfig';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
-import { getMarketAtrPct } from './executionGuards';
+import { getMarketAtrPct, getMarketRangePct } from './executionGuards';
 import { OptionsTradeSignal } from './optionsDecide';
 import {
   correlatedNotional,
@@ -16,11 +16,13 @@ import {
   cutFactor,
   factorState,
   effectiveRiskPct as computeEffectiveRiskPct,
-  isRegimeActive,
   isStepDownActive,
   preFinishLineFactors,
+  regimeTriggers,
   NEUTRAL,
 } from './effectiveRisk';
+import { ML_REGIME_LABELS } from '../regimeModel';
+import { actionableRegime, peekMarketRegime } from '../mlRegime';
 
 // ---------------------------------------------------------------------------
 // The options counterpart to riskCheck.ts (docs/AUTOTRADING_SPEC.md, phase 10)
@@ -206,9 +208,21 @@ export function evaluateOptionsRiskCheck(signal: OptionsTradeSignal, ctx: RiskCh
   // Both predicates come from effectiveRisk.ts now. The "threshold of 0 means
   // OFF" guard used to be written out twice, and the equity copy was fixed
   // while this one was missed — pinning the regime cut permanently ON here and
-  // halving every options position. One copy cannot be half-fixed.
+  // halving every options position. One copy cannot be half-fixed. The regime
+  // factor's three triggers (ATR, ML reading, shock nowcast) come the same way,
+  // from the same inputs the loop derived the tick's effective regime from.
   const stepDownActive = isStepDownActive(ctx.consecutiveLosses, ctx.stepDownAfterLosses);
-  const regimeActive = isRegimeActive(ctx.marketAtrPct, ctx.regimeAtrThresholdPct);
+  const regime = regimeTriggers({
+    marketAtrPct: ctx.marketAtrPct,
+    regimeAtrThresholdPct: ctx.regimeAtrThresholdPct,
+    regimeSizeCutPct: ctx.regimeSizeCutPct,
+    mlRegime: ctx.mlRegime,
+    mlRegimeEnabled: ctx.mlRegimeEnabled,
+    mlRegimeSizeCutPct: ctx.mlRegimeSizeCutPct,
+    todayRangePct: ctx.todayRangePct,
+    regimeShockRangeRatio: ctx.regimeShockRangeRatio,
+  });
+  const regimeActive = regime.triggered;
   const methodMultiplier = ctx.methodMultiplier ?? 1;
   const finishLineFactor = ctx.finishLineFactor ?? 1;
   // NOT here, deliberately as of 2026-09-05: the GRADE-expectancy multiplier
@@ -246,6 +260,11 @@ export function evaluateOptionsRiskCheck(signal: OptionsTradeSignal, ctx: RiskCh
       marketAtrPct: ctx.marketAtrPct,
       regimeAtrThresholdPct: ctx.regimeAtrThresholdPct,
       regimeSizeCutPct: ctx.regimeSizeCutPct,
+      mlRegime: ctx.mlRegime,
+      mlRegimeEnabled: ctx.mlRegimeEnabled,
+      mlRegimeSizeCutPct: ctx.mlRegimeSizeCutPct,
+      todayRangePct: ctx.todayRangePct,
+      regimeShockRangeRatio: ctx.regimeShockRangeRatio,
       // Options opt out: the repeat finding was measured on 89 closed EQUITY
       // trades and says nothing about a premium book.
       priorSameDayExits: 0,
@@ -262,7 +281,7 @@ export function evaluateOptionsRiskCheck(signal: OptionsTradeSignal, ctx: RiskCh
   // book's copy (see factorState): a threshold firing and a size actually
   // changing are different facts.
   const stepDownState = factorState(stepDownActive, cutFactor(stepDownActive, ctx.stepDownSizeCutPct));
-  const regimeState = factorState(regimeActive, cutFactor(regimeActive, ctx.regimeSizeCutPct));
+  const regimeState = factorState(regime.triggered, regime.factor);
   const sizingAt = `sizing at ${effectiveRiskPct}% instead of ${ctx.riskPerTradePct}%`;
   check(
     'step_down_sizing',
@@ -288,15 +307,20 @@ export function evaluateOptionsRiskCheck(signal: OptionsTradeSignal, ctx: RiskCh
         ? `active — near the daily bank line, risk trimmed to ${Math.round(finishLineFactor * 100)}%`
         : 'inactive — finish-line sizing off, or the day is not near the bank line'),
   );
+  // A cut of 100% is "no entries in this regime": a FAILING rule through the
+  // normal refusal path, same as the equity book, so the journal names it.
   check(
     'regime_sizing',
-    true,
-    regimeState === 'active'
-      ? `active — market ATR ${ctx.marketAtrPct!.toFixed(1)}% exceeds ${ctx.regimeAtrThresholdPct}%, ${sizingAt} (${ctx.regimeSizeCutPct}% cut)`
-      : regimeState === 'triggered-but-neutral'
-        ? `triggered — market ATR ${ctx.marketAtrPct!.toFixed(1)}% exceeds ${ctx.regimeAtrThresholdPct}%, but the configured cut is 0% — size unchanged`
-        : `inactive — market ATR ${ctx.marketAtrPct == null ? 'unavailable' : ctx.marketAtrPct.toFixed(1) + '%'} (triggers above ${ctx.regimeAtrThresholdPct}%)`,
+    !regime.skip,
+    regime.skip
+      ? `${ML_REGIME_LABELS.high_vol_bearish} — entries skipped (cut 100%): ${regime.detail}`
+      : regimeState === 'active'
+        ? `active — ${regime.detail}, ${sizingAt}`
+        : regimeState === 'triggered-but-neutral'
+          ? `triggered — ${regime.detail}, but the configured cut is 0% — size unchanged`
+          : `inactive — ${regime.detail}`,
   );
+  if (regime.skip) return blocked(zeroSizing, stepDownActive, regimeActive);
 
   // Sizing itself is the one place single-leg and spread genuinely differ:
   //   - single_leg: sized against the deepest premium loss the exit ladder
@@ -467,8 +491,12 @@ export async function runOptionsRiskCheck(
   const config = getAutotradeConfig();
   const snapshot = getPortfolioSnapshot();
   // Self-fetched, same reasoning as runAutotradeRiskCheck's own — see that
-  // function's comment.
+  // function's comment; the overlay's two inputs likewise (a peek at today's
+  // persisted reading, and the range only when the nowcast is on).
   const marketAtrPct = await getMarketAtrPct('SPY');
+  const mlRegime = actionableRegime(peekMarketRegime());
+  const todayRangePct =
+    config.mlRegimeEnabled && config.regimeShockRangeRatio > 0 ? await getMarketRangePct('SPY') : null;
   const approvedEquity = equityResults.filter((r) => r.ok);
 
   const results: OptionsRiskCheckResult[] = [];
@@ -537,6 +565,11 @@ export async function runOptionsRiskCheck(
       marketAtrPct,
       regimeAtrThresholdPct: config.regimeAtrThresholdPct,
       regimeSizeCutPct: config.regimeSizeCutPct,
+      mlRegime,
+      mlRegimeEnabled: config.mlRegimeEnabled,
+      mlRegimeSizeCutPct: config.mlRegimeSizeCutPct,
+      todayRangePct,
+      regimeShockRangeRatio: config.regimeShockRangeRatio,
     };
     const result = evaluateOptionsRiskCheck(signal, ctx);
     results.push(result);

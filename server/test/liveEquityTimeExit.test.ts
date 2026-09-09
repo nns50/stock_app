@@ -173,6 +173,11 @@ async function openAgedLivePosition(ageDays: number) {
     marketAtrPct: null,
     regimeAtrThresholdPct: 3,
     regimeSizeCutPct: 0,
+    mlRegime: null,
+    mlRegimeEnabled: false,
+    mlRegimeSizeCutPct: 35,
+    todayRangePct: null,
+    regimeShockRangeRatio: 0,
     priorSameDayExits: 0,
     repeatEntrySizeCutPct: 0,
   });

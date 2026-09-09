@@ -156,6 +156,11 @@ function baseRiskCtx() {
     marketAtrPct: null,
     regimeAtrThresholdPct: 3,
     regimeSizeCutPct: 0,
+    mlRegime: null,
+    mlRegimeEnabled: false,
+    mlRegimeSizeCutPct: 35,
+    todayRangePct: null,
+    regimeShockRangeRatio: 0,
     priorSameDayExits: 0,
     repeatEntrySizeCutPct: 0,
   };
@@ -318,6 +323,11 @@ describe('getProbationStatus', () => {
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      mlRegime: null,
+      mlRegimeEnabled: false,
+      mlRegimeSizeCutPct: 35,
+      todayRangePct: null,
+      regimeShockRangeRatio: 0,
       priorSameDayExits: 0,
       repeatEntrySizeCutPct: 0,
     });
@@ -451,6 +461,11 @@ describe('attemptLiveEntry', () => {
     marketAtrPct: null,
     regimeAtrThresholdPct: 3,
     regimeSizeCutPct: 0,
+    mlRegime: null,
+    mlRegimeEnabled: false,
+    mlRegimeSizeCutPct: 35,
+    todayRangePct: null,
+    regimeShockRangeRatio: 0,
     priorSameDayExits: 0,
     repeatEntrySizeCutPct: 0,
   });
@@ -1669,6 +1684,11 @@ describe('adoptOrphanedLivePositions', () => {
     marketAtrPct: null,
     regimeAtrThresholdPct: 3,
     regimeSizeCutPct: 0,
+    mlRegime: null,
+    mlRegimeEnabled: false,
+    mlRegimeSizeCutPct: 35,
+    todayRangePct: null,
+    regimeShockRangeRatio: 0,
     priorSameDayExits: 0,
     repeatEntrySizeCutPct: 0,
   };
@@ -2304,10 +2324,15 @@ describe('reconcileLiveOrders', () => {
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      mlRegime: null,
+      mlRegimeEnabled: false,
+      mlRegimeSizeCutPct: 35,
+      todayRangePct: null,
+      regimeShockRangeRatio: 0,
       priorSameDayExits: 0,
       repeatEntrySizeCutPct: 0,
     });
-    await attemptLiveEntry(signal(), okResult, 'MODERATE', cfg, 'risk-off', 2.5);
+    await attemptLiveEntry(signal(), okResult, 'MODERATE', cfg, 'risk-off', 2.5, 'sideways', 0.7);
     const intentId = listIntents()[0].id;
 
     mockOrderStatus.mockResolvedValue({
@@ -2338,6 +2363,13 @@ describe('reconcileLiveOrders', () => {
     expect(positions[0].entryScore).toBe(70);
     expect(positions[0].marketRegime).toBe('risk-off');
     expect(positions[0].marketAtrPct).toBe(2.5);
+    // The ML regime label (2026-09-08): recorded on the order row, carried to
+    // the materialized position by the same path.
+    expect(getLiveOrder(intentId)?.mlRegime).toBe('sideways');
+    expect(positions[0].mlRegime).toBe('sideways');
+    // The target tighten factor (2026-09-08) rides the same order row → position path.
+    expect(getLiveOrder(intentId)?.regimeTargetFactor).toBe(0.7);
+    expect(positions[0].regimeTargetFactor).toBe(0.7);
     expect(positions[0].entryTime).toMatch(/^\d{2}:\d{2}$/);
   });
 
@@ -2369,6 +2401,11 @@ describe('reconcileLiveOrders', () => {
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      mlRegime: null,
+      mlRegimeEnabled: false,
+      mlRegimeSizeCutPct: 35,
+      todayRangePct: null,
+      regimeShockRangeRatio: 0,
       priorSameDayExits: 0,
       repeatEntrySizeCutPct: 0,
     });
@@ -2430,6 +2467,11 @@ describe('reconcileLiveOrders', () => {
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      mlRegime: null,
+      mlRegimeEnabled: false,
+      mlRegimeSizeCutPct: 35,
+      todayRangePct: null,
+      regimeShockRangeRatio: 0,
       priorSameDayExits: 0,
       repeatEntrySizeCutPct: 0,
     });
@@ -2630,6 +2672,11 @@ describe('reconcileLiveOrders', () => {
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      mlRegime: null,
+      mlRegimeEnabled: false,
+      mlRegimeSizeCutPct: 35,
+      todayRangePct: null,
+      regimeShockRangeRatio: 0,
       priorSameDayExits: 0,
       repeatEntrySizeCutPct: 0,
     });
@@ -2694,6 +2741,11 @@ describe('reconcileLiveOrders', () => {
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      mlRegime: null,
+      mlRegimeEnabled: false,
+      mlRegimeSizeCutPct: 35,
+      todayRangePct: null,
+      regimeShockRangeRatio: 0,
       priorSameDayExits: 0,
       repeatEntrySizeCutPct: 0,
     });
@@ -2757,6 +2809,11 @@ describe('reconcileLiveOrders', () => {
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      mlRegime: null,
+      mlRegimeEnabled: false,
+      mlRegimeSizeCutPct: 35,
+      todayRangePct: null,
+      regimeShockRangeRatio: 0,
       priorSameDayExits: 0,
       repeatEntrySizeCutPct: 0,
     });
@@ -2819,6 +2876,11 @@ describe('reconcileLiveOrders', () => {
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      mlRegime: null,
+      mlRegimeEnabled: false,
+      mlRegimeSizeCutPct: 35,
+      todayRangePct: null,
+      regimeShockRangeRatio: 0,
       priorSameDayExits: 0,
       repeatEntrySizeCutPct: 0,
     });
@@ -2900,6 +2962,11 @@ describe('reconcileLiveOrders + adoptOrphanedLivePositions interaction', () => {
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      mlRegime: null,
+      mlRegimeEnabled: false,
+      mlRegimeSizeCutPct: 35,
+      todayRangePct: null,
+      regimeShockRangeRatio: 0,
       priorSameDayExits: 0,
       repeatEntrySizeCutPct: 0,
     });
@@ -3183,6 +3250,11 @@ describe('listPendingLiveOrders / terminal-state exclusion', () => {
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      mlRegime: null,
+      mlRegimeEnabled: false,
+      mlRegimeSizeCutPct: 35,
+      todayRangePct: null,
+      regimeShockRangeRatio: 0,
       priorSameDayExits: 0,
       repeatEntrySizeCutPct: 0,
     });
@@ -3246,6 +3318,11 @@ describe('listPendingLiveOrders / terminal-state exclusion', () => {
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      mlRegime: null,
+      mlRegimeEnabled: false,
+      mlRegimeSizeCutPct: 35,
+      todayRangePct: null,
+      regimeShockRangeRatio: 0,
       priorSameDayExits: 0,
       repeatEntrySizeCutPct: 0,
     });
@@ -3296,6 +3373,11 @@ describe('checkLiveScaleIns', () => {
     marketAtrPct: null,
     regimeAtrThresholdPct: 3,
     regimeSizeCutPct: 0,
+    mlRegime: null,
+    mlRegimeEnabled: false,
+    mlRegimeSizeCutPct: 35,
+    todayRangePct: null,
+    regimeShockRangeRatio: 0,
     priorSameDayExits: 0,
     repeatEntrySizeCutPct: 0,
   };
@@ -3510,6 +3592,11 @@ describe('reconcileLiveOrders — partial fills', () => {
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      mlRegime: null,
+      mlRegimeEnabled: false,
+      mlRegimeSizeCutPct: 35,
+      todayRangePct: null,
+      regimeShockRangeRatio: 0,
       priorSameDayExits: 0,
       repeatEntrySizeCutPct: 0,
     });
@@ -3661,6 +3748,11 @@ describe('reconcileLiveOrders — booking and the materialization mark are atomi
       marketAtrPct: null,
       regimeAtrThresholdPct: 3,
       regimeSizeCutPct: 0,
+      mlRegime: null,
+      mlRegimeEnabled: false,
+      mlRegimeSizeCutPct: 35,
+      todayRangePct: null,
+      regimeShockRangeRatio: 0,
       priorSameDayExits: 0,
       repeatEntrySizeCutPct: 0,
     });

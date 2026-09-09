@@ -68,6 +68,11 @@ const VOLATILE_TABLES = [
   'autotrade_live_orders',
   'autotrade_live_options_orders',
   'autotrade_live_options_positions',
+  // The ML regime reading (2026-09-08): a persisted reading for today, written
+  // by the dashboard and route suites, would otherwise read as today's regime
+  // in every file that runs after them.
+  'daily_series',
+  'ml_regime_readings',
 ];
 
 beforeAll(() => {

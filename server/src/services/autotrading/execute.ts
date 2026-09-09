@@ -8,6 +8,8 @@ import {
   RiskCheckContext,
   RiskCheckResult,
 } from './riskCheck';
+import { NO_TICK_REGIME, TickRegime, regimeStamp } from './effectiveRisk';
+import { regimeAdjustedTargets } from './regimeTargets';
 import { computeStreaksAndDrawdown } from '../pnl';
 import { listAutotradeEvents, logAutotradeEvent } from '../../db/autotradeEvents';
 import {
@@ -96,6 +98,12 @@ export async function attemptPaperEntry(
    *  a failed best-effort regime read stamps nothing, never a guess. */
   marketRegime: string | null = null,
   marketAtrPct: number | null = null,
+  /** The ML regime label at entry (2026-09-08) — the HMM reading's regime when
+   *  known and fresh, else null. Stamped, never used for sizing here. */
+  mlRegime: string | null = null,
+  /** The target tighten factor applied to this entry's target (regimeTargets.ts):
+   *  1 when untightened; null for a caller with no tick behind it. */
+  regimeTargetFactor: number | null = null,
 ): Promise<ExecutionOutcome> {
   if (!riskResult.ok) return { symbol: signal.symbol, ok: false, reason: 'Risk check did not pass' };
   if (hasOpenPaperPosition(signal.symbol)) {
@@ -156,6 +164,8 @@ export async function attemptPaperEntry(
       entryComponents: signal.components ?? null,
       marketRegime,
       marketAtrPct,
+      mlRegime,
+      regimeTargetFactor,
     });
   } catch (err) {
     // A single candidate's persistence failure must not abort the rest of
@@ -338,6 +348,11 @@ export async function runPaperExecution(
    *  each opened position as at-entry context, never used for sizing here.
    *  Defaults to null for callers without one. */
   marketRegime: string | null = null,
+  /** What the loop knows about the regime this tick (2026-09-08,
+   *  effectiveRisk.ts's TickRegime): the ML reading and SPY's range for the
+   *  risk check's triggers, and the ONE effective regime stamped on each
+   *  opened position. Defaults to "nothing known" for a direct caller. */
+  regime: TickRegime = NO_TICK_REGIME,
 ): Promise<ExecutionOutcome[]> {
   const config = getAutotradeConfig();
   const equity = config.accountEquityUsd ?? 0;
@@ -427,6 +442,11 @@ export async function runPaperExecution(
       marketAtrPct,
       regimeAtrThresholdPct: config.regimeAtrThresholdPct,
       regimeSizeCutPct: config.regimeSizeCutPct,
+      mlRegime: regime.mlRegime,
+      mlRegimeEnabled: config.mlRegimeEnabled,
+      mlRegimeSizeCutPct: config.mlRegimeSizeCutPct,
+      todayRangePct: regime.todayRangePct,
+      regimeShockRangeRatio: config.regimeShockRangeRatio,
       equityCurveDeriskActive: snapshot.equityCurveDeriskActive,
       equityCurveDeriskCutPct: config.equityCurveDeriskCutPct,
       maxAdvParticipationPct: config.maxAdvParticipationPct,
@@ -456,7 +476,18 @@ export async function runPaperExecution(
       aMinScore: config.convictionGradeAMinScore,
       bMinScore: config.convictionGradeBMinScore,
     });
-    const outcome = await attemptPaperEntry(signal, result, config.riskProfile, grade, marketRegime, marketAtrPct);
+    const outcome = await attemptPaperEntry(
+      signal,
+      result,
+      config.riskProfile,
+      grade,
+      marketRegime,
+      marketAtrPct,
+      regimeStamp(regime),
+      // The factor decide.ts's target was tightened by this tick — stamped so
+      // the counterfactual ledger can read what the full target would have done.
+      regimeAdjustedTargets(config, regime.effectiveRegime).factor,
+    );
     outcomes.push(outcome);
     if (outcome.ok && outcome.position) {
       runningRisk += result.approvedRiskAmount;

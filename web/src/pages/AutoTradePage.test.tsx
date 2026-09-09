@@ -125,6 +125,12 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     regimeAtrThresholdPct: 3,
     regimeSizeCutPct: 0,
     repeatEntrySizeCutPct: 0,
+    mlRegimeEnabled: false,
+    mlRegimeSizeCutPct: 35,
+    mlRegimeSwitchThreshold: 0.6,
+    regimeShockRangeRatio: 0,
+    mlRegimeTargetTightenPct: 30,
+    mlRegimeHighVolMinSignalScore: 0,
     equityCurveDeriskEnabled: false,
     equityCurveLookbackDays: 10,
     equityCurveDeriskCutPct: 50,
@@ -250,6 +256,8 @@ function dashboardFixture(overrides: Partial<AutotradeDashboard> = {}): Autotrad
     riskProfile: 'MODERATE',
     equity: 100_000,
     dailyTarget: { active: false, reached: false, giveBackArmed: false, giveBackHalted: false, entriesHalted: false },
+    mlRegime: null,
+    regimeTighten: { tightenedClosedTrades: 0, paper: 0, live: 0, minForReading: 30 },
     dailyGoalEvidence: {
       avgR: null,
       rTrades: 0,
@@ -341,6 +349,7 @@ function loopSummaryFixture(overrides: Partial<LoopTickSummary> = {}): LoopTickS
     moversDiscovered: 0,
     moversCandidates: 0,
     moversFetchError: null,
+    mlRegime: null,
     ...overrides,
   };
 }
@@ -489,6 +498,96 @@ describe('AutoTradePage', () => {
     fireEvent.click(saveButton);
 
     await waitFor(() => expect(setConfig).toHaveBeenCalledWith({ regimeSizeCutPct: 25, confirmAggressive: undefined }));
+  });
+
+  it('toggling the ML regime overlay saves immediately', async () => {
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /ML regime overlay/ }));
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ mlRegimeEnabled: true, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new ML regime size cut', async () => {
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const field = screen.getByText('ML regime size cut (%)').closest('label')!;
+    fireEvent.change(within(field).getByRole('textbox'), { target: { value: '50' } });
+    const saveButton = screen.getByRole('button', { name: 'Save ML regime size cut' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ mlRegimeSizeCutPct: 50, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new ML regime switch threshold', async () => {
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const field = screen.getByText('ML regime switch threshold').closest('label')!;
+    fireEvent.change(within(field).getByRole('textbox'), { target: { value: '0.7' } });
+    const saveButton = screen.getByRole('button', { name: 'Save ML regime switch threshold' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ mlRegimeSwitchThreshold: 0.7, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new shock day range ratio', async () => {
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.change(screen.getByPlaceholderText('0 (off)'), { target: { value: '1.5' } });
+    const saveButton = screen.getByRole('button', { name: 'Save shock day range ratio' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ regimeShockRangeRatio: 1.5, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new High-Vol conviction bar', async () => {
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.change(screen.getByPlaceholderText('0 (no bar)'), { target: { value: '78' } });
+    const saveButton = screen.getByRole('button', { name: 'Save High-Vol conviction bar' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ mlRegimeHighVolMinSignalScore: 78, confirmAggressive: undefined }),
+    );
+  });
+
+  it('saves a new ML regime target tighten', async () => {
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const field = screen.getByText('ML regime target tighten (%)').closest('label')!;
+    fireEvent.change(within(field).getByRole('textbox'), { target: { value: '15' } });
+    const saveButton = screen.getByRole('button', { name: 'Save ML regime target tighten' });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ mlRegimeTargetTightenPct: 15, confirmAggressive: undefined }),
+    );
   });
 
   it('saves a new same-day re-entry size cut value', async () => {
@@ -1792,6 +1891,7 @@ describe('AutoTradePage', () => {
       finalEquity: 100_300,
       excludedSymbols: [],
       errors: [],
+      regimeDayTrades: 0,
     },
     stats: {
       totalTrades: 1,
@@ -1873,6 +1973,7 @@ describe('AutoTradePage', () => {
         finalEquity: 100_000,
         excludedSymbols: [],
         errors: [],
+        regimeDayTrades: 0,
         optionsSkipped: [],
       },
       stats: btRun().stats,
@@ -1893,6 +1994,59 @@ describe('AutoTradePage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Run combined backtest' }));
     await waitFor(() => expect(combinedRun).toHaveBeenCalledWith(expect.objectContaining({ directionMode: 'both' })));
+  });
+
+  it('threads the ML regime overlay checkbox into the equity and combined runs, and says how many fills it touched', async () => {
+    const eqRun = vi.spyOn(client, 'runAutotradeBacktest').mockResolvedValue({
+      ...btRun(),
+      report: { ...btRun().report, regimeDayTrades: 1 },
+    });
+    const optRun = vi.spyOn(client, 'runOptionsBacktest').mockResolvedValue({
+      report: {
+        trades: [],
+        equityCurve: [],
+        startingEquity: 100_000,
+        finalEquity: 100_000,
+        excludedSymbols: [],
+        errors: [],
+        skipped: [],
+      },
+      stats: btRun().stats,
+    });
+    const combinedRun = vi.spyOn(client, 'runCombinedBacktest').mockResolvedValue({
+      report: {
+        equityTrades: [],
+        optionsTrades: [],
+        equityCurve: [],
+        startingEquity: 100_000,
+        finalEquity: 100_000,
+        excludedSymbols: [],
+        errors: [],
+        optionsSkipped: [],
+        regimeDayTrades: 0,
+      },
+      stats: btRun().stats,
+    });
+    renderDashboard();
+    await screen.findByText('Monitoring');
+
+    fireEvent.change(screen.getByPlaceholderText('AAPL, MSFT, NVDA'), { target: { value: 'aapl' } });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'ML regime overlay' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run backtest' }));
+    await waitFor(() => expect(eqRun).toHaveBeenCalledWith(expect.objectContaining({ mlRegimeEnabled: true })));
+    expect(await screen.findByTestId('bt-regime-day-trades')).toHaveTextContent(
+      /1 fill\(s\) on High Volatility\/Bearish regime days/,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run combined backtest' }));
+    await waitFor(() => expect(combinedRun).toHaveBeenCalledWith(expect.objectContaining({ mlRegimeEnabled: true })));
+
+    // The standalone options engine does not read the overlay, so the form
+    // does not pretend it does.
+    fireEvent.click(screen.getByRole('button', { name: 'Run options backtest' }));
+    await waitFor(() => expect(optRun).toHaveBeenCalled());
+    expect(optRun.mock.calls[0][0]).not.toHaveProperty('mlRegimeEnabled');
   });
 
   it('runs a walk-forward split once a split date is set, showing both windows and their significance stats', async () => {
@@ -1940,6 +2094,7 @@ describe('AutoTradePage', () => {
           finalEquity: 100_000,
           excludedSymbols: [],
           errors: [],
+          regimeDayTrades: 0,
         },
         stats: btRun().stats,
         significance: {
@@ -1960,6 +2115,7 @@ describe('AutoTradePage', () => {
           finalEquity: 100_000,
           excludedSymbols: [],
           errors: [],
+          regimeDayTrades: 0,
         },
         stats: btRun().stats,
         significance: {
@@ -2466,6 +2622,7 @@ describe('AutoTradePage', () => {
         finalEquity: 100_800,
         excludedSymbols: [],
         errors: [],
+        regimeDayTrades: 0,
         optionsSkipped: [],
       },
       stats: {
@@ -3133,6 +3290,89 @@ describe('AutoTradePage', () => {
       expect(await screen.findByText('dashboard unavailable')).toBeInTheDocument();
     });
 
+    // The goal held constant in R (2026-09-08): a scaled day shows the
+    // effective goal, what it was scaled from, and locks once the guard arms.
+    it('shows a regime-scaled goal with its factor and reason, and says when it is locked', async () => {
+      const scaled = {
+        active: true,
+        targetPct: 1.95,
+        configuredTargetPct: 3,
+        goalScale: 0.65,
+        goalScaleReason: 'ML regime High Volatility/Bearish (35% cut; ATR trigger inactive at 0.9%)',
+        baselineEquityUsd: 10_000,
+        targetEquityUsd: 10_195,
+        currentEquityUsd: 10_050,
+        gainPct: 0.5,
+        reached: false,
+        reachedAt: null,
+        giveBackArmed: false,
+        giveBackHalted: false,
+        giveBackArmPct: 1.3,
+        giveBackFloorPct: 0.65,
+        giveBackHaltedAt: null,
+        entriesHalted: false,
+      };
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(dashboardFixture({ dailyTarget: scaled }));
+      renderDashboard();
+      const line = await screen.findByTestId('daily-goal-scale');
+      expect(line).toHaveTextContent(/1\.95% = 3\.0% × 0\.65/);
+      expect(line).toHaveTextContent(/arm 1\.30%, floor 0\.65%/);
+      expect(line).toHaveTextContent(/ML regime High Volatility\/Bearish/);
+      expect(line).not.toHaveTextContent(/Locked for the day/);
+      expect(screen.getByText(/of the 1\.95% goal/)).toBeInTheDocument();
+    });
+
+    it('marks a scaled goal locked once the guard has armed', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({
+          dailyTarget: {
+            active: true,
+            targetPct: 1.95,
+            configuredTargetPct: 3,
+            goalScale: 0.65,
+            baselineEquityUsd: 10_000,
+            targetEquityUsd: 10_195,
+            currentEquityUsd: 10_140,
+            gainPct: 1.4,
+            reached: false,
+            reachedAt: null,
+            giveBackArmed: true,
+            giveBackHalted: false,
+            giveBackHaltedAt: null,
+            entriesHalted: false,
+          },
+        }),
+      );
+      renderDashboard();
+      expect(await screen.findByTestId('daily-goal-scale')).toHaveTextContent(/Locked for the day/);
+    });
+
+    it('shows no scale line on an unscaled day', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({
+          dailyTarget: {
+            active: true,
+            targetPct: 3,
+            configuredTargetPct: 3,
+            goalScale: 1,
+            baselineEquityUsd: 10_000,
+            targetEquityUsd: 10_300,
+            currentEquityUsd: 10_050,
+            gainPct: 0.5,
+            reached: false,
+            reachedAt: null,
+            giveBackArmed: false,
+            giveBackHalted: false,
+            giveBackHaltedAt: null,
+            entriesHalted: false,
+          },
+        }),
+      );
+      renderDashboard();
+      await screen.findByTestId('daily-goal-evidence');
+      expect(screen.queryByTestId('daily-goal-scale')).not.toBeInTheDocument();
+    });
+
     // The goal against the record (2026-09-07): the expected day at the
     // current sizing sits beside the goal — or, with no goal set, stands on
     // its own so there is a number to choose one from.
@@ -3194,6 +3434,25 @@ describe('AutoTradePage', () => {
       expect(line).toHaveTextContent(/Daily goal: none set/);
       expect(line).toHaveTextContent(/Expected day at current sizing ≈ 0\.40%/);
       expect(line).toHaveTextContent(/thin record, 7 of 20 trades, 5 of 20 active sessions/);
+    });
+
+    it('points at the regime-tighten ledger once ten tightened trades have closed', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({ regimeTighten: { tightenedClosedTrades: 12, paper: 9, live: 3, minForReading: 30 } }),
+      );
+      renderDashboard();
+      const line = await screen.findByTestId('regime-tighten-evidence');
+      expect(line).toHaveTextContent(/12 closed stock trades carry a tightened target \(9 paper, 3 live\)/);
+      expect(line).toHaveTextContent(/Journal › Analytics › Regime tighten — the pre-committed reading needs 30/);
+    });
+
+    it('stays quiet below ten tightened trades — nothing to read yet', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({ regimeTighten: { tightenedClosedTrades: 3, paper: 3, live: 0, minForReading: 30 } }),
+      );
+      renderDashboard();
+      await screen.findByTestId('daily-goal-evidence');
+      expect(screen.queryByTestId('regime-tighten-evidence')).toBeNull();
     });
 
     it('shows "no candidate checked yet" for correlated exposure before any risk-check has run', async () => {
@@ -3760,6 +4019,8 @@ describe('AutoTradePage', () => {
         entryScore: null,
         entryComponents: null,
         marketRegime: null,
+        mlRegime: null,
+        regimeTargetFactor: null,
         marketAtrPct: null,
         entryVwap: null,
         createdAt: Date.now(),
@@ -4415,5 +4676,41 @@ describe('AutoTradePage live-trading settings guards', () => {
     const fatFinger = screen.getByPlaceholderText('e.g. 10') as HTMLInputElement;
     fireEvent.change(fatFinger, { target: { value: '150' } });
     expect(fatFinger.value).not.toBe('150');
+  });
+});
+
+describe('Last cycle — the ML regime line', () => {
+  it('shows the reading the tick saw, with its caveats', async () => {
+    vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+      dashboardFixture({
+        lastTick: {
+          ranAt: Date.now() - 30_000,
+          summary: loopSummaryFixture({
+            mlRegime: {
+              regime: 'high_vol_bearish',
+              label: 'High Volatility/Bearish',
+              source: 'fred',
+              asOf: '2026-09-03',
+              stale: true,
+              drift: false,
+              probability: 0.91,
+            },
+          }),
+        },
+      }),
+    );
+    renderDashboard();
+    expect(await screen.findByTestId('last-cycle-ml-regime')).toHaveTextContent(
+      'ML regime: High Volatility/Bearish (p=0.91) · fred · stale',
+    );
+  });
+
+  it('shows nothing for a tick persisted before the reading existed', async () => {
+    vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+      dashboardFixture({ lastTick: { ranAt: Date.now() - 30_000, summary: loopSummaryFixture({ mlRegime: null }) } }),
+    );
+    renderDashboard();
+    expect(await screen.findByText(/screened →/)).toBeInTheDocument();
+    expect(screen.queryByTestId('last-cycle-ml-regime')).not.toBeInTheDocument();
   });
 });

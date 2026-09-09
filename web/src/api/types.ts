@@ -345,6 +345,13 @@ export interface Position {
    *  positions opened before 2026-09-02, and on manually logged trades. */
   entryComponents: Record<string, number> | null;
   marketRegime: string | null;
+  /** The ML regime label at entry (2026-09-08): 'high_vol_bearish' |
+   *  'low_vol_bullish' | 'sideways'; null when the reading was unknown or
+   *  stale, and on rows that predate it. */
+  mlRegime: string | null;
+  /** The ML regime target-tighten factor applied at entry (2026-09-08): 1 when
+   *  untightened, 0.7 at a 30% tighten; null on rows that predate it. */
+  regimeTargetFactor: number | null;
   marketAtrPct: number | null;
   /** Session VWAP at entry (2026-08-22 observer) — evidence for a possible
    *  future VWAP-alignment filter; null when unmeasured. */
@@ -485,6 +492,65 @@ export interface MarketRegime {
   breadthSampleSize: number;
   marketAtrPct: number | null;
   asOf: number;
+}
+
+/** The ML market-regime reading's label (server: services/mlRegime.ts,
+ *  docs/MARKET_REGIME_MODEL.md). `unknown` = no model, no data, a stale data
+ *  date, or the source switched off — never acted on. */
+export type MlRegime = 'high_vol_bearish' | 'low_vol_bullish' | 'sideways' | 'unknown';
+export type MlRegimeSource = 'fred' | 'provider' | 'cache' | 'override' | 'off' | 'none';
+export type MlRegimeReason = 'no_model' | 'source_off' | 'no_data' | 'stale' | 'synthetic_provider' | 'fetch_failed';
+
+export interface MlRegimeProbabilities {
+  high_vol_bearish: number;
+  low_vol_bullish: number;
+  sideways: number;
+}
+
+/** One day's reading from the shipped Gaussian HMM: the filtered posterior over
+ *  the last 250 sessions, sticky-switched from the previous known day. */
+export interface MlRegimeReading {
+  regime: MlRegime;
+  /** `regime` in words: High Volatility/Bearish, Low Volatility/Bullish, Sideways, Unknown. */
+  label: string;
+  /** The argmax posterior before the sticky rule (what the model would read). */
+  candidate: MlRegime;
+  probabilities: MlRegimeProbabilities | null;
+  /** posterior × transition matrix — the one-step-ahead state distribution. */
+  predictedNext: MlRegimeProbabilities | null;
+  /** Last data date the reading was computed from (both series present). */
+  asOf: string | null;
+  etDate: string;
+  /** The last row's features in natural units. */
+  features: { ret: number; vix: number; rv20: number } | null;
+  source: MlRegimeSource;
+  /** Data older than the third most recent session — not acted on. */
+  stale: boolean;
+  /** Trailing likelihood below the training 5th percentile: a retrain signal. */
+  drift: boolean;
+  driftScore: number | null;
+  driftP5: number | null;
+  modelVersion: string | null;
+  switched: boolean;
+  heldBelowThreshold: boolean;
+  threshold: number;
+  previous: MlRegime | null;
+  rows: number;
+  logLikelihood: number | null;
+  reason?: MlRegimeReason;
+  computedAt: number;
+}
+
+/** The compact mirror the loop persists on each tick summary. */
+export interface MlRegimeTickSummary {
+  regime: MlRegime;
+  label: string;
+  source: MlRegimeSource;
+  asOf: string | null;
+  stale: boolean;
+  drift: boolean;
+  /** The acted-on regime's posterior (null when nothing was computed). */
+  probability: number | null;
 }
 
 export type RotationBasis = 'relative-to-benchmark' | 'absolute-return';
@@ -655,6 +721,61 @@ export interface ExcursionReport {
     intraday: ExcursionAverages;
     daily: ExcursionAverages;
   };
+}
+
+/** One closed stock trade whose target the ML regime overlay tightened at
+ *  entry, read against its own excursion: the target as traded and the full
+ *  (untightened) one in R, whether MFE reached each, and a counterfactual R
+ *  that takes the most optimistic case for the full target. */
+export interface TightenedTradeRow {
+  positionId: number;
+  symbol: string;
+  book: 'paper' | 'live';
+  side: 'long' | 'short';
+  entryDate: string;
+  factor: number;
+  tightenedTargetR: number;
+  fullTargetR: number;
+  mfeR: number;
+  realizedR: number;
+  tightenedReached: boolean;
+  fullReached: boolean;
+  /** A tightened hit whose MFE never reached the full target. */
+  bankedWin: boolean;
+  /** fullReached ? fullTargetR : realizedR. */
+  counterfactualR: number;
+  resolution: 'intraday' | 'daily';
+}
+
+export interface RegimeTightenCoverage {
+  /** Closed stock trades stamped with a tightened target, both books. */
+  tightenedTrades: number;
+  undated: number;
+  overCap: number;
+  unavailable: number;
+  /** Tightened OPTIONS trades — counted, not measurable (their excursion is
+   *  on the underlying, not the premium). Outside the identity. */
+  optionsExcluded: number;
+}
+
+/** The counterfactual MFE ledger. n + undated + overCap + unavailable ===
+ *  coverage.tightenedTrades. */
+export interface RegimeTightenLedger {
+  n: number;
+  byBook: { paper: number; live: number };
+  tightenedReached: number;
+  fullReached: number;
+  bankedWins: number;
+  meanRealizedR: number | null;
+  meanCounterfactualR: number | null;
+  difference: { meanR: number | null; ciLow: number | null; ciHigh: number | null; resamples: number };
+  /** The pre-committed reading — 'insufficient' below minTrades. */
+  reading: 'insufficient' | 'tighten_costs' | 'tighten_holds';
+  readingDetail: string;
+  minTrades: number;
+  rows: TightenedTradeRow[];
+  coverage: RegimeTightenCoverage;
+  resolutionMix: { intraday: number; daily: number };
 }
 
 /** One live-traded fill's execution quality vs. the order's limit price. */
@@ -1484,6 +1605,13 @@ export interface AutotradeConfig {
   /** % cut to risk-per-trade when this name already closed a trade today, LIVE
    *  only. 0 disables it (default). Paper opts out to stay the control arm. */
   repeatEntrySizeCutPct: number;
+  // --- The ML regime overlay (2026-09-08; live + paper; off by default) ---
+  mlRegimeEnabled: boolean;
+  mlRegimeSizeCutPct: number;
+  mlRegimeSwitchThreshold: number;
+  regimeShockRangeRatio: number;
+  mlRegimeTargetTightenPct: number;
+  mlRegimeHighVolMinSignalScore: number;
   equityCurveDeriskEnabled: boolean;
   equityCurveLookbackDays: number;
   equityCurveDeriskCutPct: number;
@@ -2054,6 +2182,9 @@ export interface BacktestReport {
   /** Symbols whose historical-bar fetch failed — every other symbol's result
    *  is still simulated normally. */
   errors: { symbol: string; message: string }[];
+  /** Fills whose signal day read High Volatility/Bearish under the ML regime
+   *  overlay — 0 with the overlay off. */
+  regimeDayTrades: number;
 }
 
 export interface BacktestStats {
@@ -2123,6 +2254,13 @@ export interface BacktestRiskParams {
   correlationLookbackDays?: number;
   correlationThreshold?: number;
   correlationAwareSelectionEnabled?: boolean;
+  /** The ML regime overlay (2026-09-08), replayed from the walk-forward regime
+   *  history one session behind (no lookahead). The flag alone uses the live
+   *  Configuration's cut/tighten/bar; the research grid sends explicit numbers. */
+  mlRegimeEnabled?: boolean;
+  mlRegimeSizeCutPct?: number;
+  mlRegimeTargetTightenPct?: number;
+  mlRegimeHighVolMinSignalScore?: number;
 }
 
 export interface BacktestRequest extends BacktestRiskParams {
@@ -2239,6 +2377,9 @@ export interface OptionsWalkForwardRequest extends OptionsBacktestRequest {
 export interface CombinedBacktestReport {
   equityTrades: SimulatedTrade[];
   optionsTrades: SimulatedOptionsTrade[];
+  /** Equity fills whose signal day read High Volatility/Bearish under the ML
+   *  regime overlay — 0 with the overlay off. */
+  regimeDayTrades: number;
   /** ONE curve — the combined account value, not two separate ones. */
   equityCurve: BacktestEquityPoint[];
   startingEquity: number;
@@ -2389,6 +2530,9 @@ export interface LoopTickSummary {
   moversDiscovered: number;
   moversCandidates: number;
   moversFetchError: string | null;
+  /** Today's ML market-regime reading as this tick saw it, or null when the
+   *  read did not run (older persisted ticks lack the field entirely). */
+  mlRegime: MlRegimeTickSummary | null;
 }
 
 /** The automated loop's most recently completed tick, persisted rather than
@@ -2535,7 +2679,14 @@ export interface MethodStats {
 export interface DailyTargetStatus {
   active: boolean;
   inactiveReason?: string;
+  /** The EFFECTIVE goal % for the day — configuredTargetPct × goalScale. */
   targetPct?: number;
+  /** The configured goal % (targetDailyGainPct) before any regime scale. */
+  configuredTargetPct?: number;
+  /** The regime overlay's scale on the goal, arm and floor today (1 = unscaled)
+   *  — the same factor the sizer cut entries by (2026-09-08). */
+  goalScale?: number;
+  goalScaleReason?: string;
   baselineEquityUsd?: number;
   targetEquityUsd?: number;
   currentEquityUsd?: number;
@@ -2560,6 +2711,16 @@ export interface SymbolCooldownState {
   until: string;
 }
 
+/** The regime-tighten ledger's population: closed stock trades stamped with a
+ *  tightened target, both books — counted on the dashboard, measured on
+ *  demand in Journal › Analytics › Regime tighten. */
+export interface RegimeTightenPopulation {
+  tightenedClosedTrades: number;
+  paper: number;
+  live: number;
+  minForReading: number;
+}
+
 export interface AutotradeDashboard {
   enabled: boolean;
   killSwitch: boolean;
@@ -2573,6 +2734,11 @@ export interface AutotradeDashboard {
   /** The goal against the record: realized edge over recent sessions and the
    *  expected day it implies at the current sizing. */
   dailyGoalEvidence: DailyGoalEvidence;
+  /** How many closed stock trades the counterfactual MFE ledger has to read. */
+  regimeTighten: RegimeTightenPopulation;
+  /** Today's ML market-regime reading as the loop last computed it (never a
+   *  fetch) — null before the loop has read today. */
+  mlRegime: MlRegimeReading | null;
   /** Per-method recent realized performance + current sizing multiplier. */
   methodPerformance: MethodStats[];
   /** Symbols currently in a loss cooldown — live entries skipped until each

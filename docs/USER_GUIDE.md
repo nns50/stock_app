@@ -141,6 +141,20 @@ Your at-a-glance morning screen.
   out of the score — never counted as a fake neutral. It's **context, not a signal**: it
   does not place, size, or block any trade, and it's cached hourly (regime turns on the
   daily close). Formula details live on the **About** page.
+- **ML regime (HMM)** (2026-09-08) — a second read inside the same tile, from a three-state
+  **Gaussian hidden Markov model** trained on five years of daily S&P 500 log returns, the
+  VIX and 20-day realized volatility: **High Volatility/Bearish**, **Low Volatility/Bullish**
+  or **Sideways**, with the filtered probability (`p=0.83`), the data date it is _as of_
+  (FRED publishes the prior close the next morning, so the reading runs one to two sessions
+  behind), and the caveats that matter: **stale** (data older than the third most recent
+  session — never acted on), **held** (the model prefers another state but not by enough to
+  switch — a regime changes only when the new state's probability clears 0.6), **unknown**
+  with its reason, and **model drift** (the tape has left the model's distribution; retrain).
+  "Bearish"/"Bullish" describe each state's fitted drift, **not** a forecast — out of sample
+  the sessions read as High Volatility had the _highest_ forward returns. It acts on sizing
+  only when the **ML regime overlay** in the auto-trade config is on (off by default — see
+  the guardrails under Auto-trading); otherwise it is display only. The model card is
+  [MARKET_REGIME_MODEL.md](MARKET_REGIME_MODEL.md).
 - **Needs attention** panel — positions that hit their stop/target or option exit
   rules, plus any triggered symbol alerts, each linking to where you act. If the check
   itself **fails**, the panel says so and the tile reads `?` instead of `0` — an
@@ -778,16 +792,18 @@ trades.
   context*: the screener's **raw 0–100 score** (not just the A/B/C grade), the
   **market regime** label that cycle (risk-on / neutral / risk-off; best-effort — blank
   if the read failed, never guessed), the **market ATR%** reading, and, for options,
-  the **IV rank** the decision gated on. Live-placed positions also get a real
+  the **IV rank** the decision gated on. Since 2026-09-08 every entry also carries the
+  **ML regime** label the HMM read that day (`mlRegime`; blank when the reading was unknown
+  or stale, never guessed). Live-placed positions also get a real
   **entry time** (ET), so from now on the bot's trades appear in the entry-session
   breakdown above — they previously carried no time at all and were silently absent
   from it. Live bracket exits record an **exit reason** (`stop` / `target` /
   `time_exit`) on the exit itself, so you can see *which exit mechanism* is making or
   losing the money instead of inferring it from prices. All of it is capture-only —
   nothing about entries, sizing, or exits changes — and it flows through the CSV/JSON
-  export (new `entryTime`, `entryScore`, `marketRegime`, `marketAtrPct`, and
-  `lastExitReason` columns) so a month of trades can be sliced by score band, regime,
-  and session offline. Since 2026-08-22 live equity entries also stamp the day's
+  export (new `entryTime`, `entryScore`, `marketRegime`, `mlRegime`, `regimeTargetFactor`,
+  `marketAtrPct`, and `lastExitReason` columns) so a month of trades can be sliced by
+  score band, regime, and session offline. Since 2026-08-22 live equity entries also stamp the day's
   **session VWAP at entry** (`entryVwap`, in the export too) — capture-only, like the
   rest: it exists so the journal itself can answer whether VWAP-aligned entries (longs
   above VWAP, shorts below) actually win more *here*, before any alignment filter is
@@ -870,6 +886,21 @@ tabs of one **Analytics** button (top right) — pick a tab, the report loads on
   reason never counts, even below the stop: a deliberate sale isn't a stop execution.
   Unlike Execution quality above, manual, imported, and paper-era trades all count —
   the comparison is against your own declared stop, not a broker order.
+- **Regime tighten** (2026-09-08) — for every closed *stock* trade whose profit target the
+  **ML regime overlay tightened** at entry (the factor is stamped on the trade), joins it to
+  its excursion and asks whether the **full**, untightened target would have been reached.
+  Per trade: the target as traded and the full one in R, MFE, realized R, and a
+  **counterfactual R** that takes the most optimistic case for the full target (reached →
+  banked there with no reversal; not reached → the untightened trade did as well as this
+  one). The card reports how many tightened targets were hit, how many full targets were
+  reached, the **banked wins** (tightened hits the full target would have missed), mean
+  realized vs counterfactual R with a 95% bootstrap CI on their difference, and the
+  **pre-committed reading** once 30 trades are in: a counterfactual that beats realized R
+  with a CI excluding zero means the tighten has a real cost (set it to 0 and re-run the
+  grid); one that cannot means it stays — never the reverse, because the bound only leans
+  one way. Both books count; a tightened *options* trade is counted but not measured (its
+  excursion is on the underlying, not the premium), and like Excursions it says what it
+  left out.
 
 ### Benchmark
 
@@ -1182,9 +1213,14 @@ equally-weighted cards in the order they happened to be built:
   minimum on purpose — that one gates signal generation for **both** books, so
   raising it would starve the paper track the strategy is measured against. Paper
   keeps taking every signal; live takes only what clears the floor, which keeps the
-  comparison honest. The two bars compose, and whichever is stricter at that moment
-  decides; a refusal is journaled as `live_score_floor_skipped` or
-  `finish_line_skipped` depending on which one bit.
+  comparison honest. A third bar, the **High-Vol conviction bar**
+  (`mlRegimeHighVolMinSignalScore`, 2026-09-08, 0 = off, needs the ML regime overlay),
+  raises the floor while the tick's effective regime is High Volatility/Bearish — the bar
+  rises where the size falls, because the same score carries less edge in a High-Vol
+  tape (every live dollar so far came from scores 76–94); live only, like the floor.
+  The three bars compose, and whichever is strictest at that moment decides; a
+  refusal is journaled as `live_score_floor_skipped`, `finish_line_skipped` or
+  `regime_score_floor_skipped` depending on which one bit.
   Separately, a **symbol loss cooldown** (also 2026-08-22, off by default) gives the
   loop a memory of losing on a name: once a symbol takes the configured number of
   losing live trades (2+) within a rolling window of calendar days, its new live
@@ -1244,7 +1280,38 @@ equally-weighted cards in the order they happened to be built:
   leaving it untouched changes nothing regardless of the threshold's own value; setting
   the **threshold** itself to 0 likewise disables the cut entirely. **Live
   and paper only — no backtest equivalent**, same as max market ATR itself; watch
-  **Recent activity**'s risk-check entries to see it fire). Next, **same-day re-entry
+  **Recent activity**'s risk-check entries to see it fire). The same regime cut has two
+  more triggers behind the **ML regime overlay** (2026-09-08, off by default): with the
+  overlay on, the **ML regime (HMM)** reading on the Today page's Market regime tile
+  sizes new positions down by the **ML regime size cut (%)** (default 35%) while it reads
+  High Volatility/Bearish, and the **shock day range ratio (× ATR)** (0 = off; 1.5
+  suggested) treats a session whose SPY range so far is that many times its 14-day ATR
+  as High Volatility on the spot — the day a model read from yesterday's close cannot
+  see. One cut, never three: when the ATR trigger and the overlay fire together the
+  deeper configured cut applies once (40% and 35% is 40%, not 61%); a cut of 100% skips
+  new entries in that regime outright (the `regime_sizing` line in Recent activity's
+  risk-check entries says so); a stale or unknown reading never cuts; a shock day
+  journals `market_shock_detected` once. The **ML regime switch threshold** (0–1,
+  default 0.6) is the reading's own sticky rule — the regime changes only when the new
+  state's probability reaches it — and applies whether or not the overlay is on. The
+  same switch also **tightens the profit target** in that regime by the **ML regime
+  target tighten (%)** (default 30): the target R-multiple and the options take-profit
+  % are both multiplied by (1 − tighten/100) at entry — a 2R target becomes 1.4R and a
+  60% take-profit 42% — the finish-line trim reasons about the tightened payoff, and the
+  options exit rules read the regime stamped on the position at entry, so a High-Vol
+  entry keeps its tighter target through a calm afternoon and a calm-tape entry is never
+  tightened by a later switch. The **daily gain goal** follows the size cut, not the
+  tighten: on a day the regime cut fires, the goal, the give-back arm and the floor are
+  all scaled by the same factor entries were cut by (3 / 2 / 1 reads 1.95 / 1.3 / 0.65
+  at a 35% cut), so the goal is held constant in R — the goal card shows both numbers
+  and the reason, `daily_goal_scaled` journals each change, and the scale locks once the
+  guard arms or the day banks ([TUNE_FROM_TARGET.md](TUNE_FROM_TARGET.md) §6c). Once ten
+  closed stock trades carry a tightened target, the goal card adds a line pointing at the
+  **Regime tighten** ledger (Journal › Analytics), where the tighten's counterfactual is
+  measured by a rule written in advance. Leave
+  the overlay off until the enabling rules in the model card are met; the plain-English
+  walkthrough with worked numbers is [AUTOTRADE_RISK_SETTINGS.md](AUTOTRADE_RISK_SETTINGS.md)
+  §"Regime size cut — three triggers, one cut". Next, **same-day re-entry
   size cut (%)** (2026-09-08, off by default) trims an entry into a name the loop
   already closed a trade in _that Eastern trading day_. It is measured rather than
   assumed: over 89 closed live trades, first entries in a name averaged +$7.12 and
@@ -2109,7 +2176,9 @@ because the loop is the only caller that is always flat by the bell, so it is
   turned into signals (equity and options), how many paper/live entries it opened, how
   many exits it checked/closed, and any movers promoted that cycle — persisted from the
   actual last tick (not recomputed), so it reads "hasn't run yet" only before the loop's
-  very first cycle, and survives the page being closed and reopened. The same line now
+  very first cycle, and survives the page being closed and reopened. Since 2026-09-08 it
+  also shows the **ML regime** the tick read (label, probability, source, and whether the
+  reading was stale or drifting) — see the Today page's Market regime tile. The same line now
   reports **how many of the premarket movers fetched actually became candidates**
   ("Movers discovery contributed 1 of 35 fetched"), or, if the fetch itself failed, says
   so in amber with the reason. Read the pair together: a high fetched count with zero
@@ -2280,7 +2349,16 @@ because the loop is the only caller that is always flat by the bell, so it is
   yours to do, same as the eventual live-trading flag. At most 50 symbols per run and a
   3-year maximum date span; if one symbol's historical data can't be fetched (bad ticker,
   provider rate limit), it's called out separately and excluded — the rest of the run
-  still completes.
+  still completes. An **ML regime overlay** checkbox (2026-09-08) replays the
+  Configuration's ML regime size cut, target tighten and High-Vol conviction bar from the
+  shipped walk-forward regime history — each simulated day reads the _previous_ session's
+  regime, the reading the live loop could have had that morning, never its own — so the
+  overlay can be measured before it is trusted live; the equity result then says how many
+  fills fell on High Volatility/Bearish days. The standalone options run ignores it; the
+  combined run applies it to the equity leg and cuts (but does not tighten) the options
+  leg. Needs the regime history file (`npm run regime:evaluate`). The pre-registered grid
+  that actually decides the numbers is `npm run research -- --experiments mlregime`
+  (README), by a rule written before the run (the model card, §6a).
   **Run options backtest** / **Run options walk-forward** replays the identical
   symbols/dates/profile/equity through the options overlay instead — single leg or debit
   spread, whichever the **Options strategy** setting above is set to, gated by the same

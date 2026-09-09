@@ -29,6 +29,8 @@ function pos(overrides: Partial<Position> = {}): Position {
     entryScore: null,
     entryComponents: null,
     marketRegime: null,
+    mlRegime: null,
+    regimeTargetFactor: null,
     marketAtrPct: null,
     entryVwap: null,
     initialStopPrice: null,
@@ -122,6 +124,7 @@ describe('positionsToCsv', () => {
         entryTime: '09:47',
         entryScore: 72.3,
         marketRegime: 'risk-on',
+        mlRegime: 'sideways',
         marketAtrPct: 1.8,
         exits: [
           {
@@ -140,12 +143,21 @@ describe('positionsToCsv', () => {
       }),
     ]);
     const [header, row] = csv.split('\r\n');
-    for (const col of ['entryTime', 'entryScore', 'marketRegime', 'marketAtrPct', 'entryVwap', 'lastExitReason']) {
+    for (const col of [
+      'entryTime',
+      'entryScore',
+      'marketRegime',
+      'mlRegime',
+      'marketAtrPct',
+      'entryVwap',
+      'lastExitReason',
+    ]) {
       expect(header).toContain(col);
     }
     expect(row).toContain('09:47');
     expect(row).toContain('72.3');
     expect(row).toContain('risk-on');
+    expect(row).toContain('sideways');
     expect(row).toContain('target');
   });
 });

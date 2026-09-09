@@ -2,7 +2,7 @@
   "name": "stock-app",
   "version": "0.1.0",
   "private": true,
-  "description": "Personal day-trading & options-trading assistant (decision-support and tracking). Rule-based heuristics for personal research — not financial advice.",
+  "description": "Personal day-trading & options-trading assistant (decision-support and tracking). Rule-based heuristics for personal research \u2014 not financial advice.",
   "workspaces": [
     "server",
     "web"
@@ -24,6 +24,9 @@
     "backfill:exits": "npm run backfill:exits -w server --",
     "check:journal": "npm run check:journal -w server --",
     "research": "npm run research -w server --",
+    "regime:train": "python3 -m ml.regime.train",
+    "regime:evaluate": "python3 -m ml.regime.evaluate",
+    "regime:predict": "python3 -m ml.regime.predict",
     "seed": "npm run seed -w server --"
   },
   "overrides": {

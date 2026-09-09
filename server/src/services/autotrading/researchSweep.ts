@@ -45,6 +45,9 @@ export interface SweepVariant {
   endpoint: string;
   /** A COMPLETE walk-forward request body — post as-is. */
   body: Record<string, unknown>;
+  /** The ML regime overlay grid's cell this variant is (2026-09-08) — carried
+   *  onto its SweepResult so selectOverlayCell can apply the written rule. */
+  cell?: OverlayCell;
 }
 
 /** A complete weight set: the engine defaults with `overrides` applied. Every
@@ -101,7 +104,7 @@ export const EXPERIMENT_NAMES = ['exits', 'minscore', 'direction', 'weights', 'r
  *  via `--experiments ivrv` / `--experiments optexits`, ideally over a handful
  *  of liquid names (they share one cache, so the second is cheap after the
  *  first). */
-export const OPTIN_EXPERIMENT_NAMES = ['ivrv', 'optexits'] as const;
+export const OPTIN_EXPERIMENT_NAMES = ['ivrv', 'optexits', 'mlregime'] as const;
 export const ALL_EXPERIMENT_NAMES = [...EXPERIMENT_NAMES, ...OPTIN_EXPERIMENT_NAMES] as const;
 export type ExperimentName = (typeof ALL_EXPERIMENT_NAMES)[number];
 
@@ -287,6 +290,30 @@ export function buildExperiments(base: SweepBase, which: readonly ExperimentName
     });
   }
 
+  // OPT-IN (see OPTIN_EXPERIMENT_NAMES): the ML regime overlay grid, stage 1
+  // (2026-09-08) — every size-cut × target-tighten cell on the EQUITY
+  // walk-forward with the overlay replayed from the walk-forward regime
+  // history one session behind (no lookahead; the nowcast excluded). 0/0 is
+  // the baseline with the overlay OFF, so it is byte-identical to every other
+  // experiment's baseline; 100 skips High Vol entirely, so not trading
+  // competes with trading small on the same evidence. Stage 2 (the High-Vol
+  // conviction bar at the winning cell) is built by buildOverlayFloorStage
+  // once selectOverlayCell has applied the written rule to these results.
+  if (which.includes('mlregime')) {
+    for (const cut of ML_REGIME_GRID.cuts) {
+      for (const tighten of ML_REGIME_GRID.tightens) {
+        const cell = { cut, tighten, floor: 0 };
+        variants.push({
+          experiment: 'mlregime',
+          label: overlayCellLabel(cell),
+          endpoint: EQUITY_WALK_FORWARD_PATH,
+          body: { ...baseBody(base), ...overlayFields(cell) },
+          cell,
+        });
+      }
+    }
+  }
+
   return variants;
 }
 
@@ -299,9 +326,13 @@ export interface SweepWindow {
     expectancy: number;
     profitFactor: number | null;
     returnPct: number;
+    /** Dollars, not percent — see OverlayCellRow.drawdownPct. */
     maxDrawdown: number;
     avgR: number | null;
   };
+  /** The window's report, of which the overlay grid reads one field: fills
+   *  whose signal day read High Volatility/Bearish (backtest.ts). */
+  report?: { regimeDayTrades?: number };
   significance?: {
     sampleSize: number;
     ciLow: number | null;
@@ -328,6 +359,8 @@ export interface SweepResult {
   inSample: SweepWindow | null;
   dataIssues?: SweepDataIssues;
   error?: string;
+  /** The overlay grid cell this result came from (SweepVariant.cell). */
+  cell?: OverlayCell;
 }
 
 /** Order results for reading: errors last, then reliable OOS samples before
@@ -389,4 +422,211 @@ export function formatResultRow(r: SweepResult): string {
     `maxDD $${fmt(o.stats.maxDrawdown).padStart(8)}  ` +
     `CI [${fmt(sig?.ciLow)}, ${fmt(sig?.ciHigh)}]  p ${fmt(sig?.pValue, 3)}  ${rel}`
   );
+}
+
+// --- The ML regime overlay grid (2026-09-08) — two stages, one written rule --
+
+/** Stage 1: size cut × target tighten on the out-of-sample regime path (0/0
+ *  the baseline; 100 = skip High Vol entirely). Stage 2: the High-Vol
+ *  conviction bar at the cell stage 1 chose. The rule is selectOverlayCell,
+ *  and it was written before the first run — docs/MARKET_REGIME_MODEL.md §6a. */
+export const ML_REGIME_GRID = {
+  cuts: [0, 25, 35, 50, 100],
+  tightens: [0, 15, 30],
+  floors: [0, 72, 76],
+} as const;
+
+export interface OverlayCell {
+  cut: number;
+  tighten: number;
+  floor: number;
+}
+
+export function overlayCellLabel(c: OverlayCell): string {
+  const core = `cut ${c.cut} / tighten ${c.tighten}${c.floor ? ` / floor ${c.floor}` : ''}`;
+  if (c.cut === 0 && c.tighten === 0 && c.floor === 0) return `${core} (baseline)`;
+  if (c.cut === 100) return `${core} (skip High Vol)`;
+  return core;
+}
+
+/** The overlay's four backtest fields for a cell. The overlay is OFF at the
+ *  0/0/0 cell so it is byte-identical to the baseline, never "on at zero". */
+function overlayFields(c: OverlayCell): Record<string, unknown> {
+  const on = c.cut > 0 || c.tighten > 0 || c.floor > 0;
+  return {
+    mlRegimeEnabled: on,
+    mlRegimeSizeCutPct: c.cut,
+    mlRegimeTargetTightenPct: c.tighten,
+    mlRegimeHighVolMinSignalScore: c.floor,
+  };
+}
+
+/** Stage 2 — the High-Vol conviction bar (off / 72 / 76) at the cell stage 1
+ *  chose. Its floor-0 variant IS that cell, re-run as the stage's baseline so
+ *  the floors are judged by the same rule against the same run. */
+export function buildOverlayFloorStage(base: SweepBase, chosen: Pick<OverlayCell, 'cut' | 'tighten'>): SweepVariant[] {
+  return ML_REGIME_GRID.floors.map((floor) => {
+    const cell = { cut: chosen.cut, tighten: chosen.tighten, floor };
+    return {
+      experiment: 'mlregime-floor',
+      label: overlayCellLabel(cell),
+      endpoint: EQUITY_WALK_FORWARD_PATH,
+      body: { ...baseBody(base), ...overlayFields(cell) },
+      cell,
+    };
+  });
+}
+
+export interface OverlayCellRow {
+  cell: OverlayCell;
+  label: string;
+  returnPct: number;
+  /** OOS max drawdown as a % of starting equity (the stats carry dollars, and
+   *  both walk-forward windows start from the same equity). */
+  drawdownPct: number;
+  /** returnPct ÷ drawdownPct — the rule's ranking statistic. */
+  ratio: number;
+  trades: number;
+  regimeDayTrades: number | null;
+  /** Kept ≥ OVERLAY_KEEP_SHARE of the baseline's return (or is the baseline). */
+  eligible: boolean;
+  note: string;
+}
+
+export interface OverlaySelection {
+  baseline: OverlayCellRow | null;
+  /** Every answered cell, in grid order. */
+  rows: OverlayCellRow[];
+  chosen: OverlayCell | null;
+  reason: string;
+}
+
+/** The share of the baseline's OOS return a cell must keep to be considered —
+ *  the overlay must not win as a plain de-leveraging. */
+export const OVERLAY_KEEP_SHARE = 0.75;
+
+const overlayRatio = (returnPct: number, drawdownPct: number): number =>
+  drawdownPct > 0
+    ? returnPct / drawdownPct
+    : returnPct > 0
+      ? Number.POSITIVE_INFINITY
+      : returnPct < 0
+        ? Number.NEGATIVE_INFINITY
+        : 0;
+
+const sameCell = (a: OverlayCell, b: OverlayCell): boolean =>
+  a.cut === b.cut && a.tighten === b.tighten && a.floor === b.floor;
+
+/** Descending comparator that survives ±Infinity (a − b would be NaN). */
+const byRatioDesc = (a: number, b: number): number => (a === b ? 0 : a > b ? -1 : 1);
+
+/**
+ * The rule, written before the run: the cell with the highest OOS return ÷
+ * max drawdown among cells that keep at least OVERLAY_KEEP_SHARE of the
+ * baseline's OOS return; ties go to the smaller cut, then the smaller
+ * tighten, then the lower floor; no cell beating the baseline on the ratio →
+ * null, the overlay stays OFF. A non-positive baseline return makes the
+ * keep-share clause vacuous — a cell must then simply not be worse. Stage 2
+ * passes the stage-1 winner (floor 0) as its baseline.
+ */
+export function selectOverlayCell(
+  results: SweepResult[],
+  startingEquity: number,
+  opts: { baseline: OverlayCell; keepShare?: number },
+): OverlaySelection {
+  const keepShare = opts.keepShare ?? OVERLAY_KEEP_SHARE;
+  const rows: OverlayCellRow[] = [];
+  for (const r of results) {
+    if (!r.cell || !r.outOfSample || r.error) continue;
+    const s = r.outOfSample.stats;
+    const drawdownPct = startingEquity > 0 ? (s.maxDrawdown / startingEquity) * 100 : 0;
+    rows.push({
+      cell: r.cell,
+      label: r.label,
+      returnPct: s.returnPct,
+      drawdownPct,
+      ratio: overlayRatio(s.returnPct, drawdownPct),
+      trades: s.totalTrades,
+      regimeDayTrades: r.outOfSample.report?.regimeDayTrades ?? null,
+      eligible: false,
+      note: '',
+    });
+  }
+  rows.sort((a, b) => a.cell.cut - b.cell.cut || a.cell.tighten - b.cell.tighten || a.cell.floor - b.cell.floor);
+  const baseline = rows.find((row) => sameCell(row.cell, opts.baseline)) ?? null;
+  if (!baseline) {
+    return {
+      baseline: null,
+      rows,
+      chosen: null,
+      reason: `no baseline row (${overlayCellLabel(opts.baseline)}) answered — nothing to compare against, the overlay stays OFF`,
+    };
+  }
+  const keepPct = Math.round(keepShare * 100);
+  const floorReturn = baseline.returnPct > 0 ? keepShare * baseline.returnPct : baseline.returnPct;
+  for (const row of rows) {
+    if (sameCell(row.cell, opts.baseline)) {
+      row.eligible = true;
+      row.note = 'baseline';
+      continue;
+    }
+    if (row.returnPct < floorReturn) {
+      row.note =
+        baseline.returnPct > 0 ? `keeps < ${keepPct}% of the baseline return` : 'worse than the baseline return';
+      continue;
+    }
+    row.eligible = true;
+    row.note =
+      byRatioDesc(row.ratio, baseline.ratio) < 0 ? 'beats the baseline ratio' : 'does not beat the baseline ratio';
+  }
+  const candidates = rows
+    .filter((row) => row.eligible && !sameCell(row.cell, opts.baseline) && byRatioDesc(row.ratio, baseline.ratio) < 0)
+    .sort(
+      (a, b) =>
+        byRatioDesc(a.ratio, b.ratio) ||
+        a.cell.cut - b.cell.cut ||
+        a.cell.tighten - b.cell.tighten ||
+        a.cell.floor - b.cell.floor,
+    );
+  const winner = candidates[0];
+  if (!winner) {
+    return {
+      baseline,
+      rows,
+      chosen: null,
+      reason:
+        `no cell beats the baseline (${fmt(baseline.returnPct)}% over a ${fmt(baseline.drawdownPct)}% max drawdown, ` +
+        `ratio ${fmtRatio(baseline.ratio)}) on OOS return ÷ max drawdown while keeping ≥ ${keepPct}% of its return — ` +
+        `the overlay stays OFF`,
+    };
+  }
+  return {
+    baseline,
+    rows,
+    chosen: winner.cell,
+    reason:
+      `${overlayCellLabel(winner.cell)}: OOS return ${fmt(winner.returnPct)}% over a ${fmt(winner.drawdownPct)}% max ` +
+      `drawdown (ratio ${fmtRatio(winner.ratio)}) beats the baseline's ${fmt(baseline.returnPct)}% / ` +
+      `${fmt(baseline.drawdownPct)}% (ratio ${fmtRatio(baseline.ratio)}) while keeping ≥ ${keepPct}% of its return` +
+      (candidates.length > 1 ? '; ties break toward the smaller cut, then tighten, then floor' : ''),
+  };
+}
+
+const fmtRatio = (v: number): string =>
+  v === Number.POSITIVE_INFINITY ? '∞' : v === Number.NEGATIVE_INFINITY ? '−∞' : fmt(v);
+
+/** The grid as a console table plus the rule's verdict — one block per stage. */
+export function formatOverlaySelection(title: string, sel: OverlaySelection): string {
+  const lines = [
+    `\n=== ${title} — OOS return ÷ max drawdown, cells keeping ≥ ${Math.round(OVERLAY_KEEP_SHARE * 100)}% of the baseline return ===`,
+  ];
+  for (const row of sel.rows) {
+    const share = row.regimeDayTrades == null ? '—' : `${row.regimeDayTrades}/${row.trades}`;
+    lines.push(
+      `  ${row.label.padEnd(36)} ret% ${fmt(row.returnPct).padStart(7)}  DD% ${fmt(row.drawdownPct).padStart(6)}  ` +
+        `ratio ${fmtRatio(row.ratio).padStart(7)}  regime-day fills ${share.padStart(7)}  ${row.note}`,
+    );
+  }
+  lines.push(`  → ${sel.chosen ? `chosen: ${overlayCellLabel(sel.chosen)}` : 'no cell chosen'} — ${sel.reason}`);
+  return lines.join('\n');
 }

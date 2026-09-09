@@ -65,7 +65,15 @@ import { evaluateOptionsRiskCheck, OptionsRiskCheckResult, optionsPositionNotion
 import { journalMethodMultipliers, methodOfOptionsSignal } from './methodSizing';
 import { activeSymbolCooldowns, journalEntrySkipOncePerDay } from './symbolCooldown';
 import { computeFinishLineFactor, finishLineScoreGate } from './finishLine';
-import { preFinishLineFactors, preFinishLineRiskPct, NEUTRAL } from './effectiveRisk';
+import { regimeAdjustedTargets, withRegimeAdjustedTargets } from './regimeTargets';
+import {
+  NO_TICK_REGIME,
+  preFinishLineFactors,
+  preFinishLineRiskPct,
+  regimeStamp,
+  TickRegime,
+  NEUTRAL,
+} from './effectiveRisk';
 import { evaluateDailyTarget } from './dailyTarget';
 import { getDailyBaseline } from '../../db/dailyBaseline';
 import { correlatedNotional, sectorNotional, buildSectorOf, RiskCheckContext } from './riskCheck';
@@ -479,6 +487,12 @@ export async function attemptLiveOptionsEntry(
    *  direct callers (e.g. tests). */
   marketRegime: string | null = null,
   marketAtrPct: number | null = null,
+  /** The ML regime label at entry (2026-09-08), recorded on the entry order row
+   *  and carried to the position at materialization; null when unknown or stale. */
+  mlRegime: string | null = null,
+  /** The target tighten factor the exit rules will apply to this position
+   *  (regimeTargets.ts): 1 when untightened; null for a direct caller. */
+  regimeTargetFactor: number | null = null,
 ): Promise<LiveOptionsExecutionOutcome> {
   const symbol = signal.symbol.toUpperCase();
   if (!config.trading.placeEnabled) {
@@ -559,6 +573,8 @@ export async function attemptLiveOptionsEntry(
     ivRank: signal.ivRank,
     marketRegime,
     marketAtrPct,
+    mlRegime,
+    regimeTargetFactor,
     underlyingAtEntry: signal.underlyingPrice,
   };
 
@@ -821,6 +837,11 @@ export async function runLiveOptionsExecution(
    *  the entry order row and carried to the position at materialization as
    *  at-entry context; never used for sizing here. */
   marketRegime: string | null = null,
+  /** What the loop knows about the regime this tick (2026-09-08,
+   *  effectiveRisk.ts's TickRegime) — the risk check's trigger inputs and the
+   *  ONE effective regime recorded on the entry order and carried to the
+   *  position at materialization. */
+  regime: TickRegime = NO_TICK_REGIME,
 ): Promise<LiveOptionsExecutionOutcome[]> {
   const cfg = getAutotradeConfig();
   const equity = cfg.accountEquityUsd ?? 0;
@@ -977,6 +998,11 @@ export async function runLiveOptionsExecution(
           marketAtrPct,
           regimeAtrThresholdPct: cfg.regimeAtrThresholdPct,
           regimeSizeCutPct: cfg.regimeSizeCutPct,
+          mlRegime: regime.mlRegime,
+          mlRegimeEnabled: cfg.mlRegimeEnabled,
+          mlRegimeSizeCutPct: cfg.mlRegimeSizeCutPct,
+          todayRangePct: regime.todayRangePct,
+          regimeShockRangeRatio: cfg.regimeShockRangeRatio,
           // Options opt out: the repeat finding was measured on 89 closed EQUITY
           // trades and says nothing about a premium book. 0 exits + 0 cut is the
           // written opt-out, not an omission.
@@ -988,8 +1014,9 @@ export async function runLiveOptionsExecution(
         }),
       ),
       // What an options winner pays per $1 of premium risked: the take-profit
-      // % of premium, in R terms.
-      rewardMultiple: cfg.optionsTakeProfitPct / 100,
+      // % of premium, in R terms — the EFFECTIVE take-profit, tightened by the
+      // ML regime overlay under this tick's effective regime (regimeTargets.ts).
+      rewardMultiple: regimeAdjustedTargets(cfg, regime.effectiveRegime).optionsTakeProfitPct / 100,
     });
     const ctx: RiskCheckContext = {
       // Options opt out — the finding was measured on 89 closed EQUITY trades.
@@ -1022,6 +1049,11 @@ export async function runLiveOptionsExecution(
       marketAtrPct,
       regimeAtrThresholdPct: cfg.regimeAtrThresholdPct,
       regimeSizeCutPct: cfg.regimeSizeCutPct,
+      mlRegime: regime.mlRegime,
+      mlRegimeEnabled: cfg.mlRegimeEnabled,
+      mlRegimeSizeCutPct: cfg.mlRegimeSizeCutPct,
+      todayRangePct: regime.todayRangePct,
+      regimeShockRangeRatio: cfg.regimeShockRangeRatio,
       methodMultiplier,
       finishLineFactor: finishLine.factor,
       finishLineDetail: finishLine.detail,
@@ -1085,6 +1117,8 @@ export async function runLiveOptionsExecution(
         freshCfg,
         marketRegime,
         marketAtrPct,
+        regimeStamp(regime),
+        regimeAdjustedTargets(freshCfg, regime.effectiveRegime).factor,
       );
     } catch (err) {
       const reason = `Unexpected error placing order: ${(err as Error).message}`;
@@ -1534,6 +1568,12 @@ export async function checkLiveOptionsExits(): Promise<LiveOptionsExitCheckOutco
     }
 
     const entryBasis = pos.kind === 'debit_spread' ? pos.entryPrice - (pos.shortEntryPrice ?? 0) : pos.entryPrice;
+    // The take-profit this position exits on is the one tightened by the ML
+    // regime overlay for the regime STAMPED on it at entry (regimeTargets.ts):
+    // a position opened on a High-Vol morning keeps its tighter target through
+    // a calm afternoon, and a calm-tape entry is never tightened by a later
+    // switch. Both the ladder below and the %-of-premium rule read this copy.
+    const exitCfg = withRegimeAdjustedTargets(freshCfg, pos.mlRegime);
     // With the short-dated ladder in charge the %-of-premium rules below must
     // go quiet — the ladder owns them, and leaving them live alongside it
     // reintroduces exactly the failure the ladder exists to prevent. At the
@@ -1550,7 +1590,7 @@ export async function checkLiveOptionsExits(): Promise<LiveOptionsExitCheckOutco
       {
         timeExitDaysBeforeExpiry: timeExitDaysFor(freshCfg),
         stopLossPct: freshCfg.shortDatedOptionsEnabled ? undefined : freshCfg.optionsStopLossPct || undefined,
-        takeProfitPct: freshCfg.shortDatedOptionsEnabled ? undefined : freshCfg.optionsTakeProfitPct || undefined,
+        takeProfitPct: freshCfg.shortDatedOptionsEnabled ? undefined : exitCfg.optionsTakeProfitPct || undefined,
       },
     );
     // --- INTRADAY time exits (2026-08-25) -------------------------------
@@ -1596,7 +1636,7 @@ export async function checkLiveOptionsExits(): Promise<LiveOptionsExitCheckOutco
       // handler never sees it and the whole exit sweep dies. Found by a test
       // provider that only stubbed getOptionsChain.
       const underlying = await quoteOrNull(pos.symbol.toUpperCase());
-      const sd = evaluateShortDatedExit(pos, currentBasis, underlying, freshCfg, Date.now());
+      const sd = evaluateShortDatedExit(pos, currentBasis, underlying, exitCfg, Date.now());
       // Persist the high-water mark on EVERY tick, not just the ones that
       // exit — a give-back trail that only learns about peaks when it acts is
       // measuring the wrong thing.
@@ -2039,6 +2079,8 @@ function materializeOptionsEntryFill(
     ivRank: meta.ivRank,
     marketRegime: meta.marketRegime,
     marketAtrPct: meta.marketAtrPct,
+    mlRegime: meta.mlRegime,
+    regimeTargetFactor: meta.regimeTargetFactor,
     underlyingAtEntry: meta.underlyingAtEntry,
   });
   setLiveOptionsOrderPositionId(intent.id, position.id);

@@ -60,8 +60,16 @@ import { computeMethodMultipliers, methodOfEquitySignal } from './methodSizing';
 import { activeSymbolCooldowns, journalEntrySkipOncePerDay } from './symbolCooldown';
 import { isUnparseableSymbolError, markUnplaceableSymbol, unplaceableReason } from './unplaceableSymbols';
 import { computeFinishLineFactor } from './finishLine';
+import { regimeAdjustedTargets } from './regimeTargets';
 import { liveEntryScoreGate } from './entryScoreGate';
-import { cutFactor, preFinishLineFactors, preFinishLineRiskPct } from './effectiveRisk';
+import {
+  cutFactor,
+  NO_TICK_REGIME,
+  preFinishLineFactors,
+  preFinishLineRiskPct,
+  regimeStamp,
+  TickRegime,
+} from './effectiveRisk';
 import { evaluateStagnation, type SlotPressure } from './stagnationExit';
 import { classifySecondBracketRefusal, lotTargetPrice, splitEntryForPerLot } from './perLotBrackets';
 import { claimOncePerDay } from './oncePerDayEvents';
@@ -708,6 +716,12 @@ export async function attemptLiveEntry(
    *  callers (e.g. tests) that don't have them. */
   marketRegime: string | null = null,
   marketAtrPct: number | null = null,
+  /** The ML regime label at entry (2026-09-08), recorded on the order row and
+   *  carried to the position at materialization; null when unknown or stale. */
+  mlRegime: string | null = null,
+  /** The target tighten factor the bracket's target was built with
+   *  (regimeTargets.ts): 1 when untightened; null for a direct caller. */
+  regimeTargetFactor: number | null = null,
 ): Promise<LiveExecutionOutcome> {
   const symbol = signal.symbol.toUpperCase();
   // The deploy-level master gate, checked FIRST — mirrors placeOrder.ts's own
@@ -887,6 +901,8 @@ export async function attemptLiveEntry(
     entryComponents: signal.components ?? null,
     marketRegime,
     marketAtrPct,
+    mlRegime,
+    regimeTargetFactor,
     entryVwap,
     // The combo group id this client minted for the bracket. Stored on BOTH
     // paths below — including the ambiguous one, where the order may well have
@@ -1033,6 +1049,11 @@ export async function runLiveExecution(
    *  the entry order row and carried to the position at materialization as
    *  at-entry context; never used for sizing here. */
   marketRegime: string | null = null,
+  /** What the loop knows about the regime this tick (2026-09-08,
+   *  effectiveRisk.ts's TickRegime) — the risk check's trigger inputs and the
+   *  ONE effective regime recorded on the entry order and carried to the
+   *  position at materialization. */
+  regime: TickRegime = NO_TICK_REGIME,
 ): Promise<LiveExecutionOutcome[]> {
   const cfg = getAutotradeConfig();
   const equity = cfg.accountEquityUsd ?? 0;
@@ -1275,19 +1296,27 @@ export async function runLiveExecution(
       outcomes.push({ symbol, ok: false, reason });
       continue;
     }
-    // ONE conviction gate, composing the everyday live floor with the
-    // armed-day ramp — whichever bar is stricter right now decides, and the
-    // gate says which, so a refusal stays attributable. See entryScoreGate.ts
-    // for the 57-trade evidence behind the everyday floor.
-    const scoreGate = liveEntryScoreGate(candidateSignal.score, dailyTarget, cfg);
+    // ONE conviction gate, composing the everyday live floor, the armed-day
+    // ramp and the High-Vol bar (from this tick's effective regime — the same
+    // one that cut the size and tightened the target) — whichever bar is
+    // strictest right now decides, and the gate says which, so a refusal stays
+    // attributable. See entryScoreGate.ts for the 57-trade evidence behind
+    // the everyday floor.
+    const scoreGate = liveEntryScoreGate(candidateSignal.score, dailyTarget, cfg, regime.effectiveRegime);
     if (scoreGate.skip) {
       journalEntrySkipOncePerDay(symbol, scoreGate.action ?? 'live_score_floor_skipped', {
         score: candidateSignal.score,
         bar: scoreGate.bar,
         source: scoreGate.source,
+        effectiveRegime: regime.effectiveRegime,
         reason: scoreGate.detail,
       });
-      const label = scoreGate.source === 'armed_day' ? 'Armed-day selectivity' : 'Below the live conviction floor';
+      const label =
+        scoreGate.source === 'armed_day'
+          ? 'Armed-day selectivity'
+          : scoreGate.source === 'high_vol_regime'
+            ? 'Below the High-Vol conviction bar'
+            : 'Below the live conviction floor';
       outcomes.push({ symbol, ok: false, reason: `${label}: ${scoreGate.detail}` });
       continue;
     }
@@ -1415,7 +1444,7 @@ export async function runLiveExecution(
     // is exactly what CLAUDE.md's "agree by construction" rule is about.
     const priorSameDayExits = sameDaySymbolExits(signal.symbol, closedLiveForRepeat, etDayForRepeat);
     // The finish-line trim, from every OTHER factor this entry will be sized
-    // by. It is one of six multipliers in the same product, so comparing the
+    // by. It is one of seven multipliers in the same product, so comparing the
     // gap to the bank line against a payoff derived from the raw
     // cfg.riskPerTradePct double-counted every cut already in force — see
     // computeFinishLineFactor's own note for the worked case.
@@ -1432,6 +1461,11 @@ export async function runLiveExecution(
           marketAtrPct,
           regimeAtrThresholdPct: cfg.regimeAtrThresholdPct,
           regimeSizeCutPct: cfg.regimeSizeCutPct,
+          mlRegime: regime.mlRegime,
+          mlRegimeEnabled: cfg.mlRegimeEnabled,
+          mlRegimeSizeCutPct: cfg.mlRegimeSizeCutPct,
+          todayRangePct: regime.todayRangePct,
+          regimeShockRangeRatio: cfg.regimeShockRangeRatio,
           priorSameDayExits,
           repeatEntrySizeCutPct: cfg.repeatEntrySizeCutPct,
           equityCurveDerisk: cutFactor(snapshot.equityCurveDeriskActive, cfg.equityCurveDeriskCutPct),
@@ -1439,7 +1473,10 @@ export async function runLiveExecution(
           method: methodMultiplier,
         }),
       ),
-      rewardMultiple: cfg.targetRMultiple,
+      // What a winner pays per $1 risked is the EFFECTIVE target — tightened
+      // by the ML regime overlay under this tick's effective regime, the same
+      // multiple decide.ts built the bracket from (regimeTargets.ts).
+      rewardMultiple: regimeAdjustedTargets(cfg, regime.effectiveRegime).targetRMultiple,
     });
     const ctx: RiskCheckContext = {
       priorSameDayExits,
@@ -1466,6 +1503,11 @@ export async function runLiveExecution(
       marketAtrPct,
       regimeAtrThresholdPct: cfg.regimeAtrThresholdPct,
       regimeSizeCutPct: cfg.regimeSizeCutPct,
+      mlRegime: regime.mlRegime,
+      mlRegimeEnabled: cfg.mlRegimeEnabled,
+      mlRegimeSizeCutPct: cfg.mlRegimeSizeCutPct,
+      todayRangePct: regime.todayRangePct,
+      regimeShockRangeRatio: cfg.regimeShockRangeRatio,
       equityCurveDeriskActive: snapshot.equityCurveDeriskActive,
       equityCurveDeriskCutPct: cfg.equityCurveDeriskCutPct,
       maxAdvParticipationPct: cfg.maxAdvParticipationPct,
@@ -1538,7 +1580,16 @@ export async function runLiveExecution(
     // than throwing (the broker client never throws), so this is a backstop.
     let outcome: LiveExecutionOutcome;
     try {
-      outcome = await attemptLiveEntry(signal, result, freshCfg.riskProfile, freshCfg, marketRegime, marketAtrPct);
+      outcome = await attemptLiveEntry(
+        signal,
+        result,
+        freshCfg.riskProfile,
+        freshCfg,
+        marketRegime,
+        marketAtrPct,
+        regimeStamp(regime),
+        regimeAdjustedTargets(freshCfg, regime.effectiveRegime).factor,
+      );
     } catch (err) {
       const reason = `Unexpected error placing order: ${(err as Error).message}`;
       logAutotradeEvent({ symbol, stage: 'execution', action: 'live_entry_failed', detail: { reason } });
@@ -2074,6 +2125,8 @@ function materializeEntryFill(
         entryComponents: adopted.entryComponents ?? meta?.entryComponents ?? null,
         marketRegime: adopted.marketRegime ?? meta?.marketRegime ?? null,
         marketAtrPct: adopted.marketAtrPct ?? meta?.marketAtrPct ?? null,
+        mlRegime: adopted.mlRegime ?? meta?.mlRegime ?? null,
+        regimeTargetFactor: adopted.regimeTargetFactor ?? meta?.regimeTargetFactor ?? null,
         entryVwap: adopted.entryVwap ?? meta?.entryVwap ?? null,
         ...(entryStamp ?? {}),
       });
@@ -2123,6 +2176,8 @@ function materializeEntryFill(
     entryComponents: orderMeta?.entryComponents ?? null,
     marketRegime: orderMeta?.marketRegime ?? null,
     marketAtrPct: orderMeta?.marketAtrPct ?? null,
+    mlRegime: orderMeta?.mlRegime ?? null,
+    regimeTargetFactor: orderMeta?.regimeTargetFactor ?? null,
     entryVwap: orderMeta?.entryVwap ?? null,
     sourceIntentId: intent.id,
     accountId,

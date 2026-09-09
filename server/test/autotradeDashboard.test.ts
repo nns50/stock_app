@@ -1,12 +1,17 @@
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 import { initDb, db } from '../src/db';
 import { setAutotradeConfig, setAutotradeKillSwitch } from '../src/db/autotradeConfig';
-import { openPaperPosition } from '../src/db/autotradePaperPositions';
+import { closePaperPosition, openPaperPosition } from '../src/db/autotradePaperPositions';
+import { addExit, createPosition } from '../src/db/positions';
+import { MIN_LEDGER_TRADES } from '../src/services/autotrading/regimeTightenLedger';
 import { openOptionsPaperPosition } from '../src/db/autotradeOptionsPaperPositions';
 import { logAutotradeEvent } from '../src/db/autotradeEvents';
 import { saveLastTick } from '../src/db/autotradeLastTick';
 import { getAutotradeDashboard } from '../src/services/autotrading/dashboard';
 import { seedClosedAutotradeSessions } from './helpers/autotradeSessions';
+import { saveMlRegimeReading } from '../src/db/mlRegimeReadings';
+import { resetMlRegimeCache } from '../src/services/mlRegime';
+import { etToday } from '../src/util/marketDate';
 
 // Unit coverage for the Phase 7 dashboard snapshot (docs/AUTOTRADING_SPEC.md —
 // MONITORING & KILL SWITCH). Every "used vs limit" figure here is meant to be
@@ -137,6 +142,7 @@ describe('getAutotradeDashboard', () => {
       moversDiscovered: 0,
       moversCandidates: 0,
       moversFetchError: null,
+      mlRegime: null,
     });
     const dash = getAutotradeDashboard();
     expect(dash.lastTick).not.toBeNull();
@@ -454,5 +460,76 @@ describe('dailyGoalEvidence', () => {
     expect(e.impliedDailyGainPct).toBeCloseTo(1, 2);
     expect(e.targetOverImplied).toBe(3);
     expect(e.reliable).toBe(false); // 3 of 20 trades, 2 of 20 sessions
+  });
+});
+
+describe('regimeTighten — the counterfactual ledger’s population, counted, never fetched', () => {
+  it('counts closed STOCK trades stamped with a tightened target in both books, and nothing else', () => {
+    expect(getAutotradeDashboard().regimeTighten).toEqual({
+      tightenedClosedTrades: 0,
+      paper: 0,
+      live: 0,
+      minForReading: MIN_LEDGER_TRADES,
+    });
+
+    closePaperPosition(openPos({ symbol: 'TGHA', regimeTargetFactor: 0.7 }).id, {
+      exitPrice: 107,
+      exitReason: 'target',
+    });
+    closePaperPosition(openPos({ symbol: 'TGHB', regimeTargetFactor: 1 }).id, { exitPrice: 107, exitReason: 'target' });
+    openPos({ symbol: 'TGHC', regimeTargetFactor: 0.7 }); // still open — not a closed trade yet
+    const live = createPosition({
+      assetType: 'stock',
+      symbol: 'TGHL',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      stopPrice: 95,
+      targetPrice: 107,
+      entryDate: '2026-06-01',
+      tags: ['live', 'autotrade'],
+      regimeTargetFactor: 0.7,
+    });
+    addExit(live.id, { quantity: 10, exitPrice: 107, exitDate: '2026-06-02' });
+    createPosition({
+      assetType: 'stock',
+      symbol: 'TGHU',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      entryDate: '2026-06-01',
+      tags: ['live', 'autotrade'],
+      regimeTargetFactor: 1,
+    });
+
+    expect(getAutotradeDashboard().regimeTighten).toEqual({
+      tightenedClosedTrades: 2,
+      paper: 1,
+      live: 1,
+      minForReading: MIN_LEDGER_TRADES,
+    });
+  });
+});
+
+describe("mlRegime — the dashboard peeks at today's reading, never fetches", () => {
+  beforeEach(() => {
+    db.exec('DELETE FROM ml_regime_readings');
+    resetMlRegimeCache();
+  });
+
+  it('is null before the loop has read today', () => {
+    expect(getAutotradeDashboard().mlRegime).toBeNull();
+  });
+
+  it("mirrors today's persisted reading", () => {
+    const reading = { regime: 'high_vol_bearish', label: 'High Volatility/Bearish', source: 'fred', stale: false };
+    saveMlRegimeReading({
+      etDate: etToday(),
+      regime: 'high_vol_bearish',
+      asOf: '2026-09-03',
+      reading,
+      modelVersion: 'test',
+    });
+    expect(getAutotradeDashboard().mlRegime).toMatchObject(reading);
   });
 });

@@ -62,6 +62,10 @@ export interface OpenOptionsPaperPositionInput {
   /** Market regime label at entry ('risk-on' | 'neutral' | 'risk-off'), or
    *  null when the best-effort regime read failed that cycle. */
   marketRegime?: string | null;
+  /** ML regime label at entry (2026-09-08): 'high_vol_bearish' | 'low_vol_bullish' |
+   *  'sideways', or null when the reading was unknown or stale — never a guess. */
+  mlRegime?: string | null;
+  regimeTargetFactor?: number | null;
   /** Market (SPY) ATR% the loop read the cycle this entry was placed, or null. */
   marketAtrPct?: number | null;
   /** The underlying's price at entry — the reference an underlying-based stop
@@ -121,6 +125,8 @@ export interface OptionsPaperPosition {
   entryScore: number | null;
   ivRank: number | null;
   marketRegime: string | null;
+  mlRegime: string | null;
+  regimeTargetFactor: number | null;
   marketAtrPct: number | null;
   /** The underlying's price at entry (2026-08-27). Null on rows that predate
    *  the column, which leaves the short-dated ladder's underlying stop and
@@ -167,6 +173,8 @@ interface Row {
   entry_score: number | null;
   iv_rank: number | null;
   market_regime: string | null;
+  ml_regime: string | null;
+  regime_target_factor: number | null;
   market_atr_pct: number | null;
   underlying_at_entry: number | null;
   created_at: number;
@@ -204,6 +212,8 @@ function map(r: Row): OptionsPaperPosition {
     entryScore: r.entry_score ?? null,
     ivRank: r.iv_rank ?? null,
     marketRegime: r.market_regime ?? null,
+    mlRegime: r.ml_regime ?? null,
+    regimeTargetFactor: r.regime_target_factor ?? null,
     marketAtrPct: r.market_atr_pct ?? null,
     underlyingAtEntry: r.underlying_at_entry ?? null,
     createdAt: r.created_at,
@@ -226,9 +236,9 @@ export function openOptionsPaperPosition(input: OpenOptionsPaperPositionInput): 
          (symbol, side, kind, contract_symbol, strike, short_contract_symbol, short_strike,
           expiration, quantity, entry_price, short_entry_price, entry_at,
           risk_amount, risk_profile, rationale, status, best_basis_since_entry,
-          grade, entry_score, iv_rank, market_regime, market_atr_pct, underlying_at_entry,
+          grade, entry_score, iv_rank, market_regime, ml_regime, regime_target_factor, market_atr_pct, underlying_at_entry,
           created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       input.symbol.toUpperCase(),
@@ -251,6 +261,8 @@ export function openOptionsPaperPosition(input: OpenOptionsPaperPositionInput): 
       input.entryScore ?? null,
       input.ivRank ?? null,
       input.marketRegime ?? null,
+      input.mlRegime ?? null,
+      input.regimeTargetFactor ?? null,
       input.marketAtrPct ?? null,
       input.underlyingAtEntry ?? null,
       now,

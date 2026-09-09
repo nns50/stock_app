@@ -84,6 +84,8 @@ registering it in `server/src/providers/index.ts`; nothing else changes.
 
 - Node.js ≥ 20 (developed on 22)
 - npm ≥ 10
+- Python ≥ 3.11 — **only** to retrain the market-regime model under `ml/`; the running app
+  needs no Python (see [Market regime model](docs/MARKET_REGIME_MODEL.md))
 
 ## Quick start
 
@@ -130,6 +132,10 @@ npm run seed       # 5 closed + 2 open trades, 7 watchlist symbols (idempotent)
   read turns into parameter changes: layered diagnosis (funnel → signal → ladder),
   pre-committed decision rules with minimum sample sizes, a one-change-per-week
   budget, and the decision log.
+- **[Market regime model](docs/MARKET_REGIME_MODEL.md)** — the Gaussian HMM behind the
+  ML regime reading: the FRED data and its lag, the three features, the labeling rule, the
+  walk-forward out-of-sample evidence, parity between the Python trainer and the TypeScript
+  filter, what it does not do, and how to retrain it.
 - In-app **About** page — the live, authoritative description of the scoring formulas
   and glossary.
 
@@ -198,6 +204,8 @@ Copy `.env.example` to `server/.env`. All keys are read **server-side only**.
 | `WEBULL_APP_SECRET`     | _(empty)_                          | Webull OpenAPI app secret (server-side only).                   |
 | `WEBULL_PACING_SCALE`   | `1`                                | Multiplier on the client's per-endpoint request spacing (Webull limits order/position queries to 2 requests per 2s). `0` disables pacing — used by the test suite; leave at `1` in normal use. |
 | `POLYGON_API_KEY`       | _(empty)_                          | Polygon.io/Massive key for the auto-trading **backtest** harness only (docs/AUTOTRADING_SPEC.md). Separate from `MARKET_DATA_PROVIDER` — never used for live screening/quotes. |
+| `ML_REGIME_SOURCE`      | `fred`                             | Where the market-regime reading's daily closes come from: `fred` (the series the model was trained on, keyless), `provider` (the configured provider's `^GSPC`/`^VIX` candles; never the mock), or `off` (no fetch — every reading is `unknown`; the test suite). See [docs/MARKET_REGIME_MODEL.md](docs/MARKET_REGIME_MODEL.md). |
+| `ML_REGIME_DEV_OVERRIDE` | _(empty)_                         | Force a regime label (`high_vol_bearish`, `low_vol_bullish`, `sideways`) for local end-to-end checks. Refused when `NODE_ENV=production`. |
 | `TRADING_ENABLED`       | `false`                            | **Master gate for placing REAL orders.** Off ⇒ the Trade page can dry-run/live-preview but **never** places. Even on, placing also needs the guardrails to pass + kill switch off + type-to-confirm. |
 | `PORT`                  | `3001`                             | API port.                                                       |
 | `DATABASE_PATH`         | `./data/stock_app.db`              | SQLite file (relative to `server/`).                            |
@@ -247,6 +255,9 @@ npm run capture:broker # dump raw Webull field shapes (read-only; see below)
 npm run backfill:exits # correct estimated exit prices from real fills (dry run; see below)
 npm run check:journal  # audit the trade journal for rows that are already wrong (report only)
 npm run research       # scripted walk-forward sweep over the backtest API (needs a running server; see below)
+npm run regime:train   # retrain the market-regime HMM → server/data/regimeModel.json (Python; see below)
+npm run regime:evaluate # walk-forward out-of-sample evaluation → server/data/regimeHistory.json + ml/reports/
+npm run regime:predict # print today's regime reading from the shipped model
 ```
 
 CI runs lint, format-check, typecheck, tests, and build on every PR. Typecheck
@@ -272,7 +283,7 @@ npm run research -- \
   --from 2024-08-01 --to 2026-07-01 --split 2025-12-01
 ```
 
-`--experiments exits,minscore,direction,weights,rshorizon,ivrv,optexits` picks a subset;
+`--experiments exits,minscore,direction,weights,rshorizon,ivrv,optexits,mlregime` picks a subset;
 `--password` logs in first when `APP_PASSWORD` is set (add `--code <TOTP>` if MFA is
 enforced); `--out` names the JSON results file. The first
 variant pays the provider fetches, then the bar cache makes the rest local compute.
@@ -282,9 +293,38 @@ take-profit / breakeven+trailing runner, in %-of-premium terms) — are **opt-in
 in the default set**: their first run fetches option contract references and
 per-contract price bars from Polygon, far heavier than equity daily bars, so run
 them explicitly over a handful of liquid names (they share one cache).
+`mlregime` — the **ML regime overlay grid** — is opt-in too: stage 1 sweeps the size cut
+{0, 25, 35, 50, 100 = skip High Vol} × the target tighten {0, 15, 30} on the equity
+walk-forward with the overlay replayed from `server/data/regimeHistory.json` (each day
+reads the _previous_ session's regime — no lookahead), stage 2 the High-Vol conviction bar
+{off, 72, 76} at the cell stage 1 chose, and the script applies the written rule
+(`docs/MARKET_REGIME_MODEL.md` §6a: highest out-of-sample return ÷ max drawdown among
+cells keeping ≥ 75% of the baseline's return; nothing beating the baseline → OFF) and
+prints the cell that ships ON — record it in the decision log before enabling anything.
 Read `docs/STRATEGY_PLAYBOOK.md`'s backtest-reality sections before acting on a
 winner — the engine models zero slippage/commissions, and a sweep is many looks at
 one history.
+
+### `regime:train` / `regime:evaluate` / `regime:predict` — the market-regime model
+
+The Gaussian HMM behind the ML regime reading is trained **offline** in Python and shipped as
+`server/data/regimeModel.json`; the server infers from that file in TypeScript and needs no
+Python at all. Retraining (quarterly, or when the drift flag persists) needs a virtualenv
+with the pinned libraries:
+
+```bash
+python3 -m venv ml/.venv && . ml/.venv/bin/activate
+pip install -r ml/requirements.txt
+python -m pytest ml/tests -q                       # the trainer's own tests
+npm run regime:train    -- --version 2026.12.1     # artifact + parity fixture + ml/reports/regime-<date>.md
+npm run regime:evaluate -- --version 2026.12.1     # walk-forward path + ml/reports/regime-eval-<date>.md
+npm run regime:predict                             # today's reading as JSON
+npm test -w server -- regimeModelParity            # the TypeScript port agrees with what was just written
+```
+
+Read the reports against the enabling rules before committing a retrain; the
+[model card](docs/MARKET_REGIME_MODEL.md) has the rules, the data's publication lag, and what
+the model does not do. FRED is fetched keylessly and cached under `ml/data/cache/` (gitignored).
 
 ### `check:journal` — auditing the journal for rows that are already wrong
 

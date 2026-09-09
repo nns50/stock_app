@@ -5,7 +5,7 @@ import { cx, fmtDate, fmtNum, fmtPct, fmtSignedUsd, fmtUsd } from '../lib/format
 import { EmptyState, ErrorState, Field, Modal, NumberInput, Segmented, Spinner, StatTile } from './ui';
 import type { RuinResult } from '../api/types';
 
-type Tab = 'excursions' | 'slippage' | 'overrun' | 'ruin';
+type Tab = 'excursions' | 'slippage' | 'overrun' | 'tighten' | 'ruin';
 
 const r = (v: number | null) => (v == null ? '—' : `${v >= 0 ? '+' : ''}${fmtNum(v, 2)}R`);
 const rClass = (v: number | null) => (v == null ? '' : v >= 0 ? 'text-bull' : 'text-bear');
@@ -32,6 +32,7 @@ export function JournalAnalyticsModal({ open, onClose }: { open: boolean; onClos
               { value: 'excursions', label: 'Excursions' },
               { value: 'slippage', label: 'Execution quality' },
               { value: 'overrun', label: 'Stop overrun' },
+              { value: 'tighten', label: 'Regime tighten' },
               { value: 'ruin', label: 'Risk of ruin' },
             ]}
           />
@@ -39,6 +40,7 @@ export function JournalAnalyticsModal({ open, onClose }: { open: boolean; onClos
         {tab === 'excursions' && <ExcursionsPanel active={open && tab === 'excursions'} />}
         {tab === 'slippage' && <SlippagePanel active={open && tab === 'slippage'} />}
         {tab === 'overrun' && <StopOverrunPanel active={open && tab === 'overrun'} />}
+        {tab === 'tighten' && <RegimeTightenPanel active={open && tab === 'tighten'} />}
         {tab === 'ruin' && <RuinPanel active={open && tab === 'ruin'} />}
       </div>
     </Modal>
@@ -169,6 +171,159 @@ function ExcursionsPanel({ active }: { active: boolean }) {
       <p className="text-[11px] text-slate-500">
         R needs a logged stop. “Captured” = realized ÷ MFE on winners — low values suggest exiting winners early; small
         MAE vs your −1R stop suggests room to tighten.
+      </p>
+    </div>
+  );
+}
+
+/** The counterfactual MFE ledger for the ML regime target tighten: for every
+ *  closed stock trade whose target was tightened at entry, whether the FULL
+ *  (untightened) target would have been reached, from the trade's own best
+ *  run — a bound that leans toward the full target, read by a rule written
+ *  before the first trade. */
+function RegimeTightenPanel({ active }: { active: boolean }) {
+  const data = useAsync(() => (active ? client.journalRegimeTighten() : Promise.resolve(null)), [active]);
+
+  if (data.loading) return <Spinner label="Joining tightened trades to their excursions…" />;
+  if (data.error) return <ErrorState error={data.error} onRetry={data.reload} />;
+  if (!data.data || data.data.n === 0) {
+    const c = data.data?.coverage;
+    const hadTrades = (c?.tightenedTrades ?? 0) > 0;
+    const optionsNote = c?.optionsExcluded
+      ? ` ${c.optionsExcluded} closed options trade(s) were tightened too — their excursion is on the underlying, not the premium, so they are not measured here.`
+      : '';
+    return (
+      <EmptyState
+        title={hadTrades ? 'Nothing could be measured' : 'No tightened trades yet'}
+        hint={
+          hadTrades
+            ? `${c!.tightenedTrades} closed stock trade(s) carry a tightened target, none of them measurable: ` +
+              [
+                c!.undated ? `${c!.undated} without an entry date` : null,
+                c!.unavailable ? `${c!.unavailable} with no candles, stop or target to measure against` : null,
+                c!.overCap ? `${c!.overCap} beyond this request's cap` : null,
+              ]
+                .filter(Boolean)
+                .join(', ') +
+              '.' +
+              optionsNote
+            : 'This ledger fills in once the ML regime overlay is on and stock trades opened under High Volatility/Bearish have closed — each carries the factor its target was tightened by.' +
+              optionsNote
+        }
+      />
+    );
+  }
+  const d = data.data;
+  const cov = d.coverage;
+  const excluded = cov.undated + cov.overCap + cov.unavailable;
+  const pctOf = (k: number) => (d.n ? `${fmtNum((k / d.n) * 100, 0)}% of measured` : '—');
+  const readingLabel =
+    d.reading === 'tighten_costs'
+      ? 'Tighten costs'
+      : d.reading === 'tighten_holds'
+        ? 'Tighten holds'
+        : 'Reading pending';
+  const readingClass =
+    d.reading === 'tighten_costs'
+      ? 'border-amber-500/50 bg-amber-500/5 text-amber-200'
+      : d.reading === 'tighten_holds'
+        ? 'border-bull/50 bg-bull/5 text-slate-200'
+        : 'border-ink-600 bg-ink-800/40 text-slate-300';
+  const outcome = (row: (typeof d.rows)[number]) =>
+    row.fullReached ? 'full target reached' : row.bankedWin ? 'banked win' : 'missed';
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-slate-500">
+        For each closed stock trade whose profit target the ML regime overlay tightened, the trade’s own best run (MFE)
+        says whether the <em>full</em>, untightened target would have been reached. The counterfactual takes the most
+        optimistic case for the full target — reached means banked there with no reversal, not reached means the
+        untightened trade did as well as this one — so it is read in one direction only.
+      </p>
+      <p className={cx('rounded-lg border px-3 py-2 text-xs', readingClass)} data-testid="regime-tighten-reading">
+        <span className="font-medium">{readingLabel}:</span> {d.readingDetail}
+      </p>
+      {excluded > 0 && (
+        <p className="text-[11px] text-amber-400/90" data-testid="regime-tighten-coverage">
+          Over {d.n} of {cov.tightenedTrades} tightened trades.{' '}
+          {[
+            cov.undated ? `${cov.undated} have no entry date` : null,
+            cov.unavailable ? `${cov.unavailable} had no candles, stop or target to measure against` : null,
+            cov.overCap ? `${cov.overCap} beyond this request's cap` : null,
+          ]
+            .filter(Boolean)
+            .join(' · ')}
+          .
+        </p>
+      )}
+      {cov.optionsExcluded > 0 && (
+        <p className="text-[11px] text-slate-500" data-testid="regime-tighten-options">
+          {cov.optionsExcluded} closed options trade(s) were tightened too — their excursion is on the underlying, not
+          the premium, so they are not measured here.
+        </p>
+      )}
+      {d.resolutionMix.daily > 0 && d.resolutionMix.intraday > 0 && (
+        <p className="text-[11px] text-slate-500">
+          {d.resolutionMix.intraday} measured on intraday bars, {d.resolutionMix.daily} on daily. A same-session trade
+          on a daily bar reads that whole day’s high, so “full target reached” is an upper bound on those rows.
+        </p>
+      )}
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+        <StatTile label="Tightened trades" value={d.n} sub={`${d.byBook.paper} paper · ${d.byBook.live} live`} />
+        <StatTile label="Tightened target hit" value={d.tightenedReached} sub={pctOf(d.tightenedReached)} />
+        <StatTile label="Full target reached" value={d.fullReached} sub={pctOf(d.fullReached)} />
+        <StatTile label="Banked wins" value={d.bankedWins} sub="hit the tightened target, never the full one" />
+        <StatTile
+          label="Realized vs counterfactual"
+          value={`${r(d.meanRealizedR)} / ${r(d.meanCounterfactualR)}`}
+          sub={
+            d.difference.meanR == null
+              ? '—'
+              : `difference ${r(d.difference.meanR)} (95% CI ${r(d.difference.ciLow)} to ${r(d.difference.ciHigh)})`
+          }
+        />
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-ink-600/60">
+              <th className="py-1 pr-2 font-medium">Symbol</th>
+              <th className="py-1 px-2 font-medium">Entry</th>
+              <th className="py-1 px-2 font-medium text-right">Target (traded → full)</th>
+              <th className="py-1 px-2 font-medium text-right">MFE</th>
+              <th className="py-1 px-2 font-medium text-right">Realized</th>
+              <th className="py-1 px-2 font-medium text-right">Counterfactual</th>
+              <th className="py-1 pl-2 font-medium">Outcome</th>
+            </tr>
+          </thead>
+          <tbody>
+            {d.rows.map((row) => (
+              <tr key={`${row.book}-${row.positionId}`} className="border-b border-ink-700/40 last:border-0">
+                <td className="py-1 pr-2 font-medium text-slate-200">
+                  {row.symbol}{' '}
+                  <span className="text-[11px] text-slate-500">
+                    {row.book} · {row.side}
+                  </span>
+                </td>
+                <td className="py-1 px-2 text-slate-400 text-xs">{row.entryDate}</td>
+                <td className="py-1 px-2 text-right tabular-nums text-slate-300">
+                  {fmtNum(row.tightenedTargetR, 2)}R → {fmtNum(row.fullTargetR, 2)}R
+                  <span className="text-[11px] text-slate-500"> (×{fmtNum(row.factor, 2)})</span>
+                </td>
+                <td className="py-1 px-2 text-right tabular-nums text-bull">{r(row.mfeR)}</td>
+                <td className={cx('py-1 px-2 text-right tabular-nums', rClass(row.realizedR))}>{r(row.realizedR)}</td>
+                <td className={cx('py-1 px-2 text-right tabular-nums', rClass(row.counterfactualR))}>
+                  {r(row.counterfactualR)}
+                </td>
+                <td className="py-1 pl-2 text-xs text-slate-400">{outcome(row)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[11px] text-slate-500">
+        Pre-committed: after {d.minTrades} tightened trades, a counterfactual that beats realized R with a CI excluding
+        zero means the tighten has a real cost (set it to 0 and re-run the grid); one that cannot means it stays. The
+        bound only leans toward the full target, so “the counterfactual lost” is never read as a measured gain.
       </p>
     </div>
   );

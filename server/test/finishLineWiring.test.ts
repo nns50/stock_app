@@ -32,6 +32,7 @@ import { setTradingConfig } from '../src/db/trading';
 import { saveDailyBaseline } from '../src/db/dailyBaseline';
 import { config } from '../src/config';
 import { runLiveExecution } from '../src/services/autotrading/liveExecute';
+import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { etToday } from '../src/util/marketDate';
 import { evaluateEntryCutoff } from '../src/services/autotrading/endOfDayFlatten';
 
@@ -121,6 +122,12 @@ const cfgFields = {
   // files first, then slowest first — so it changed with the previous run's
   // timings. Nothing "always" ran first.
   endOfDayFlattenMinutes: 0,
+  // Same shape of leak (2026-09-08): explainRoute.test.ts leaves the live
+  // conviction floor at 72, and the 70-score fixture signal below is refused
+  // by liveEntryScoreGate before evaluateRiskCheck ever runs whenever that
+  // file happens to sort first. The floor is not what these tests are about,
+  // so it is pinned off here rather than inherited.
+  liveMinSignalScore: 0,
   stagnationExitMinutes: 0,
 };
 
@@ -214,6 +221,68 @@ describe('cannot be decided by what time the suite runs', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// The High-Vol conviction bar (2026-09-08), asserted at the consumer: the live
+// executor hands liveEntryScoreGate the tick's effective regime, and a signal
+// that clears the everyday floor is refused by the bar in High Vol — before
+// the risk check ever runs — while paper is untouched (entryScoreGate.test.ts
+// pins that separately).
+// ---------------------------------------------------------------------------
+describe('the High-Vol conviction bar reaches the live executor', () => {
+  const highVol = {
+    mlRegime: 'high_vol_bearish' as const,
+    todayRangePct: null,
+    effectiveRegime: 'high_vol_bearish' as const,
+  };
+  const calm = { mlRegime: 'sideways' as const, todayRangePct: null, effectiveRegime: 'sideways' as const };
+  const scored = (score: number) => ({ signal: { ...signal(), score } });
+
+  it('refuses a 75 that clears the 72 floor when the bar is 78 and the tick is High Vol, and journals why', async () => {
+    db.exec('DELETE FROM autotrade_events');
+    setAutotradeConfig({
+      ...cfgFields,
+      ...STEP_DOWN_OFF,
+      liveMinSignalScore: 72,
+      mlRegimeEnabled: true,
+      mlRegimeHighVolMinSignalScore: 78,
+    });
+    const outcomes = await runLiveExecution([scored(75)], null, undefined, null, highVol);
+    expect(outcomes[0]).toMatchObject({ ok: false });
+    expect(outcomes[0].reason).toMatch(/Below the High-Vol conviction bar/);
+    expect(seenContexts).toHaveLength(0);
+    const skips = listAutotradeEvents({ symbol: 'ZFLW' }).filter((e) => e.action === 'regime_score_floor_skipped');
+    expect(skips).toHaveLength(1);
+    expect(JSON.parse(skips[0].detail!)).toMatchObject({ score: 75, bar: 78, source: 'high_vol_regime' });
+  });
+
+  it('takes an 80 in High Vol, and takes the 75 on a calm tick — the bar is the only difference', async () => {
+    setAutotradeConfig({
+      ...cfgFields,
+      ...STEP_DOWN_OFF,
+      liveMinSignalScore: 72,
+      mlRegimeEnabled: true,
+      mlRegimeHighVolMinSignalScore: 78,
+    });
+    await runLiveExecution([scored(80)], null, undefined, null, highVol);
+    expect(seenContexts.length).toBeGreaterThan(0);
+    seenContexts.length = 0;
+    await runLiveExecution([scored(75)], null, undefined, null, calm);
+    expect(seenContexts.length).toBeGreaterThan(0);
+  });
+
+  it('is inert with the overlay off, whatever the tick reads', async () => {
+    setAutotradeConfig({
+      ...cfgFields,
+      ...STEP_DOWN_OFF,
+      liveMinSignalScore: 72,
+      mlRegimeEnabled: false,
+      mlRegimeHighVolMinSignalScore: 78,
+    });
+    await runLiveExecution([scored(75)], null, undefined, null, highVol);
+    expect(seenContexts.length).toBeGreaterThan(0);
+  });
+});
+
 const STEP_DOWN_ON = { stepDownAfterLosses: 0, stepDownSizeCutPct: 50 };
 const STEP_DOWN_OFF = { stepDownAfterLosses: 99, stepDownSizeCutPct: 50 };
 
@@ -274,5 +343,38 @@ describe('neither live executor feeds the trim the raw config risk %', () => {
     const args = call.slice(0, call.indexOf('});') + 3);
     expect(args).toMatch(/riskPerTradePct:\s*preFinishLineRiskPct\(/);
     expect(args).not.toMatch(/riskPerTradePct:\s*cfg\.riskPerTradePct/);
+  });
+
+  // The reward multiple the trim reasons about is the EFFECTIVE target — the
+  // config's, tightened by the ML regime overlay under the tick's effective
+  // regime (regimeTargets.ts), the same multiple decide.ts built the bracket
+  // from. Handed the raw config value, the trim would reason about a payoff
+  // the tightened trade can never produce and trim too deep, the defect above
+  // in a new coat.
+  it.each(EXECUTORS)('%s hands the trim the regime-tightened reward multiple, never the raw config target', (name) => {
+    const src = readFileSync(join(__dirname, '..', 'src', 'services', 'autotrading', name), 'utf8');
+    const call = src.slice(src.indexOf('computeFinishLineFactor({'));
+    const args = call.slice(0, call.indexOf('});') + 3);
+    expect(args).toMatch(/rewardMultiple:\s*regimeAdjustedTargets\(cfg, regime\.effectiveRegime\)/);
+    expect(args).not.toMatch(/rewardMultiple:\s*cfg\.targetRMultiple/);
+    expect(args).not.toMatch(/rewardMultiple:\s*cfg\.optionsTakeProfitPct/);
+  });
+
+  // The ML regime overlay (2026-09-08) is a second and third trigger of the
+  // regime factor, so the basis the trim reasons about must see the tick's
+  // inputs for it — the same five the risk check gets, from the same tick.
+  it.each(EXECUTORS)('%s hands the trim the ML regime overlay inputs the risk check sizes by', (name) => {
+    const src = readFileSync(join(__dirname, '..', 'src', 'services', 'autotrading', name), 'utf8');
+    const call = src.slice(src.indexOf('computeFinishLineFactor({'));
+    const args = call.slice(0, call.indexOf('});') + 3);
+    for (const field of [
+      'mlRegime: regime.mlRegime',
+      'mlRegimeEnabled: cfg.mlRegimeEnabled',
+      'mlRegimeSizeCutPct: cfg.mlRegimeSizeCutPct',
+      'todayRangePct: regime.todayRangePct',
+      'regimeShockRangeRatio: cfg.regimeShockRangeRatio',
+    ]) {
+      expect(args, `${name}: ${field}`).toContain(field);
+    }
   });
 });

@@ -79,6 +79,11 @@ export default defineConfig({
       // they assert on retry/timeout LOGIC, not on the pacing — and seconds per
       // request would add minutes to the suite.
       WEBULL_PACING_SCALE: '0',
+      // The market-regime reading fetches FRED on the loop's first tick of a
+      // day, and the integration suite runs a real tick through
+      // POST /api/autotrade/loop/run-once — CI stays off the network, and a
+      // test that wants a reading seeds one (test/helpers) or mocks mlRegime.
+      ML_REGIME_SOURCE: 'off',
     },
   },
 });

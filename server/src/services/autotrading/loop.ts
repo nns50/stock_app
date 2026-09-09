@@ -1,6 +1,9 @@
 import { config } from '../../config';
 import { getAutotradeConfig, AutotradeConfig } from '../../db/autotradeConfig';
 import { saveLastTick } from '../../db/autotradeLastTick';
+import { MlRegimeTickSummary, actionableRegime, getMarketRegime, summarizeMlRegime } from '../mlRegime';
+import { TickRegime, regimeTriggers } from './effectiveRisk';
+import { regimeAdjustedTargets } from './regimeTargets';
 import { getTradingConfig } from '../../db/trading';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { runAutotradeScreen, ScreenCandidate } from './screen';
@@ -40,7 +43,7 @@ import {
 } from './liveOptionsExecute';
 import { maybeAlertLiveOrderFailures, maybeAlertLiveAmbiguity } from './liveFailureAlert';
 import { reanchorLiveCapsIfDrifted } from './liveCapsReanchor';
-import { DailyTargetStatus, updateDailyTarget } from './dailyTarget';
+import { DailyTargetStatus, updateDailyGoalScale, updateDailyTarget } from './dailyTarget';
 import { hasExpiredLiveOptions, sweepExpiredLiveOptions } from './liveOptionsExpiry';
 import { maybeAlertDailyDrawdownHalt } from './dailyHaltAlert';
 import { maybeAutoTune } from './autoTune';
@@ -49,6 +52,7 @@ import {
   checkMacroEventBlackout,
   checkVolatility,
   getMarketAtrPct,
+  getMarketRangePct,
   VolatilityFilterConfig,
 } from './executionGuards';
 import { listMacroEvents } from '../../db/macroEvents';
@@ -60,6 +64,13 @@ import { etToday } from '../../util/marketDate';
 /** `${etDay}|${message}` of the last journaled movers-fetch failure — the
  *  once-per-day-per-message throttle for 'movers_fetch_failed'. */
 let lastMoversFailureKey: string | null = null;
+/** The ET day the shock nowcast was last journaled — 'market_shock_detected'
+ *  once per day, the same in-memory throttle as the movers failure above
+ *  (one extra row after a restart is the intended trade). */
+let lastShockJournalDay: string | null = null;
+
+/** Journal action for a tick the intraday shock nowcast promoted to High Vol. */
+export const MARKET_SHOCK_ACTION = 'market_shock_detected';
 
 // ---------------------------------------------------------------------------
 // The autonomous execution loop (docs/AUTOTRADING_SPEC.md — EXECUTION LOOP):
@@ -187,6 +198,10 @@ export interface LoopTickSummary {
   /** Why the movers fetch produced nothing, when it failed rather than
    *  returned an empty list. Null on success and when no fetch was made. */
   moversFetchError: string | null;
+  /** Today's ML market-regime reading as this tick saw it (services/mlRegime.ts),
+   *  or null when the read did not run (a tick that ended before it, or a
+   *  read that threw — runStage journals that). */
+  mlRegime: MlRegimeTickSummary | null;
 }
 
 /** Ticker-level volatility pre-filter, applied between Screen and Decision —
@@ -246,6 +261,7 @@ function emptySummary(skippedReason?: string): LoopTickSummary {
     moversDiscovered: 0,
     moversCandidates: 0,
     moversFetchError: null,
+    mlRegime: null,
   };
 }
 
@@ -519,6 +535,14 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     } catch (e) {
       journalStageFailure('live-caps re-anchor', e);
     }
+    // The ML market-regime reading (services/mlRegime.ts): once per tick, in
+    // or out of session, cached per ET day inside the service (a day's first
+    // tick fetches FRED; the hourly refresh picks up a late publication). It
+    // sits BEFORE the daily-target refresh below because the day's goal will
+    // be scaled from this reading right here (docs/MARKET_REGIME_MODEL.md);
+    // today it only records. A failed read is journaled by runStage and the
+    // tick carries null — nothing downstream ever waits on it.
+    const mlRegimeReading = await runStage('ml regime read', () => getMarketRegime(), null);
     // Re-measure the daily-gain goal with THIS tick's just-synced equity, so
     // the entry gates below see the freshest number (the first measurement
     // above ran before the sync, for the scale-in gate). Second call is safe:
@@ -557,6 +581,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       liveScaleOutsRequested: liveScaleOutOutcomes.filter((o) => o.requested).length,
       liveStopsRatcheted: liveStopAdjustOutcomes.filter((o) => o.adjusted).length,
     };
+    summary.mlRegime = mlRegimeReading ? summarizeMlRegime(mlRegimeReading) : null;
 
     const config = getAutotradeConfig();
     const paperActive = isPaperEntryActive(config);
@@ -588,6 +613,71 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     if (!macroBlackout.ok) {
       summary.skippedReason = macroBlackout.reason;
       return summary;
+    }
+
+    const volCfg: VolatilityFilterConfig = {
+      maxTickerAtrPct: config.maxTickerAtrPct,
+      maxMarketAtrPct: config.maxMarketAtrPct,
+      marketProxySymbol: 'SPY',
+    };
+    const marketAtrPct = await getMarketAtrPct(volCfg.marketProxySymbol);
+    // THE tick's regime, derived ONCE (2026-09-08; effectiveRisk.ts's header).
+    // The ML reading's regime when known and fresh (null otherwise — never a
+    // guess), SPY's range so far today for the shock nowcast (fetched only when
+    // the nowcast is on, so an untouched config makes no extra quote call),
+    // and the one effective regime regimeTriggers derives from them. Every
+    // executor gets all three: the two inputs feed its risk check, which calls
+    // regimeTriggers again from the SAME inputs for the sizing line, and the
+    // effective regime is what it stamps on what it opens — so a shock day is
+    // cut AND stamped High Vol, or neither, never one without the other.
+    const mlRegime = actionableRegime(mlRegimeReading);
+    const todayRangePct =
+      config.mlRegimeEnabled && config.regimeShockRangeRatio > 0
+        ? await getMarketRangePct(volCfg.marketProxySymbol)
+        : null;
+    const triggers = regimeTriggers({
+      marketAtrPct,
+      regimeAtrThresholdPct: config.regimeAtrThresholdPct,
+      regimeSizeCutPct: config.regimeSizeCutPct,
+      mlRegime,
+      mlRegimeEnabled: config.mlRegimeEnabled,
+      mlRegimeSizeCutPct: config.mlRegimeSizeCutPct,
+      todayRangePct,
+      regimeShockRangeRatio: config.regimeShockRangeRatio,
+    });
+    const tickRegime: TickRegime = { mlRegime, todayRangePct, effectiveRegime: triggers.effectiveRegime };
+    if (triggers.shock) {
+      const today = etToday();
+      if (today !== lastShockJournalDay) {
+        lastShockJournalDay = today;
+        logAutotradeEvent({
+          stage: 'execution',
+          action: MARKET_SHOCK_ACTION,
+          detail: {
+            date: today,
+            rangePct: todayRangePct,
+            marketAtrPct,
+            ratio: config.regimeShockRangeRatio,
+            modelRegime: mlRegime ?? 'unknown',
+            cutPct: triggers.cutPct,
+            note: `${volCfg.marketProxySymbol}'s range so far today reached the shock ratio × its ATR — this tick sizes and stamps as High Volatility/Bearish; compare with the model's next-session label (docs/MARKET_REGIME_MODEL.md)`,
+          },
+          riskProfile: config.riskProfile,
+        });
+      }
+    }
+
+    // The goal follows the sizer (2026-09-08; dailyTarget.ts's header and
+    // docs/TUNE_FROM_TARGET.md §6c): the SAME factor the entries below will be
+    // cut by scales the day's % goal, arm and floor, so the goal is held
+    // constant in R — tracked per tick until the guard arms or the day banks,
+    // then frozen. Same regimeTriggers call, same inputs, so the goal and the
+    // sizer cannot disagree about the factor. The day is re-measured on a
+    // change so this tick's entry gates already read the scaled goal.
+    try {
+      if (updateDailyGoalScale(triggers).changed) dailyTarget = updateDailyTarget();
+    } catch (e) {
+      journalStageFailure('daily-goal scale', e);
     }
 
     // Market regime read (best-effort, cached ~1h in marketRegime.ts): used
@@ -705,12 +795,6 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       }
     }
 
-    const volCfg: VolatilityFilterConfig = {
-      maxTickerAtrPct: config.maxTickerAtrPct,
-      maxMarketAtrPct: config.maxMarketAtrPct,
-      marketProxySymbol: 'SPY',
-    };
-    const marketAtrPct = await getMarketAtrPct(volCfg.marketProxySymbol);
     const passedVolatility = filterByVolatility(screenResult.candidates, marketAtrPct, volCfg);
     summary.candidatesPassedVolatility = passedVolatility.length;
 
@@ -737,10 +821,14 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     }
     const selectedCandidates = selection.ordered;
 
+    // The target is the EFFECTIVE multiple: the config's targetRMultiple,
+    // tightened by the ML regime overlay under this tick's effective regime
+    // (regimeTargets.ts — the same helper the finish line and the options
+    // exits read). decide.ts stamps it on every signal as rMultiple.
     const decision = runAutotradeDecision(selectedCandidates, {
       stopAtrMultiple: config.stopAtrMultiple,
       maxStopDistancePct: config.maxStopDistancePct,
-      targetRMultiple: config.targetRMultiple,
+      targetRMultiple: regimeAdjustedTargets(config, tickRegime.effectiveRegime).targetRMultiple,
     });
     summary.signalsGenerated = decision.signals.length;
 
@@ -872,6 +960,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
         seed,
         marketAtrPct,
         regimeLabel,
+        tickRegime,
       );
       summary.entriesOpened = outcomes.filter((o) => o.ok).length;
 
@@ -879,6 +968,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
         optionsDecision.signals.map((signal) => ({ signal })),
         marketAtrPct,
         regimeLabel,
+        tickRegime,
       );
       summary.optionsEntriesOpened = optionsOutcomes.filter((o) => o.ok).length;
     }
@@ -892,6 +982,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
         // direction; this closes the one-way gap.
         liveOptionsSeedForEquity(getLiveOptionsPortfolioSnapshot(getAutotradeConfig().liveAccountId ?? null)),
         regimeLabel,
+        tickRegime,
       );
       summary.liveEntriesOpened = liveOutcomes.filter((o) => o.ok).length;
     }
@@ -900,6 +991,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
         optionsDecision.signals.map((signal) => ({ signal })),
         marketAtrPct,
         regimeLabel,
+        tickRegime,
       );
       summary.liveOptionsEntriesOpened = liveOptionsOutcomes.filter((o) => o.ok).length;
     }

@@ -48,7 +48,6 @@ export type StopAdjustConfig = Pick<
   | 'trailStartRMultiple'
   | 'trailStopRMultiple'
   | 'dayProtectiveStopEnabled'
-  | 'giveBackFloorPct'
 >;
 
 // --- The day-protective stop (2026-08-26) ----------------------------------
@@ -147,14 +146,21 @@ function dayProtectiveStop(
   initialStopDistance: number,
 ): number | null {
   if (!cfg.dayProtectiveStopEnabled) return null;
-  if (cfg.giveBackFloorPct === null || !(cfg.giveBackFloorPct > 0)) return null;
   if (!dt || !dt.active || !dt.giveBackArmed) return null;
   if (dt.baselineEquityUsd === undefined || dt.currentEquityUsd === undefined) return null;
+  // The floor comes from the day's STATUS — the guard's own effective level,
+  // scaled by the regime overlay together with the goal (dailyTarget.ts) —
+  // never from the raw config field. Until 2026-09-08 this read
+  // cfg.giveBackFloorPct while the guard read the status: two derivations of
+  // one floor, agreeing by coincidence, one step apart the day the overlay
+  // scaled it (CLAUDE.md's 2026-08-27 disease).
+  const floorPct = dt.giveBackFloorPct;
+  if (floorPct === undefined || !(floorPct > 0)) return null;
 
   const qty = pos.remainingQuantity;
   if (!(qty > 0)) return null;
 
-  const floorEquity = dt.baselineEquityUsd * (1 + cfg.giveBackFloorPct / 100);
+  const floorEquity = dt.baselineEquityUsd * (1 + floorPct / 100);
   // Headroom: how much this position may lose before the day breaches its
   // floor. Non-positive means the day is already at or below it, which is the
   // give-back guard's business, not this rule's.

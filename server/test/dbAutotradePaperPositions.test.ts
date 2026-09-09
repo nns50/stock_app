@@ -2,12 +2,15 @@ import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { initDb, db } from '../src/db';
 import {
   closePaperPosition,
+  countTightenedClosedPaperPositions,
   hasOpenPaperPosition,
   listOpenPaperPositions,
   listPaperPositions,
+  listTightenedClosedPaperPositions,
   openPaperPosition,
   OpenPaperPositionInput,
 } from '../src/db/autotradePaperPositions';
+import { isTightenedFactor } from '../src/services/autotrading/regimeTightenLedger';
 
 beforeAll(() => initDb());
 beforeEach(() => db.exec("DELETE FROM autotrade_paper_positions WHERE symbol LIKE 'PP%'"));
@@ -128,5 +131,43 @@ describe('at-entry context (2026-07-26)', () => {
     expect(pos.entryScore).toBeNull();
     expect(pos.marketRegime).toBeNull();
     expect(pos.marketAtrPct).toBeNull();
+  });
+});
+
+describe('the ML regime label at entry (2026-09-08)', () => {
+  it('round-trips and is null when not given', () => {
+    expect(openPaperPosition(input({ symbol: 'PPML', mlRegime: 'low_vol_bullish' })).mlRegime).toBe('low_vol_bullish');
+    expect(openPaperPosition(input({ symbol: 'PPMN' })).mlRegime).toBeNull();
+  });
+
+  it('carries the regime target factor the same way (2026-09-08)', () => {
+    expect(openPaperPosition(input({ symbol: 'PPTF', regimeTargetFactor: 0.7 })).regimeTargetFactor).toBe(0.7);
+    expect(openPaperPosition(input({ symbol: 'PPTN' })).regimeTargetFactor).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The regime-tighten ledger's paper population (2026-09-08) is a SQL
+// predicate here and a TS predicate in regimeTightenLedger.ts — two
+// derivations of one set, so this pins them to each other over the boundary
+// set rather than trusting them to agree.
+// ---------------------------------------------------------------------------
+describe('the tightened population — the SQL predicate matches isTightenedFactor', () => {
+  it('lists and counts closed rows with a factor strictly inside (0, 1), and only those', () => {
+    const factors: (number | null)[] = [null, 0, 0.7, 1, 1.2, 0.999];
+    const ids = factors.map((f, i) => openPaperPosition(input({ symbol: `PPT${i}`, regimeTargetFactor: f })).id);
+    for (const id of ids) closePaperPosition(id, { exitPrice: 51, exitReason: 'target' });
+    const stillOpen = openPaperPosition(input({ symbol: 'PPTO', regimeTargetFactor: 0.7 }));
+
+    const expected = listPaperPositions({ status: 'closed', limit: 1000 }).filter((p) =>
+      isTightenedFactor(p.regimeTargetFactor),
+    );
+    expect(countTightenedClosedPaperPositions()).toBe(expected.length);
+    const listed = listTightenedClosedPaperPositions(1000);
+    expect(listed.map((p) => p.id).sort()).toEqual(expected.map((p) => p.id).sort());
+
+    const mine = listed.filter((p) => p.symbol.startsWith('PPT'));
+    expect(mine.map((p) => p.regimeTargetFactor).sort()).toEqual([0.7, 0.999]);
+    expect(listed.some((p) => p.id === stillOpen.id)).toBe(false); // open, so not yet a closed trade
   });
 });

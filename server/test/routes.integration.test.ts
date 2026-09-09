@@ -5,6 +5,9 @@ import { app } from '../src/index';
 import { db } from '../src/db';
 import { addExclusion } from '../src/db/autotradeExclusions';
 import { config } from '../src/config';
+import { MlRegimeReading, resetMlRegimeCache } from '../src/services/mlRegime';
+import { saveMlRegimeReading } from '../src/db/mlRegimeReadings';
+import { saveDailyBaseline, setDailyGoalScale } from '../src/db/dailyBaseline';
 import { totp } from '../src/services/totp';
 import { resetLoginThrottle } from '../src/services/auth';
 import { setSetting } from '../src/db/settings';
@@ -1128,6 +1131,7 @@ describe('health (integration)', () => {
       moversDiscovered: 0,
       moversCandidates: 0,
       moversFetchError: null,
+      mlRegime: null,
     });
     const after = (await getJson('/api/health')) as { loopLastTickAgeMs: number | null };
     expect(after.loopLastTickAgeMs).toBeGreaterThanOrEqual(0);
@@ -2351,6 +2355,29 @@ describe('autotrade backtest routes (integration)', () => {
   it('rejects a backtest request with an empty symbols list', async () => {
     const res = await post('/api/autotrade/backtest', { ...baseBody, symbols: [] });
     expect(res.status).toBe(400);
+  });
+
+  it('accepts the ML regime overlay fields, replays the shipped regime history, and rejects out-of-range numbers', async () => {
+    // The overlay on loads server/data/regimeHistory.json (shipped with the
+    // model) — a 200 here proves the loader ran, and the report carries the
+    // regime-day fill count even when nothing traded (VNQ is excluded).
+    const on = await post('/api/autotrade/backtest', {
+      ...baseBody,
+      mlRegimeEnabled: true,
+      mlRegimeSizeCutPct: 50,
+      mlRegimeTargetTightenPct: 15,
+      mlRegimeHighVolMinSignalScore: 76,
+    });
+    expect(on.status).toBe(200);
+    const body = (await on.json()) as { report: { trades: unknown[]; regimeDayTrades: number } };
+    expect(body.report.trades).toEqual([]);
+    expect(body.report.regimeDayTrades).toBe(0);
+    // The flag alone runs the live config's numbers — still a valid body.
+    expect((await post('/api/autotrade/backtest', { ...baseBody, mlRegimeEnabled: true })).status).toBe(200);
+    expect((await post('/api/autotrade/backtest', { ...baseBody, mlRegimeSizeCutPct: 101 })).status).toBe(400);
+    expect((await post('/api/autotrade/backtest', { ...baseBody, mlRegimeHighVolMinSignalScore: -1 })).status).toBe(
+      400,
+    );
   });
 
   it('runs a walk-forward split and reports both windows with the exclusion applied to each', async () => {
@@ -3593,6 +3620,379 @@ describe('journal analysis routes tell you what they could not cover (integratio
     // never undefined, which JSON drops entirely and the client reads as absent.
     expect(rep.startDate === null || typeof rep.startDate === 'string').toBe(true);
     expect(typeof rep.totalRealized).toBe('number');
+  });
+
+  it('regime-tighten joins every tightened trade in both books to its excursion, and says what it could not measure', async () => {
+    // The consumer of PR 5's regime_target_factor stamp: the ledger reads the
+    // factor off the row, divides the traded target back out to the full one,
+    // and asks the excursion whether each was reached.
+    db.exec('DELETE FROM autotrade_paper_positions; DELETE FROM autotrade_options_paper_positions;');
+    // Live: 100 / 95 / 107 at 0.7 — 1.4R as traded, 2R untightened; ran to
+    // 112 (the full target reached) and exited at the tightened target.
+    const live = createPosition({
+      assetType: 'stock',
+      symbol: 'TGHL',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      stopPrice: 95,
+      targetPrice: 107,
+      entryDate: '2026-06-01',
+      tags: ['live', 'autotrade'],
+      regimeTargetFactor: 0.7,
+      mlRegime: 'high_vol_bearish',
+    });
+    addExit(live.id, { quantity: 10, exitPrice: 107, exitDate: '2026-06-02' });
+    // Paper: same geometry, ran to 108 — the tightened target hit, the full
+    // one never reached: a banked win.
+    const paper = openPaperPosition({
+      symbol: 'TGHP',
+      side: 'buy',
+      quantity: 10,
+      entryPrice: 100,
+      stopPrice: 95,
+      targetPrice: 107,
+      riskAmount: 50,
+      riskProfile: 'MODERATE',
+      rationale: 'fixture',
+      regimeTargetFactor: 0.7,
+      mlRegime: 'high_vol_bearish',
+    });
+    db.prepare(
+      "UPDATE autotrade_paper_positions SET status='closed', exit_price=107, exit_at=?, exit_reason='target', entry_at=? WHERE id=?",
+    ).run(Date.parse('2026-06-02T18:00:00Z'), Date.parse('2026-06-01T15:00:00Z'), paper.id);
+    // Untightened (factor 1): not in the population at all.
+    const plain = createPosition({
+      assetType: 'stock',
+      symbol: 'TGHU',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      stopPrice: 95,
+      targetPrice: 110,
+      entryDate: '2026-06-01',
+      tags: ['live', 'autotrade'],
+      regimeTargetFactor: 1,
+    });
+    addExit(plain.id, { quantity: 10, exitPrice: 110, exitDate: '2026-06-02' });
+    // A tightened OPTIONS trade: counted as excluded, never measured.
+    const opt = openOptionsPaperPosition({
+      symbol: 'TGHO',
+      side: 'call',
+      contractSymbol: 'TGHO-fixture',
+      strike: 100,
+      expiration: '2026-08-21',
+      quantity: 1,
+      entryPrice: 3,
+      riskAmount: 300,
+      riskProfile: 'MODERATE',
+      rationale: 'fixture',
+      regimeTargetFactor: 0.7,
+    });
+    db.prepare(
+      "UPDATE autotrade_options_paper_positions SET status='closed', exit_price=4.26, exit_at=?, exit_reason='take_profit' WHERE id=?",
+    ).run(Date.now(), opt.id);
+
+    const bars = (high: number) =>
+      ['2026-06-01', '2026-06-02'].map((d) => ({
+        time: Date.parse(`${d}T16:00:00Z`),
+        open: 100,
+        high,
+        low: 99,
+        close: 101,
+        volume: 1,
+      }));
+    const candles = vi
+      .spyOn(getProvider(), 'getCandles')
+      .mockImplementation(async (symbol: string) => bars(symbol === 'TGHL' ? 112 : 108));
+    try {
+      const rep = (await getJson('/api/journal/regime-tighten')) as {
+        n: number;
+        byBook: { paper: number; live: number };
+        tightenedReached: number;
+        fullReached: number;
+        bankedWins: number;
+        meanRealizedR: number;
+        meanCounterfactualR: number;
+        difference: { meanR: number };
+        reading: string;
+        rows: {
+          symbol: string;
+          book: string;
+          factor: number;
+          tightenedTargetR: number;
+          fullTargetR: number;
+          mfeR: number;
+          realizedR: number;
+          fullReached: boolean;
+          bankedWin: boolean;
+          counterfactualR: number;
+        }[];
+        coverage: {
+          tightenedTrades: number;
+          undated: number;
+          overCap: number;
+          unavailable: number;
+          optionsExcluded: number;
+        };
+      };
+      expect(rep.n).toBe(2);
+      expect(rep.byBook).toEqual({ paper: 1, live: 1 });
+      const liveRow = rep.rows.find((r) => r.symbol === 'TGHL')!;
+      expect(liveRow).toMatchObject({
+        book: 'live',
+        factor: 0.7,
+        tightenedTargetR: 1.4,
+        fullTargetR: 2,
+        mfeR: 2.4,
+        realizedR: 1.4,
+        fullReached: true,
+        bankedWin: false,
+        counterfactualR: 2,
+      });
+      const paperRow = rep.rows.find((r) => r.symbol === 'TGHP')!;
+      expect(paperRow).toMatchObject({
+        book: 'paper',
+        factor: 0.7,
+        tightenedTargetR: 1.4,
+        fullTargetR: 2,
+        mfeR: 1.6,
+        realizedR: 1.4,
+        fullReached: false,
+        bankedWin: true,
+        counterfactualR: 1.4,
+      });
+      expect(rep.tightenedReached).toBe(2);
+      expect(rep.fullReached).toBe(1);
+      expect(rep.bankedWins).toBe(1);
+      expect(rep.meanRealizedR).toBe(1.4);
+      expect(rep.meanCounterfactualR).toBe(1.7);
+      expect(rep.difference.meanR).toBe(0.3);
+      expect(rep.reading).toBe('insufficient');
+      expect(rep.coverage).toEqual({ tightenedTrades: 2, undated: 0, overCap: 0, unavailable: 0, optionsExcluded: 1 });
+      // The identity that makes the report checkable.
+      const c = rep.coverage;
+      expect(rep.n + c.undated + c.overCap + c.unavailable).toBe(c.tightenedTrades);
+    } finally {
+      candles.mockRestore();
+      db.exec('DELETE FROM autotrade_paper_positions; DELETE FROM autotrade_options_paper_positions;');
+    }
+  });
+});
+
+describe('ML market-regime reading (integration)', () => {
+  afterEach(() => {
+    config.mlRegime.source = 'off';
+    config.mlRegime.devOverride = '';
+    resetMlRegimeCache();
+    db.exec('DELETE FROM ml_regime_readings');
+  });
+
+  it('reads unknown/source_off in the test environment, in the operator’s words', async () => {
+    const r = (await getJson('/api/market/regime-ml')) as {
+      regime: string;
+      label: string;
+      reason?: string;
+      source: string;
+    };
+    expect(r).toMatchObject({ regime: 'unknown', label: 'Unknown', reason: 'source_off', source: 'off' });
+  });
+
+  it('honours the dev override and mirrors it on the dashboard without a fetch', async () => {
+    config.mlRegime.source = 'fred';
+    config.mlRegime.devOverride = 'high_vol_bearish';
+    const r = (await getJson('/api/market/regime-ml?force=true')) as { regime: string; label: string; source: string };
+    expect(r).toMatchObject({ regime: 'high_vol_bearish', label: 'High Volatility/Bearish', source: 'override' });
+    const dash = (await getJson('/api/autotrade/dashboard')) as { mlRegime: { regime: string; source: string } | null };
+    expect(dash.mlRegime).toMatchObject({ regime: 'high_vol_bearish', source: 'override' });
+  });
+});
+
+describe('the ML regime overlay (integration, 2026-09-08)', () => {
+  const put = (path: string, body: unknown) =>
+    fetch(`${base}${path}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  const restore = {
+    mlRegimeEnabled: false,
+    mlRegimeSizeCutPct: 35,
+    mlRegimeSwitchThreshold: 0.6,
+    regimeShockRangeRatio: 0,
+    mlRegimeTargetTightenPct: 30,
+    mlRegimeHighVolMinSignalScore: 0,
+    regimeAtrThresholdPct: 3,
+  };
+  afterEach(async () => {
+    resetMlRegimeCache();
+    db.exec('DELETE FROM ml_regime_readings');
+    await put('/api/autotrade/config', restore);
+  });
+
+  it('round-trips the four overlay fields and refuses out-of-range values', async () => {
+    const patch = {
+      mlRegimeEnabled: true,
+      mlRegimeSizeCutPct: 50,
+      mlRegimeSwitchThreshold: 0.7,
+      regimeShockRangeRatio: 1.5,
+      mlRegimeTargetTightenPct: 15,
+      mlRegimeHighVolMinSignalScore: 78,
+    };
+    expect((await put('/api/autotrade/config', patch)).status).toBe(200);
+    expect((await getJson('/api/autotrade/config')) as Record<string, unknown>).toMatchObject(patch);
+    // A probability above 1, a ratio above 10 and a cut above 100 are 400s, not silent clamps.
+    expect((await put('/api/autotrade/config', { mlRegimeSwitchThreshold: 1.5 })).status).toBe(400);
+    expect((await put('/api/autotrade/config', { regimeShockRangeRatio: 11 })).status).toBe(400);
+    expect((await put('/api/autotrade/config', { mlRegimeSizeCutPct: 101 })).status).toBe(400);
+    expect((await put('/api/autotrade/config', { mlRegimeTargetTightenPct: 101 })).status).toBe(400);
+    expect((await put('/api/autotrade/config', { mlRegimeHighVolMinSignalScore: 101 })).status).toBe(400);
+    expect((await getJson('/api/autotrade/config')) as Record<string, unknown>).toMatchObject(patch);
+  });
+
+  it('/risk-check sizes by the persisted High-Vol reading with the overlay on, names the trigger, and refuses at cut 100', async () => {
+    // Entry 100 / stop 95 / 1% of $100k → 200 shares at full size. The ATR
+    // trigger is switched off (threshold 0) so the synthetic provider's SPY
+    // candles cannot fire it; the shock nowcast stays off.
+    await put('/api/autotrade/config', {
+      accountEquityUsd: 100_000,
+      riskPerTradePct: 1,
+      regimeAtrThresholdPct: 0,
+      maxAdvParticipationPct: 0,
+      mlRegimeEnabled: true,
+      mlRegimeSizeCutPct: 50,
+    });
+    const today = etToday();
+    const reading: MlRegimeReading = {
+      regime: 'high_vol_bearish',
+      label: 'High Volatility/Bearish',
+      candidate: 'high_vol_bearish',
+      probabilities: { high_vol_bearish: 0.9, low_vol_bullish: 0.05, sideways: 0.05 },
+      predictedNext: null,
+      asOf: today,
+      etDate: today,
+      features: null,
+      source: 'fred',
+      stale: false,
+      drift: false,
+      driftScore: null,
+      driftP5: null,
+      modelVersion: 'test',
+      switched: false,
+      heldBelowThreshold: false,
+      threshold: 0.6,
+      previous: null,
+      rows: 250,
+      logLikelihood: null,
+      computedAt: Date.now(),
+    };
+    saveMlRegimeReading({ etDate: today, regime: 'high_vol_bearish', asOf: today, reading, modelVersion: 'test' });
+    resetMlRegimeCache(); // the preview peeks at the persisted row, never fetches
+    const signal = {
+      symbol: 'TEST',
+      side: 'buy',
+      entry: 100,
+      stop: 95,
+      target: 110,
+      rMultiple: 2,
+      rationale: 'overlay fixture',
+      score: 70,
+    };
+    type Result = {
+      ok: boolean;
+      sizing: { suggestedQuantity: number };
+      checks: { rule: string; passed: boolean; detail: string }[];
+    };
+    const check = async (): Promise<Result> => {
+      const res = await post('/api/autotrade/risk-check', { signals: [signal] });
+      expect(res.status).toBe(200);
+      return ((await res.json()) as { results: Result[] }).results[0];
+    };
+    const regimeRule = (r: Result) => r.checks.find((c) => c.rule === 'regime_sizing')!;
+
+    const cut = await check();
+    expect(cut.sizing.suggestedQuantity).toBe(100);
+    expect(regimeRule(cut).passed).toBe(true);
+    expect(regimeRule(cut).detail).toMatch(/^active — ML regime High Volatility\/Bearish \(50% cut/);
+
+    await put('/api/autotrade/config', { mlRegimeEnabled: false });
+    const off = await check();
+    expect(off.sizing.suggestedQuantity).toBe(200);
+    expect(regimeRule(off).detail).toMatch(/overlay off/);
+
+    await put('/api/autotrade/config', { mlRegimeEnabled: true, mlRegimeSizeCutPct: 100 });
+    const skipped = await check();
+    expect(skipped.ok).toBe(false);
+    expect(skipped.sizing.suggestedQuantity).toBe(0);
+    expect(regimeRule(skipped).passed).toBe(false);
+    expect(regimeRule(skipped).detail).toMatch(/entries skipped \(cut 100%\)/);
+
+    // A stale reading is no overlay, whatever it says.
+    saveMlRegimeReading({
+      etDate: today,
+      regime: 'unknown',
+      asOf: today,
+      reading: { ...reading, regime: 'unknown', stale: true, reason: 'stale' },
+      modelVersion: 'test',
+    });
+    resetMlRegimeCache();
+    const stale = await check();
+    expect(stale.sizing.suggestedQuantity).toBe(200);
+    expect(regimeRule(stale).detail).toMatch(/ML regime unknown/);
+  });
+});
+
+describe('the daily goal held constant in R (integration, 2026-09-08)', () => {
+  afterEach(async () => {
+    db.exec('DELETE FROM autotrade_daily_baseline');
+    await put('/api/autotrade/config', { targetDailyGainPct: null, giveBackArmPct: null, giveBackFloorPct: null });
+  });
+  const put = (path: string, body: unknown) =>
+    fetch(`${base}${path}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  it('the dashboard reports the SCALED goal, arm and floor beside the configured goal and the scale', async () => {
+    expect(
+      (
+        await put('/api/autotrade/config', {
+          accountEquityUsd: 10_100,
+          targetDailyGainPct: 3,
+          giveBackArmPct: 2,
+          giveBackFloorPct: 1,
+        })
+      ).status,
+    ).toBe(200);
+    saveDailyBaseline(etToday(), 10_000);
+    expect(setDailyGoalScale(0.65, 'ML regime High Volatility/Bearish (35% cut)')).toBe(true);
+    const dash = (await getJson('/api/autotrade/dashboard')) as {
+      dailyTarget: {
+        targetPct: number;
+        configuredTargetPct: number;
+        goalScale: number;
+        goalScaleReason?: string;
+        giveBackArmPct: number;
+        giveBackFloorPct: number;
+        targetEquityUsd: number;
+      };
+    };
+    expect(dash.dailyTarget).toMatchObject({
+      targetPct: 1.95,
+      configuredTargetPct: 3,
+      goalScale: 0.65,
+      goalScaleReason: 'ML regime High Volatility/Bearish (35% cut)',
+      giveBackArmPct: 1.3,
+      giveBackFloorPct: 0.65,
+      targetEquityUsd: 10_195,
+    });
+    // The stored goal itself never moved.
+    expect((await getJson('/api/autotrade/config')) as Record<string, unknown>).toMatchObject({
+      targetDailyGainPct: 3,
+      giveBackArmPct: 2,
+      giveBackFloorPct: 1,
+    });
   });
 });
 

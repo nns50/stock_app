@@ -41,3 +41,11 @@ web/dist/
 
 # Test coverage
 coverage/
+
+# Python — the market-regime trainer under ml/ (retraining only; the runtime is Node)
+ml/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+ml/data/cache/*
+!ml/data/cache/.gitkeep

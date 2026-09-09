@@ -2,6 +2,7 @@ import { AutotradeConfig, getAutotradeConfig } from '../../db/autotradeConfig';
 import {
   DailyBaseline,
   getDailyBaseline,
+  setDailyGoalScale,
   setReachCandidate,
   markDailyTargetReached,
   markGiveBackArmed,
@@ -73,6 +74,23 @@ import { etToday } from '../../util/marketDate';
 // there is no day-gain axis to put its levels on. The baseline is still
 // maintained — it costs one row write per day and the dashboard can show
 // "today so far" regardless.
+//
+// THE GOAL IS HELD CONSTANT IN R (2026-09-08, the ML regime overlay). The goal
+// is `expected day % = entries/session × risk % × avg R` (targetTune.ts), and
+// the tune solved riskPerTradePct from it for a calm day. On a regime day the
+// sizer cuts every entry's risk by a factor f (effectiveRisk.ts's
+// regimeTriggers); a % goal left where it was would then be 1/f harder in R —
+// reachable only through more entries, in the one regime where more entries
+// is the wrong answer — and the bank line and the guard's arm would come later
+// or never. So the day's % goal, arm and floor are all scaled by that SAME f,
+// from the SAME call the executors size by (loop.ts), and the identity holds
+// on both kinds of day: entries × (risk × f) × avg R = f × goal. Every
+// mechanism keeps its meaning at the scaled line. The scale is written to the
+// baseline row per in-session tick until the day has a gain to protect (the
+// guard armed, or the day banked), then frozen — a mid-morning reading update
+// before that is harmless; after it, the line must not move. A skip (the
+// sizer refusing every entry) opens nothing, so it does not scale the goal:
+// banking a day at +0% would be the opposite of the point.
 // ---------------------------------------------------------------------------
 
 export interface DailyTargetStatus {
@@ -81,7 +99,15 @@ export interface DailyTargetStatus {
   active: boolean;
   /** Why tracking is inactive (unset target, no equity, no baseline yet). */
   inactiveReason?: string;
+  /** The EFFECTIVE goal % for the day — the configured goal × goalScale. */
   targetPct?: number;
+  /** The configured goal % (targetDailyGainPct), before any regime scale. */
+  configuredTargetPct?: number;
+  /** The regime overlay's scale applied to the goal, arm and floor today
+   *  (1 = unscaled) — the sizer's own factor, from the baseline row. */
+  goalScale?: number;
+  /** The trigger line behind a scale below 1. */
+  goalScaleReason?: string;
   baselineEquityUsd?: number;
   /** baseline × (1 + targetPct/100) — the equity that banks the day. */
   targetEquityUsd?: number;
@@ -99,8 +125,9 @@ export interface DailyTargetStatus {
   /** True once the guard has FIRED today (an armed day's gain fell back to
    *  giveBackFloorPct) — sticky, and one of the two entriesHalted reasons. */
   giveBackHalted: boolean;
-  /** The configured levels, echoed only when the guard is configured and
-   *  coherent (arm > floor ≥ 0). */
+  /** The EFFECTIVE levels (configured × goalScale), echoed only when the guard
+   *  is configured and coherent (arm > floor ≥ 0). The one floor every
+   *  consumer reads — the guard, the day-protective stop, the goal card. */
   giveBackArmPct?: number;
   giveBackFloorPct?: number;
   /** Epoch ms the guard fired today, from the persisted baseline row. */
@@ -111,15 +138,25 @@ export interface DailyTargetStatus {
 }
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
+const round4 = (n: number): number => Math.round(n * 10_000) / 10_000;
+
+/** The scale a baseline row applies to the day's goal: its goalScale when that
+ *  is a real cut (strictly between 0 and 1), else 1. */
+export function goalScaleOf(baseline: Pick<DailyBaseline, 'goalScale'> | null): number {
+  const s = baseline?.goalScale;
+  return s !== null && s !== undefined && s > 0 && s < 1 ? s : 1;
+}
 
 /** The guard needs BOTH levels, coherent: arm above floor, floor at or above
- *  water (see the header for why negative floors belong to the loss halts). */
+ *  water (see the header for why negative floors belong to the loss halts).
+ *  Both scaled by the day's goal scale, like the goal itself. */
 function giveBackLevels(
   cfg: Pick<AutotradeConfig, 'giveBackArmPct' | 'giveBackFloorPct'>,
+  scale: number,
 ): { armPct: number; floorPct: number } | null {
   const { giveBackArmPct: arm, giveBackFloorPct: floor } = cfg;
   if (arm === null || floor === null || !(arm > 0) || !(floor >= 0) || !(floor < arm)) return null;
-  return { armPct: arm, floorPct: floor };
+  return { armPct: round4(arm * scale), floorPct: round4(floor * scale) };
 }
 
 /** Pure evaluation — all I/O stays in updateDailyTarget. */
@@ -145,13 +182,17 @@ export function evaluateDailyTarget(
   if (!baseline || !(baseline.equityUsd > 0)) {
     return inactive('no day-start baseline captured yet');
   }
-  const targetEquityUsd = round2(baseline.equityUsd * (1 + cfg.targetDailyGainPct / 100));
+  // The regime overlay's scale (see the header): the goal, the arm and the
+  // floor all move together, from the one factor on the baseline row.
+  const goalScale = goalScaleOf(baseline);
+  const targetPct = round4(cfg.targetDailyGainPct * goalScale);
+  const targetEquityUsd = round2(baseline.equityUsd * (1 + targetPct / 100));
   // Unrounded for the threshold comparisons; rounded only for display.
   const rawGainPct = ((equity - baseline.equityUsd) / baseline.equityUsd) * 100;
   const gainPct = round2(rawGainPct);
   // Sticky: a recorded reach holds for the day even if equity slips back.
   const reached = baseline.reachedAt !== null || equity >= targetEquityUsd;
-  const levels = giveBackLevels(cfg);
+  const levels = giveBackLevels(cfg, goalScale);
   const giveBackArmed = baseline.giveBackArmedAt !== null || (levels !== null && rawGainPct >= levels.armPct);
   // Fires only on an armed, not-yet-banked day — once reached, entries are
   // already halted and a second halt would just double-journal the same day.
@@ -161,7 +202,10 @@ export function evaluateDailyTarget(
     (levels !== null && giveBackArmed && !reached && rawGainPct <= levels.floorPct);
   return {
     active: true,
-    targetPct: cfg.targetDailyGainPct,
+    targetPct,
+    configuredTargetPct: cfg.targetDailyGainPct,
+    goalScale,
+    ...(goalScale !== 1 && baseline.goalScaleReason ? { goalScaleReason: baseline.goalScaleReason } : {}),
     baselineEquityUsd: baseline.equityUsd,
     targetEquityUsd,
     currentEquityUsd: equity,
@@ -226,6 +270,8 @@ export function updateDailyTarget(now: number = Date.now()): DailyTargetStatus {
       action: 'daily_target_pending_confirmation',
       detail: {
         targetPct: status.targetPct,
+        configuredTargetPct: status.configuredTargetPct,
+        goalScale: status.goalScale,
         baselineEquityUsd: status.baselineEquityUsd,
         currentEquityUsd: status.currentEquityUsd,
         gainPct: status.gainPct,
@@ -247,6 +293,8 @@ export function updateDailyTarget(now: number = Date.now()): DailyTargetStatus {
       action: 'daily_target_reached',
       detail: {
         targetPct: status.targetPct,
+        configuredTargetPct: status.configuredTargetPct,
+        goalScale: status.goalScale,
         baselineEquityUsd: status.baselineEquityUsd,
         targetEquityUsd: status.targetEquityUsd,
         currentEquityUsd: status.currentEquityUsd,
@@ -272,6 +320,8 @@ export function updateDailyTarget(now: number = Date.now()): DailyTargetStatus {
       detail: {
         giveBackArmPct: status.giveBackArmPct,
         giveBackFloorPct: status.giveBackFloorPct,
+        goalScale: status.goalScale,
+        configuredTargetPct: status.configuredTargetPct,
         baselineEquityUsd: status.baselineEquityUsd,
         currentEquityUsd: status.currentEquityUsd,
         gainPct: status.gainPct,
@@ -281,6 +331,74 @@ export function updateDailyTarget(now: number = Date.now()): DailyTargetStatus {
     });
   }
   return status;
+}
+
+/** Journal action for a change of the day's goal scale — one line on a regime morning. */
+export const DAILY_GOAL_SCALED_ACTION = 'daily_goal_scaled';
+
+export interface DailyGoalScaleOutcome {
+  /** The scale on the row after this call (1 = unscaled). */
+  scale: number;
+  /** The row moved (and one daily_goal_scaled event was journaled). */
+  changed: boolean;
+  /** The day already has a gain to protect (guard armed or day banked), so a
+   *  different factor was NOT written — the line stays where it was. */
+  frozen: boolean;
+}
+
+/**
+ * Hold the day's goal constant in R under the regime overlay (see the header).
+ * Called by loop.ts once per in-session tick with the SAME regimeTriggers
+ * result the executors size by — one factor, one derivation. Writes only when
+ * the factor differs from the row's, and only while nothing sticky has
+ * happened (setDailyGoalScale's freeze); journals one daily_goal_scaled event
+ * per change while a goal is configured. A factor of 1, or a skip (nothing
+ * opens, so nothing to scale the goal for), reads as unscaled.
+ */
+export function updateDailyGoalScale(
+  triggers: { factor: number; skip: boolean; detail: string },
+  now: number = Date.now(),
+): DailyGoalScaleOutcome {
+  const baseline = getDailyBaseline();
+  if (!baseline || baseline.etDate !== etToday(now)) return { scale: 1, changed: false, frozen: false };
+  const scale = triggers.skip || !(triggers.factor > 0) || triggers.factor >= 1 ? 1 : round4(triggers.factor);
+  const current = goalScaleOf(baseline);
+  if (scale === current) return { scale, changed: false, frozen: false };
+  if (baseline.giveBackArmedAt !== null || baseline.reachedAt !== null) {
+    return { scale: current, changed: false, frozen: true };
+  }
+  if (!setDailyGoalScale(scale, scale === 1 ? null : triggers.detail)) {
+    return { scale: current, changed: false, frozen: true };
+  }
+  const cfg = getAutotradeConfig();
+  if (cfg.targetDailyGainPct !== null && cfg.targetDailyGainPct > 0) {
+    const levels = giveBackLevels(cfg, 1);
+    const effective = giveBackLevels(cfg, scale);
+    logAutotradeEvent({
+      stage: 'execution',
+      action: DAILY_GOAL_SCALED_ACTION,
+      detail: {
+        factor: scale,
+        detail: triggers.detail,
+        configured: {
+          targetPct: cfg.targetDailyGainPct,
+          giveBackArmPct: levels?.armPct ?? null,
+          giveBackFloorPct: levels?.floorPct ?? null,
+        },
+        effective: {
+          targetPct: round4(cfg.targetDailyGainPct * scale),
+          giveBackArmPct: effective?.armPct ?? null,
+          giveBackFloorPct: effective?.floorPct ?? null,
+        },
+        note:
+          scale === 1
+            ? 'the regime cut lifted before the day had a gain to protect — the goal, arm and floor are back at their configured levels'
+            : 'the regime cut scales the day’s goal, arm and floor by the same factor it cut entries by, so the goal is held constant in R (docs/TUNE_FROM_TARGET.md §6c)',
+      },
+      riskProfile: cfg.riskProfile,
+    });
+  }
+  return { scale, changed: true, frozen: false };
 }
 
 /**

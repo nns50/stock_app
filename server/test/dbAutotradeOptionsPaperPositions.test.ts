@@ -146,3 +146,15 @@ describe('at-entry context (2026-07-26)', () => {
     expect(pos.marketAtrPct).toBeNull();
   });
 });
+
+describe('the ML regime label at entry (2026-09-08)', () => {
+  it('round-trips and is null when not given', () => {
+    expect(openOptionsPaperPosition(input({ symbol: 'OPPML', mlRegime: 'sideways' })).mlRegime).toBe('sideways');
+    expect(openOptionsPaperPosition(input({ symbol: 'OPPMN' })).mlRegime).toBeNull();
+  });
+
+  it('carries the regime target factor the same way (2026-09-08)', () => {
+    expect(openOptionsPaperPosition(input({ symbol: 'OPPTF', regimeTargetFactor: 0.7 })).regimeTargetFactor).toBe(0.7);
+    expect(openOptionsPaperPosition(input({ symbol: 'OPPTN' })).regimeTargetFactor).toBeNull();
+  });
+});

@@ -1,11 +1,16 @@
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { initDb, db } from '../src/db';
 import { defaultAutotradeConfig, setAutotradeConfig } from '../src/db/autotradeConfig';
-import { getDailyBaseline, saveDailyBaseline } from '../src/db/dailyBaseline';
+import { getDailyBaseline, markGiveBackArmed, saveDailyBaseline, setDailyGoalScale } from '../src/db/dailyBaseline';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { computeTargetTune, resetToModerate } from '../src/services/autotrading/targetTune';
 import { emptyRealizedEdge } from '../src/services/autotrading/dailyTargetSweep';
-import { applyExternalCashFlow, evaluateDailyTarget, updateDailyTarget } from '../src/services/autotrading/dailyTarget';
+import {
+  applyExternalCashFlow,
+  evaluateDailyTarget,
+  updateDailyGoalScale,
+  updateDailyTarget,
+} from '../src/services/autotrading/dailyTarget';
 import { etToday } from '../src/util/marketDate';
 
 // A fixed instant: 2026-08-21 14:00 UTC = 10:00 ET (during the session).
@@ -29,6 +34,7 @@ describe('evaluateDailyTarget (pure)', () => {
     reachedAt: number | null = null,
     giveBackArmedAt: number | null = null,
     giveBackHaltedAt: number | null = null,
+    goalScale: number | null = null,
   ) => ({
     etDate: TODAY,
     equityUsd: equity,
@@ -36,6 +42,8 @@ describe('evaluateDailyTarget (pure)', () => {
     giveBackArmedAt,
     giveBackHaltedAt,
     reachCandidateAt: null,
+    goalScale,
+    goalScaleReason: goalScale === null ? null : 'ML regime High Volatility/Bearish (35% cut)',
   });
 
   it('is inactive with no target set — the calibration-only tune never halts anything', () => {
@@ -55,6 +63,59 @@ describe('evaluateDailyTarget (pure)', () => {
     expect(evaluateDailyTarget(cfg(3, 10_299.99), baseline(10_000))).toMatchObject({ active: true, reached: false });
     const s = evaluateDailyTarget(cfg(3, 10_300), baseline(10_000));
     expect(s).toMatchObject({ active: true, reached: true, targetEquityUsd: 10_300, gainPct: 3 });
+  });
+
+  // The goal held constant in R (2026-09-08): the baseline row's scale moves
+  // the goal, the arm and the floor together, and every consumer reads the
+  // effective numbers.
+  describe('the regime goal scale', () => {
+    it('scales the goal, the arm and the floor by the one factor: 3/2/1 at 0.65 reads 1.95/1.3/0.65', () => {
+      const s = evaluateDailyTarget(cfg(3, 10_100, 2, 1), baseline(10_000, null, null, null, 0.65));
+      expect(s).toMatchObject({
+        active: true,
+        targetPct: 1.95,
+        configuredTargetPct: 3,
+        goalScale: 0.65,
+        goalScaleReason: 'ML regime High Volatility/Bearish (35% cut)',
+        targetEquityUsd: 10_195,
+        giveBackArmPct: 1.3,
+        giveBackFloorPct: 0.65,
+      });
+    });
+
+    it('banks at the SCALED line — +1.95% reaches, +1.9% does not', () => {
+      expect(evaluateDailyTarget(cfg(3, 10_190, 2, 1), baseline(10_000, null, null, null, 0.65)).reached).toBe(false);
+      expect(evaluateDailyTarget(cfg(3, 10_195, 2, 1), baseline(10_000, null, null, null, 0.65))).toMatchObject({
+        reached: true,
+        entriesHalted: true,
+      });
+    });
+
+    it('arms the guard at the SCALED arm (+1.3%) and fires at the scaled floor', () => {
+      const row = baseline(10_000, null, null, null, 0.65);
+      expect(evaluateDailyTarget(cfg(3, 10_125, 2, 1), row).giveBackArmed).toBe(false);
+      expect(evaluateDailyTarget(cfg(3, 10_130, 2, 1), row).giveBackArmed).toBe(true);
+      const armedRow = baseline(10_000, null, NOW, null, 0.65);
+      expect(evaluateDailyTarget(cfg(3, 10_070, 2, 1), armedRow).giveBackHalted).toBe(false);
+      expect(evaluateDailyTarget(cfg(3, 10_065, 2, 1), armedRow)).toMatchObject({
+        giveBackHalted: true,
+        entriesHalted: true,
+      });
+    });
+
+    it('a null scale, a scale of 1, 0 or above 1 all read as unscaled — the same numbers as before', () => {
+      const plain = evaluateDailyTarget(cfg(3, 10_100, 2, 1), baseline(10_000));
+      expect(plain).toMatchObject({ targetPct: 3, configuredTargetPct: 3, goalScale: 1, targetEquityUsd: 10_300 });
+      expect(plain.goalScaleReason).toBeUndefined();
+      for (const s of [1, 0, 1.5, -0.5]) {
+        expect(evaluateDailyTarget(cfg(3, 10_100, 2, 1), baseline(10_000, null, null, null, s))).toMatchObject({
+          targetPct: 3,
+          goalScale: 1,
+          giveBackArmPct: 2,
+          giveBackFloorPct: 1,
+        });
+      }
+    });
   });
 
   it('reports negative progress honestly — behind is behind, never a halt', () => {
@@ -342,6 +403,102 @@ describe('updateDailyTarget (DB + journal)', () => {
       setAutotradeConfig({ accountEquityUsd: 10_050 }); // fades to the +0.5% floor
       const halted = updateDailyTarget(NOW + 120_000);
       expect(halted).toMatchObject({ giveBackHalted: true, entriesHalted: true });
+    });
+  });
+
+  // updateDailyGoalScale: tracks until the day has a gain to protect, then freezes.
+  describe('updateDailyGoalScale (DB + journal, 2026-09-08)', () => {
+    const cut = {
+      factor: 0.65,
+      skip: false,
+      detail: 'ML regime High Volatility/Bearish (35% cut; ATR trigger inactive at 0.9%)',
+    };
+    const calm = {
+      factor: 1,
+      skip: false,
+      detail: 'market ATR 0.9% (triggers above 3%); ML regime Sideways — cuts only in High Volatility/Bearish',
+    };
+    const scaledEvents = () => listAutotradeEvents({}).filter((e) => e.action === 'daily_goal_scaled');
+
+    it('writes the factor while unarmed, journals once per change, and re-measures the scaled goal', () => {
+      setAutotradeConfig({
+        ...defaultAutotradeConfig(),
+        accountEquityUsd: 10_000,
+        targetDailyGainPct: 3,
+        giveBackArmPct: 2,
+        giveBackFloorPct: 1,
+      });
+      updateDailyTarget(NOW); // baseline 10,000, scale NULL
+      expect(updateDailyGoalScale(cut, NOW)).toEqual({ scale: 0.65, changed: true, frozen: false });
+      expect(getDailyBaseline()).toMatchObject({ goalScale: 0.65, goalScaleReason: cut.detail });
+      expect(updateDailyTarget(NOW + 1_000)).toMatchObject({
+        targetPct: 1.95,
+        giveBackArmPct: 1.3,
+        giveBackFloorPct: 0.65,
+        goalScale: 0.65,
+      });
+      // The same factor again is not a change: no write, no second event.
+      expect(updateDailyGoalScale(cut, NOW + 2_000)).toEqual({ scale: 0.65, changed: false, frozen: false });
+      expect(scaledEvents()).toHaveLength(1);
+      const detail = JSON.parse(scaledEvents()[0].detail!) as {
+        factor: number;
+        configured: unknown;
+        effective: unknown;
+      };
+      expect(detail.factor).toBe(0.65);
+      expect(detail.configured).toEqual({ targetPct: 3, giveBackArmPct: 2, giveBackFloorPct: 1 });
+      expect(detail.effective).toEqual({ targetPct: 1.95, giveBackArmPct: 1.3, giveBackFloorPct: 0.65 });
+      // The cut lifting before anything sticky happened: back to 1, one more event.
+      expect(updateDailyGoalScale(calm, NOW + 3_000)).toEqual({ scale: 1, changed: true, frozen: false });
+      expect(getDailyBaseline()).toMatchObject({ goalScale: 1, goalScaleReason: null });
+      expect(updateDailyTarget(NOW + 4_000)).toMatchObject({ targetPct: 3, goalScale: 1 });
+      expect(scaledEvents()).toHaveLength(2);
+    });
+
+    it('is FROZEN once the guard has armed or the day has banked — a later switch changes tomorrow, not today', () => {
+      setAutotradeConfig({
+        ...defaultAutotradeConfig(),
+        accountEquityUsd: 10_000,
+        targetDailyGainPct: 3,
+        giveBackArmPct: 2,
+        giveBackFloorPct: 1,
+      });
+      updateDailyTarget(NOW);
+      expect(updateDailyGoalScale(cut, NOW).changed).toBe(true);
+      markGiveBackArmed(NOW + 1_000);
+      expect(updateDailyGoalScale(calm, NOW + 2_000)).toEqual({ scale: 0.65, changed: false, frozen: true });
+      expect(getDailyBaseline()?.goalScale).toBe(0.65);
+      expect(scaledEvents()).toHaveLength(1);
+      // The DB guard itself refuses a write on an armed row.
+      expect(setDailyGoalScale(1, null)).toBe(false);
+    });
+
+    it('a skip, a factor of 1, or 0 read as unscaled; no baseline for today means nothing to scale', () => {
+      setAutotradeConfig({ ...defaultAutotradeConfig(), accountEquityUsd: 10_000, targetDailyGainPct: 3 });
+      updateDailyTarget(NOW);
+      expect(updateDailyGoalScale({ factor: 0, skip: true, detail: 'skip' }, NOW)).toEqual({
+        scale: 1,
+        changed: false,
+        frozen: false,
+      });
+      expect(updateDailyGoalScale({ factor: 0, skip: false, detail: 'zero' }, NOW).scale).toBe(1);
+      expect(getDailyBaseline()?.goalScale).toBeNull();
+      expect(scaledEvents()).toHaveLength(0);
+      saveDailyBaseline('2026-08-20', 10_000); // yesterday's row
+      expect(updateDailyGoalScale(cut, NOW)).toEqual({ scale: 1, changed: false, frozen: false });
+    });
+
+    it('clears on the day roll, and journals nothing while no goal is configured', () => {
+      setAutotradeConfig({ ...defaultAutotradeConfig(), accountEquityUsd: 10_000, targetDailyGainPct: 3 });
+      updateDailyTarget(NOW);
+      updateDailyGoalScale(cut, NOW);
+      expect(getDailyBaseline()?.goalScale).toBe(0.65);
+      updateDailyTarget(NOW + 86_400_000);
+      expect(getDailyBaseline()).toMatchObject({ goalScale: null, goalScaleReason: null });
+      setAutotradeConfig({ targetDailyGainPct: null });
+      db.exec('DELETE FROM autotrade_events');
+      expect(updateDailyGoalScale(cut, NOW + 86_400_000).changed).toBe(true);
+      expect(scaledEvents()).toHaveLength(0);
     });
   });
 
