@@ -3344,6 +3344,63 @@ describe('journal analysis routes tell you what they could not cover (integratio
     expect(rep.trades + c.undated + c.overCap + c.unavailable).toBe(c.closedStockTrades);
   });
 
+  /** N dated, closed stock trades — enough that the cap actually BINDS. Without
+   *  this the assertions below hold vacuously on a two-trade book, which is how
+   *  the first draft of these tests passed under every mutation I threw at it
+   *  (cap 250 -> 2, `limit` ignored, NaN collapsing the sample). */
+  function seedClosedStockTrades(n: number, prefix: string) {
+    for (let i = 0; i < n; i++) {
+      const p = createPosition({
+        assetType: 'stock',
+        symbol: `${prefix}${i}`,
+        side: 'long',
+        quantity: 10,
+        entryPrice: 100,
+        entryDate: `2026-06-${String(10 + i).padStart(2, '0')}`,
+      });
+      addExit(p.id, { quantity: 10, exitPrice: 105, exitDate: `2026-06-${String(11 + i).padStart(2, '0')}` });
+    }
+  }
+
+  type Excursions = {
+    trades: number;
+    coverage: { closedStockTrades: number; undated: number; overCap: number; unavailable: number };
+  };
+
+  it('analyses the whole book by default, and ?limit= narrows it', async () => {
+    // The cap was 50 while 92 trades were measurable, so 42 were reported as
+    // `overCap` and task #32's target comparison came out inside noise on half
+    // the evidence. Asserted through the ROUTE's own coverage numbers.
+    db.exec('DELETE FROM position_exits; DELETE FROM positions;');
+    seedClosedStockTrades(5, 'EXCAP');
+
+    const full = (await getJson('/api/journal/excursions')) as Excursions;
+    expect(full.coverage.closedStockTrades).toBe(5);
+    expect(full.coverage.overCap).toBe(0); // nothing dropped until the book exceeds the cap
+    // `trades + unavailable` is the SELECTED count — the discriminating number.
+    // `trades` alone also moves when a candle fetch fails, which is a different
+    // fact and would make this test lie about what the cap did.
+    expect(full.trades + full.coverage.unavailable).toBe(5);
+
+    const capped = (await getJson('/api/journal/excursions?limit=2')) as Excursions;
+    expect(capped.trades + capped.coverage.unavailable).toBe(2);
+    expect(capped.coverage.overCap).toBe(3); // the other three are ACCOUNTED for, not dropped
+    expect(capped.trades + capped.coverage.undated + capped.coverage.overCap + capped.coverage.unavailable).toBe(5);
+  });
+
+  it('ignores a junk or hostile ?limit= rather than analysing nothing', async () => {
+    // `Number('abc')` is NaN and `slice(0, NaN)` returns an EMPTY array, so an
+    // unguarded limit reports a clean zero-trade analysis instead of an error.
+    db.exec('DELETE FROM position_exits; DELETE FROM positions;');
+    seedClosedStockTrades(4, 'EXJUNK');
+
+    for (const q of ['?limit=abc', '?limit=0', '?limit=-5', '?limit=', '?limit=99999']) {
+      const r = (await getJson(`/api/journal/excursions${q}`)) as Excursions;
+      expect(r.trades + r.coverage.unavailable, `limit=${q} analysed the wrong number`).toBe(4);
+      expect(r.coverage.overCap, `limit=${q} dropped trades`).toBe(0);
+    }
+  });
+
   it('benchmark survives a book whose closed trades are all undated', async () => {
     // startDate came from `.filter(...).sort()[0]`, which is undefined on an
     // empty array while the type predicate lets TypeScript call it `string`.

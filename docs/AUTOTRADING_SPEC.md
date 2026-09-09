@@ -6714,3 +6714,54 @@ Read a few sessions of `relvol_pace_scoring_shadow`. If `wouldNewlyPass` and
 the risk. If the set turns over materially, then `liveMinSignalScore` has to be
 re-fitted against the pace-scored distribution **before** the flag goes on — not
 after.
+
+---
+
+## The excursion cap was the binding constraint on the target multiple (2026-09-08)
+
+`GET /api/journal/excursions` capped its analysis at **50** trades. The book held
+117 closed stock trades: 25 undated (genuinely unmeasurable — an excursion walks
+candles from the entry), leaving **92 measurable**, of which **42 were reported
+as `overCap`**. The report was honest about dropping them; nothing was hidden.
+It was still analysing barely half the evidence.
+
+That mattered the moment task #32's gate was reached. With 24 winners the
+target-multiple question became answerable, so the counterfactual was run: for
+each trade, if its MFE reached candidate target `T` it exits at `+T`, otherwise
+it keeps the outcome it actually had.
+
+| T | hit % | mean R | paired Δ vs 2.0R | trades that differ |
+|---|---|---|---|---|
+| 0.5 | 35% | +0.120 | −0.023 (t −0.37) | 17 |
+| 1.0 | 12% | +0.111 | −0.032 (t −0.77) | 6 |
+| 1.5 | 8% | +0.122 | −0.021 (t −1.06) | 4 |
+| **2.0** | 6% | **+0.143** | baseline | — |
+| 2.5 | 4% | +0.165 | +0.022 (t +1.53) | 3 |
+
+**Verdict: HOLD at 2.0.** Every alternative sits inside noise — all |t| < 2, every
+95% CI straddles zero — and above 1.25R only three or four trades differ at all.
+
+**The naive read is backwards**, which is why it is written down here. "Only 12%
+of winners reach 2R, so lower the target" would have *cost* expectancy: median
+realized R is 0.00, so the book is carried by a thin tail, and a lower target
+clips exactly that tail while changing nothing for the trades that exit by stop,
+trail or stagnation anyway.
+
+### What changed
+
+- `EXCURSION_TRADE_CAP` 50 → **250**, so the whole measurable book is analysed.
+- **`?limit=`** narrows it on demand, clamped to the cap, so a growing book never
+  needs a deploy to be measured — and a junk limit (`abc`, `0`, `-5`, empty)
+  falls back to the full cap rather than to `slice(0, NaN)`, which returns an
+  empty array and would have reported a clean zero-trade analysis.
+- Fetches now run through **`mapPool` at 6**, not `Promise.all` over everything.
+  Raising the cap without this would have fired 92+ concurrent candle requests at
+  a provider that already costs the screener ~47 of 559 symbols a tick to rate
+  limiting — and a throttled fetch here does not fail loudly, it lands in
+  `unavailable` and *shrinks* the sample, which is the exact opposite of the point.
+
+### Still open
+
+Winners capture a median **48%** of their peak favourable move. That is an EXIT
+question — trail, stagnation, scale-out — not a target question, and it belongs
+with the exit-tuning work rather than here.
