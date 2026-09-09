@@ -96,6 +96,26 @@ describe('runAutotradeScreen', () => {
     expect(JSON.parse(events[0].detail!)).toMatchObject({ source: 'list' });
   });
 
+  // task #43. excluded_re was 155,162 rows — 31% of a 507k-row journal that
+  // nothing prunes — because a STATIC classification was re-logged on every
+  // tick of every session. Asserted at the journal, since that is the thing
+  // that was growing.
+  it('journals excluded_re ONCE a day, however many ticks exclude the symbol', async () => {
+    await runAutotradeScreen({ symbols: [LISTED] });
+    await runAutotradeScreen({ symbols: [LISTED] });
+    await runAutotradeScreen({ symbols: [LISTED] });
+    expect(listAutotradeEvents({ stage: 'screen', symbol: LISTED })).toHaveLength(1);
+  });
+
+  it('still reports the exclusion on EVERY tick — only the repeat ROW is dropped', async () => {
+    // The screen result is what the dashboard and the explain route read, and
+    // it is in memory. Trading the fact away to save the row would be a much
+    // worse deal than the one this makes.
+    await runAutotradeScreen({ symbols: [LISTED] });
+    const second = await runAutotradeScreen({ symbols: [LISTED] });
+    expect(second.excluded.find((e) => e.symbol === LISTED)).toBeDefined();
+  });
+
   it('excludes a sector-classified real-estate symbol not on the static list', async () => {
     const result = await runAutotradeScreen({ symbols: [SECTORED] });
     expect(result.excluded.find((e) => e.symbol === SECTORED)).toBeDefined();

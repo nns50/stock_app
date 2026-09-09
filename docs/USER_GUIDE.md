@@ -1573,8 +1573,9 @@ equally-weighted cards in the order they happened to be built:
   if the record says so) are in [Tune from target daily gain](TUNE_FROM_TARGET.md) §6b.
 
 - **"Why wasn't this traded today?"** — `GET /api/autotrade/explain/:symbol` answers it for
-  any symbol, on demand. The screener journals *some* rejections per symbol (real estate,
-  relative-volume pace, volatility, earnings, unknown sector) and says nothing about the
+  any symbol, on demand. The screener journals *some* rejections per symbol (real estate —
+  **once a day**, since the classification is the same on every tick and the repeats were
+  31% of the whole journal; relative-volume pace, volatility, earnings, unknown sector) and says nothing about the
   filters inside the score — today's move, the score minimum, weekly-trend alignment,
   price, average volume. Those reasons were computed and dropped, so a name that simply
   never appeared left no trace of what stopped it. This runs a **real screen over the whole

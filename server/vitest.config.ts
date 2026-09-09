@@ -68,8 +68,9 @@ export default defineConfig({
   test: {
     fileParallelism: false,
     sequence: { sequencer: PathOrderSequencer },
-    // Runs once per TEST FILE — see test/setupConfigIsolation.ts.
-    setupFiles: ['./test/setupConfigIsolation.ts'],
+    // setupConfigIsolation runs once per TEST FILE; setupProcessState runs
+    // before every TEST. See each file for why its granularity is what it is.
+    setupFiles: ['./test/setupConfigIsolation.ts', './test/setupProcessState.ts'],
     globalSetup: './test/globalSetup.ts',
     env: {
       DATABASE_PATH,
