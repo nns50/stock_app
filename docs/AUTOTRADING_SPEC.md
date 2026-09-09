@@ -7121,11 +7121,48 @@ true, so `sanitize()` rewrote the default `null` to the epoch on the first read.
 `null` now survives the round trip and a stored `0` reads back as the "never" it
 always meant.
 
-### What would actually re-enable it
+### The measurement, taken 2026-09-09
 
-Read `/api/journal/exit-tune-validation` on the live book. A `better` verdict on
-the **fixed point**, out of sample, is the evidence this feature has never had.
-`inside_noise` — the expected outcome at this sample size — is not permission.
+Run against the live book: 117 closed stock trades → **48 same-session
+measurable** (25 undated, 32 not same-session, 12 with no intraday history
+left). Carried rules from the live config: breakeven 0.25R, trail start 0.5R,
+trail stop 0.5R.
+
+**Out of sample — fit on 2026-07-15..09-02, scored on 09-02..09-08, 24 trades
+each:** `no_change`. The training half holds **10 winners** against the live
+`autoTuneMinTrades` of **20**, so the rule refuses to act at all. On a proper
+walk-forward the tuner does nothing — not because the geometry fits, but
+because the sample cannot support a fit.
+
+**In sample — fit and scored on all 48, optimistic by construction:**
+
+| candidate | geometry | mean R | vs current +0.08R | 95% CI | verdict |
+|---|---|---|---|---|---|
+| one step | stop 1.25 / target 1.75 | +0.10R | +0.02R | (−0.05, +0.08) | `inside_noise` |
+| fixed point (5 runs) | **stop 0.50 / target 1.00** | +0.12R | +0.04R | (−0.13, +0.20) | `inside_noise` |
+
+The fixed point reproduces task #47's finding exactly — five bounded steps to
+**both clamps**. What it actually does is visible in the exit-reason mix:
+
+| reason | current | converged |
+|---|---|---|
+| time_exit | 22 | 5 |
+| stop | 1 | 8 |
+| target | 1 | 11 |
+| breakeven | 13 | 16 |
+| trail | 11 | 8 |
+
+It converts held trades into stops and targets — a **different strategy** — for
+a difference indistinguishable from zero, on the arm that has already seen every
+trade it is scored on.
+
+### DECISION: `autoTuneExitsEnabled` stays OFF
+
+The precondition was a `better` verdict on the fixed point, out of sample. What
+came back was `no_change` out of sample and `inside_noise` in sample. Re-run
+`/api/journal/exit-tune-validation` when a training half holds enough winners to
+clear `minTrades`; until then the rule cannot be validated at all, and a rule
+that walks to both clamps does not go back on unvalidated.
 
 ---
 
