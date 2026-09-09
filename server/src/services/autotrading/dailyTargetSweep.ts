@@ -76,7 +76,21 @@ export interface SessionPathsResult {
 /** Both halves of the realized edge the goal is compared against, plus every
  *  count a reader needs to judge how much record stands behind the numbers. */
 export interface RealizedEdge {
-  /** Mean realized R per closed trade over the window; null with no trades. */
+  /** Mean realized R per closed trade over the window; null with no trades.
+   *
+   *  ATTRIBUTED TO THE ENTRY, not the exit — every trade counts once, whatever
+   *  session it closed on. That is what makes `tradesPerSession × avgR` a
+   *  coherent forward identity: every trade is entered on a session that has
+   *  entries and is therefore ACTIVE, so both factors are drawn from the same
+   *  population even though only one of them mentions sessions.
+   *
+   *  It therefore does NOT reconcile with PolicyOutcome.totalR, which is
+   *  exit-attributed and covers active sessions only. On the live book at
+   *  2026-09-09 that read avgR 0.013 × 77 trades = 1.00R beside totalR 1.65R,
+   *  and the ~0.65R gap is exits landing on sessions with no entries. Both are
+   *  right; they answer different questions. `totalRAllSessions` on the sweep
+   *  result exists so a reader can see that rather than have to derive it —
+   *  the first person to compare the two (2026-09-09) took it for a bug. */
   avgR: number | null;
   /** Closed trades with a usable R inside the window. */
   rTrades: number;
@@ -314,10 +328,16 @@ export function simulateSession(path: SessionPath, policy: SweepPolicy, levelR: 
   return { dayR: cum, halted, entries: path.entries, entriesDropped };
 }
 
+/** One policy's outcome over the ACTIVE sessions only — a session with no
+ *  entries cannot be changed by a stopping rule, so including it would add the
+ *  same constant to every policy and to the baseline. R here is attributed to
+ *  the EXIT session (that is when a stopping rule sees it), which is the other
+ *  basis from RealizedEdge.avgR — see its note. */
 export interface PolicyOutcome {
   policy: SweepPolicy;
   sessionsHalted: number;
   entriesDropped: number;
+  /** Summed over active sessions, exit-attributed. NOT avgR × rTrades. */
   totalR: number;
   meanDayR: number | null;
   medianDayR: number | null;
@@ -347,6 +367,18 @@ export interface DailyTargetSweepResult {
   /** The baseline every level is measured against: the record as it happened,
    *  over the ACTIVE sessions. */
   actual: PolicyOutcome;
+  /** Every exit in the window, including those landing on sessions with no
+   *  entries — which `actual.totalR` deliberately excludes, since no stopping
+   *  rule could have touched them.
+   *
+   *  Present ONLY so the two are reconcilable at a glance: this equals
+   *  `realized.avgR × realized.rTrades` (to rounding), while `actual.totalR`
+   *  does not and was never meant to. Comparing those two and finding them
+   *  0.65R apart is what prompted this field — a difference of attribution
+   *  that read exactly like a defect. Not used by any policy comparison: the
+   *  baseline and every level must share one session set or the deltas stop
+   *  meaning anything. */
+  totalRAllSessions: number;
   levels: SweepLevel[];
   /** The realized edge's own floors — ≥ 20 R-scored trades AND ≥ 20 active
    *  sessions. Below either the per-level CIs are reported but are noise;
@@ -435,6 +467,10 @@ export function runDailyTargetSweep(input: DailyTargetSweepInput): DailyTargetSw
   });
   const opts = { rng: input.rng, resamples: input.resamples };
   const actualOutcomes = paths.map((p) => simulateSession(p, 'none', Number.POSITIVE_INFINITY));
+  // Over ALL paths, not the active ones — see totalRAllSessions.
+  const totalRAllSessions = round2(
+    all.flatMap((p) => p.events.filter((e) => e.kind === 'exit')).reduce((sum, e) => sum + e.r, 0),
+  );
   const actualDays = actualOutcomes.map((o) => o.dayR);
   const actual = summarize('none', actualOutcomes, null, opts);
 
@@ -464,6 +500,7 @@ export function runDailyTargetSweep(input: DailyTargetSweepInput): DailyTargetSw
   return {
     book: input.book,
     realized,
+    totalRAllSessions,
     riskPerTradePct: risk,
     storedTargetPct: input.storedTargetPct,
     storedTargetR,
