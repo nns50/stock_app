@@ -357,7 +357,9 @@ describe('runOptionsPaperExecution', () => {
     expect(outcomes.map((o) => o.ok)).toEqual([true, false]);
     expect(outcomes[1].reason).toMatch(/risk check/i);
     const blockedEvent = listAutotradeEvents({ stage: 'risk_check', symbol: 'CCC' })[0];
-    expect(blockedEvent.action).toBe('blocked');
+    // The OPTIONS funnel's own action (task #53): 'blocked' is equity's, and
+    // while both wrote it neither funnel's block count could be read alone.
+    expect(blockedEvent.action).toBe('options_blocked');
   });
 
   it('combines with an already-open EQUITY position for max_aggregate_open_risk (MODERATE caps at 2% = $2000)', async () => {
@@ -1361,7 +1363,7 @@ describe('optionsMaxConcurrentPositions — the options book gets its own slots'
 
     expect(out[0]).toMatchObject({ ok: false });
     expect(hasOpenOptionsPaperPosition('AAPL')).toBe(false);
-    const blocked = listAutotradeEvents({ actions: ['blocked'] });
+    const blocked = listAutotradeEvents({ actions: ['options_blocked'] });
     const rules = blocked.flatMap((e) =>
       JSON.parse(e.detail!)
         .checks.filter((c: { passed: boolean }) => !c.passed)

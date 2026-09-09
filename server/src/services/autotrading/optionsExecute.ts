@@ -1,7 +1,12 @@
 import { AutotradeConfig, getAutotradeConfig, RiskProfileName } from '../../db/autotradeConfig';
 import { convictionGrade } from './decide';
 import { OptionsTradeSignal } from './optionsDecide';
-import { evaluateOptionsRiskCheck, OptionsRiskCheckResult, optionsPositionNotionalUsd } from './optionsRiskCheck';
+import {
+  evaluateOptionsRiskCheck,
+  OptionsRiskCheckResult,
+  optionsPositionNotionalUsd,
+  optionsRiskCheckAction,
+} from './optionsRiskCheck';
 import { journalMethodMultipliers, methodOfOptionsSignal } from './methodSizing';
 import { correlatedNotional, sectorNotional, buildSectorOf, RiskCheckContext } from './riskCheck';
 import { getPaperPortfolioSnapshot, PaperPortfolioSeed } from './execute';
@@ -620,7 +625,8 @@ export async function runOptionsPaperExecution(
       symbol,
       stage: 'risk_check',
       riskProfile: config.riskProfile,
-      action: result.ok ? 'passed' : 'blocked',
+      // The options funnel's own action, not equity's — see optionsRiskCheck.ts.
+      action: optionsRiskCheckAction(result.ok),
       detail: { checks: result.checks, contracts },
     });
     if (!result.ok) {
