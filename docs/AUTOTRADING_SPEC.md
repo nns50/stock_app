@@ -6949,3 +6949,66 @@ they predate score stamping* — all three were near-full losers (−0.98, −1.
 −1.00). Filtering on a field correlated with age, where age correlates with
 outcome, is selection. The correction is recorded here because the wrong number
 briefly looked like good news.
+
+---
+
+## Per-lot protective brackets — the planner (2026-09-09, task #26)
+
+`services/autotrading/perLotBrackets.ts`. **Pure and not yet wired**: nothing
+places these orders. The placement path needs a live entry to answer the one
+question the design still has open, and this is the half that can be built and
+tested without one.
+
+### Why two brackets at entry
+
+Three ways to take a partial out of one bracket have been tried:
+
+| approach | outcome |
+|---|---|
+| modify the resting legs | 144 refusals, 0 fills — dead (#54) |
+| cancel then place | ships and works (#29/#31), but the window between the cancel and the replace is **structural** — if the replace fails, the remainder rests naked. Live today, disclosed, not fixed |
+| **two brackets at entry** | this module |
+
+With the scale-out placed as its own bracket group at entry, taking a partial is
+just that group's target filling. No modify, no cancel, no window.
+
+### The bound, and the part still unknown
+
+From the 2026-09-08 FCX probe, encoded in `committedProtectiveQuantity`: a new
+protective order is compared against **held minus already-committed**. Within one
+combo group the **max** leg counts; **across** groups they **sum**. So two lots of
+19 over 38 held sit *exactly* on the bound with zero headroom — and anything that
+makes the held count smaller at the moment the second bracket goes out (a partial
+fill, an entry not yet booked) refuses it. `lotsFitProtectiveBound` checks this
+before either order is sent.
+
+**Still unknown: whether two combo groups may coexist on one symbol at all.** The
+probe sent 39 shares of exits against 38 held, so its refusal is fully explained
+by the quantity bound and says nothing about group count — the error text
+conflates them. Answering it needs a live entry.
+
+### The failure branch, designed before the build
+
+`classifySecondBracketRefusal` turns the probe into a decision. A
+reverse-position refusal on the **second** bracket, when the arithmetic already
+fits, can only mean the broker is counting the **first** bracket against us — the
+group-count answer. That is a fact about the account, not a transient, so it
+**does not retry**. Anything else gets one retry; a second failure falls back
+regardless, because one lot protected and one naked is not a state to keep
+probing from.
+
+`planRollbackToSingle` then returns to **one full-size bracket — today's
+behaviour** — so the failure mode is never worse than the status quo. It reports
+`reopensNakedWindow` rather than leaving the caller to infer it: the first
+bracket must be cancelled *before* the full one is placed, because the broker
+counts it against the new order. That window is accepted only on the branch where
+two groups have already been refused.
+
+### Degenerate cases collapse to one lot
+
+Quantity below 2, `partialExitPct` at 0 or ≥ 100, no near target, or a percentage
+that rounds either lot to zero — all return a single lot, which is current
+behaviour. The single lot is always the **runner** at the full target: if only one
+bracket can exist it must not cap the trade at 0.25R. Lots always sum to the
+**filled** quantity, checked exhaustively from 1 to 200 shares, since a plan that
+sums high is refused and one that sums low leaves shares unprotected.
