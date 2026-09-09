@@ -8,11 +8,14 @@ import { computeDayStats } from '../services/dayGuard';
 import {
   aggregateExcursions,
   barsWithinHoldingPeriod,
+  computeExcursion,
   excursionForTrade,
   INTRADAY_TIMEFRAME,
   TradeExcursion,
 } from '../services/excursion';
 import { aggregateReplay, replayExit, type ExitRules, type ReplayResult } from '../services/exitReplay';
+import { validateExitTuneRules, type ValidationTrade } from '../services/autotrading/exitTuneValidation';
+import type { Candle } from '../providers/types';
 import { aggregateSlippage, computeSlippage, SlippageRow } from '../services/slippage';
 import { aggregateStopOverruns, classifyStopExit, computeStopOverrun, StopOverrunRow } from '../services/stopOverrun';
 import { computeBenchmark } from '../services/benchmark';
@@ -161,6 +164,82 @@ journalRouter.get(
 // geometry have done" and any query param answers "what would this one change".
 // Both are returned against the ACTUAL realized R on the same trades, paired.
 // ---------------------------------------------------------------------------
+/** A same-session closed trade with its 5-minute bars already fetched, and the
+ *  FROZEN stop that denominates its R. */
+interface SameSessionTrade {
+  position: Position & { entryDate: string };
+  /** initialStopPrice, falling back to the live stop only when there is no
+   *  frozen one. The ratchet mutates the live one, which is why the frozen
+   *  value is preferred everywhere R is computed. */
+  stop: number;
+  bars: Candle[];
+}
+
+interface SameSessionLoad {
+  trades: SameSessionTrade[];
+  coverage: {
+    closedStockTrades: number;
+    undated: number;
+    notSameSession: number;
+    overCap: number;
+    /** Trades that never produced bars at all: no stop to denominate R, or the
+     *  candle fetch failed. A trade whose bars came back EMPTY is still in
+     *  `trades` — the caller decides what an empty path means to it. */
+    unusable: number;
+  };
+}
+
+/**
+ * The population both bar-path reads run on, loaded once here rather than
+ * twice in two routes.
+ *
+ * Intraday bars only exist for a trade that opened and closed in ONE session;
+ * anything else would be measured on daily bars, where a single bar spans the
+ * whole day and a path replay degenerates into the peak-and-distance model
+ * these routes exist to replace. Excluded and COUNTED.
+ */
+async function loadSameSessionBars(): Promise<SameSessionLoad> {
+  const closedStock = listPositions({ status: 'closed', assetType: 'stock' });
+  const dated = closedStock.filter((p): p is typeof p & { entryDate: string } => p.entryDate !== null);
+  const sameSession = dated.filter((p) => lastExitDate(p) === p.entryDate);
+  const selected = sameSession.slice(0, EXCURSION_TRADE_CAP);
+
+  const provider = getProvider();
+  const trades: SameSessionTrade[] = [];
+  let unusable = 0;
+  await mapPool(selected, EXCURSION_FETCH_CONCURRENCY, async (p) => {
+    try {
+      const stop = p.initialStopPrice ?? p.stopPrice;
+      if (stop == null) {
+        unusable++;
+        return;
+      }
+      const candles = await provider.getCandles(p.symbol, INTRADAY_TIMEFRAME, {
+        start: p.entryDate,
+        end: lastExitDate(p) ?? undefined,
+      });
+      const bars = barsWithinHoldingPeriod(candles, p.entryDate, lastExitDate(p), {
+        entryAt: p.entryTime ? etDateTimeToMs(p.entryDate, p.entryTime) : null,
+        exitAt: lastExitAt(p),
+      });
+      trades.push({ position: p, stop, bars });
+    } catch {
+      unusable++;
+    }
+  });
+
+  return {
+    trades,
+    coverage: {
+      closedStockTrades: closedStock.length,
+      undated: closedStock.length - dated.length,
+      notSameSession: dated.length - sameSession.length,
+      overCap: sameSession.length - selected.length,
+      unusable,
+    },
+  };
+}
+
 journalRouter.get(
   '/exit-replay',
   asyncHandler(async (req, res) => {
@@ -178,16 +257,7 @@ journalRouter.get(
       targetR: num(req.query.targetR, cfg.targetRMultiple),
     };
 
-    const closedStock = listPositions({ status: 'closed', assetType: 'stock' });
-    const dated = closedStock.filter((p): p is typeof p & { entryDate: string } => p.entryDate !== null);
-    // Intraday bars only exist for a trade that opened and closed in ONE
-    // session; anything else would be replayed on daily bars, where a single
-    // bar spans the whole day and the replay degenerates into the peak-and-
-    // distance model this route exists to replace. Excluded and COUNTED.
-    const sameSession = dated.filter((p) => lastExitDate(p) === p.entryDate);
-    const selected = sameSession.slice(0, EXCURSION_TRADE_CAP);
-
-    const provider = getProvider();
+    const load = await loadSameSessionBars();
     const rows: {
       positionId: number;
       symbol: string;
@@ -199,45 +269,31 @@ journalRouter.get(
     }[] = [];
     const results: ReplayResult[] = [];
     const actualRs: number[] = [];
-    let unreplayable = 0;
+    // A trade with no stop or no candles is unreplayable for the same reason
+    // one whose bars produce no path is: there is nothing to walk.
+    const { unusable, ...coverage } = load.coverage;
+    let unreplayable = unusable;
 
-    await mapPool(selected, EXCURSION_FETCH_CONCURRENCY, async (p) => {
-      try {
-        const stop = p.initialStopPrice ?? p.stopPrice;
-        if (stop == null) {
-          unreplayable++;
-          return;
-        }
-        const candles = await provider.getCandles(p.symbol, INTRADAY_TIMEFRAME, {
-          start: p.entryDate,
-          end: lastExitDate(p) ?? undefined,
-        });
-        const bars = barsWithinHoldingPeriod(candles, p.entryDate, lastExitDate(p), {
-          entryAt: p.entryTime ? etDateTimeToMs(p.entryDate, p.entryTime) : null,
-          exitAt: lastExitAt(p),
-        });
-        const out = replayExit({ side: p.side, entryPrice: p.entryPrice, initialStopPrice: stop }, bars, rules);
-        if (!out) {
-          unreplayable++;
-          return;
-        }
-        const risk = Math.abs(p.entryPrice - stop) * p.quantity * p.multiplier;
-        const actualR = risk > 0 ? Math.round((realizedPnlOf(p) / risk) * 100) / 100 : null;
-        results.push(out);
-        if (actualR !== null) actualRs.push(actualR);
-        rows.push({
-          positionId: p.id,
-          symbol: p.symbol,
-          entryDate: p.entryDate,
-          actualR,
-          replayR: out.exitR,
-          reason: out.reason,
-          bestR: Math.round(out.bestR * 100) / 100,
-        });
-      } catch {
+    for (const { position: p, stop, bars } of load.trades) {
+      const out = replayExit({ side: p.side, entryPrice: p.entryPrice, initialStopPrice: stop }, bars, rules);
+      if (!out) {
         unreplayable++;
+        continue;
       }
-    });
+      const risk = Math.abs(p.entryPrice - stop) * p.quantity * p.multiplier;
+      const actualR = risk > 0 ? Math.round((realizedPnlOf(p) / risk) * 100) / 100 : null;
+      results.push(out);
+      if (actualR !== null) actualRs.push(actualR);
+      rows.push({
+        positionId: p.id,
+        symbol: p.symbol,
+        entryDate: p.entryDate,
+        actualR,
+        replayR: out.exitR,
+        reason: out.reason,
+        bestR: Math.round(out.bestR * 100) / 100,
+      });
+    }
 
     rows.sort((a, b) => b.entryDate.localeCompare(a.entryDate));
     const mean = (xs: number[]) =>
@@ -249,14 +305,96 @@ journalRouter.get(
       // over one population against a headline average over another is how a
       // rule change comes to look like an improvement it never made.
       actual: { trades: actualRs.length, meanR: mean(actualRs) },
-      coverage: {
-        closedStockTrades: closedStock.length,
-        undated: closedStock.length - dated.length,
-        notSameSession: dated.length - sameSession.length,
-        overCap: sameSession.length - selected.length,
-        unreplayable,
-      },
+      coverage: { ...coverage, unreplayable },
       rows,
+    });
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Does the exit AUTO-TUNE's rule make money? (task #58b)
+//
+// Fits excursionTune.ts's own rules on the older half of the same-session
+// trades and replays the newer half under what they produced, against the
+// geometry actually traded. Read this before touching autoTuneExitsEnabled —
+// the rules have never been checked against a realized outcome, and their own
+// answer on this book is "go to the clamp on both parameters".
+//
+// The bounds come from the LIVE config, so what is tested is the tuner as
+// configured. See services/autotrading/exitTuneValidation.ts for the units.
+// ---------------------------------------------------------------------------
+journalRouter.get(
+  '/exit-tune-validation',
+  asyncHandler(async (req, res) => {
+    const cfg = getAutotradeConfig();
+    const load = await loadSameSessionBars();
+    const trades: ValidationTrade[] = [];
+    const { unusable, ...coverage } = load.coverage;
+    let unmeasured = unusable;
+
+    for (const { position: p, stop, bars } of load.trades) {
+      // The excursion row is computed from the SAME bars the replay walks, so
+      // the rule's input and the outcome it is scored on can never come from
+      // two different fetches of two different windows.
+      const excursion = computeExcursion(
+        {
+          positionId: p.id,
+          symbol: p.symbol,
+          side: p.side,
+          entryPrice: p.entryPrice,
+          quantity: p.quantity,
+          multiplier: p.multiplier,
+          stopPrice: stop,
+          realizedPnl: realizedPnlOf(p),
+          entryDate: p.entryDate,
+          exitDate: lastExitDate(p),
+        },
+        bars,
+        'intraday',
+      );
+      if (!excursion) {
+        unmeasured++;
+        continue;
+      }
+      trades.push({
+        positionId: p.id,
+        symbol: p.symbol,
+        entryDate: p.entryDate,
+        side: p.side,
+        entryPrice: p.entryPrice,
+        initialStopPrice: stop,
+        bars,
+        excursion,
+      });
+    }
+
+    const oosFraction = Number(req.query.oosFraction);
+    const result = validateExitTuneRules(
+      trades,
+      { stopAtrMultiple: cfg.stopAtrMultiple, targetRMultiple: cfg.targetRMultiple },
+      {
+        breakevenTriggerR: cfg.breakevenTriggerRMultiple,
+        trailStartR: cfg.trailStartRMultiple,
+        trailStopR: cfg.trailStopRMultiple,
+      },
+      {
+        minTrades: cfg.autoTuneMinTrades,
+        maxStep: cfg.autoTuneExitMaxStep,
+        // NOT cfg.autoTuneExitTunedAt: this is a backtest of the rule over a
+        // fixed history, and applying the live "ignore trades from before the
+        // last change" gate would silently shrink the sample to whatever has
+        // happened since the geometry last moved. The walk-forward split below
+        // is what keeps the fit honest here.
+        sampleSince: null,
+      },
+      { oosFraction: Number.isFinite(oosFraction) && oosFraction > 0 && oosFraction < 1 ? oosFraction : undefined },
+    );
+
+    res.json({
+      ...result,
+      autoTuneExitsEnabled: cfg.autoTuneExitsEnabled,
+      autoTuneExitTunedAt: cfg.autoTuneExitTunedAt,
+      coverage: { ...coverage, ...result.coverage, unmeasured },
     });
   }),
 );

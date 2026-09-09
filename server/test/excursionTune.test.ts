@@ -1,11 +1,21 @@
 import { describe, it, expect } from 'vitest';
 import { computeExcursionTune } from '../src/services/autotrading/excursionTune';
-import { aggregateExcursions, TradeExcursion } from '../src/services/excursion';
+import { aggregateExcursions, ExcursionResolution, TradeExcursion } from '../src/services/excursion';
 
 let seq = 0;
 /** A winning trade's excursion row (realizedR > 0), with a given adverse (maeR,
- *  <= 0) and favorable (mfeR, >= 0) excursion in R. */
-function winner(maeR: number, mfeR: number, realizedR = 1): TradeExcursion {
+ *  <= 0) and favorable (mfeR, >= 0) excursion in R.
+ *
+ *  INTRADAY by default, because that is the only resolution the tuner reads
+ *  (task #58a) — a daily row's mfeR/maeR span hours the position did not exist.
+ *  These fixtures were all `daily` until then, which meant every case below was
+ *  exercising the tuner on rows the live tuner now discards. */
+function winner(
+  maeR: number,
+  mfeR: number,
+  realizedR = 1,
+  resolution: ExcursionResolution = 'intraday',
+): TradeExcursion {
   seq += 1;
   return {
     positionId: seq,
@@ -18,12 +28,17 @@ function winner(maeR: number, mfeR: number, realizedR = 1): TradeExcursion {
     maeR,
     realizedR,
     capturedPct: mfeR > 0 ? Math.round((realizedR / mfeR) * 100) : null,
-    resolution: 'daily',
+    resolution,
   };
 }
 /** A losing trade (realizedR <= 0) — excluded from the winner-only signals. */
 function loser(maeR: number, mfeR: number): TradeExcursion {
   return { ...winner(maeR, mfeR, -1), realizedR: -1, capturedPct: null };
+}
+/** A winner measured on DAILY bars — an upper bound on excursion, not a
+ *  measurement of it. */
+function dailyWinner(maeR: number, mfeR: number, realizedR = 1): TradeExcursion {
+  return winner(maeR, mfeR, realizedR, 'daily');
 }
 
 const BOUNDS = { minTrades: 2, maxStep: 0.25 };
@@ -191,5 +206,55 @@ describe('computeExcursionTune sample freshness (2026-07-25)', () => {
     );
     expect(r.diagnostics.winners).toBe(2);
     expect(r.patch.stopAtrMultiple).toBe(1);
+  });
+});
+
+describe('computeExcursionTune reads INTRADAY rows only (2026-09-09, #58a)', () => {
+  it('does not tune off daily-bar rows, and says how many it dropped', () => {
+    // Three winners that would comfortably clear a minTrades of 2 and demand a
+    // much tighter stop — but every one is a daily-bar row, whose mfeR/maeR are
+    // that whole calendar day's high and low, including the hours the position
+    // did not exist. Nothing to tune on.
+    const report = aggregateExcursions([dailyWinner(-0.1, 5), dailyWinner(-0.1, 5), dailyWinner(-0.1, 5)]);
+    const r = computeExcursionTune(report, { stopAtrMultiple: 1.5, targetRMultiple: 2 }, BOUNDS);
+    expect(r.patch).toEqual({});
+    expect(r.diagnostics.winners).toBe(0);
+    expect(r.diagnostics.dailyExcluded).toBe(3);
+    expect(r.warnings.join(' ')).toMatch(/measured on daily bars/);
+  });
+
+  it('a daily majority cannot move the geometry the intraday rows say to leave alone', () => {
+    // The real shape of the 2026-09-09 book: a minority of honest intraday rows
+    // beside a majority of daily ones whose R is inflated by whole days of
+    // range. The intraday pair says "already matches" (heat 0.91 => ~1R of room
+    // needed, MFE 2.5 x 0.8 = 2.0R target). Pooled, the four daily rows would
+    // tighten the stop AND raise the target.
+    const rows = [
+      winner(-0.91, 2.5),
+      winner(-0.91, 2.5),
+      dailyWinner(-0.05, 12),
+      dailyWinner(-0.05, 12),
+      dailyWinner(-0.05, 12),
+      dailyWinner(-0.05, 12),
+    ];
+    const r = computeExcursionTune(aggregateExcursions(rows), { stopAtrMultiple: 1.5, targetRMultiple: 2 }, BOUNDS);
+    expect(r.patch).toEqual({});
+    expect(r.diagnostics.winners).toBe(2);
+    expect(r.diagnostics.avgWinnerMfeR).toBe(2.5); // not the pooled 8.83
+  });
+
+  it('reports capturePct from the same rows the other two signals come from', () => {
+    // The diagnostics used to mix populations: two averages over intraday rows
+    // printed beside a capture % over everything. Intraday capture here is 50%
+    // (realized 1R of a 2R peak); pooled it is 30%.
+    const report = aggregateExcursions([
+      winner(-0.5, 2, 1),
+      winner(-0.5, 2, 1),
+      dailyWinner(-0.5, 10, 1),
+      dailyWinner(-0.5, 10, 1),
+    ]);
+    expect(report.capturePct).toBe(30);
+    const r = computeExcursionTune(report, { stopAtrMultiple: 1.5, targetRMultiple: 2 }, BOUNDS);
+    expect(r.diagnostics.capturePct).toBe(50);
   });
 });

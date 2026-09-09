@@ -14,6 +14,23 @@
 // never stopped, so its worst drawdown (MAE) is an honest read of how much room a
 // good trade needs, and its favorable peak (MFE) is an honest read of how far a
 // good trade runs.
+//
+// ...and from INTRADAY rows only (2026-09-09, task #58a). A daily-bar row's
+// mfeR/maeR are that whole CALENDAR DAY's high and low, including the hours the
+// position did not exist — an upper bound, not the trade's excursion. This loop
+// runs maxHoldDays 1 and a 90-minute stagnation exit, so for most of its trades
+// that bound is most of the day. Mixing the two is not a slightly noisier
+// average, it is an average of two different quantities: on 2026-09-09's book,
+// 79 rows split 48 intraday / 31 daily and their MFE averaged 0.54R and 3.60R
+// respectively (worst single daily row: 55.51R, a multi-day penny stock). Both
+// signals here feed a MULTIPLE that the live path then places real stops with,
+// so the tuner reads only the rows that measure what it is tuning.
+//
+// This is a CORRECTNESS fix and NOT a sufficiency argument. Measured on the
+// same book, intraday-only (n=22 winners, avgMfeR 0.75, heat p90 0.32) walks to
+// the SAME two safety clamps as the pooled sample did. See task #58 and
+// exitTuneValidation.ts — the rules themselves have never been checked against
+// realized P&L, and that, not this, is what keeps autoTuneExitsEnabled off.
 
 import { ExcursionReport } from '../excursion';
 
@@ -90,11 +107,19 @@ export interface ExcursionTuneResult {
   warnings: string[];
   diagnostics: {
     winners: number;
+    /** Rows the report carried that were measured on DAILY bars and therefore
+     *  never reached the sample above. Reported rather than silently dropped:
+     *  a run that tuned off 4 intraday winners while ignoring 30 daily rows is
+     *  a different event from one that had 4 trades to look at. */
+    dailyExcluded: number;
     /** Mean |MAE| over winners, in R — how much stop room a good trade uses. */
     avgWinnerHeatR: number | null;
     /** Mean MFE over winners, in R — how far a good trade runs. */
     avgWinnerMfeR: number | null;
-    /** Average % of the favorable move captured on winners (from the report). */
+    /** Average % of the favorable move captured on winners — read from the
+     *  report's INTRADAY partition, the same rows the signals above come from.
+     *  It used to read the pooled figure, which put a number computed over one
+     *  population next to two computed over another. */
     capturePct: number | null;
     stopAtrMultiple: { current: number; suggested: number | null };
     targetRMultiple: { current: number; suggested: number | null };
@@ -124,7 +149,11 @@ export function computeExcursionTune(
 ): ExcursionTuneResult {
   const warnings: string[] = [];
   const since = bounds.sampleSince ?? null;
-  const allWinners = report.rows.filter(
+  // Intraday rows only — see the header. Daily rows are an upper bound on a
+  // same-session trade's excursion, not a measurement of it.
+  const measurable = report.rows.filter((r) => r.resolution === 'intraday');
+  const dailyExcluded = report.rows.length - measurable.length;
+  const allWinners = measurable.filter(
     (r) => r.realizedR != null && r.realizedR > 0 && r.maeR != null && r.mfeR != null,
   );
   // Only trades entered AFTER the last change — see ExcursionTuneBounds.sampleSince.
@@ -134,12 +163,20 @@ export function computeExcursionTune(
 
   const diagnostics: ExcursionTuneResult['diagnostics'] = {
     winners: winners.length,
+    dailyExcluded,
     avgWinnerHeatR: null,
     avgWinnerMfeR: null,
-    capturePct: report.capturePct,
+    capturePct: report.byResolution.intraday.capturePct,
     stopAtrMultiple: { current: current.stopAtrMultiple, suggested: null },
     targetRMultiple: { current: current.targetRMultiple, suggested: null },
   };
+
+  if (dailyExcluded > 0) {
+    warnings.push(
+      `${dailyExcluded} row${dailyExcluded === 1 ? '' : 's'} excluded: measured on daily bars, whose ` +
+        `high/low span hours the position did not exist — an upper bound on excursion, not a measurement.`,
+    );
+  }
 
   if (winners.length < bounds.minTrades) {
     warnings.push(

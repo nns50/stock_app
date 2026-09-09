@@ -1779,11 +1779,16 @@ equally-weighted cards in the order they happened to be built:
   trade actually took sizes the stop, how far it actually ran sizes the target — and nudges
   each toward that, capped per day by its own **max exit step** so one sample can't swing
   your exits. Winners only, deliberately: a stopped-out loser can't tell you whether a
-  different stop was better. It also only reads trades **entered since its last change**:
-  both signals are measured against each trade's own stop at entry, so a trade taken under
-  the previous geometry can't judge the one that replaced it — re-reading them would keep
-  re-applying a correction it had already made, walking your stop toward its floor. After
-  an adjustment it waits for enough fresh trades to close before moving again. Every adjustment shows up in **Recent activity** the moment it happens, and
+  different stop was better. It also reads only trades measured on **intraday bars**
+  (2026-09-09) — a trade held overnight is measured on daily bars, whose high and low
+  cover whole calendar days including hours the position didn't exist, so its "heat" is
+  the market's range rather than the trade's. It also only reads trades **entered since
+  the last change to your stop or target** — including one you made yourself on this
+  page, not just one the tuner made: both signals are measured against each trade's own
+  stop at entry, so a trade taken under the previous geometry can't judge the one that
+  replaced it — re-reading them would keep re-applying a correction it had already made,
+  walking your stop toward its floor. After any change it waits for enough fresh trades
+  to close before moving again. Every adjustment shows up in **Recent activity** the moment it happens, and
   also pushes a notification through your configured webhooks (see **Alerts** below) —
   a live change to what the loop does is worth more than a line you'd only see if you
   went looking. See `docs/STRATEGY_PLAYBOOK.md`'s sizing and execution-quality sections

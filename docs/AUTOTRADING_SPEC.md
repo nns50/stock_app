@@ -6812,7 +6812,14 @@ one `averagesOf` both paths call. The pooled fields stay (callers read them, and
 R should read `byResolution.intraday`. The Journal analytics modal shows the
 split beneath the tiles for the same reason.
 
-### Known, unfixed: `computeExcursionTune` does not filter by resolution
+### Known, unfixed at the time: `computeExcursionTune` did not filter by resolution
+
+**Fixed 2026-09-09 — see "the exit auto-tune's three preconditions" at the end of
+this document.** The tuner now reads intraday rows only, `autoTuneExitTunedAt` is
+stamped by every writer of the geometry (not just the tuner), and
+`autoTuneExitsEnabled` is OFF. The rest of this section is the reasoning as it
+stood, kept because the "non-binding, not correct" distinction is the reason the
+fix is not on its own sufficient.
 
 `excursionTune.ts` derives `targetRMultiple` from `avgMfeR` over winners and
 `stopAtrMultiple` from their MAE percentile, with **no resolution filter**, so an
@@ -6825,10 +6832,11 @@ neither is a fix:
   or excluded (n=22, avgMfeR 0.75) — both raw targets land on the `TARGET_R_MIN`
   floor, and the step limit caps the move either way.
 
-So it is currently **non-binding, not correct**. `sampleSince` would normally
-exclude the older daily rows, but `autoTuneExitTunedAt` is `0` in production, so
-that filter admits everything. Left as an operator decision rather than changed
-under them: it is a live-money path and `autoTuneExitsEnabled` is on.
+So it was **non-binding, not correct**. `sampleSince` would normally exclude the
+older daily rows, but `autoTuneExitTunedAt` was `0` in production, so that filter
+admitted everything. Left as an operator decision rather than changed under them
+while it was a live-money path — the flag has since been turned off (task #47)
+and both defects fixed (task #58).
 
 ---
 
@@ -7012,3 +7020,109 @@ behaviour. The single lot is always the **runner** at the full target: if only o
 bracket can exist it must not cap the trade at 0.25R. Lots always sum to the
 **filled** quantity, checked exhaustively from 1 to 200 shares, since a plan that
 sums high is refused and one that sums low leaves shares unprotected.
+
+---
+
+## 2026-09-09 — the exit auto-tune's three preconditions (task #58)
+
+`autoTuneExitsEnabled` is **off in production** (task #47) because
+`computeExcursionTune` converges to *both* its safety clamps in about five 0.25
+steps: `stopAtrMultiple` 1.5 → **0.50** (`STOP_MULT_MIN`) and `targetRMultiple`
+2.0 → **1.00–1.15** (`TARGET_R_MIN`). A 3× tightening of the stop, reached in
+increments small enough that no single day's run looks alarming.
+
+Three things had to exist before that switch could be argued about again. All
+three now do; **the switch stays off**, because the third one is a measurement
+and it has not been read yet.
+
+### (a) The tuner reads INTRADAY rows only
+
+`computeExcursionTune` took every row in the report. A daily-bar row's `mfeR` and
+`maeR` are that whole *calendar day's* high and low — including the hours the
+position did not exist — which for a loop running `maxHoldDays 1` and a 90-minute
+stagnation exit is most of them. On 2026-09-09's book the 79 measured rows split
+48 intraday / 31 daily, and their mean MFE was **0.54R** and **3.60R**
+respectively (worst single daily row: 55.51R, a penny stock held several days).
+Averaging the two is not a noisier estimate of one quantity; it is the mean of
+two different quantities.
+
+The same partition now also feeds `diagnostics.capturePct`, which used to read
+the *pooled* figure and print it beside two intraday-only averages.
+`diagnostics.dailyExcluded` reports what was dropped, and a warning names it.
+
+**This is a correctness fix and NOT a sufficiency argument.** Measured on the
+same book, intraday-only (n=22 winners, avgMfeR 0.75, heat p90 0.32) walks to the
+**same two clamps**. Re-enabling on (a) alone was the first instinct and it is
+wrong.
+
+### (b) `GET /api/journal/exit-tune-validation` — do the rules make money?
+
+The two rules —
+
+| | rule |
+|---|---|
+| target | `0.8 × mean winner MFE` |
+| stop | `stopAtrMultiple × (winners' heat p90 × 1.1)` |
+
+— have never been checked against a realized outcome. `liveMinSignalScore` was
+fitted that way in PR #44; `targetRMultiple` was tested that way in task #32,
+where **no candidate beat 2.0 outside noise and 1.0 was among the weaker
+options** — so the target rule's own answer disagrees with the only direct
+expectancy test that exists. The stop rule additionally reasons from a **censored
+sample**: a winner's MAE is bounded by the very stop being tuned.
+
+The route fits the rules on the older half of the same-session trades and replays
+the newer half under what they produced, against the geometry actually traded,
+using `exitReplay.ts`'s bar-path walk (never an MFE model — see that section
+above for why a peak-minus-distance model reported every tightening as an
+improvement and was discarded).
+
+Two candidates are priced, not one:
+
+- **one step** — what a single day's tune would do.
+- **the fixed point** — where repeated runs come to rest if the trades keep
+  looking like the ones recorded. That is the case worth pricing, because it is
+  what actually happened. Each run is bounded to `maxStep`, so the strategy
+  change is the *sum* of them and only the fixed point shows it.
+
+**Units, since the two arms are denominated differently.** 1R is the trade's
+initial risk in dollars. A candidate that tightens `stopAtrMultiple` makes 1R a
+smaller *price* distance, and the sizer answers by buying more shares — because
+`riskPerTradePct × equity` is what it holds fixed. So both arms' R are the same
+number of dollars and their means compare directly; the replay is therefore run
+with a **scaled stop price** rather than by rescaling results afterwards. Three
+things that assumption ignores all **flatter the tighter candidate**: the extra
+shares may not fit the per-order cap or buying power; `levelPlan` can override
+the ATR stop on some trades; and intrabar order is resolved adversely. A
+candidate that fails to win here fails on generous terms.
+
+A directional verdict (`better` / `worse`) requires a **reliable** sample
+(significance.ts's 20-trade floor) *and* a bootstrap CI on the paired
+per-trade differences that excludes zero — the same pair of conditions
+`checkOosEdgeConfirmation` uses. Below that it reports `insufficient` rather than
+reading a confidence interval off four numbers.
+
+### (c) `autoTuneExitTunedAt` is stamped by every writer
+
+The field is documented as "when the exit geometry last changed" and the tuner
+uses it to ignore trades taken under the previous geometry. **Only `autoTune.ts`
+ever wrote it** — so a change made from the Settings page, which is how both
+multiples actually got their current values, left the stamp behind and the next
+tune judged the new geometry on trades taken under the old one. That is the
+re-applied-correction loop `sampleSince` exists to prevent, entered through the
+other door. It is now stamped in `setAutotradeConfig`, where every writer passes;
+an explicit stamp in the patch still wins, so restoring a known state does not
+date it to now.
+
+Production read `autoTuneExitTunedAt: 0`, which is not "never" — it is a
+timestamp older than every trade ever recorded, so `sampleSince` admitted the
+entire journal. The cause: `Number(null)` is `0` and `Number.isFinite(0)` is
+true, so `sanitize()` rewrote the default `null` to the epoch on the first read.
+`null` now survives the round trip and a stored `0` reads back as the "never" it
+always meant.
+
+### What would actually re-enable it
+
+Read `/api/journal/exit-tune-validation` on the live book. A `better` verdict on
+the **fixed point**, out of sample, is the evidence this feature has never had.
+`inside_noise` — the expected outcome at this sample size — is not permission.
