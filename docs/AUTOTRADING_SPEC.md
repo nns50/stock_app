@@ -7168,3 +7168,68 @@ config row, one layer up. `test/setupProcessState.ts` now resets these caches
 before **every test** (config isolation is per file; these are per test, because
 a cache exists to suppress repeat work and any test wanting the first call's
 behaviour must start empty). Add each new process-global cache to that file.
+
+---
+
+## 2026-09-09 — the stagnation exit learns whether the slot was scarce (task #41)
+
+The 90-minute stagnation exit is the live book's **dominant exit** — 30 of 52
+closes (58%) over 2026-08-24..09-04 — and it does what it says: it scratches.
+Mean **−0.036R**, 14W/16L, **−$65.77** total.
+
+Its stated justification is "recycling the slot for fresh signals". **That
+applied in 7 of 31 firings.** The other 24 fired while the book was BELOW
+`maxConcurrentPositions`, so nothing scarce was freed — the rule paid the spread
+to close a trade at flat, and the next signal could have opened anyway. On the
+two days the cap really was binding (09-02, 09-04) there were dozens of
+`max_concurrent_positions` blocks inside the same half hour, so the rationale is
+real there and only there.
+
+### What shipped, and what deliberately did not
+
+`stagnationExitRequiresScarcity` (**off by default**) narrows the rule to that
+case. The DECISION is not in this change: the paper book has run without the
+stagnation exit since 2026-09-08 and, since the end-of-day flatten landed
+2026-09-05, without overnight carry either — so paper is now
+same-signals-minus-the-90-minute-cut, exactly this counterfactual. Flip the flag
+when ~2 weeks of paper closes are in, and exclude any close carrying
+`pnlIsNotAMeasurement` when reading it.
+
+### Scarcity is STATE, not history
+
+"Scarce" is asked as *would a fresh full-size entry be refused for want of room
+right now*, against the same two quantities the entry gate itself compares —
+`combinedLiveOpenRisk()`'s count and risk:
+
+| arm | test |
+|---|---|
+| concurrency | `openPositions >= maxConcurrentPositions` |
+| risk budget | `openRiskUsd + nextTradeRiskUsd > (maxAggregateOpenRiskPct / 100) x equity` |
+
+`nextTradeRiskUsd` is the **pre-cut** full-size figure (`riskPerTradePct / 100 x
+equity`): the question is whether the budget has room for a trade at all, and a
+step-down/regime/finish-line-cut trade is a smaller ask that would fit more
+often. Both sides of that comparison are dollars, stated here because the
+2026-08-27 bugs were unit mismatches inside honest-looking formulas.
+
+Scanning the journal for recent `max_concurrent_positions` blocks was the
+alternative and was rejected: it answers a question about the last few minutes
+with a query shape nothing else depends on, and it would disagree with the entry
+gate the moment either changed.
+
+**Not modelled: buying power.** When BP is the binding constraint this reports
+"not scarce" and holds the trade — the wrong direction for the rule's purpose,
+since the slot really is blocking entries. Named in the source rather than left
+to be discovered.
+
+### The read is recorded whether or not the gate is on
+
+Every stagnation decision now carries its `scarcity` verdict — on the scratch
+(`live_time_exit_placed`, `trigger: "stagnation"`) and on the hold
+(`stagnation_exit_held_slot_free`, once per position per ET day) alike. A
+suppression-only record could not answer "was the cap binding when this fired",
+which is half the question. That evidence accrues from now on, with the flag off.
+
+When the flag is on and the book's room could not be measured this tick, the
+position is **held**, not scratched: a gate that fires on an assumption is not a
+gate.

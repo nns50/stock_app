@@ -1643,6 +1643,7 @@ export interface AutotradeConfig {
    *  its slot. 0 = off. */
   stagnationExitMinutes: number;
   stagnationExitMinR: number;
+  stagnationExitRequiresScarcity: boolean;
   liveOptionsFatFingerPct: number;
   liveOptionsProbationTrades: number;
   liveOptionsProbationSizeMultiplier: number;

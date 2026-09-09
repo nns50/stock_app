@@ -45,23 +45,27 @@ let currentDay: string | null = null;
 const claimed = new Set<string>();
 
 /**
- * Claim the day's single slot for (action, symbol). TRUE the first time it is
+ * Claim the day's single slot for (action, subject). TRUE the first time it is
  * asked in an ET day, FALSE every time after — so the caller writes one row.
+ *
+ * `subject` is whatever the fact is ABOUT: a symbol for a screener
+ * classification, a position id for a per-position condition. Normalised
+ * (trimmed, upper-cased) so one subject is one slot however it is spelled.
  *
  * It MUTATES: asking is claiming. A separate "may I?" and "I did" would let a
  * caller check and then not write, which leaves the slot spent and loses the
  * day's only row — the failure mode this exists to prevent, inverted.
  *
  * The whole set is dropped when the ET day rolls, so memory is bounded by one
- * day's distinct (action, symbol) pairs rather than growing with uptime.
+ * day's distinct (action, subject) pairs rather than growing with uptime.
  */
-export function claimOncePerDay(action: string, symbol: string, at: number = Date.now()): boolean {
+export function claimOncePerDay(action: string, subject: string, at: number = Date.now()): boolean {
   const today = etDateStr(at);
   if (today !== currentDay) {
     currentDay = today;
     claimed.clear();
   }
-  const key = `${action}|${symbol.trim().toUpperCase()}`;
+  const key = `${action}|${subject.trim().toUpperCase()}`;
   if (claimed.has(key)) return false;
   claimed.add(key);
   return true;

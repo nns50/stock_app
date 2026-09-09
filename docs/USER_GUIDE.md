@@ -1493,7 +1493,17 @@ equally-weighted cards in the order they happened to be built:
   recycled too, and a position with no stop is never scratched on a guess. Every
   scratch journals its held time and R (`live_time_exit_placed` with
   `trigger: "stagnation"`), so you can audit whether it's cutting losers or
-  winners. Their end-of-session sibling is the **end-of-day flatten**
+  winners. A separate **Only scratch when the slot is scarce** toggle (2026-09-09,
+  default off) narrows it to the case its own justification describes: with it on,
+  a stagnant position is scratched only when the book is at **Max concurrent
+  positions** or the aggregate risk budget has no room for another full-size
+  entry, and otherwise keeps its optionality with a
+  `stagnation_exit_held_slot_free` row in the journal. Over 2026-08-24..09-04 the
+  "recycle the slot" rationale held in only **7 of 31** firings — the other 24 fired
+  with slots to spare — and the rule was the live book's dominant exit at 30 of 52
+  closes, averaging −0.036R. Every scratch and every hold now records which it was,
+  so the paper book (running without the stagnation exit since 2026-09-08) can be
+  compared against it before you flip the toggle. Their end-of-session sibling is the **end-of-day flatten**
   (2026-08-25, default off): set it to a number of **minutes
   before the 16:00 ET close** and every open live position is closed through
   that same cancel-bracket-then-close path rather than carried overnight —

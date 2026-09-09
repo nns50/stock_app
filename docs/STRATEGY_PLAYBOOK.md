@@ -946,6 +946,17 @@ unobservable there. A paper book running the same setups to stop, target or the
 flatten is the missing half — and it only became a *valid* missing half once the
 flatten landed, because before that "ran on" silently meant "held overnight."
 
+While that reads out, the live side now records the other half of the question. The
+rule's justification is "recycle the slot for fresh signals", and over
+2026-08-24..09-04 that held in **7 of 31** firings: the other 24 fired while the book
+was *below* `maxConcurrentPositions`, so nothing scarce was freed and the rule simply
+paid the spread to close a trade at flat. Every stagnation decision now carries a
+`scarcity` read — whether a fresh full-size entry would have been refused for want of
+room at that moment — on the scratch and on the hold alike, so "was the cap binding
+when this fired" is answerable from the journal rather than reconstructed. The
+`stagnationExitRequiresScarcity` flag turns that read into a gate; it ships **off**,
+because this table's experiment is what should decide it.
+
 Anything else that diverges is a bug, not a counterfactual.
 
 **A sizing rule that reasons about size must read the size that will be used.** The

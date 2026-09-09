@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { evaluateStagnation, progressR, sessionMinutesBetween } from '../src/services/autotrading/stagnationExit';
+import {
+  evaluateStagnation,
+  progressR,
+  sessionMinutesBetween,
+  slotScarcity,
+  type SlotPressure,
+} from '../src/services/autotrading/stagnationExit';
 
 // Long: entry 100, stop 95 => risk $5/share. Short mirrors it.
 // Entry at 10:00 ET on Monday 2026-08-24 — mid-session, so elapsed minutes and
@@ -15,7 +21,7 @@ const shortPos = {
   createdAt: ENTRY,
 };
 
-const cfg = { stagnationExitMinutes: 90, stagnationExitMinR: 0.5 };
+const cfg = { stagnationExitMinutes: 90, stagnationExitMinR: 0.5, stagnationExitRequiresScarcity: false };
 const MIN = 60_000;
 /** `n` minutes of real session time after the entry. */
 const after = (n: number) => ENTRY + n * MIN;
@@ -109,7 +115,7 @@ describe('evaluateStagnation', () => {
   });
 
   it('a zero R bar means "scratch only when not even at breakeven progress"', () => {
-    const zeroBar = { stagnationExitMinutes: 90, stagnationExitMinR: 0 };
+    const zeroBar = { ...cfg, stagnationExitMinR: 0 };
     expect(evaluateStagnation(longPos, 100, zeroBar, after(90)).triggered).toBe(false); // 0R >= 0R: kept
     expect(evaluateStagnation(longPos, 99.9, zeroBar, after(90)).triggered).toBe(true); // below water: recycled
   });
@@ -188,5 +194,108 @@ describe('evaluateStagnation with session minutes', () => {
     const d = evaluateStagnation(pos, 100, cfg, Date.parse('2026-08-25T15:10:00Z'));
     expect(d.triggered).toBe(true);
     expect(d.heldMinutes).toBeGreaterThanOrEqual(90);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The slot-scarcity gate (2026-09-09, task #41). The stagnation exit's whole
+// justification is "recycling the slot for fresh signals", and over
+// 08-24..09-04 that held in only 7 of 31 firings — the other 24 fired while
+// the book was BELOW maxConcurrentPositions, paying the spread to close a
+// trade at flat when the next signal could have opened anyway.
+// ---------------------------------------------------------------------------
+
+/** $10,000 equity, 6% aggregate cap ($600), 1% per trade ($100). */
+const pressure = (overrides: Partial<SlotPressure> = {}): SlotPressure => ({
+  openPositions: 1,
+  maxConcurrentPositions: 3,
+  openRiskUsd: 100,
+  aggregateRiskCapUsd: 600,
+  nextTradeRiskUsd: 100,
+  ...overrides,
+});
+
+describe('slotScarcity', () => {
+  it('is scarce at the concurrency cap, and not below it', () => {
+    expect(slotScarcity(pressure({ openPositions: 3 })).scarce).toBe(true);
+    expect(slotScarcity(pressure({ openPositions: 2 })).scarce).toBe(false);
+  });
+
+  it('is scarce when one more full-size entry would not fit the risk budget', () => {
+    // $550 open + $100 next > $600 cap: the concurrency cap is nowhere near
+    // binding, and a fresh signal would still be refused.
+    const v = slotScarcity(pressure({ openPositions: 1, openRiskUsd: 550 }));
+    expect(v.scarce).toBe(true);
+    expect(v.reason).toMatch(/aggregate risk budget/);
+  });
+
+  it('measures the budget in dollars on both sides of the comparison', () => {
+    // The 2026-08-27 bugs were unit mismatches inside honest-looking formulas.
+    // $500 open + $100 next == $600 cap fits exactly; one dollar more does not.
+    expect(slotScarcity(pressure({ openRiskUsd: 500 })).scarce).toBe(false);
+    expect(slotScarcity(pressure({ openRiskUsd: 501 })).scarce).toBe(true);
+  });
+
+  it('treats a zero cap as "no such limit" rather than as always-binding', () => {
+    // maxConcurrentPositions 0 and an unset equity would otherwise make every
+    // position permanently scarce and scratch the whole book.
+    expect(slotScarcity(pressure({ maxConcurrentPositions: 0, aggregateRiskCapUsd: 0 })).scarce).toBe(false);
+  });
+});
+
+describe('evaluateStagnation with the scarcity gate', () => {
+  const gated = { ...cfg, stagnationExitRequiresScarcity: true };
+  /** Stagnant by every other measure: flat after 100 session minutes. */
+  const stagnant = (p?: SlotPressure, c = gated) => evaluateStagnation(longPos, 100, c, after(100), p);
+
+  it('holds the trade when the slot is free', () => {
+    const d = stagnant(pressure({ openPositions: 1 }));
+    expect(d.triggered).toBe(false);
+    expect(d.heldForFreeSlot).toBe(true);
+    expect(d.scarcity?.scarce).toBe(false);
+    expect(d.detail).toMatch(/keeps its optionality/);
+  });
+
+  it('scratches when the book is at the concurrency cap', () => {
+    const d = stagnant(pressure({ openPositions: 3 }));
+    expect(d.triggered).toBe(true);
+    expect(d.heldForFreeSlot).toBe(false);
+    expect(d.detail).toMatch(/concurrency cap/);
+  });
+
+  it('leaves today’s behaviour exactly as it is while the gate is OFF', () => {
+    // The flag ships off: the paper book is running the counterfactual and the
+    // decision is a config flip, not this commit.
+    const d = stagnant(pressure({ openPositions: 1 }), cfg);
+    expect(d.triggered).toBe(true);
+  });
+
+  it('holds rather than firing on an assumption when the book’s room is unknown', () => {
+    const d = stagnant(undefined);
+    expect(d.triggered).toBe(false);
+    expect(d.heldForFreeSlot).toBe(true);
+    expect(d.scarcity).toBeNull();
+    expect(d.detail).toMatch(/not measured/);
+  });
+
+  it('records the scarcity read on a TRIGGERED decision too', () => {
+    // "The cap was binding when this fired" is half the question the paper
+    // experiment is running to answer, and a suppression-only record cannot
+    // answer it. Also recorded when the gate is off, which is when the
+    // evidence is actually being gathered.
+    const d = stagnant(pressure({ openPositions: 1 }), cfg);
+    expect(d.triggered).toBe(true);
+    expect(d.scarcity).toEqual({ scarce: false, reason: expect.stringMatching(/slots used/) });
+  });
+
+  it('is not consulted at all before the deadline or above the R bar', () => {
+    // The gate is the LAST question, so a position that is not stagnant is
+    // never reported as "held for a free slot" — which would make the new
+    // journal action count trades the rule was never going to touch.
+    const early = evaluateStagnation(longPos, 100, gated, after(30), pressure());
+    expect(early.heldForFreeSlot).toBe(false);
+    const working = evaluateStagnation(longPos, 105, gated, after(100), pressure());
+    expect(working.triggered).toBe(false);
+    expect(working.heldForFreeSlot).toBe(false);
   });
 });

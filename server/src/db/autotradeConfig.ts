@@ -815,6 +815,20 @@ export interface AutotradeConfig {
    *  deadline = recycled. May be 0 ("scratch only if not even at breakeven
    *  progress"); a slow bleeder below 0R is recycled too. */
   stagnationExitMinR: number;
+  /** Only fire the stagnation exit when the slot it frees is actually SCARCE —
+   *  the book at maxConcurrentPositions, or the aggregate risk budget with no
+   *  room for one more full-size entry (2026-09-09, task #41).
+   *
+   *  The rule's stated justification is "recycling the slot for fresh
+   *  signals", and over 08-24..09-04 that held in only 7 of 31 firings: the
+   *  other 24 fired while the book was BELOW the cap, paying the spread to
+   *  close a trade at flat when the next signal could have opened anyway. It
+   *  was the live book's dominant exit at 30 of 52 closes, mean −0.036R.
+   *
+   *  OFF by default — the mechanism, not the decision. The paper book has run
+   *  without the stagnation exit since 2026-09-08, which is the clean
+   *  counterfactual; flip this once ~2 weeks of paper closes are in. */
+  stagnationExitRequiresScarcity: boolean;
   /** END-OF-DAY FLATTEN (services/autotrading/endOfDayFlatten.ts): inside the
    *  last N minutes of the regular session, close every open LIVE EQUITY
    *  position at a marketable limit rather than carrying it overnight —
@@ -1216,6 +1230,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     liveMinSignalScore: 0,
     stagnationExitMinutes: 0,
     stagnationExitMinR: 0.5,
+    stagnationExitRequiresScarcity: false,
     endOfDayFlattenMinutes: 0,
     levelExitsEnabled: false,
     levelMinStrength: 0.35,
@@ -1518,6 +1533,10 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     liveMinSignalScore: pct(input.liveMinSignalScore, d.liveMinSignalScore),
     stagnationExitMinutes: posInt(input.stagnationExitMinutes, d.stagnationExitMinutes),
     stagnationExitMinR: nonNeg(input.stagnationExitMinR, d.stagnationExitMinR),
+    stagnationExitRequiresScarcity:
+      typeof input.stagnationExitRequiresScarcity === 'boolean'
+        ? input.stagnationExitRequiresScarcity
+        : d.stagnationExitRequiresScarcity,
     // Capped at the session's own length: a window longer than the trading day
     // would mean "always flattening", which is a way of saying "never enter".
     endOfDayFlattenMinutes: Math.min(posInt(input.endOfDayFlattenMinutes, d.endOfDayFlattenMinutes), 390),
