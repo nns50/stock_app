@@ -282,6 +282,37 @@ describe('runDailyTargetSweep', () => {
       ...over,
     });
 
+  it('reconciles the two attributions: totalRAllSessions matches avgR x rTrades, actual.totalR need not', () => {
+    // The distinction that read as a bug on 2026-09-09. `realized.avgR` is
+    // ENTRY-attributed over every closed trade; `actual.totalR` is
+    // EXIT-attributed over ACTIVE sessions only, and a trade closing on a
+    // session with no entries falls out of the second and not the first.
+    // `totalRAllSessions` exists so that gap is visible rather than derived.
+    //
+    // 'x' enters on an active session and exits on one with no entries of its
+    // own, which is exactly the shape that separates them.
+    const withCrossSession = [...trades, trade('x', ['2026-09-03', '15:00'], ['2026-09-04', '10:00'], -3)];
+    const out = run({ trades: withCrossSession });
+
+    const sumAll = 1.5 + 0.5 - 1 + 2 - 1 - 0.5 + 1 - 2 - 3;
+    expect(out.totalRAllSessions).toBeCloseTo(sumAll, 2);
+    // The identity that makes the field worth having.
+    expect(out.totalRAllSessions).toBeCloseTo((out.realized.avgR as number) * out.realized.rTrades, 1);
+    // And the one that must NOT hold — 09-04 has no entries, so its -3R is
+    // outside the policy baseline. Asserting they DIFFER is the point: an
+    // implementation that quietly made them agree would have re-broken the
+    // session-set invariant every delta depends on.
+    expect(out.actual.totalR).not.toBeCloseTo(out.totalRAllSessions, 2);
+    expect(out.actual.totalR).toBeCloseTo(sumAll + 3, 2);
+  });
+
+  it('leaves the two identical when no trade crosses a session boundary', () => {
+    // With every exit on a session that also had entries, the two bases agree.
+    // Pins that the difference is attribution and not an unconditional offset.
+    const out = run();
+    expect(out.totalRAllSessions).toBeCloseTo(out.actual.totalR, 2);
+  });
+
   it('carries the realized edge, the counts, and the record as it happened over the ACTIVE sessions', () => {
     const out = run();
     expect(out.book).toBe('live');

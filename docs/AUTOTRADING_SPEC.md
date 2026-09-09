@@ -6902,3 +6902,50 @@ look like an improvement it never made.
 Nothing has been tuned from this. The replay is the instrument; running the grid
 and deciding the three 0.5R thresholds is the next step, and `autoTuneExitsEnabled`
 stays off until it has been done (task #58).
+
+
+---
+
+## Two attributions of realized R, and why they don't reconcile (2026-09-09)
+
+Reading the live sweep, `realized.avgR × realized.rTrades` came to **1.00R**
+while `actual.totalR` read **1.65R** in the same payload. That looks exactly
+like a defect and is not one — they are attributed differently, and both are
+right for what they answer.
+
+| | attributed to | over which sessions |
+|---|---|---|
+| `realized.avgR` | the **entry** | every closed trade in the window |
+| `actual.totalR` | the **exit** | **active** sessions only |
+
+`tradesPerSession × avgR` is a forward identity: on a day the book trades it
+makes N entries, and each will eventually realize `avgR`. Every trade is
+entered on a session that has entries — and so is active by definition — so
+both factors come from the same population even though only one of them
+mentions sessions.
+
+`actual.totalR` is a policy **baseline**. A session with no entries cannot be
+changed by a stopping rule, so including it would add the same constant to the
+baseline and to every level, and the deltas are the whole point. The ~0.65R gap
+on the live book is exits landing on sessions that had no entries of their own —
+trades opened the day before, which are net negative there.
+
+`totalRAllSessions` was added so this is visible rather than something a reader
+has to derive. It equals `avgR × rTrades` (to rounding) and is used by nothing:
+the baseline and every level must share one session set.
+
+### What this does NOT change
+
+`impliedDailyGainPct` stays as it was. It reads **0.07%** against a stored 3%
+goal — `targetOverImplied ≈ 43` — and the mismatch above is not a reason to
+doubt it. Recomputing the live book by hand agrees: same-session stock trades
+average **+0.033R** (n=48), overnight ones **−0.030R** (n=29), all live stock
+**+0.009R** (n=77) against the sweep's 0.013.
+
+A first pass at this reported **+0.105R** and read as though the dashboard were
+understating the edge by an order of magnitude. That figure covered only the 45
+trades carrying an `entryScore`, and the three it dropped lack a score *because
+they predate score stamping* — all three were near-full losers (−0.98, −1.21,
+−1.00). Filtering on a field correlated with age, where age correlates with
+outcome, is selection. The correction is recorded here because the wrong number
+briefly looked like good news.
