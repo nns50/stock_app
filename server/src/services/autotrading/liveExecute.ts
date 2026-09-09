@@ -4508,11 +4508,38 @@ export async function checkLivePerLotSecondLots(): Promise<LivePerLotOutcome[]> 
     try {
       if (inFlightSymbols.has(pos.symbol)) continue;
       if (countLiveAddOns(pos.id) > 0) continue; // already sent, or scaled in
-      const plan = perLotPlanFor(pos.sourceIntentId);
-      if (!plan) continue;
-
+      // Resolve the entry order FIRST, because it is also how the plan's key is
+      // recovered. positions.source_intent_id is populated only intermittently
+      // — 40 of 106 live positions on 2026-09-09, flipping back and forth since
+      // July, because whichever path first observes the fill creates the row and
+      // the broker-sync/adoption path does not carry the intent link (the same
+      // seam as task #30). Keying the plan off it directly meant
+      // perLotPlanFor(null) returned null and this loop `continue`d SILENTLY:
+      // both of the first two real per-lot entries (HPE 34 of an intended 51,
+      // DELL 1 of 2) got a first lot, no second lot, and no event saying why.
+      // The fallback below already existed for the entry order on exactly this
+      // reasoning; the plan lookup simply never used it.
       const entryOrder =
         pos.sourceIntentId !== null ? getLiveOrder(pos.sourceIntentId) : getLiveEntryOrderForPosition(pos.id);
+      const entryIntentId = pos.sourceIntentId ?? entryOrder?.intentId ?? null;
+      if (entryIntentId === null) {
+        // Nothing left to look the plan up by. Say so once a day per position
+        // rather than dropping it: this function's own header asks for a
+        // position that never got its second lot to be distinguishable from one
+        // that was never meant to have one, and a bare `continue` is exactly
+        // what made them identical.
+        if (claimOncePerDay('per_lot_intent_unresolved', String(pos.id))) {
+          logAutotradeEvent({
+            symbol: pos.symbol,
+            stage: 'execution',
+            action: 'per_lot_second_lot_blocked',
+            detail: { positionId: pos.id, reason: 'no entry intent id — cannot look up the second lot plan' },
+          });
+        }
+        continue;
+      }
+      const plan = perLotPlanFor(entryIntentId);
+      if (!plan) continue;
       // Both lots share ONE stop — the position has a single risk level, and two
       // stops would be two ideas about where the trade is wrong. The FROZEN
       // entry stop, not the ratcheted one: the second lot is part of the

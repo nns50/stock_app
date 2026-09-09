@@ -1857,6 +1857,52 @@ describe('checkLivePerLotSecondLots', () => {
     expect(mockPlaceOrder).not.toHaveBeenCalled();
   });
 
+  it('still places the second lot when the position carries NO source_intent_id', async () => {
+    // The production shape this missed. positions.source_intent_id is populated
+    // only intermittently — 40 of 106 live positions on 2026-09-09 — because
+    // whichever path first observes the fill creates the row, and the
+    // broker-sync/adoption path does not carry the intent link. Every test
+    // above uses openAgedLivePosition, which materializes through
+    // reconcileLiveOrders and therefore always HAS the link: the fixture was
+    // more favourable than reality, so the suite stayed green while the first
+    // two real per-lot entries (HPE 34 of 51, DELL 1 of 2) each got a first lot
+    // and silently no second.
+    const { position, entryIntentId } = await openAgedLivePosition(0);
+    db.prepare('UPDATE positions SET source_intent_id = NULL WHERE id = ?').run(position.id);
+    expect(listPositions({ status: 'open', symbol: 'AAPL' })[0].sourceIntentId).toBeNull();
+    setAutotradeConfig(liveConfig({ livePerLotBracketsEnabled: true, maxHoldDays: 0 }));
+    planFor(entryIntentId, { quantity: 5, targetR: 2, targetPrice: 110 });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(accountStateWith(0) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-LOT2' });
+
+    const outcomes = await checkLivePerLotSecondLots();
+
+    expect(outcomes).toEqual([{ symbol: 'AAPL', positionId: position.id, requested: true, quantity: 5 }]);
+    expect(mockPlaceOrder).toHaveBeenCalledTimes(1);
+  });
+
+  it('journals a block when the intent id cannot be recovered at all, instead of skipping silently', async () => {
+    // No source_intent_id AND no entry order row to recover it from. There is
+    // genuinely nothing to look the plan up by — but that must be SAID, not
+    // dropped: this function's header asks for a position that never got its
+    // second lot to be distinguishable from one that was never meant to have
+    // one, and a bare `continue` made them identical.
+    const { position } = await openAgedLivePosition(0);
+    db.prepare('UPDATE positions SET source_intent_id = NULL WHERE id = ?').run(position.id);
+    db.prepare('DELETE FROM autotrade_live_orders').run();
+    setAutotradeConfig(liveConfig({ livePerLotBracketsEnabled: true, maxHoldDays: 0 }));
+
+    expect(await checkLivePerLotSecondLots()).toEqual([]);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    const blocked = listAutotradeEvents({ actions: ['per_lot_second_lot_blocked'], limit: 10 });
+    expect(blocked).toHaveLength(1);
+    expect(JSON.parse(blocked[0].detail ?? '{}')).toMatchObject({
+      positionId: position.id,
+      reason: 'no entry intent id — cannot look up the second lot plan',
+    });
+  });
+
   it('leaves a position with no plan alone, rather than inventing a lot', async () => {
     await openAgedLivePosition(0);
     setAutotradeConfig(liveConfig({ livePerLotBracketsEnabled: true, maxHoldDays: 0 }));
