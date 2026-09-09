@@ -441,6 +441,20 @@ export interface AutotradeConfig {
   optionsStagnationMinMovePct: number;
   /** Premium-percentage backstop for a gap or volatility collapse — NOT management. Deliberately wide: at anything tighter, ordinary decay fires it with no adverse move at all. 0 disables. */
   optionsDisasterStopPct: number;
+  /** Drop options candidates whose ATM contract the per-order risk budget
+   *  could not buy, BEFORE the single options slot is spent on them
+   *  (optionsAffordability.ts, task #59). Not a new limit — the ceiling is an
+   *  exact inversion of the `quantity` rule optionsRiskCheck already applies,
+   *  so this only moves an inevitable refusal earlier, where it still leaves
+   *  the slot free for a name that can fill. */
+  optionsAffordabilityFilterEnabled: boolean;
+  /** Assumed ATM short-dated premium as a % of the underlying's price, used to
+   *  estimate a contract's cost before the chain is fetched. LOWER is more
+   *  permissive (a low ratio implies a high price cap), and the 1.0 default
+   *  sits under every single-name observation from 2026-09-09 (1.42%-1.73%)
+   *  on purpose, so the filter removes only the certainly-unaffordable. 0
+   *  disables the filter. */
+  optionsAtmPremiumRatioPct: number;
 
   /** Target distance = stop distance × this (a reward:risk multiple). */
   targetRMultiple: number;
@@ -1191,6 +1205,8 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     optionsStagnationMinutes: 30,
     optionsStagnationMinMovePct: 0.3,
     optionsDisasterStopPct: 70,
+    optionsAffordabilityFilterEnabled: false,
+    optionsAtmPremiumRatioPct: 1,
     targetRMultiple: 2,
     sessionBufferMinutes: 15,
     earningsBlackoutDays: 0,
@@ -1460,6 +1476,11 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     optionsStagnationMinutes: nonNeg(input.optionsStagnationMinutes, d.optionsStagnationMinutes),
     optionsStagnationMinMovePct: nonNeg(input.optionsStagnationMinMovePct, d.optionsStagnationMinMovePct),
     optionsDisasterStopPct: nonNeg(input.optionsDisasterStopPct, d.optionsDisasterStopPct),
+    optionsAffordabilityFilterEnabled:
+      typeof input.optionsAffordabilityFilterEnabled === 'boolean'
+        ? input.optionsAffordabilityFilterEnabled
+        : d.optionsAffordabilityFilterEnabled,
+    optionsAtmPremiumRatioPct: nonNeg(input.optionsAtmPremiumRatioPct, d.optionsAtmPremiumRatioPct),
     targetRMultiple: posDecimal(input.targetRMultiple, d.targetRMultiple),
     sessionBufferMinutes: posInt(input.sessionBufferMinutes, d.sessionBufferMinutes),
     earningsBlackoutDays: posInt(input.earningsBlackoutDays, d.earningsBlackoutDays),

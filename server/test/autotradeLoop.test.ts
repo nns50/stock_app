@@ -1104,6 +1104,80 @@ describe('runAutotradeLoopTick', () => {
     expect(summary.optionsCandidatesConsidered).toBe(1);
   });
 
+  it("drops an unaffordable underlying before the options decision spends the day's only slot on it", async () => {
+    // Task #59. optionsMaxConcurrentPositions is 1, so a candidate whose ATM
+    // contract the risk budget cannot buy does not merely waste a chain fetch
+    // — it can consume the single options slot on a refusal that was certain
+    // before the chain was read. Asserted HERE, at the consumer, and not only
+    // in optionsAffordability.test.ts: a filter that computes a verdict and
+    // then hands the unfiltered list on anyway passes every unit test it has.
+    const cheap = { ...candidate('RIOT', 2), price: 21.91 };
+    const dear = { ...candidate('META', 2), price: 650.81 };
+    setAutotradeConfig({
+      optionsAffordabilityFilterEnabled: true,
+      optionsAtmPremiumRatioPct: 1,
+      accountEquityUsd: 5137.44,
+      riskPerTradePct: 1.25,
+      optionsDisasterStopPct: 70,
+      methodWeightingEnabled: false,
+    });
+    mockScreen.mockResolvedValue({
+      generatedAt: Date.now(),
+      candidates: [cheap, dear],
+      excluded: [],
+      skipped: [],
+      errors: [],
+      rejected: [],
+      relVolMedian: null,
+      discovery: { universeCount: 2, moversCount: 0, scannedCount: 2, moversError: null },
+    });
+    mockDecide.mockReturnValue({ signals: [signal('RIOT'), signal('META')], skipped: [] });
+    mockExecute.mockResolvedValue([{ symbol: 'RIOT', ok: true }]);
+    mockOptionsDecide.mockResolvedValue({ signals: [], skipped: [] });
+
+    const summary = await runAutotradeLoopTick();
+
+    // The ceiling is (5137.44 * 1.25 / 100) / 70 = $0.9174 per share, so at a
+    // 1% assumed ratio META's $650.81 underlying implies $6.51 and cannot fit;
+    // RIOT's $21.91 implies $0.22 and can.
+    const optionsArgs = mockOptionsDecide.mock.calls.at(-1)?.[0];
+    expect(optionsArgs?.map((c) => c.symbol)).toEqual(['RIOT']);
+    expect(summary.optionsCandidatesConsidered).toBe(1);
+    // Equity is untouched by the options affordability filter.
+    expect(mockDecide).toHaveBeenCalledWith([cheap, dear], {
+      stopAtrMultiple: 1.5,
+      targetRMultiple: 2,
+      maxStopDistancePct: 0,
+    });
+  });
+
+  it('leaves the options candidate list alone while the affordability filter is off', async () => {
+    const cheap = { ...candidate('RIOT', 2), price: 21.91 };
+    const dear = { ...candidate('META', 2), price: 650.81 };
+    setAutotradeConfig({
+      optionsAffordabilityFilterEnabled: false,
+      accountEquityUsd: 5137.44,
+    });
+    mockScreen.mockResolvedValue({
+      generatedAt: Date.now(),
+      candidates: [cheap, dear],
+      excluded: [],
+      skipped: [],
+      errors: [],
+      rejected: [],
+      relVolMedian: null,
+      discovery: { universeCount: 2, moversCount: 0, scannedCount: 2, moversError: null },
+    });
+    mockDecide.mockReturnValue({ signals: [signal('RIOT'), signal('META')], skipped: [] });
+    mockExecute.mockResolvedValue([{ symbol: 'RIOT', ok: true }]);
+    mockOptionsDecide.mockResolvedValue({ signals: [], skipped: [] });
+
+    const summary = await runAutotradeLoopTick();
+
+    expect(mockOptionsDecide.mock.calls.at(-1)?.[0]?.map((c) => c.symbol)).toEqual(['RIOT', 'META']);
+    expect(summary.optionsCandidatesConsidered).toBe(2);
+  });
+
   it('filters out a high-ATR candidate before Decision ever sees it', async () => {
     mockScreen.mockResolvedValue({
       generatedAt: Date.now(),

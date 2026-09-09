@@ -735,6 +735,11 @@ export const NEVER_TUNED_KEYS = [
   'optionsStagnationMinutes',
   'optionsStagnationMinMovePct',
   'optionsDisasterStopPct',
+  // Affordability filtering is a claim about what the broker will sell for the
+  // budget, not a risk appetite the tune gets to lean on: the ceiling already
+  // moves on its own whenever equity or the risk % does.
+  'optionsAffordabilityFilterEnabled',
+  'optionsAtmPremiumRatioPct',
   'stagnationExitMinutes',
   'stagnationExitMinR',
   'endOfDayFlattenMinutes',
