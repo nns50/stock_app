@@ -6990,10 +6990,9 @@ makes the held count smaller at the moment the second bracket goes out (a partia
 fill, an entry not yet booked) refuses it. `lotsFitProtectiveBound` checks this
 before either order is sent.
 
-**Still unknown: whether two combo groups may coexist on one symbol at all.** The
-probe sent 39 shares of exits against 38 held, so its refusal is fully explained
-by the quantity bound and says nothing about group count — the error text
-conflates them. Answering it needs a live entry.
+**Answered 2026-09-09 — see the SIRI probe below.** That bound is the STANDALONE
+rule and does not govern the OTOCO entry path, so `lotsFitProtectiveBound` must
+not gate it. It remains correct for the re-arm endpoint.
 
 ### The failure branch, designed before the build
 
@@ -7270,3 +7269,79 @@ which is half the question. That evidence accrues from now on, with the flag off
 When the flag is on and the book's room could not be measured this tick, the
 position is **held**, not scratched: a gate that fires on an assumption is not a
 gate.
+
+---
+
+## 2026-09-09 — the SIRI probe: two OTOCO groups DO coexist on one symbol
+
+The 2026-09-08 FCX probe placed a **standalone** bracket (exits only, no MASTER)
+over shares already held, and the broker compared it to held-minus-committed. It
+could not answer the question per-lot brackets actually turn on, because its
+refusal was fully explained by quantity and
+`OPENAPI_ORDER_NOT_SUPPORT_REVERSE_OPTION` conflates the two causes.
+
+Answered with **one share and six cents**, live, at 09:55 ET:
+
+| | order | result |
+|---|---|---|
+| OTOCO #1 | BUY 1 SIRI @ 28.95, stop 28.26 / target 29.99 | **FILLED @ 28.80**, both exit legs resting → 1 held, 1 committed, available **0** |
+| OTOCO #2 | BUY 1 SIRI @ 24.50 (15% below market, unfillable), stop 24.00 / target 25.50, **same symbol** | **ACCEPTED** — combo `C0JGQD5J959H6P10EU6AIK135B`, all three legs SUBMITTED |
+
+Verified at the broker rather than from the acknowledgement:
+`GET /api/autotrade/live/open-orders` showed **two SIRI combo groups resting
+simultaneously**, the second carrying two SELL exit legs against a single share
+already fully committed to the first.
+
+**Two facts, both new:**
+
+1. An OTOCO's **contingent** exit legs are **not** counted against holdings.
+2. **Two OTOCO combo groups coexist on one symbol.**
+
+**Consequence:** `lotsFitProtectiveBound` encodes the standalone rule and would
+refuse the very plan the broker accepted. It must not gate the OTOCO entry path.
+`planLotBrackets`, `classifySecondBracketRefusal` and `planRollbackToSingle` are
+unaffected — though the *premise* of the refusal classifier changed and its
+comment now says so, while its behaviour stays put.
+
+**What the probe did NOT show, recorded because it bounds the claim.** OTOCO #2's
+entry never filled, so its exits were contingent-pending throughout — never
+ACTIVE protective orders over held shares. The steady state (both entries
+filled, both groups' exits live, summing to exactly the held quantity) was not
+observed. The arithmetic fits by construction, but so did the FCX bound before
+it was measured, so **the wiring must submit both entries before either fills** —
+the shape the probe validated — rather than adding a second group against an
+already-filled first.
+
+**Bonus, useful for the wiring:** cancelling an OTOCO's **MASTER** by client
+order id **cascades** — the entire combo, both contingent legs included,
+disappeared in one call.
+
+**Method note.** The manual `/api/trade/place` path is governed by
+`trading_config.maxExposureUsd`, which at $2,000 sits below the loop's own
+routine book, so the probe was refused at 09:40 by a guardrail that had nothing
+to do with the question. The operator authorised raising it to $5,500 for the
+duration; it was restored to $2,000 immediately after and verified by read-back,
+with every other guardrail untouched. Unwind: OTOCO #2 cancelled (cascaded),
+OTOCO #1's take-profit cancelled first and its stop last, 1 share sold @ 28.74,
+broker quantity 0, zero working orders, intent reconciled to `cancelled`.
+
+### What the full wiring costs, measured before starting it
+
+The entry path is `one intent → one broker order → one fill → one
+createPosition`. Per-lot brackets need **two bracketed entry orders per signal**,
+so the cost is not the placement — it is that one signal becomes **two
+positions**, and a position is the unit every downstream consumer counts:
+
+| consumer | what breaks |
+|---|---|
+| `maxConcurrentPositions` (3) | one signal consumes **two** slots |
+| re-entry cooldown | the second lot reads as a repeat entry on the same symbol |
+| stagnation exit / time exit | evaluates each lot separately, on its own clock |
+| `checkLiveBracketProtection` | two groups on one symbol is now normal, not an alarm |
+| scale-out (cancel-and-replace) | would fire on a lot that is already the partial |
+| `liveMaxOrdersPerDay` (20) | halves to 10 entries a day |
+
+So the wiring needs a position model that maps two entry orders to one logical
+trade, or teaches all six consumers to treat the pair as one. That is the real
+scope, and it is a change to the live money path's core invariant — not
+something to slip in behind a flag and discover from a fill.

@@ -161,3 +161,51 @@ describe('planRollbackToSingle', () => {
     expect(planRollbackToSingle([], 38).reopensNakedWindow).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// WHAT THE 2026-09-09 SIRI PROBE ESTABLISHED, pinned as a test so the finding
+// cannot be quietly un-learned by someone reading only lotsFitProtectiveBound.
+//
+// One share, six cents: OTOCO #1 filled and rested a bracket (1 held, 1
+// committed, available 0), then OTOCO #2 was submitted on the SAME symbol with
+// its own bracket and an unfillable entry — and was ACCEPTED, both groups
+// resting simultaneously. So contingent exits are not counted against
+// holdings, and two combo groups do coexist on one symbol.
+// ---------------------------------------------------------------------------
+describe('the standalone bound does not govern the OTOCO path (2026-09-09 probe)', () => {
+  it('would REFUSE the very plan the broker accepted, which is why it must not gate entries', () => {
+    // The probe's exact state: 1 share held, 1 already committed to the first
+    // bracket. lotsFitProtectiveBound says no room for a single further share.
+    const verdict = lotsFitProtectiveBound([{ quantity: 1, targetR: 2, role: 'runner' }], 1, 1);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.available).toBe(0);
+    // The broker accepted it anyway. This assertion is not describing a bug in
+    // the function — it is correct for STANDALONE brackets — it pins the reason
+    // the OTOCO entry path must not consult it.
+  });
+
+  it('still governs a standalone re-arm over shares already held', () => {
+    // 38 held, nothing committed: a full-size standalone bracket fits.
+    expect(lotsFitProtectiveBound([{ quantity: 38, targetR: 2, role: 'runner' }], 38, 0).ok).toBe(true);
+    // 38 held with 38 already committed: no room, which is the FCX refusal.
+    expect(lotsFitProtectiveBound([{ quantity: 38, targetR: 2, role: 'runner' }], 38, 38).ok).toBe(false);
+  });
+
+  it('a per-lot plan sums to exactly the filled quantity, so the lots never over-ask', () => {
+    // The arithmetic the OTOCO design rests on: each group's exits cover only
+    // its own lot, so together they equal what is held — never more. Checked
+    // across sizes rather than at one convenient number.
+    for (const qty of [2, 3, 7, 38, 47, 91, 100, 199]) {
+      const lots = planLotBrackets({
+        filledQuantity: qty,
+        partialExitPct: 67,
+        partialExitRMultiple: 0.25,
+        targetRMultiple: 2,
+      });
+      expect(
+        lots.reduce((s, l) => s + l.quantity, 0),
+        `qty ${qty}`,
+      ).toBe(qty);
+    }
+  });
+});
