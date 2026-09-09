@@ -32,6 +32,10 @@ describe('JournalAnalyticsModal', () => {
         },
       ],
       resolutionMix: { intraday: 0, daily: 0 },
+      byResolution: {
+        intraday: { trades: 0, avgMfeR: null, avgMaeR: null, avgRealizedR: null, capturePct: null },
+        daily: { trades: 0, avgMfeR: null, avgMaeR: null, avgRealizedR: null, capturePct: null },
+      },
       coverage: { closedStockTrades: 1, undated: 0, overCap: 0, unavailable: 0 },
     });
     const slipSpy = vi.spyOn(client, 'journalSlippage');
@@ -60,6 +64,10 @@ describe('JournalAnalyticsModal', () => {
       capturePct: null,
       rows: [],
       resolutionMix: { intraday: 0, daily: 0 },
+      byResolution: {
+        intraday: { trades: 0, avgMfeR: null, avgMaeR: null, avgRealizedR: null, capturePct: null },
+        daily: { trades: 0, avgMfeR: null, avgMaeR: null, avgRealizedR: null, capturePct: null },
+      },
       coverage: { closedStockTrades: 0, undated: 0, overCap: 0, unavailable: 0 },
     });
     const slipSpy = vi.spyOn(client, 'journalSlippage').mockResolvedValue({
@@ -100,6 +108,10 @@ describe('JournalAnalyticsModal', () => {
       capturePct: null,
       rows: [],
       resolutionMix: { intraday: 0, daily: 0 },
+      byResolution: {
+        intraday: { trades: 0, avgMfeR: null, avgMaeR: null, avgRealizedR: null, capturePct: null },
+        daily: { trades: 0, avgMfeR: null, avgMaeR: null, avgRealizedR: null, capturePct: null },
+      },
       coverage: { closedStockTrades: 0, undated: 0, overCap: 0, unavailable: 0 },
     });
     const overrunSpy = vi.spyOn(client, 'journalStopOverrun').mockResolvedValue({
@@ -154,6 +166,10 @@ describe('JournalAnalyticsModal', () => {
       capturePct: null,
       rows: [],
       resolutionMix: { intraday: 0, daily: 0 },
+      byResolution: {
+        intraday: { trades: 0, avgMfeR: null, avgMaeR: null, avgRealizedR: null, capturePct: null },
+        daily: { trades: 0, avgMfeR: null, avgMaeR: null, avgRealizedR: null, capturePct: null },
+      },
       coverage: { closedStockTrades: 0, undated: 0, overCap: 0, unavailable: 0 },
     });
     vi.spyOn(client, 'journalStats').mockResolvedValue({ winRate: 55, kelly: { suggestedRiskPct: 2 } } as never);
@@ -205,6 +221,10 @@ describe('JournalAnalyticsModal — excursion coverage', () => {
       capturePct: 60,
       rows: [row],
       resolutionMix: { intraday: 0, daily: 1 },
+      byResolution: {
+        intraday: { trades: 0, avgMfeR: null, avgMaeR: null, avgRealizedR: null, capturePct: null },
+        daily: { trades: 1, avgMfeR: null, avgMaeR: null, avgRealizedR: null, capturePct: null },
+      },
       coverage: { closedStockTrades: 70, undated: 4, overCap: 16, unavailable: 49 },
     });
     render(<JournalAnalyticsModal open onClose={() => {}} />);
@@ -223,6 +243,10 @@ describe('JournalAnalyticsModal — excursion coverage', () => {
       capturePct: 60,
       rows: [row],
       resolutionMix: { intraday: 0, daily: 1 },
+      byResolution: {
+        intraday: { trades: 0, avgMfeR: null, avgMaeR: null, avgRealizedR: null, capturePct: null },
+        daily: { trades: 1, avgMfeR: null, avgMaeR: null, avgRealizedR: null, capturePct: null },
+      },
       coverage: { closedStockTrades: 1, undated: 0, overCap: 0, unavailable: 0 },
     });
     render(<JournalAnalyticsModal open onClose={() => {}} />);
@@ -240,6 +264,10 @@ describe('JournalAnalyticsModal — excursion coverage', () => {
       capturePct: null,
       rows: [],
       resolutionMix: { intraday: 0, daily: 0 },
+      byResolution: {
+        intraday: { trades: 0, avgMfeR: null, avgMaeR: null, avgRealizedR: null, capturePct: null },
+        daily: { trades: 0, avgMfeR: null, avgMaeR: null, avgRealizedR: null, capturePct: null },
+      },
       coverage: { closedStockTrades: 12, undated: 3, overCap: 0, unavailable: 9 },
     });
     render(<JournalAnalyticsModal open onClose={() => {}} />);
@@ -258,6 +286,10 @@ describe('JournalAnalyticsModal — excursion coverage', () => {
       capturePct: null,
       rows: [],
       resolutionMix: { intraday: 0, daily: 0 },
+      byResolution: {
+        intraday: { trades: 0, avgMfeR: null, avgMaeR: null, avgRealizedR: null, capturePct: null },
+        daily: { trades: 0, avgMfeR: null, avgMaeR: null, avgRealizedR: null, capturePct: null },
+      },
       coverage: { closedStockTrades: 0, undated: 0, overCap: 0, unavailable: 0 },
     });
     render(<JournalAnalyticsModal open onClose={() => {}} />);

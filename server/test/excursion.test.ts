@@ -280,3 +280,65 @@ describe('aggregateExcursions resolution mix', () => {
     expect(aggregateExcursions(rows).resolutionMix).toEqual({ intraday: 1, daily: 1 });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Averages segregated by resolution (2026-09-09).
+//
+// Disclosing the mix was enough while daily rows were a rounding error. When
+// the journal route's cap was raised they became 31 of 79 measured trades, and
+// the pooled avgMfeR jumped 0.70 -> 1.74 with no trade changing: measured
+// apart, intraday averaged 0.54 and daily 3.60. A daily-bar MFE is the high
+// across whole calendar days, not the excursion during the hold — the worst
+// case in that sample read mfeR 55.51 — so their mean is not a quantity.
+// ---------------------------------------------------------------------------
+describe('aggregateExcursions — averages per resolution', () => {
+  /** Two rows whose MFE differs a lot, one per resolution, so a pooled mean is
+   *  visibly not either of them. */
+  const mixed = () => [
+    { ...computeExcursion(longTrade, [candle(110, 99)], 'intraday')! },
+    { ...computeExcursion(longTrade, [candle(200, 99)], 'daily')! },
+  ];
+
+  it('reports each resolution separately, and neither equals the pooled figure', () => {
+    const rep = aggregateExcursions(mixed());
+    const i = rep.byResolution.intraday.avgMfeR!;
+    const d = rep.byResolution.daily.avgMfeR!;
+    expect(i).toBeLessThan(d);
+    // The whole point: the pooled number is between them and describes neither.
+    expect(rep.avgMfeR!).toBeGreaterThan(i);
+    expect(rep.avgMfeR!).toBeLessThan(d);
+    expect(rep.byResolution.intraday.trades).toBe(1);
+    expect(rep.byResolution.daily.trades).toBe(1);
+  });
+
+  it('a resolution with no rows reports null averages, not zero', () => {
+    // Zero would read as "measured, and it was zero" — the mistake this whole
+    // module exists to avoid. `trades: 0` says there was nothing to average.
+    const rep = aggregateExcursions([{ ...computeExcursion(longTrade, [candle(110, 99)], 'intraday')! }]);
+    expect(rep.byResolution.daily.trades).toBe(0);
+    expect(rep.byResolution.daily.avgMfeR).toBeNull();
+    expect(rep.byResolution.daily.avgMaeR).toBeNull();
+    expect(rep.byResolution.daily.capturePct).toBeNull();
+  });
+
+  it('an all-one-resolution report has that resolution equal to the pooled figure', () => {
+    // The identity that proves the split is a PARTITION and not a re-derivation:
+    // with nothing to separate, separating must change nothing.
+    const rows = [
+      { ...computeExcursion(longTrade, [candle(110, 99)], 'intraday')! },
+      { ...computeExcursion(longTrade, [candle(130, 94)], 'intraday')! },
+    ];
+    const rep = aggregateExcursions(rows);
+    expect(rep.byResolution.intraday.avgMfeR).toBe(rep.avgMfeR);
+    expect(rep.byResolution.intraday.avgMaeR).toBe(rep.avgMaeR);
+    expect(rep.byResolution.intraday.avgRealizedR).toBe(rep.avgRealizedR);
+    expect(rep.byResolution.intraday.trades).toBe(rep.trades);
+  });
+
+  it('the two resolutions partition the rows — counts agree with resolutionMix', () => {
+    const rep = aggregateExcursions(mixed());
+    expect(rep.byResolution.intraday.trades + rep.byResolution.daily.trades).toBe(rep.trades);
+    expect(rep.byResolution.intraday.trades).toBe(rep.resolutionMix.intraday);
+    expect(rep.byResolution.daily.trades).toBe(rep.resolutionMix.daily);
+  });
+});
