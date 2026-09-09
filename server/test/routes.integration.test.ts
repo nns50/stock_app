@@ -10,6 +10,7 @@ import { resetLoginThrottle } from '../src/services/auth';
 import { setSetting } from '../src/db/settings';
 import { createIntent } from '../src/db/orders';
 import { addExit, createPosition } from '../src/db/positions';
+import { getAutotradeConfig } from '../src/db/autotradeConfig';
 import { setAutotradeConfig } from '../src/db/autotradeConfig';
 import { openPaperPosition } from '../src/db/autotradePaperPositions';
 import { openOptionsPaperPosition } from '../src/db/autotradeOptionsPaperPositions';
@@ -3399,6 +3400,75 @@ describe('journal analysis routes tell you what they could not cover (integratio
       expect(r.trades + r.coverage.unavailable, `limit=${q} analysed the wrong number`).toBe(4);
       expect(r.coverage.overCap, `limit=${q} dropped trades`).toBe(0);
     }
+  });
+
+  it('exit-replay accounts for every closed stock trade and defaults to the live geometry', async () => {
+    // Asserted at the ROUTE. The engine's own tests prove replayExit walks bars
+    // correctly; they prove nothing about whether this handler hands it any.
+    db.exec('DELETE FROM position_exits; DELETE FROM positions;');
+    // Same-session (replayable) and an overnight hold (not — intraday bars
+    // would span two days and the replay would degenerate).
+    const sameDay = createPosition({
+      assetType: 'stock',
+      symbol: 'RPLAY',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      entryDate: '2026-06-10',
+      stopPrice: 95,
+    });
+    addExit(sameDay.id, { quantity: 10, exitPrice: 103, exitDate: '2026-06-10' });
+    const overnight = createPosition({
+      assetType: 'stock',
+      symbol: 'RPOVN',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      entryDate: '2026-06-10',
+      stopPrice: 95,
+    });
+    addExit(overnight.id, { quantity: 10, exitPrice: 101, exitDate: '2026-06-12' });
+
+    const rep = (await getJson('/api/journal/exit-replay')) as {
+      rules: { breakevenTriggerR: number; trailStartR: number; trailStopR: number; targetR: number };
+      replay: { trades: number };
+      actual: { trades: number };
+      coverage: {
+        closedStockTrades: number;
+        undated: number;
+        notSameSession: number;
+        overCap: number;
+        unreplayable: number;
+      };
+    };
+    // Defaults are the LIVE config, not hardcoded — a bare call has to answer
+    // "what would today's geometry have done".
+    const cfg = getAutotradeConfig();
+    expect(rep.rules.trailStopR).toBe(cfg.trailStopRMultiple);
+    expect(rep.rules.targetR).toBe(cfg.targetRMultiple);
+    // The overnight trade is EXCLUDED and counted, never silently dropped.
+    expect(rep.coverage.closedStockTrades).toBe(2);
+    expect(rep.coverage.notSameSession).toBe(1);
+    // Every closed trade is accounted for by exactly one bucket.
+    const c = rep.coverage;
+    expect(rep.replay.trades + c.undated + c.notSameSession + c.overCap + c.unreplayable).toBe(c.closedStockTrades);
+  });
+
+  it('exit-replay takes rule overrides from the query, and ignores junk', async () => {
+    const over = (await getJson('/api/journal/exit-replay?trailStopR=0.15&targetR=1.5')) as {
+      rules: { trailStopR: number; targetR: number };
+    };
+    expect(over.rules.trailStopR).toBe(0.15);
+    expect(over.rules.targetR).toBe(1.5);
+
+    // NaN must not silently disable a rule — `Number('abc')` is NaN and every
+    // comparison against it is false, so the trail would just never engage.
+    const cfg = getAutotradeConfig();
+    const junk = (await getJson('/api/journal/exit-replay?trailStopR=abc&targetR=-3')) as {
+      rules: { trailStopR: number; targetR: number };
+    };
+    expect(junk.rules.trailStopR).toBe(cfg.trailStopRMultiple);
+    expect(junk.rules.targetR).toBe(cfg.targetRMultiple);
   });
 
   it('benchmark survives a book whose closed trades are all undated', async () => {

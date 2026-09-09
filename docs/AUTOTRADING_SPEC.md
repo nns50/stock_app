@@ -6829,3 +6829,76 @@ So it is currently **non-binding, not correct**. `sampleSince` would normally
 exclude the older daily rows, but `autoTuneExitTunedAt` is `0` in production, so
 that filter admits everything. Left as an operator decision rather than changed
 under them: it is a live-money path and `autoTuneExitsEnabled` is on.
+
+---
+
+## Exit-rule path replay (2026-09-09)
+
+`GET /api/journal/exit-replay` — walks each same-session trade's 5-minute bars
+**in order** against a candidate exit geometry and reports where it would really
+have been closed.
+
+### Why /excursions cannot answer this
+
+`computeExcursion` collapses a trade to its high and low. It answers "how far did
+this run" and structurally cannot answer "would a tighter stop have survived the
+dip that came first". Reasoning about exit rules from MFE alone is not merely
+imprecise — it is **biased, always in the same direction**. Model a trail as
+"exit at peak − D" and it can never be punished for tightening D, because a
+peak-and-distance model contains no dip.
+
+Run over the live book on 2026-09-09, that model reported every trail distance
+from 0.5R down to 0.1R as monotonically better, mean R **+0.032 → +0.315**. That
+is the signature of a question the data cannot answer, not a finding, and it was
+discarded rather than acted on.
+
+### What prompted it
+
+Three live thresholds are all set at **0.5R**:
+
+| setting | value | against this book |
+|---|---|---|
+| `trailStartRMultiple` | 0.5 | reached by only **17 of 48** intraday trades (35%) |
+| `trailStopRMultiple` | 0.5 | the stop's distance behind the peak |
+| `stagnationExitMinR` | 0.5 | below this for 90 min and the slot recycles |
+
+The book's **median trade peaks at 0.34R** and its **median winner at 0.58R**. A
+stop trailing 0.5R behind the peak of a 0.58R move sits at breakeven — which is
+exactly what IOT (peak 1.04R, booked 0.25R) and TSLA (peak 0.64R, booked 0.05R)
+did. Those are arithmetic and need no simulation; choosing replacements does.
+
+Also worth recording, because the framing was wrong first: the 48% median capture
+is **not** the scale-out (only 3 of 22 winners had a partial fill — it began
+working on 2026-09-08) and **not** mainly the trail (which rarely binds). The
+dominant winner exit is `time_exit`, **12 of 22**, peaking at 0.54R and booking
+0.30R. The clock closes them.
+
+### Intrabar order is unknowable and is resolved ADVERSELY
+
+Within one 5-minute bar the high and low are known; their order is not. Every
+ambiguity is resolved **against** the trade: if the stop and the target both sit
+inside one bar's range, the stop fills. That assumption is the point — a replay
+whose assumptions all flatter the change under test is the peak-and-distance
+model again, wearing more code.
+
+### Scope and what it reports
+
+Same-session trades only. An overnight hold has no usable intraday window, and
+replaying it on daily bars would degenerate into the very model this replaces —
+so it is **excluded and counted** (`coverage.notSameSession`), never dropped.
+Coverage buckets sum to the whole population, as on `/excursions`.
+
+Rule defaults come from the **live config**, so a bare call answers "what would
+today's geometry have done"; `?breakevenR=`, `?trailStartR=`, `?trailStopR=`,
+`?targetR=` each answer "what would this one change". Junk falls back to the live
+value rather than to `NaN`, which would silently disable the rule it belongs to
+since every comparison against NaN is false. The response pairs the replay
+against the **actual realized R on the same trades** — comparing a replay over
+one population to a headline average over another is how a rule change comes to
+look like an improvement it never made.
+
+### Not yet done
+
+Nothing has been tuned from this. The replay is the instrument; running the grid
+and deciding the three 0.5R thresholds is the next step, and `autoTuneExitsEnabled`
+stays off until it has been done (task #58).
