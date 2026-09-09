@@ -140,6 +140,40 @@ function usd(n: number): string {
  * max-loss); every other check (drawdown halt, trade/position caps, combined
  * aggregate-risk budget, correlated exposure) is identical for both shapes.
  */
+// ---------------------------------------------------------------------------
+// THE OPTIONS FUNNEL'S OWN JOURNAL ACTIONS (2026-09-09, task #53).
+//
+// Both options risk checks used to journal `stage: 'risk_check', action:
+// result.ok ? 'passed' : 'blocked'` — byte-identical to the equity check. So
+// `/api/autotrade/events/summary?actions=blocked` returned the UNION of the two
+// funnels: on 2026-09-04 the options read and the equity read both showed
+// blocked = 2,015, because they were the same rows.
+//
+// The consequence was not cosmetic. docs/OPTIONS_TUNING_PLAN.md's rules F2-F5
+// ("dominant block reason: risk budget / DTE / IV-RV / liquidity") are
+// evaluated from COUNTS over a multi-day window, and counts that cannot be
+// split cannot answer them — they could only be read by pulling a single
+// session's rows and inspecting each detail shape, which fits the 1,000-row cap
+// for one session and never for the window the plan asks for.
+//
+// Same class as the F7 fix (task #16): a gate whose event is indistinguishable
+// from another gate's is not measurable, and an unmeasurable rule silently
+// never fires. Distinct names rather than an `assetKind` detail field, for the
+// same reason F7 chose them: the plan's own reads are count-based, and a detail
+// field only becomes countable if the summary endpoint learns to filter on it.
+//
+// The LIVE options path was never affected — it already has
+// live_options_entry_blocked / live_options_risk_blocked.
+// ---------------------------------------------------------------------------
+export const OPTIONS_RISK_CHECK_PASSED = 'options_passed';
+export const OPTIONS_RISK_CHECK_BLOCKED = 'options_blocked';
+
+/** One helper both options emitters call, so the paper entry path and the
+ *  preview path cannot drift into two spellings of the same event. */
+export function optionsRiskCheckAction(ok: boolean): string {
+  return ok ? OPTIONS_RISK_CHECK_PASSED : OPTIONS_RISK_CHECK_BLOCKED;
+}
+
 export function evaluateOptionsRiskCheck(signal: OptionsTradeSignal, ctx: RiskCheckContext): OptionsRiskCheckResult {
   const checks: RiskCheckRule[] = [];
   const check = (rule: string, passed: boolean, detail: string) => checks.push({ rule, passed, detail });
@@ -423,7 +457,8 @@ export function evaluateOptionsRiskCheck(signal: OptionsTradeSignal, ctx: RiskCh
  * shape), PLUS any options signal already approved earlier in this same
  * options batch. This IS the combined budget, threaded explicitly rather than
  * assumed shared. Journals every outcome exactly like the equity risk-check
- * does (stage 'risk_check', action 'passed' | 'blocked').
+ * does — but under the options funnel's OWN actions (see
+ * optionsRiskCheckAction), not equity's 'passed'/'blocked'.
  */
 export async function runOptionsRiskCheck(
   signals: OptionsTradeSignal[],
@@ -512,7 +547,7 @@ export async function runOptionsRiskCheck(
       symbol: signal.symbol,
       stage: 'risk_check',
       riskProfile: config.riskProfile,
-      action: result.ok ? 'passed' : 'blocked',
+      action: optionsRiskCheckAction(result.ok),
       detail: { checks: result.checks, contracts },
     });
 

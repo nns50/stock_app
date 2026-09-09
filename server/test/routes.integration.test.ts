@@ -16,6 +16,7 @@ import { openPaperPosition } from '../src/db/autotradePaperPositions';
 import { openOptionsPaperPosition } from '../src/db/autotradeOptionsPaperPositions';
 import { createLiveOptionsPosition } from '../src/db/autotradeLiveOptionsPositions';
 import { saveLastTick } from '../src/db/autotradeLastTick';
+import { logAutotradeEvent } from '../src/db/autotradeEvents';
 import { getProvider } from '../src/providers';
 import { seedClosedAutotradeSessions, weekdaysEndingAt } from './helpers/autotradeSessions';
 
@@ -3068,6 +3069,29 @@ describe('autotrade monitoring dashboard + kill switch routes (integration)', ()
     expect(future.events).toEqual([]);
     const past = (await getJson(`/api/autotrade/events?since=${Date.now() - 60 * 60_000}`)) as { events: unknown[] };
     expect(past.events.length).toBeGreaterThan(0);
+  });
+
+  it('GET /events/summary can count the OPTIONS funnel apart from the equity one', async () => {
+    // task #53. Both risk checks journaled `stage: 'risk_check', action:
+    // blocked` — byte-identical — so ?actions=blocked returned the UNION: on
+    // 2026-09-04 the options read and the equity read both showed 2,015,
+    // because they were the same rows. OPTIONS_TUNING_PLAN's rules F2-F5 are
+    // decided from counts over a multi-day window, which that made impossible.
+    db.exec('DELETE FROM autotrade_events');
+    logAutotradeEvent({ symbol: 'EQ1', stage: 'risk_check', action: 'blocked', detail: { checks: [] } });
+    logAutotradeEvent({ symbol: 'EQ2', stage: 'risk_check', action: 'blocked', detail: { checks: [] } });
+    logAutotradeEvent({ symbol: 'OPT1', stage: 'risk_check', action: 'options_blocked', detail: { checks: [] } });
+
+    const counts = async (action: string) => {
+      const { summary } = (await getJson(`/api/autotrade/events/summary?actions=${action}`)) as {
+        summary: { action: string; count: number }[];
+      };
+      return summary.reduce((n, row) => n + row.count, 0);
+    };
+
+    expect(await counts('blocked')).toBe(2); // equity only — no longer the union
+    expect(await counts('options_blocked')).toBe(1);
+    expect(await counts('blocked,options_blocked')).toBe(3);
   });
 
   it('GET /events/summary counts by ET date and action, past the row cap', async () => {

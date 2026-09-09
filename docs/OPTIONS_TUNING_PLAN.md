@@ -127,7 +127,7 @@ that day, at `limit=1000`:
 | Query | Reach |
 |---|---|
 | unfiltered | 7.9h — cannot see yesterday |
-| `actions=blocked` | 3.5h — still capped, worse in wall-clock |
+| `actions=blocked` | 3.5h — still capped, worse in wall-clock (and this was both funnels at once) |
 | `actions=options_signal_generated,no_options_signal` | 5.4h — still capped |
 | `actions=short_dated_options_exit` | uncapped (≤4/day, so years) |
 
@@ -158,17 +158,31 @@ GET /api/autotrade/events/summary?actions=<names>&since=<epoch_ms>
 |---|---|---|
 | Exit rule distribution (L1–L6) | `/events` | `short_dated_options_exit` |
 | Entry funnel (F1–F5) | `/events/summary` | `options_signal_generated,no_options_signal` |
-| Risk-check blocks (F2–F5) | `/events/summary` | `blocked` |
+| Risk-check blocks (F2–F5) | `/events/summary` | **`options_blocked`** |
 | Entry gates (F6–F7) | `/events/summary` | `short_dated_entry_window_closed` |
+
+**`options_blocked`, not `blocked` (2026-09-09, task #53).** Until that date the
+options risk check journaled `action: 'blocked'` — byte-identical to the equity
+check — so this row returned the **union of both funnels**. On 2026-09-04 the
+options read and the equity read both showed `blocked = 2,015`, because they
+were the same rows, and F2–F5 could not be evaluated from counts at all. Same
+class as the F7 fix: a gate whose event is indistinguishable from another
+gate's is not measurable. The options funnel now writes `options_blocked` /
+`options_passed`; `blocked` is the equity funnel alone. **Rows written before
+2026-09-09 are still under `blocked` and cannot be split** — for a window
+spanning that date, query both and treat the earlier part as an upper bound.
+The LIVE options path was never affected (`live_options_entry_blocked`,
+`live_options_risk_blocked`).
 
 `since` should be the epoch ms of **2026-08-27**, when short-dated was
 enabled, so every read covers the whole life of the feature rather than one
 day.
 
-One thing the summary cannot give you: the *reason* inside a `blocked` event's
-`detail`. When F1 fires and the dominant reason has to be identified, pull the
-rows for a single recent session (a narrow `since`) and read the detail there —
-the summary establishes *that* blocks dominate, the rows establish *why*.
+One thing the summary cannot give you: the *reason* inside an `options_blocked`
+event's `detail`. When F1 fires and the dominant reason has to be identified,
+pull the rows for a single recent session (a narrow `since`) and read the detail
+there — the summary establishes *that* blocks dominate, the rows establish
+*why*.
 
 ## Data-quality notes
 
