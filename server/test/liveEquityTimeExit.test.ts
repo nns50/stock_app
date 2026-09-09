@@ -43,12 +43,13 @@ import {
   WebullOrderStatus,
 } from '../src/providers/webull/orders';
 import { initDb, db } from '../src/db';
+import { getLiveEntryOrderForPosition } from '../src/db/autotradeLiveOrders';
 import { setAutotradeConfig, defaultAutotradeConfig, AutotradeConfig } from '../src/db/autotradeConfig';
 import { setTradingConfig } from '../src/db/trading';
 import { createPosition, listPositions } from '../src/db/positions';
 import { createIntent, getIntent, listIntents, type OrderIntentRecord } from '../src/db/orders';
 import { listPendingLiveOrders, getLiveOrder, recordLiveExitOrder } from '../src/db/autotradeLiveOrders';
-import { listAutotradeEvents } from '../src/db/autotradeEvents';
+import { listAutotradeEvents, logAutotradeEvent } from '../src/db/autotradeEvents';
 import { checkSessionWindow } from '../src/services/autotrading/executionGuards';
 import { evaluateRiskCheck } from '../src/services/autotrading/riskCheck';
 import { TradeSignal } from '../src/services/autotrading/decide';
@@ -58,6 +59,7 @@ import {
   attemptLiveEntry,
   reconcileLiveOrders,
   checkLiveEquityTimeExits,
+  checkLivePerLotSecondLots,
   cancelLiveBracketExitLegs,
   checkLiveBracketProtection,
 } from '../src/services/autotrading/liveExecute';
@@ -176,6 +178,8 @@ async function openAgedLivePosition(ageDays: number) {
     mlRegimeSizeCutPct: 35,
     todayRangePct: null,
     regimeShockRangeRatio: 0,
+    priorSameDayExits: 0,
+    repeatEntrySizeCutPct: 0,
   });
   await attemptLiveEntry(signal(), okResult, 'MODERATE', cfg);
   const entryIntentId = listIntents()[0].id;
@@ -284,6 +288,69 @@ describe('checkLiveEquityTimeExits', () => {
     // The closing order sells (long -> sell), not buys, and closes the FULL quantity.
     const placedIntent = mockPlaceOrder.mock.calls[0][1];
     expect(placedIntent).toMatchObject({ symbol: 'AAPL', side: 'sell', openClose: 'close', quantity });
+  });
+
+  // -------------------------------------------------------------------------
+  // The slot-scarcity gate (2026-09-09, task #41), asserted at the CONSUMER.
+  // stagnationExit.ts's own tests prove the decision; they prove nothing about
+  // whether this handler hands it the book's room, and a gate that never
+  // receives one is a gate that silently never fires — the exact shape of the
+  // four dead values found on 2026-08-27.
+  // -------------------------------------------------------------------------
+  it('holds a stagnant position when the slot is FREE, and journals that it did', async () => {
+    const { position } = await openAgedLivePosition(3);
+    setAutotradeConfig(
+      liveConfig({
+        maxHoldDays: 0,
+        endOfDayFlattenMinutes: 0,
+        stagnationExitMinutes: 90,
+        stagnationExitMinR: 0.5,
+        stagnationExitRequiresScarcity: true,
+        maxConcurrentPositions: 5, // one position open, four slots spare
+      }),
+    );
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+
+    expect(await checkLiveEquityTimeExits()).toEqual([]);
+    expect(mockCancelOrder).not.toHaveBeenCalled();
+
+    const held = listAutotradeEvents({ actions: ['stagnation_exit_held_slot_free'] });
+    expect(held).toHaveLength(1);
+    expect(JSON.parse(held[0].detail!)).toMatchObject({
+      positionId: position.id,
+      scarcity: { scarce: false },
+    });
+  });
+
+  it('scratches the SAME position once the book is at the concurrency cap', async () => {
+    const { position, quantity } = await openAgedLivePosition(3);
+    setAutotradeConfig(
+      liveConfig({
+        maxHoldDays: 0,
+        endOfDayFlattenMinutes: 0,
+        stagnationExitMinutes: 90,
+        stagnationExitMinR: 0.5,
+        stagnationExitRequiresScarcity: true,
+        maxConcurrentPositions: 1, // the one open position IS the cap
+      }),
+    );
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(accountStateWith(quantity) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-CLOSE' });
+    // The broker shows no resting legs, so the close path checks the combo
+    // itself before deciding nothing raced it.
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      legs: [{ comboType: 'MASTER', status: 'FILLED' }],
+    } as WebullOrderStatus);
+
+    const outcomes = await checkLiveEquityTimeExits();
+
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]).toMatchObject({ positionId: position.id, requested: true });
+    expect(listAutotradeEvents({ actions: ['stagnation_exit_held_slot_free'] })).toEqual([]);
   });
 
   // -------------------------------------------------------------------------
@@ -961,11 +1028,14 @@ describe('checkLiveEquityScaleOuts', () => {
   // /order/open) and order_type. Both legs of a long bracket are `sell`, so
   // without these the pair is indistinguishable — which is exactly the payload
   // the broker refused 9 times on 2026-09-03.
-  const restingLeg = (cid: string, kind: 'sl' | 'tp' = 'sl') =>
+  /** `qty` matters from 2026-09-08: the scale-out re-reads the book and checks
+   *  the legs actually carry the new size before it sells, so a test that wants
+   *  a successful resize has to model the resized legs coming back. */
+  const restingLeg = (cid: string, kind: 'sl' | 'tp' = 'sl', qty?: number) =>
     openOrder(
       kind === 'sl'
-        ? { clientOrderId: cid, comboType: 'STOP_LOSS', orderType: 'STOP_LOSS', stopPrice: 96 }
-        : { clientOrderId: cid, comboType: 'STOP_PROFIT', orderType: 'LIMIT', limitPrice: 130 },
+        ? { clientOrderId: cid, comboType: 'STOP_LOSS', orderType: 'STOP_LOSS', stopPrice: 96, quantity: qty }
+        : { clientOrderId: cid, comboType: 'STOP_PROFIT', orderType: 'LIMIT', limitPrice: 130, quantity: qty },
     );
 
   /** A working exit order on its own intent, as a real close-in-flight looks. */
@@ -1000,6 +1070,136 @@ describe('checkLiveEquityScaleOuts', () => {
     expect(await checkLiveEquityScaleOuts()).toEqual([]);
     expect(mockPlaceOrder).not.toHaveBeenCalled();
     expect(mockReplaceOrders).not.toHaveBeenCalled();
+  });
+
+  // -----------------------------------------------------------------------
+  // ACCEPTED IS NOT APPLIED (2026-09-08).
+  //
+  // These assert at the CONSUMER — what reaches the broker, and whether shares
+  // move — not at the helpers. That distinction is the whole lesson of this
+  // feature: buildBracketResizePatches' unit tests were green through 148 live
+  // refusals because they asserted the request shape and nothing asserted the
+  // outcome.
+  // -----------------------------------------------------------------------
+  describe('the resize payload and its verification', () => {
+    const bothLegsQty = (q: number) => ({
+      ok: true as const,
+      orders: [
+        openOrder({
+          clientOrderId: 'STOP-1',
+          comboType: 'STOP_LOSS',
+          orderType: 'STOP_LOSS',
+          stopPrice: 96,
+          quantity: q,
+        }),
+        openOrder({
+          clientOrderId: 'TGT-1',
+          comboType: 'STOP_PROFIT',
+          orderType: 'LIMIT',
+          limitPrice: 130,
+          quantity: q,
+        }),
+      ],
+    });
+
+    it('sends the ratchet-shaped request: ids and quantity, no labels, no prices, NO combo id', async () => {
+      const { position, quantity } = await armed(200);
+      const keep = quantity - Math.floor(quantity / 2);
+      // A combo id MUST exist for this to prove anything. Asserting "undefined
+      // was passed" against a position that never had one only proves there was
+      // nothing to send — which is how the first version of this test passed
+      // while the combo id was being sent again.
+      db.prepare(
+        "UPDATE autotrade_live_orders SET client_combo_order_id = ? WHERE position_id = ? AND role = 'entry'",
+      ).run('COMBO-KNOWN', position.id);
+      expect(getLiveEntryOrderForPosition(position.id)?.clientComboOrderId).toBe('COMBO-KNOWN');
+      mockOpenOrders.mockResolvedValueOnce(bothLegsQty(quantity)).mockResolvedValueOnce(bothLegsQty(keep));
+      mockReplaceOrders.mockResolvedValue({ ok: true });
+
+      await checkLiveEquityScaleOuts();
+
+      expect(mockReplaceOrders).toHaveBeenCalledTimes(1);
+      const [, patches, comboId] = mockReplaceOrders.mock.calls[0];
+      // The combo id is what the 46 post-09-04 refusals all carried.
+      expect(comboId).toBeUndefined();
+      for (const patch of patches) {
+        expect(Object.keys(patch).sort()).toEqual(['clientOrderId', 'quantity']);
+      }
+    });
+
+    it('sells once the re-read CONFIRMS both legs carry the new size', async () => {
+      const { quantity } = await armed(200);
+      const keep = quantity - Math.floor(quantity / 2);
+      mockOpenOrders.mockResolvedValueOnce(bothLegsQty(quantity)).mockResolvedValueOnce(bothLegsQty(keep));
+      mockReplaceOrders.mockResolvedValue({ ok: true });
+
+      const out = await checkLiveEquityScaleOuts();
+
+      expect(out[0]).toMatchObject({ requested: true });
+      expect(mockPlaceOrder).toHaveBeenCalledTimes(1);
+      // And the re-read happened BEFORE the sell — that ordering is the point.
+      expect(mockPlaceOrder.mock.invocationCallOrder[0]).toBeGreaterThan(mockOpenOrders.mock.invocationCallOrder[1]!);
+    });
+
+    // PER-LOT BRACKETS REPLACE THIS PATH (#26). Same setup as 'sells once the
+    // re-read CONFIRMS both legs carry the new size' below, which is the proof
+    // this fixture really would scale out — so the only thing stopping it here is
+    // the flag. Running both designs would have this cancel-and-replace a bracket
+    // whose near target is already resting, reopening the very naked window
+    // per-lot brackets exist to remove.
+    it('is turned OFF entirely while per-lot brackets are on, even at the trigger', async () => {
+      const { quantity } = await armed(200);
+      const keep = quantity - Math.floor(quantity / 2);
+      mockOpenOrders.mockResolvedValueOnce(bothLegsQty(quantity)).mockResolvedValueOnce(bothLegsQty(keep));
+      mockReplaceOrders.mockResolvedValue({ ok: true });
+      setAutotradeConfig({ livePerLotBracketsEnabled: true });
+
+      expect(await checkLiveEquityScaleOuts()).toEqual([]);
+      expect(mockReplaceOrders).not.toHaveBeenCalled();
+      expect(mockPlaceOrder).not.toHaveBeenCalled();
+    });
+
+    it('SELLS NOTHING when the broker accepts a resize it did not apply', async () => {
+      // The dangerous case, and the reason this check exists: a 200 with the
+      // full-size bracket still resting. Selling here puts more sell shares in
+      // the book than the position holds, which is a short.
+      const { quantity } = await armed(200);
+      mockOpenOrders.mockResolvedValueOnce(bothLegsQty(quantity)).mockResolvedValueOnce(bothLegsQty(quantity));
+      mockReplaceOrders.mockResolvedValue({ ok: true });
+
+      const out = await checkLiveEquityScaleOuts();
+
+      expect(out[0]).toMatchObject({ requested: false });
+      expect(mockPlaceOrder).not.toHaveBeenCalled();
+      const ev = listAutotradeEvents({ stage: 'execution', actions: ['live_scale_out_blocked'], limit: 5 })[0];
+      expect(String(ev?.detail)).toMatch(/accepted but not verified/);
+      // Unchanged bracket means nothing is naked — this must NOT page.
+      expect(
+        listAutotradeEvents({ stage: 'execution', actions: ['live_position_unprotected'], limit: 5 }),
+      ).toHaveLength(0);
+    });
+
+    it('PAGES and sells nothing when the resize moved a protective price', async () => {
+      const { quantity } = await armed(200);
+      const keep = quantity - Math.floor(quantity / 2);
+      const moved = bothLegsQty(keep);
+      moved.orders[0] = openOrder({
+        clientOrderId: 'STOP-1',
+        comboType: 'STOP_LOSS',
+        orderType: 'STOP_LOSS',
+        stopPrice: 88, // was 96
+        quantity: keep,
+      });
+      mockOpenOrders.mockResolvedValueOnce(bothLegsQty(quantity)).mockResolvedValueOnce(moved);
+      mockReplaceOrders.mockResolvedValue({ ok: true });
+
+      const out = await checkLiveEquityScaleOuts();
+
+      expect(out[0]).toMatchObject({ requested: false });
+      expect(mockPlaceOrder).not.toHaveBeenCalled();
+      const ev = listAutotradeEvents({ stage: 'execution', actions: ['live_position_unprotected'], limit: 5 })[0];
+      expect(String(ev?.detail)).toMatch(/stop price changed 96 -> 88/);
+    });
   });
 
   // Cancel-and-replace is the fallback for when the broker will not resize a
@@ -1155,31 +1355,29 @@ describe('checkLiveEquityScaleOuts', () => {
     // the same call is refused with "The number of take-profit orders and the
     // number of stop-loss orders must be the same" — which is what happened 89
     // times on 2026-09-02, and why no scale-out had ever executed.
+    //
+    // The REQUEST SHAPE is asserted separately (see 'the resize payload and its
+    // verification'). It used to be pinned here, to a payload that carried
+    // combo_type, order_type and the echoed prices — and this test stayed green
+    // through all 148 refusals of it. Batching is the claim this test can
+    // actually stand behind.
     const { position, quantity } = await armed(200); // well past 1.5R
-    mockOpenOrders.mockResolvedValue({ ok: true, orders: [restingLeg('STOP-1', 'sl'), restingLeg('TGT-1', 'tp')] });
+    const keep = quantity - Math.floor(quantity / 2);
+    mockOpenOrders
+      .mockResolvedValueOnce({
+        ok: true,
+        orders: [restingLeg('STOP-1', 'sl', quantity), restingLeg('TGT-1', 'tp', quantity)],
+      })
+      .mockResolvedValueOnce({ ok: true, orders: [restingLeg('STOP-1', 'sl', keep), restingLeg('TGT-1', 'tp', keep)] });
     mockReplaceOrders.mockResolvedValue({ ok: true });
 
     const out = await checkLiveEquityScaleOuts();
 
     expect(out[0]).toMatchObject({ positionId: position.id, requested: true });
-    const keep = quantity - Math.floor(quantity / 2);
     expect(mockReplaceOrders).toHaveBeenCalledTimes(1);
-    // Each leg also restates the price that DEFINES it, echoed back from the
-    // broker. Batching alone was NOT enough: the quantity-only version of this
-    // call was refused with the same OCO-balance message 9 times on
-    // 2026-09-03, because nothing in it said which leg was which.
-    expect(mockReplaceOrders).toHaveBeenCalledWith(
-      'ACC1',
-      // order_type joins them from 2026-09-05 — the field the REPLACE
-      // endpoint's schema actually documents, echoed from the leg itself.
-      [
-        { clientOrderId: 'STOP-1', quantity: keep, stopPrice: 96, comboType: 'STOP_LOSS', orderType: 'STOP_LOSS' },
-        { clientOrderId: 'TGT-1', quantity: keep, limitPrice: 130, comboType: 'STOP_PROFIT', orderType: 'LIMIT' },
-      ],
-      // The combo group id is the third argument — undefined for a bracket
-      // opened before it was persisted, which is every pre-2026-09-04 row.
-      undefined,
-    );
+    const [, patches] = mockReplaceOrders.mock.calls[0];
+    expect(patches.map((p) => p.clientOrderId).sort()).toEqual(['STOP-1', 'TGT-1']);
+    expect(patches.every((p) => p.quantity === keep)).toBe(true);
     // ...and the sell happened AFTER it. This ordering is the difference
     // between a scale-out and an accidental short.
     const lastReplace = Math.max(...mockReplaceOrders.mock.invocationCallOrder);
@@ -1188,7 +1386,10 @@ describe('checkLiveEquityScaleOuts', () => {
 
   it('sells only the scale-out slice, leaving the rest running', async () => {
     const { quantity } = await armed(200);
-    mockOpenOrders.mockResolvedValue({ ok: true, orders: [restingLeg('STOP-1')] });
+    const keep = quantity - Math.floor(quantity / 2);
+    mockOpenOrders
+      .mockResolvedValueOnce({ ok: true, orders: [restingLeg('STOP-1', 'sl', quantity)] })
+      .mockResolvedValueOnce({ ok: true, orders: [restingLeg('STOP-1', 'sl', keep)] });
     mockReplaceOrders.mockResolvedValue({ ok: true });
 
     await checkLiveEquityScaleOuts();
@@ -1255,7 +1456,13 @@ describe('checkLiveEquityScaleOuts', () => {
   it('still scales out normally against a single two-leg bracket', async () => {
     // The control: the refusal above must not have disabled the ordinary case.
     const { quantity } = await armed(200);
-    mockOpenOrders.mockResolvedValue({ ok: true, orders: [restingLeg('STOP-1', 'sl'), restingLeg('TGT-1', 'tp')] });
+    const keep = quantity - Math.floor(quantity / 2);
+    mockOpenOrders
+      .mockResolvedValueOnce({
+        ok: true,
+        orders: [restingLeg('STOP-1', 'sl', quantity), restingLeg('TGT-1', 'tp', quantity)],
+      })
+      .mockResolvedValueOnce({ ok: true, orders: [restingLeg('STOP-1', 'sl', keep), restingLeg('TGT-1', 'tp', keep)] });
     mockReplaceOrders.mockResolvedValue({ ok: true });
 
     const out = await checkLiveEquityScaleOuts();
@@ -1579,5 +1786,133 @@ describe('checkLiveEquityStopAdjusts', () => {
     expect(mockReplaceOrder).not.toHaveBeenCalled();
     expect(listPositions({ status: 'open', symbol: 'AAPL' })[0].stopPrice).toBe(afterFirst);
     expect(position.id).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PER-LOT BRACKETS: the SECOND lot (#26), asserted at the CONSUMER.
+//
+// perLotBrackets.ts's own tests prove the split arithmetic. They prove nothing
+// about whether this handler ever sends the second order, which is the failure
+// mode the 2026-08-27 dead values were all instances of.
+// ---------------------------------------------------------------------------
+describe('checkLivePerLotSecondLots', () => {
+  /** Seed the plan attemptLiveEntry would have journaled for `intentId`. */
+  function planFor(intentId: number, second: { quantity: number; targetR: number; targetPrice: number }) {
+    logAutotradeEvent({
+      symbol: 'AAPL',
+      stage: 'execution',
+      action: 'per_lot_entry_planned',
+      detail: {
+        entryIntentId: intentId,
+        sizedQuantity: 999,
+        first: { quantity: 1, targetR: 0.25, role: 'partial' },
+        second: { ...second, role: 'runner' },
+      },
+    });
+  }
+
+  it('places the planned second lot as a bracketed ADD-ON, at the runner target', async () => {
+    const { position, entryIntentId } = await openAgedLivePosition(0);
+    setAutotradeConfig(liveConfig({ livePerLotBracketsEnabled: true, maxHoldDays: 0 }));
+    planFor(entryIntentId, { quantity: 5, targetR: 2, targetPrice: 110 });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(accountStateWith(0) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-LOT2' });
+
+    const outcomes = await checkLivePerLotSecondLots();
+
+    expect(outcomes).toEqual([{ symbol: 'AAPL', positionId: position.id, requested: true, quantity: 5 }]);
+    const [, placedIntent] = mockPlaceOrder.mock.calls[0];
+    expect(placedIntent.quantity).toBe(5);
+    // Both lots share ONE stop — the position has a single risk level — and the
+    // second lot carries the RUNNER's target, not the first lot's near one.
+    expect(placedIntent.bracket).toEqual({
+      takeProfitPrice: 110,
+      stopLossPrice: position.initialStopPrice ?? position.stopPrice,
+    });
+    // Recorded as an add-on, which is what makes its fill MERGE into this
+    // position instead of creating a second one.
+    const addOn = listPendingLiveOrders().find((o) => o.addonOfPositionId === position.id);
+    expect(addOn).toBeDefined();
+  });
+
+  it('never sends the second lot twice', async () => {
+    const { entryIntentId } = await openAgedLivePosition(0);
+    setAutotradeConfig(liveConfig({ livePerLotBracketsEnabled: true, maxHoldDays: 0 }));
+    planFor(entryIntentId, { quantity: 5, targetR: 2, targetPrice: 110 });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(accountStateWith(0) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-LOT2' });
+
+    await checkLivePerLotSecondLots();
+    // The add-on row it just wrote is the marker; a second tick must find it.
+    const again = await checkLivePerLotSecondLots();
+
+    expect(again).toEqual([]);
+    expect(mockPlaceOrder).toHaveBeenCalledTimes(1);
+  });
+
+  it('does nothing at all while the flag is off', async () => {
+    const { entryIntentId } = await openAgedLivePosition(0);
+    setAutotradeConfig(liveConfig({ maxHoldDays: 0 })); // flag defaults off
+    planFor(entryIntentId, { quantity: 5, targetR: 2, targetPrice: 110 });
+
+    expect(await checkLivePerLotSecondLots()).toEqual([]);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('still places the second lot when the position carries NO source_intent_id', async () => {
+    // The production shape this missed. positions.source_intent_id is populated
+    // only intermittently — 40 of 106 live positions on 2026-09-09 — because
+    // whichever path first observes the fill creates the row, and the
+    // broker-sync/adoption path does not carry the intent link. Every test
+    // above uses openAgedLivePosition, which materializes through
+    // reconcileLiveOrders and therefore always HAS the link: the fixture was
+    // more favourable than reality, so the suite stayed green while the first
+    // two real per-lot entries (HPE 34 of 51, DELL 1 of 2) each got a first lot
+    // and silently no second.
+    const { position, entryIntentId } = await openAgedLivePosition(0);
+    db.prepare('UPDATE positions SET source_intent_id = NULL WHERE id = ?').run(position.id);
+    expect(listPositions({ status: 'open', symbol: 'AAPL' })[0].sourceIntentId).toBeNull();
+    setAutotradeConfig(liveConfig({ livePerLotBracketsEnabled: true, maxHoldDays: 0 }));
+    planFor(entryIntentId, { quantity: 5, targetR: 2, targetPrice: 110 });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(accountStateWith(0) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-LOT2' });
+
+    const outcomes = await checkLivePerLotSecondLots();
+
+    expect(outcomes).toEqual([{ symbol: 'AAPL', positionId: position.id, requested: true, quantity: 5 }]);
+    expect(mockPlaceOrder).toHaveBeenCalledTimes(1);
+  });
+
+  it('journals a block when the intent id cannot be recovered at all, instead of skipping silently', async () => {
+    // No source_intent_id AND no entry order row to recover it from. There is
+    // genuinely nothing to look the plan up by — but that must be SAID, not
+    // dropped: this function's header asks for a position that never got its
+    // second lot to be distinguishable from one that was never meant to have
+    // one, and a bare `continue` made them identical.
+    const { position } = await openAgedLivePosition(0);
+    db.prepare('UPDATE positions SET source_intent_id = NULL WHERE id = ?').run(position.id);
+    db.prepare('DELETE FROM autotrade_live_orders').run();
+    setAutotradeConfig(liveConfig({ livePerLotBracketsEnabled: true, maxHoldDays: 0 }));
+
+    expect(await checkLivePerLotSecondLots()).toEqual([]);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    const blocked = listAutotradeEvents({ actions: ['per_lot_second_lot_blocked'], limit: 10 });
+    expect(blocked).toHaveLength(1);
+    expect(JSON.parse(blocked[0].detail ?? '{}')).toMatchObject({
+      positionId: position.id,
+      reason: 'no entry intent id — cannot look up the second lot plan',
+    });
+  });
+
+  it('leaves a position with no plan alone, rather than inventing a lot', async () => {
+    await openAgedLivePosition(0);
+    setAutotradeConfig(liveConfig({ livePerLotBracketsEnabled: true, maxHoldDays: 0 }));
+    // No per_lot_entry_planned event: this position was entered whole.
+    expect(await checkLivePerLotSecondLots()).toEqual([]);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
   });
 });

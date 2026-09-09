@@ -51,6 +51,43 @@ Guidelines:
   tests — the build config alone still owns src's stricter node16 rules). If you add a
   fixture, give it every field; reach for `as never` only when you genuinely mean
   "this call is not what's under test".
+- **Test FILE ORDER is pinned by `server/vitest.config.ts`, and it has to be.**
+  Vitest's default sequencer is not deterministic: with a warm results cache it runs
+  failed files first, then slowest first, falling back to largest-file-first only on a
+  cold cache. So the order tracked the previous run's timings, and one red run
+  reordered the next. Since `setAutotradeConfig` is a PARTIAL patch over one config row
+  every test file shares, a reordering silently changes what a test runs against — that
+  is half of task #46's "2 in 6 runs, unattributed" (the other half was a stale
+  database, see `test/dbFile.ts`). A path-sorting sequencer now fixes the order. It does
+  NOT remove the coupling; it removes the ghost, so a config leak now fails identically
+  on every run and can be bisected. And never write a comment claiming some file
+  "always runs first"; three such comments were wrong.
+- **The config row itself is now reset per test FILE** (`test/setupConfigIsolation.ts`,
+  wired via `setupFiles`), which removes the coupling rather than only making it
+  deterministic. Per file, not per test: many files set their config in their own
+  `beforeAll` and rely on it across their cases. A survey found ELEVEN files patching
+  the row without ever spreading defaults, so fixing them one at a time would have left
+  the twelfth to be written next week. `test/configIsolation.test.ts` guards it, and its
+  NAME is load-bearing — under the pinned path order it runs after every `autotrade*`
+  file, which is where leakage would show. It asserts DEEP equality against
+  `defaultAutotradeConfig()` on purpose: naming individual fields only ever catches the
+  ones that have already bitten, which is the mistake the earlier per-field pinning made.
+- **So is the BOOK, and `trading_config`** (2026-09-09, same file). Signature D was a
+  leaked POSITION, not a leaked setting: `liveOptionsExpiry.test.ts` left a closed $200
+  option behind and `livePreview.test.ts`'s guardrails read it as a realized loss it
+  never traded. Cleaning up at the WRITER does not generalise — the next file to leave
+  rows has no idea who reads them — so every file now starts from an empty
+  `positions` / `order_intents` / `autotrade_events` / paper- and live-position set.
+  `setupFiles` hooks run BEFORE a test file's own `beforeAll`, so a file that seeds
+  there is unaffected. `configIsolation.test.ts` asserts the counts are zero and the
+  trading config is at defaults; both fail if the reset is removed.
+- **In-memory module state gets its own reset, per TEST** (`test/setupProcessState.ts`)
+  — a module-level Map outlives the file that filled it, and `DELETE FROM …` does not
+  touch it. **Only LEAF modules may go in that file.** A setup file is imported before
+  every test file, so whatever it imports is already in the registry when that file's
+  `vi.mock` factories run: adding `screen.ts`, `services/events.ts` and `splitCheck.ts`
+  there failed **321 tests** across files that had nothing to do with the caches being
+  reset. A file that warms a heavy cache resets it in its own `beforeEach` instead.
 - Demo data: `npm run seed` (idempotent; `--force` to add anyway).
 - Run locally: `npm run dev` → API `:3001` + web `:5173`.
 

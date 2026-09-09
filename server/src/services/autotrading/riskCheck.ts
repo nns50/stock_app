@@ -12,6 +12,7 @@ import {
   cutFactor,
   factorState,
   effectiveRiskPct as computeEffectiveRiskPct,
+  isRepeatEntryActive,
   isStepDownActive,
   preFinishLineFactors,
   regimeTriggers,
@@ -405,6 +406,11 @@ export interface RiskCheckContext {
   mlRegimeSizeCutPct: number;
   todayRangePct: number | null;
   regimeShockRangeRatio: number;
+  /** Positions in THIS symbol that already closed today, on this book, and the
+   *  % to cut for a same-day re-entry. See repeatEntrySizeCutPct in the config
+   *  and effectiveRisk.isRepeatEntryActive for the measurement behind it. */
+  priorSameDayExits: number;
+  repeatEntrySizeCutPct: number;
   /** Equity-curve de-risking (2026-07-24, services/autotrading/equityCurveDerisk.ts).
    *  Optional — only the LIVE and PAPER equity paths (which have a per-book
    *  realized equity curve) set these; every other caller (backtest engines,
@@ -535,7 +541,7 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
   // carried its own copy of this line and they drifted (see effectiveRisk.ts).
   // Every field is required, so a new factor cannot be added to one book and
   // forgotten on the other. The caller derives finishLineFactor from
-  // preFinishLineRiskPct over these same five, so the trim reasons about the
+  // preFinishLineRiskPct over these same six, so the trim reasons about the
   // payoff this trade will really produce.
   const effectiveRiskPct = computeEffectiveRiskPct(ctx.riskPerTradePct, {
     ...preFinishLineFactors({
@@ -550,6 +556,8 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
       mlRegimeSizeCutPct: ctx.mlRegimeSizeCutPct,
       todayRangePct: ctx.todayRangePct,
       regimeShockRangeRatio: ctx.regimeShockRangeRatio,
+      priorSameDayExits: ctx.priorSameDayExits,
+      repeatEntrySizeCutPct: ctx.repeatEntrySizeCutPct,
       equityCurveDerisk: cutFactor(equityCurveDeriskActive, equityCurveCutPct),
       expectancy: expectancyMultiplier,
       method: methodMultiplier,
@@ -564,6 +572,8 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
   const stepDownState = factorState(stepDownActive, cutFactor(stepDownActive, ctx.stepDownSizeCutPct));
   const regimeState = factorState(regime.triggered, regime.factor);
   const equityCurveState = factorState(equityCurveDeriskActive, cutFactor(equityCurveDeriskActive, equityCurveCutPct));
+  const repeatEntryActive = isRepeatEntryActive(ctx.priorSameDayExits);
+  const repeatEntryState = factorState(repeatEntryActive, cutFactor(repeatEntryActive, ctx.repeatEntrySizeCutPct));
   const sizingAt = `sizing at ${effectiveRiskPct}% instead of ${ctx.riskPerTradePct}%`;
   check(
     'step_down_sizing',
@@ -597,6 +607,15 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
       : equityCurveState === 'triggered-but-neutral'
         ? 'triggered — strategy equity below its recent average, but the configured cut is 0% — size unchanged'
         : 'inactive — strategy equity at/above its recent average (or disabled)',
+  );
+  check(
+    'repeat_entry_sizing',
+    true,
+    repeatEntryState === 'active'
+      ? `active — ${ctx.priorSameDayExits} prior exit(s) in this name today, ${sizingAt} (${ctx.repeatEntrySizeCutPct}% cut)`
+      : repeatEntryState === 'triggered-but-neutral'
+        ? `triggered — ${ctx.priorSameDayExits} prior exit(s) in this name today, but the configured cut is 0% — size unchanged`
+        : 'inactive — first entry in this name today (or this book takes no repeat cut)',
   );
   check(
     'expectancy_sizing',
@@ -888,6 +907,13 @@ export async function runAutotradeRiskCheck(signals: TradeSignal[]): Promise<Ris
       mlRegimeSizeCutPct: config.mlRegimeSizeCutPct,
       todayRangePct,
       regimeShockRangeRatio: config.regimeShockRangeRatio,
+      // The PREVIEW does not model the same-day re-entry cut. It is applied in
+      // liveExecute, which is the only path that knows which book a signal is
+      // being sized for — this entry point serves the shared preview, and
+      // scoring a paper signal off the LIVE book's closed rows would be worse
+      // than not scoring it. Reported as inactive, which is what it is here.
+      priorSameDayExits: 0,
+      repeatEntrySizeCutPct: 0,
       equityCurveDeriskActive: snapshot.equityCurveDeriskActive,
       equityCurveDeriskCutPct: config.equityCurveDeriskCutPct,
       maxAdvParticipationPct: config.maxAdvParticipationPct,

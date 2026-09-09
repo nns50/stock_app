@@ -25,6 +25,7 @@ function ind(overrides: Partial<IndicatorSnapshot> = {}): IndicatorSnapshot {
     atr: 4,
     atrPct: 4,
     relVolume: 1.8,
+    relVolPace: null,
     avgVolume: 1_000_000,
     volume: 1_800_000,
     gapPct: 3.5,

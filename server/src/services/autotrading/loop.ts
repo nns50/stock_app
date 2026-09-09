@@ -12,6 +12,8 @@ import { resolveScoringWeights } from './regimeWeights';
 import { selectCorrelationAware } from './correlationSelection';
 import { runAutotradeDecision } from './decide';
 import { runOptionsDecision } from './optionsDecide';
+import { filterAffordableUnderlyings, riskPctUpperBound } from './optionsAffordability';
+import { claimOncePerDay } from './oncePerDayEvents';
 import { runPaperExecution, checkPaperExits } from './execute';
 import {
   runOptionsPaperExecution,
@@ -27,6 +29,7 @@ import {
   checkLiveEquityScaleOuts,
   checkLiveEquityStopAdjusts,
   checkLiveScaleIns,
+  checkLivePerLotSecondLots,
   adoptOrphanedLivePositions,
   checkLiveBracketProtection,
 } from './liveExecute';
@@ -138,6 +141,8 @@ export interface LoopTickSummary {
   /** Live scale-in add-ons actually placed at the broker this tick (0 unless
    *  liveScaleInEnabled and a position hit its add-on trigger). */
   liveScaleInsRequested: number;
+  /** Second lots of a per-lot bracketed entry actually sent this tick (#26). */
+  perLotSecondLotsRequested: number;
   /** Live equity scale-out orders newly PLACED this tick (0 unless
    *  liveScaleOutEnabled and a position reached the R trigger). */
   liveScaleOutsRequested: number;
@@ -240,6 +245,7 @@ function emptySummary(skippedReason?: string): LoopTickSummary {
     liveOptionsExitsRequested: 0,
     liveTimeExitsRequested: 0,
     liveScaleInsRequested: 0,
+    perLotSecondLotsRequested: 0,
     liveScaleOutsRequested: 0,
     liveStopsRatcheted: 0,
     candidatesScreened: 0,
@@ -448,6 +454,17 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     }
     const liveScaleInOutcomes =
       isLiveEntryActive(getAutotradeConfig()) && !dailyTarget.entriesHalted ? await checkLiveScaleIns() : [];
+    // The SECOND lot of a per-lot bracketed entry (#26). Gated exactly like a
+    // scale-in and for the same reason — it adds real shares — with its own
+    // flag, session check and one-add-on-per-position rule inside. It is NOT a
+    // scale-in: the shares were already sized and risk-checked at entry, and
+    // this only completes a position the loop deliberately entered in two
+    // pieces. Runs after the scale-in so the shared add-on counter is read
+    // consistently within a tick.
+    const perLotSecondLotOutcomes =
+      isLiveEntryActive(getAutotradeConfig()) && !dailyTarget.entriesHalted
+        ? await runStage('per-lot second bracket', checkLivePerLotSecondLots, [])
+        : [];
     // Reconcile before checking for NEW triggers: catches up on anything an
     // earlier cycle already placed (an entry that filled, an exit that
     // filled) so a position closed by reconcile this same tick is already
@@ -560,6 +577,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       liveOptionsExitsRequested: liveOptionsExitOutcomes.filter((o) => o.requested).length,
       liveTimeExitsRequested: liveEquityTimeExitOutcomes.filter((o) => o.requested).length,
       liveScaleInsRequested: liveScaleInOutcomes.filter((o) => o.requested).length,
+      perLotSecondLotsRequested: perLotSecondLotOutcomes.filter((o) => o.requested).length,
       liveScaleOutsRequested: liveScaleOutOutcomes.filter((o) => o.requested).length,
       liveStopsRatcheted: liveStopAdjustOutcomes.filter((o) => o.adjusted).length,
     };
@@ -694,6 +712,8 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
         },
         weights: resolveScoringWeights(config, regimeLabel),
         momentumIntradayOnly: config.momentumIntradayOnly,
+        relVolUsePaceScoring: config.relVolUsePaceScoring,
+        relVolPaceTarget: config.relVolPaceTarget,
         benchmarkSymbol: config.benchmarkSymbol,
         relativeStrengthLookbackDays: config.relativeStrengthLookbackDays,
       },
@@ -827,8 +847,48 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     // over time — equity autotrading keeps using movers for momentum/
     // breakout, unaffected.
     const universeOnly = selectedCandidates.filter((c) => c.discoverySource === 'universe');
-    summary.optionsCandidatesConsidered = universeOnly.length;
-    const optionsDecision = await runOptionsDecision(universeOnly, {
+    // Then drop the ones whose ATM contract the per-order risk budget cannot
+    // buy (task #59). optionsMaxConcurrentPositions is 1, so an unaffordable
+    // candidate does not merely waste a chain fetch — it can spend the day's
+    // only options slot on a refusal that was arithmetically certain before
+    // the chain was ever read. The ceiling is optionsRiskCheck's own sizing
+    // rule inverted, not a second opinion about risk; see
+    // optionsAffordability.ts on why it can only ever drop a candidate the
+    // sizer would also have refused.
+    let optionsCandidates = universeOnly;
+    if (config.optionsAffordabilityFilterEnabled && config.accountEquityUsd !== null) {
+      const affordability = filterAffordableUnderlyings(
+        universeOnly,
+        {
+          equityUsd: config.accountEquityUsd,
+          riskPctUpperBound: riskPctUpperBound(config),
+          disasterStopPct: config.optionsDisasterStopPct,
+        },
+        config.optionsAtmPremiumRatioPct,
+      );
+      optionsCandidates = affordability.kept;
+      for (const d of affordability.dropped) {
+        // Once per symbol per ET day, the shape task #43 settled on: this runs
+        // every tick over a persistent universe, so a row per drop per tick is
+        // how excluded_re became 31% of the events table.
+        if (claimOncePerDay('options_underlying_unaffordable', d.symbol)) {
+          logAutotradeEvent({
+            stage: 'decision',
+            action: 'options_underlying_unaffordable',
+            symbol: d.symbol,
+            detail: {
+              underlyingPrice: d.underlyingPrice,
+              estimatedPremiumPerShare: d.estimatedPremiumPerShare,
+              maxPremiumPerShare: d.maxPremiumPerShare,
+              maxUnderlyingPrice: affordability.maxUnderlyingPrice,
+              atmPremiumRatioPct: config.optionsAtmPremiumRatioPct,
+            },
+          });
+        }
+      }
+    }
+    summary.optionsCandidatesConsidered = optionsCandidates.length;
+    const optionsDecision = await runOptionsDecision(optionsCandidates, {
       strategyType: config.optionsStrategyType,
       maxIvRvRatio: config.optionsMaxIvRvRatio,
       entryConfig: {

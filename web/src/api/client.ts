@@ -514,6 +514,7 @@ export const client = {
     maxTradesPerDay?: number;
     regimeAtrThresholdPct?: number;
     regimeSizeCutPct?: number;
+    repeatEntrySizeCutPct?: number;
     mlRegimeEnabled?: boolean;
     mlRegimeSizeCutPct?: number;
     mlRegimeSwitchThreshold?: number;
@@ -522,6 +523,8 @@ export const client = {
     mlRegimeHighVolMinSignalScore?: number;
     tradeDirection?: AutotradeTradeDirectionMode;
     minRelVol?: number;
+    relVolUsePaceScoring?: boolean;
+    relVolPaceTarget?: number;
     requireWeeklyTrendAlignment?: boolean;
     relativeStrengthWeight?: number;
     benchmarkSymbol?: string;

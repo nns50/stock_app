@@ -20,7 +20,18 @@ beforeAll(() => initDb());
 // other file that touches this table already resets in beforeEach; this one was
 // the outlier.
 beforeEach(() => {
-  db.exec('DELETE FROM trading_config');
+  // The same argument extends past trading_config. evaluateGuardrails also
+  // reads realizedTodayFromBook(), which sums autotrade_live_options_positions
+  // and position_exits — so a CLOSED position another file left behind arrives
+  // here as a realized loss and trips daily_loss_halt, and every wouldSubmit
+  // assertion in this file fails with a number no fixture here set.
+  //
+  // Not theoretical either: liveOptionsExpiry.test.ts closes a $200 option at
+  // $0 and does not clear the table afterwards. Once the file order was pinned
+  // (vitest.config.ts, 2026-09-08) that pair became adjacent and the failure
+  // became permanent instead of occasional. It cleans up after itself now, but
+  // this reset is what makes THIS file independent of whoever runs before it.
+  db.exec('DELETE FROM trading_config; DELETE FROM autotrade_live_options_positions; DELETE FROM position_exits;');
 });
 afterEach(() => {
   Object.assign(config.webull, orig);

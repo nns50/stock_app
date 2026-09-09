@@ -49,6 +49,26 @@ function closedAutotradeWinnerRatchetedToBreakeven(symbol: string, day: string) 
   return p;
 }
 
+/** The same winner, but held OVERNIGHT — entry and exit on different days.
+ *  excursionForTrade only reaches for intraday bars on a same-session trade, so
+ *  this one is measured on DAILY bars, whose high/low span whole calendar days
+ *  including the hours the position did not exist. The exit tuner must not
+ *  learn a stop distance from that (task #58a). */
+function closedAutotradeWinnerHeldOvernight(symbol: string, entryDay: string, exitDay: string) {
+  const p = createPosition({
+    assetType: 'stock',
+    symbol,
+    side: 'long',
+    quantity: 1,
+    entryPrice: 100,
+    entryDate: entryDay,
+    stopPrice: 95,
+    tags: ['autotrade'],
+  });
+  addExit(p.id, { quantity: 1, exitPrice: 110, exitDate: exitDay });
+  return p;
+}
+
 /** A closed WINNING autotrade stock trade: tagged so buildAutotradeExcursionReport
  *  picks it up, with a stop (for the R denominator) and a profitable exit. */
 function closedAutotradeWinner(symbol: string, day: string) {
@@ -671,6 +691,59 @@ describe('maybeAutoTune', () => {
       await maybeAutoTune(ET_DAY_1);
       expect(getAutotradeConfig().stopAtrMultiple).toBeCloseTo(1.25, 5); // 1.5 − 0.25, not the full drop to 0.78
       expect(getAutotradeConfig().targetRMultiple).toBeCloseTo(2.25, 5); // 2 + 0.25, not the full jump to 3.2
+    });
+
+    // task #58a. A daily bar's high/low is the whole session's range, not the
+    // excursion of a trade that was open for part of it — and this loop holds
+    // for at most a day. Learning a stop distance from that reads the market's
+    // range as the trade's heat.
+    it('does not tune off trades measured on DAILY bars', async () => {
+      setAutotradeConfig({
+        autoTuneEnabled: true,
+        autoTuneExitsEnabled: true,
+        autoTuneMinTrades: 2,
+        autoTuneExitMaxStep: 5,
+      });
+      mockGetProvider.mockReturnValue(candleReturning(120, 98) as never);
+      // The same two winners the tuning test above moves the geometry with —
+      // only held overnight, so they are measured on daily bars.
+      closedAutotradeWinnerHeldOvernight('AAA', '2026-08-01', '2026-08-02');
+      closedAutotradeWinnerHeldOvernight('BBB', '2026-08-02', '2026-08-03');
+
+      const result = await maybeAutoTune(ET_DAY_1);
+
+      expect(result.exitsAdjusted).toBe(false);
+      expect(getAutotradeConfig().stopAtrMultiple).toBe(1.5);
+      expect(getAutotradeConfig().targetRMultiple).toBe(2);
+    });
+
+    // task #58c. autoTuneExitTunedAt is "when the exit geometry last changed",
+    // and it was written only by the tuner — so a change made from the Settings
+    // page left it untouched and the next tune judged the NEW geometry on
+    // trades taken under the OLD one. That is the same re-applied-correction
+    // loop sampleSince exists to prevent, entered through the other door.
+    it('waits for fresh trades after a HAND-MADE geometry change, not just its own', async () => {
+      setAutotradeConfig({
+        autoTuneEnabled: true,
+        autoTuneExitsEnabled: true,
+        autoTuneMinTrades: 2,
+        autoTuneExitMaxStep: 5,
+      });
+      mockGetProvider.mockReturnValue(candleReturning(120, 98) as never);
+      closedAutotradeWinner('AAA', '2026-08-01');
+      closedAutotradeWinner('BBB', '2026-08-02');
+
+      // The operator widens the stop by hand. Nothing about the tuner is
+      // involved, and both winners above were traded under the old geometry.
+      setAutotradeConfig({ stopAtrMultiple: 1.6 });
+      const stampedAt = getAutotradeConfig().autoTuneExitTunedAt;
+      expect(stampedAt).not.toBeNull();
+      expect(stampedAt as number).toBeGreaterThan(Date.parse('2026-08-03T00:00:00Z'));
+
+      const result = await maybeAutoTune(ET_DAY_1);
+
+      expect(result.exitsAdjusted).toBe(false);
+      expect(getAutotradeConfig().stopAtrMultiple).toBe(1.6); // the operator's value, untouched
     });
 
     it('does not tune below the winner sample floor', async () => {

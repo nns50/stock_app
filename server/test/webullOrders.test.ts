@@ -13,7 +13,9 @@ import {
   webullReplaceOrders,
   listWebullOpenOrders,
   newClientOrderId,
+  committedProtectiveQuantity,
 } from '../src/providers/webull/orders';
+import type { WebullOpenOrder } from '../src/providers/webull/orders';
 import type { OrderIntent } from '../src/services/trading/guardrails';
 
 const orig = { ...config.webull };
@@ -1226,5 +1228,81 @@ describe('order-list pagination', () => {
     expect(r.ok).toBe(true);
     expect(r.orders).toHaveLength(101);
     expect(r.orders.some((o) => o.clientOrderId === 'LAST')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// committedProtectiveQuantity — the broker's real bound on a protective order.
+//
+// Measured 2026-09-08: a 1-share standalone bracket on FCX was refused as a
+// position reversal while 38 shares were held, because a full-size bracket was
+// already resting. `held` was never the bound; `held - committed` is. Both
+// counting rules below come from that same live book, and getting either
+// backwards submits an order the broker refuses — or, in the unsafe direction,
+// one it accepts as a short.
+// ---------------------------------------------------------------------------
+describe('committedProtectiveQuantity', () => {
+  const leg = (o: Partial<WebullOpenOrder>): WebullOpenOrder => ({
+    symbol: 'FCX',
+    side: 'sell',
+    status: 'SUBMITTED',
+    quantity: 38,
+    ...o,
+  });
+
+  it('counts an OCO pair ONCE — the max leg, never the sum', () => {
+    // FCX rested a 38-share stop and a 38-share target over 38 held, and the
+    // broker accepted that at entry. Summing would say 76 and conclude the
+    // account was already short.
+    const orders = [
+      leg({ comboOrderId: 'G1', comboType: 'STOP_LOSS', orderType: 'STOP_LOSS' }),
+      leg({ comboOrderId: 'G1', comboType: 'STOP_PROFIT', orderType: 'LIMIT' }),
+    ];
+    expect(committedProtectiveQuantity(orders, 'FCX', 'sell')).toBe(38);
+  });
+
+  it('SUMS across distinct combo groups — that is what refused the test order', () => {
+    const orders = [
+      leg({ comboOrderId: 'G1', quantity: 19 }),
+      leg({ comboOrderId: 'G1', quantity: 19 }),
+      leg({ comboOrderId: 'G2', quantity: 19 }),
+      leg({ comboOrderId: 'G2', quantity: 19 }),
+    ];
+    // The two-lot design over 38 held: exactly 38, with no headroom at all.
+    expect(committedProtectiveQuantity(orders, 'FCX', 'sell')).toBe(38);
+  });
+
+  it('treats each leg with no combo id as its own group', () => {
+    const orders = [leg({ quantity: 5 }), leg({ quantity: 7 })];
+    expect(committedProtectiveQuantity(orders, 'FCX', 'sell')).toBe(12);
+  });
+
+  it('ignores the filled MASTER entry, other symbols, and the opposite side', () => {
+    const orders = [
+      leg({ side: 'buy', status: 'FILLED', comboOrderId: 'G1', comboType: 'MASTER' }),
+      leg({ symbol: 'SMCI', comboOrderId: 'G9', quantity: 100 }),
+      leg({ side: 'buy', comboOrderId: 'G8', quantity: 100 }),
+      leg({ comboOrderId: 'G1', quantity: 38 }),
+    ];
+    expect(committedProtectiveQuantity(orders, 'FCX', 'sell')).toBe(38);
+  });
+
+  it('ignores every terminal status, so a cancelled bracket frees its quantity', () => {
+    const orders = [
+      leg({ comboOrderId: 'G1', status: 'CANCELLED' }),
+      leg({ comboOrderId: 'G2', status: 'REJECTED' }),
+      leg({ comboOrderId: 'G3', status: 'EXPIRED' }),
+    ];
+    expect(committedProtectiveQuantity(orders, 'FCX', 'sell')).toBe(0);
+  });
+
+  it('returns null rather than guessing LOW when a resting leg has no quantity', () => {
+    // Guessing low is the direction that submits a reversing order, so this
+    // must fail closed and the caller must refuse.
+    expect(committedProtectiveQuantity([leg({ quantity: undefined })], 'FCX', 'sell')).toBeNull();
+  });
+
+  it('is case- and whitespace-insensitive about the symbol', () => {
+    expect(committedProtectiveQuantity([leg({ symbol: 'fcx' })], '  fcx  ', 'sell')).toBe(38);
   });
 });

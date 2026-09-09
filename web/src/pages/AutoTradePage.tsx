@@ -2871,6 +2871,7 @@ export default function AutoTradePage() {
   const [maxTradesPerDayDraft, setMaxTradesPerDayDraft] = useState<number | undefined>();
   const [regimeAtrThresholdPctDraft, setRegimeAtrThresholdPctDraft] = useState<number | undefined>();
   const [regimeSizeCutPctDraft, setRegimeSizeCutPctDraft] = useState<number | undefined>();
+  const [repeatEntrySizeCutPctDraft, setRepeatEntrySizeCutPctDraft] = useState<number | undefined>();
   const [mlRegimeEnabled, setMlRegimeEnabled] = useState(false);
   const [mlRegimeSizeCutPctDraft, setMlRegimeSizeCutPctDraft] = useState<number | undefined>();
   const [mlRegimeSwitchThresholdDraft, setMlRegimeSwitchThresholdDraft] = useState<number | undefined>();
@@ -2893,10 +2894,13 @@ export default function AutoTradePage() {
   const [liveMinSignalScoreDraft, setLiveMinSignalScoreDraft] = useState<number | undefined>();
   const [stagnationExitMinutesDraft, setStagnationExitMinutesDraft] = useState<number | undefined>();
   const [stagnationExitMinRDraft, setStagnationExitMinRDraft] = useState<number | undefined>();
+  const [stagnationExitRequiresScarcity, setStagnationExitRequiresScarcity] = useState(false);
   const [expectancyMinTradesDraft, setExpectancyMinTradesDraft] = useState<number | undefined>();
   const [expectancyMinMultiplierDraft, setExpectancyMinMultiplierDraft] = useState<number | undefined>();
   const [expectancyMaxMultiplierDraft, setExpectancyMaxMultiplierDraft] = useState<number | undefined>();
   const [minRelVolDraft, setMinRelVolDraft] = useState<number | undefined>();
+  const [relVolUsePaceScoring, setRelVolUsePaceScoring] = useState(false);
+  const [relVolPaceTargetDraft, setRelVolPaceTargetDraft] = useState<number | undefined>();
   const [minPriceDraft, setMinPriceDraft] = useState<number | undefined>();
   const [minAvgVolumeDraft, setMinAvgVolumeDraft] = useState<number | undefined>();
   const [moversDiscoveryEnabled, setMoversDiscoveryEnabled] = useState(true);
@@ -3011,6 +3015,7 @@ export default function AutoTradePage() {
     sync('maxTradesPerDay', setMaxTradesPerDayDraft);
     sync('regimeAtrThresholdPct', setRegimeAtrThresholdPctDraft);
     sync('regimeSizeCutPct', setRegimeSizeCutPctDraft);
+    sync('repeatEntrySizeCutPct', setRepeatEntrySizeCutPctDraft);
     sync('mlRegimeEnabled', setMlRegimeEnabled);
     sync('mlRegimeSizeCutPct', setMlRegimeSizeCutPctDraft);
     sync('mlRegimeSwitchThreshold', setMlRegimeSwitchThresholdDraft);
@@ -3033,10 +3038,13 @@ export default function AutoTradePage() {
     sync('liveMinSignalScore', setLiveMinSignalScoreDraft);
     sync('stagnationExitMinutes', setStagnationExitMinutesDraft);
     sync('stagnationExitMinR', setStagnationExitMinRDraft);
+    sync('stagnationExitRequiresScarcity', setStagnationExitRequiresScarcity);
     sync('expectancyMinTrades', setExpectancyMinTradesDraft);
     sync('expectancyMinMultiplier', setExpectancyMinMultiplierDraft);
     sync('expectancyMaxMultiplier', setExpectancyMaxMultiplierDraft);
     sync('minRelVol', setMinRelVolDraft);
+    sync('relVolUsePaceScoring', setRelVolUsePaceScoring);
+    sync('relVolPaceTarget', setRelVolPaceTargetDraft);
     sync('minPrice', setMinPriceDraft);
     sync('minAvgVolume', setMinAvgVolumeDraft);
     sync('moversDiscoveryEnabled', setMoversDiscoveryEnabled);
@@ -3125,6 +3133,7 @@ export default function AutoTradePage() {
     maxTradesPerDay?: number;
     regimeAtrThresholdPct?: number;
     regimeSizeCutPct?: number;
+    repeatEntrySizeCutPct?: number;
     mlRegimeEnabled?: boolean;
     mlRegimeSizeCutPct?: number;
     mlRegimeSwitchThreshold?: number;
@@ -3147,11 +3156,14 @@ export default function AutoTradePage() {
     liveMinSignalScore?: number;
     stagnationExitMinutes?: number;
     stagnationExitMinR?: number;
+    stagnationExitRequiresScarcity?: boolean;
     expectancyMinTrades?: number;
     expectancyMinMultiplier?: number;
     expectancyMaxMultiplier?: number;
     tradeDirection?: AutotradeTradeDirectionMode;
     minRelVol?: number;
+    relVolUsePaceScoring?: boolean;
+    relVolPaceTarget?: number;
     minPrice?: number;
     minAvgVolume?: number;
     moversDiscoveryEnabled?: boolean;
@@ -4643,6 +4655,7 @@ export default function AutoTradePage() {
                       <NumberInput
                         value={regimeSizeCutPctDraft}
                         onChange={setRegimeSizeCutPctDraft}
+                        ariaLabel="Regime size cut (%)"
                         min={0}
                         max={100}
                         step={1}
@@ -4659,6 +4672,38 @@ export default function AutoTradePage() {
                           regimeSizeCutPctDraft < 0 ||
                           regimeSizeCutPctDraft > 100 ||
                           regimeSizeCutPctDraft === config.data?.regimeSizeCutPct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Same-day re-entry size cut (%)"
+                    hint="% cut to risk-per-trade when this name already closed a trade today, LIVE only. 0 disables it (default). Measured over 89 closed live trades: first entries averaged +$7.12, repeats -$3.67 — but 86% of that deficit is a single trade, so this trims repeats rather than blocking them. Paper deliberately ignores it and stays the control arm."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={repeatEntrySizeCutPctDraft}
+                        onChange={setRepeatEntrySizeCutPctDraft}
+                        ariaLabel="Same-day re-entry size cut (%)"
+                        min={0}
+                        max={100}
+                        step={1}
+                        placeholder="0 (no cut)"
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save same-day re-entry size cut"
+                        onClick={() =>
+                          repeatEntrySizeCutPctDraft != null &&
+                          saveConfig({ repeatEntrySizeCutPct: repeatEntrySizeCutPctDraft })
+                        }
+                        disabled={
+                          repeatEntrySizeCutPctDraft == null ||
+                          repeatEntrySizeCutPctDraft < 0 ||
+                          repeatEntrySizeCutPctDraft > 100 ||
+                          repeatEntrySizeCutPctDraft === config.data?.repeatEntrySizeCutPct
                         }
                       >
                         Save
@@ -5281,6 +5326,56 @@ export default function AutoTradePage() {
                       </button>
                     </div>
                   </Field>
+                  <label className="flex items-start gap-2 text-sm sm:col-span-2">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={relVolUsePaceScoring}
+                      onChange={(e) => saveConfig({ relVolUsePaceScoring: e.target.checked })}
+                    />
+                    <span>
+                      Score relative volume on PACE
+                      <span className="block text-[11px] text-slate-500">
+                        Off by default. Raw relative volume is today&apos;s cumulative volume over an average FULL day,
+                        so it climbs through the session on its own — before about midday almost nothing can reach the
+                        target and the component scores 0 for reasons unrelated to the stock. On the live book 8 of 15
+                        entries scored exactly 0 on it, and it carries 20% of the score&apos;s weight. Pace divides by
+                        the universe&apos;s median relative volume this tick, so 2× means the same thing at 10:00 and
+                        15:30 — the same replacement the relative-volume pace FLOOR already made for the entry gate.
+                        Leave it off until you have read the shift: the screen journals a{' '}
+                        <code>relvol_pace_scoring_shadow</code> row every tick either way, and turning this on rescales
+                        the whole distribution that <strong>Live min signal score</strong> was fitted to.
+                      </span>
+                    </span>
+                  </label>
+                  <Field
+                    label="Rel-vol pace target (×)"
+                    hint="Full marks for the relative-volume component at this multiple of the market's current pace, when pace scoring is on. 1.0 is the median stock, which scores zero by definition. Default 2.5 — roughly the 95th percentile. Not the same unit as Min relative volume above, which is a multiple of the symbol's own average."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={relVolPaceTargetDraft}
+                        onChange={setRelVolPaceTargetDraft}
+                        min={0}
+                        step={0.1}
+                        ariaLabel="Rel-vol pace target (×)"
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save rel-vol pace target"
+                        onClick={() =>
+                          relVolPaceTargetDraft != null && saveConfig({ relVolPaceTarget: relVolPaceTargetDraft })
+                        }
+                        disabled={
+                          relVolPaceTargetDraft == null ||
+                          relVolPaceTargetDraft < 0 ||
+                          relVolPaceTargetDraft === config.data?.relVolPaceTarget
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
                   <Field
                     label="Min share price ($)"
                     hint="Liquidity floor: candidates below this price fail screening. Sub-$3 movers carry a spread/slippage tax the backtester can't see — on the live book, a fifth of all losses landed BEYOND the declared stop, concentrated in exactly these names. 0 disables; 1 is the old hardcoded floor."
@@ -5722,6 +5817,28 @@ export default function AutoTradePage() {
                       </button>
                     </div>
                   </Field>
+                  <label className="flex items-start gap-2 text-sm sm:col-span-2">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={stagnationExitRequiresScarcity}
+                      onChange={(e) => saveConfig({ stagnationExitRequiresScarcity: e.target.checked })}
+                    />
+                    <span>
+                      Only scratch when the slot is scarce
+                      <span className="block text-[11px] text-slate-500">
+                        Off by default. The stagnation exit&apos;s justification is &quot;recycle the slot for fresh
+                        signals&quot;, and on the live book that held in only 7 of 31 firings — the other 24 fired while
+                        the book was below <strong>Max concurrent positions</strong>, paying the spread to close a trade
+                        at flat when the next signal could have opened anyway. It was the dominant exit at 30 of 52
+                        closes, averaging −0.036R. With this on, a stagnant position is only scratched when the book is
+                        at the concurrency cap or the aggregate risk budget has no room for another full-size entry;
+                        otherwise it keeps its optionality and the journal records a{' '}
+                        <code>stagnation_exit_held_slot_free</code> row. Leave it off until the paper book — which has
+                        run without the stagnation exit since 2026-09-08 — has ~2 weeks of closes to compare.
+                      </span>
+                    </span>
+                  </label>
                   <Field
                     label="Breakeven trigger (R-multiple)"
                     hint="Once unrealized gain reaches this many R, move the stop to exactly the entry price — a one-time move, never applied if it would loosen the current stop. 0 disables it. Paper and backtest only; live positions are untouched."

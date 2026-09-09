@@ -143,6 +143,8 @@ describe('attemptOptionsPaperEntry', () => {
     mlRegimeSizeCutPct: 35,
     todayRangePct: null,
     regimeShockRangeRatio: 0,
+    priorSameDayExits: 0,
+    repeatEntrySizeCutPct: 0,
   });
 
   it('fills at a freshly-fetched contract mark, not the signal premium', async () => {
@@ -239,6 +241,8 @@ describe('attemptOptionsPaperEntry', () => {
       mlRegimeSizeCutPct: 35,
       todayRangePct: null,
       regimeShockRangeRatio: 0,
+      priorSameDayExits: 0,
+      repeatEntrySizeCutPct: 0,
     });
 
     it('opens both legs at freshly-fetched marks, not the signal premiums', async () => {
@@ -363,7 +367,9 @@ describe('runOptionsPaperExecution', () => {
     expect(outcomes.map((o) => o.ok)).toEqual([true, false]);
     expect(outcomes[1].reason).toMatch(/risk check/i);
     const blockedEvent = listAutotradeEvents({ stage: 'risk_check', symbol: 'CCC' })[0];
-    expect(blockedEvent.action).toBe('blocked');
+    // The OPTIONS funnel's own action (task #53): 'blocked' is equity's, and
+    // while both wrote it neither funnel's block count could be read alone.
+    expect(blockedEvent.action).toBe('options_blocked');
   });
 
   it('combines with an already-open EQUITY position for max_aggregate_open_risk (MODERATE caps at 2% = $2000)', async () => {
@@ -1035,6 +1041,8 @@ describe('short-dated options — the paper book', () => {
       mlRegimeSizeCutPct: 35,
       todayRangePct: null,
       regimeShockRangeRatio: 0,
+      priorSameDayExits: 0,
+      repeatEntrySizeCutPct: 0,
     });
     const outcome = await attemptOptionsPaperEntry(optionSignal({ underlyingPrice: 143.2 }), risk, 'MODERATE');
     expect(outcome.ok).toBe(true);
@@ -1103,6 +1111,26 @@ describe('short-dated options — the paper book', () => {
       expect(out[0]!.position!.exitReason).toBe('stop_loss');
       const ev = listAutotradeEvents({}).find((e) => e.action === 'short_dated_options_exit')!;
       expect(JSON.parse(ev.detail!)).toMatchObject({ rule: 'underlying_stop', underlyingMovePct: -0.6 });
+    });
+
+    it('journals the peak the contract reached, which is what makes rule L5 answerable', async () => {
+      // Asserted on the EVENT, not on the decision that produced it. The peak
+      // was computed and returned all along; it simply never reached the
+      // journal, so L5 ("was the give-back trail too tight?") could not be
+      // evaluated from any of the 15 trades closed before 2026-09-09.
+      atClock(EARLY);
+      shortDated();
+      openShortDated();
+      mockGetProvider.mockReturnValue(
+        withQuote(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 0.24 } }), 99.4) as never,
+      );
+
+      await checkOptionsPaperExits();
+
+      const ev = listAutotradeEvents({}).find((e) => e.action === 'short_dated_options_exit')!;
+      const detail = JSON.parse(ev.detail!) as { peakGainPct: number | null; peakPremium: number | null };
+      expect(typeof detail.peakGainPct).toBe('number');
+      expect(typeof detail.peakPremium).toBe('number');
     });
 
     it('does NOT cut when only theta has moved the premium — the whole point', async () => {
@@ -1386,7 +1414,7 @@ describe('optionsMaxConcurrentPositions — the options book gets its own slots'
 
     expect(out[0]).toMatchObject({ ok: false });
     expect(hasOpenOptionsPaperPosition('AAPL')).toBe(false);
-    const blocked = listAutotradeEvents({ actions: ['blocked'] });
+    const blocked = listAutotradeEvents({ actions: ['options_blocked'] });
     const rules = blocked.flatMap((e) =>
       JSON.parse(e.detail!)
         .checks.filter((c: { passed: boolean }) => !c.passed)

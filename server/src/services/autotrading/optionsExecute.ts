@@ -1,7 +1,12 @@
 import { AutotradeConfig, getAutotradeConfig, RiskProfileName } from '../../db/autotradeConfig';
 import { convictionGrade } from './decide';
 import { OptionsTradeSignal } from './optionsDecide';
-import { evaluateOptionsRiskCheck, OptionsRiskCheckResult, optionsPositionNotionalUsd } from './optionsRiskCheck';
+import {
+  evaluateOptionsRiskCheck,
+  OptionsRiskCheckResult,
+  optionsPositionNotionalUsd,
+  optionsRiskCheckAction,
+} from './optionsRiskCheck';
 import { NO_TICK_REGIME, TickRegime, regimeStamp } from './effectiveRisk';
 import { regimeAdjustedTargets, withRegimeAdjustedTargets } from './regimeTargets';
 import { journalMethodMultipliers, methodOfOptionsSignal } from './methodSizing';
@@ -596,6 +601,9 @@ export async function runOptionsPaperExecution(
       sectorOf,
     );
     const ctx: RiskCheckContext = {
+      // Paper options: control arm, and the finding is equity-only.
+      priorSameDayExits: 0,
+      repeatEntrySizeCutPct: 0,
       equity,
       dailyPnl,
       tradesToday,
@@ -637,7 +645,8 @@ export async function runOptionsPaperExecution(
       symbol,
       stage: 'risk_check',
       riskProfile: config.riskProfile,
-      action: result.ok ? 'passed' : 'blocked',
+      // The options funnel's own action, not equity's — see optionsRiskCheck.ts.
+      action: optionsRiskCheckAction(result.ok),
       detail: { checks: result.checks, contracts },
     });
     if (!result.ok) {
@@ -840,6 +849,12 @@ export async function checkOptionsPaperExits(): Promise<OptionsExitCheckOutcome[
               rule: sd.rule,
               reason: sd.detail,
               premiumGainPct: sd.premiumGainPct,
+              // The high-water mark this contract actually reached. Rule L5 asks
+              // whether a give_back trail was too tight, which is unanswerable
+              // from the exit price alone — but a peak below optionsTakeProfitPct
+              // could never have exited at the target however long it was held.
+              peakGainPct: sd.peakGainPct,
+              peakPremium: sd.peakPremium,
               underlyingMovePct: sd.underlyingMovePct,
               expiration: pos.expiration,
               exitReason: sdReason,

@@ -106,6 +106,8 @@ function baseCtx(overrides: Partial<RiskCheckContext> = {}): RiskCheckContext {
     mlRegimeSizeCutPct: 35,
     todayRangePct: null,
     regimeShockRangeRatio: 0,
+    priorSameDayExits: 0,
+    repeatEntrySizeCutPct: 0,
     ...overrides,
   };
 }
@@ -493,11 +495,14 @@ describe('runOptionsRiskCheck — batch orchestration', () => {
     expect(results[0].checks[0].rule).toBe('equity_configured');
   });
 
-  it('journals a passed result under the shared risk_check stage', async () => {
+  it('journals a passed result under the shared risk_check stage, with the OPTIONS action', async () => {
     const results = await runOptionsRiskCheck([optionSignal({ symbol: 'AAPL' })]);
     expect(results[0].ok).toBe(true);
     const events = listAutotradeEvents({ stage: 'risk_check', symbol: 'AAPL' });
-    expect(events[0].action).toBe('passed');
+    // Same STAGE as equity — the funnel really is the same stage of the same
+    // pipeline — but its own ACTION, so counts over a window can be split
+    // (task #53). Equity's 'passed' would make both funnels one number.
+    expect(events[0].action).toBe('options_passed');
     expect(events[0].riskProfile).toBe('MODERATE');
   });
 

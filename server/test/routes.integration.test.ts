@@ -13,11 +13,13 @@ import { resetLoginThrottle } from '../src/services/auth';
 import { setSetting } from '../src/db/settings';
 import { createIntent } from '../src/db/orders';
 import { addExit, createPosition } from '../src/db/positions';
+import { getAutotradeConfig } from '../src/db/autotradeConfig';
 import { setAutotradeConfig } from '../src/db/autotradeConfig';
 import { openPaperPosition } from '../src/db/autotradePaperPositions';
 import { openOptionsPaperPosition } from '../src/db/autotradeOptionsPaperPositions';
 import { createLiveOptionsPosition } from '../src/db/autotradeLiveOptionsPositions';
 import { saveLastTick } from '../src/db/autotradeLastTick';
+import { logAutotradeEvent } from '../src/db/autotradeEvents';
 import { getProvider } from '../src/providers';
 import { seedClosedAutotradeSessions, weekdaysEndingAt } from './helpers/autotradeSessions';
 
@@ -1112,6 +1114,7 @@ describe('health (integration)', () => {
       liveOptionsPositionsClosed: 0,
       liveOptionsExitsRequested: 0,
       liveTimeExitsRequested: 0,
+      perLotSecondLotsRequested: 0,
       liveScaleInsRequested: 0,
       liveScaleOutsRequested: 0,
       liveStopsRatcheted: 0,
@@ -3096,6 +3099,29 @@ describe('autotrade monitoring dashboard + kill switch routes (integration)', ()
     expect(past.events.length).toBeGreaterThan(0);
   });
 
+  it('GET /events/summary can count the OPTIONS funnel apart from the equity one', async () => {
+    // task #53. Both risk checks journaled `stage: 'risk_check', action:
+    // blocked` — byte-identical — so ?actions=blocked returned the UNION: on
+    // 2026-09-04 the options read and the equity read both showed 2,015,
+    // because they were the same rows. OPTIONS_TUNING_PLAN's rules F2-F5 are
+    // decided from counts over a multi-day window, which that made impossible.
+    db.exec('DELETE FROM autotrade_events');
+    logAutotradeEvent({ symbol: 'EQ1', stage: 'risk_check', action: 'blocked', detail: { checks: [] } });
+    logAutotradeEvent({ symbol: 'EQ2', stage: 'risk_check', action: 'blocked', detail: { checks: [] } });
+    logAutotradeEvent({ symbol: 'OPT1', stage: 'risk_check', action: 'options_blocked', detail: { checks: [] } });
+
+    const counts = async (action: string) => {
+      const { summary } = (await getJson(`/api/autotrade/events/summary?actions=${action}`)) as {
+        summary: { action: string; count: number }[];
+      };
+      return summary.reduce((n, row) => n + row.count, 0);
+    };
+
+    expect(await counts('blocked')).toBe(2); // equity only — no longer the union
+    expect(await counts('options_blocked')).toBe(1);
+    expect(await counts('blocked,options_blocked')).toBe(3);
+  });
+
   it('GET /events/summary counts by ET date and action, past the row cap', async () => {
     // The row endpoint caps at 1000, and during market hours the busiest
     // actions write that many in ~3 hours — so the multi-day distribution the
@@ -3369,6 +3395,215 @@ describe('journal analysis routes tell you what they could not cover (integratio
     // for exclusion equals the whole population. No trade goes unaccounted for.
     const c = rep.coverage;
     expect(rep.trades + c.undated + c.overCap + c.unavailable).toBe(c.closedStockTrades);
+  });
+
+  /** N dated, closed stock trades — enough that the cap actually BINDS. Without
+   *  this the assertions below hold vacuously on a two-trade book, which is how
+   *  the first draft of these tests passed under every mutation I threw at it
+   *  (cap 250 -> 2, `limit` ignored, NaN collapsing the sample). */
+  function seedClosedStockTrades(n: number, prefix: string) {
+    for (let i = 0; i < n; i++) {
+      const p = createPosition({
+        assetType: 'stock',
+        symbol: `${prefix}${i}`,
+        side: 'long',
+        quantity: 10,
+        entryPrice: 100,
+        entryDate: `2026-06-${String(10 + i).padStart(2, '0')}`,
+      });
+      addExit(p.id, { quantity: 10, exitPrice: 105, exitDate: `2026-06-${String(11 + i).padStart(2, '0')}` });
+    }
+  }
+
+  type Excursions = {
+    trades: number;
+    coverage: { closedStockTrades: number; undated: number; overCap: number; unavailable: number };
+  };
+
+  it('analyses the whole book by default, and ?limit= narrows it', async () => {
+    // The cap was 50 while 92 trades were measurable, so 42 were reported as
+    // `overCap` and task #32's target comparison came out inside noise on half
+    // the evidence. Asserted through the ROUTE's own coverage numbers.
+    db.exec('DELETE FROM position_exits; DELETE FROM positions;');
+    seedClosedStockTrades(5, 'EXCAP');
+
+    const full = (await getJson('/api/journal/excursions')) as Excursions;
+    expect(full.coverage.closedStockTrades).toBe(5);
+    expect(full.coverage.overCap).toBe(0); // nothing dropped until the book exceeds the cap
+    // `trades + unavailable` is the SELECTED count — the discriminating number.
+    // `trades` alone also moves when a candle fetch fails, which is a different
+    // fact and would make this test lie about what the cap did.
+    expect(full.trades + full.coverage.unavailable).toBe(5);
+
+    const capped = (await getJson('/api/journal/excursions?limit=2')) as Excursions;
+    expect(capped.trades + capped.coverage.unavailable).toBe(2);
+    expect(capped.coverage.overCap).toBe(3); // the other three are ACCOUNTED for, not dropped
+    expect(capped.trades + capped.coverage.undated + capped.coverage.overCap + capped.coverage.unavailable).toBe(5);
+  });
+
+  it('ignores a junk or hostile ?limit= rather than analysing nothing', async () => {
+    // `Number('abc')` is NaN and `slice(0, NaN)` returns an EMPTY array, so an
+    // unguarded limit reports a clean zero-trade analysis instead of an error.
+    db.exec('DELETE FROM position_exits; DELETE FROM positions;');
+    seedClosedStockTrades(4, 'EXJUNK');
+
+    for (const q of ['?limit=abc', '?limit=0', '?limit=-5', '?limit=', '?limit=99999']) {
+      const r = (await getJson(`/api/journal/excursions${q}`)) as Excursions;
+      expect(r.trades + r.coverage.unavailable, `limit=${q} analysed the wrong number`).toBe(4);
+      expect(r.coverage.overCap, `limit=${q} dropped trades`).toBe(0);
+    }
+  });
+
+  it('exit-replay accounts for every closed stock trade and defaults to the live geometry', async () => {
+    // Asserted at the ROUTE. The engine's own tests prove replayExit walks bars
+    // correctly; they prove nothing about whether this handler hands it any.
+    db.exec('DELETE FROM position_exits; DELETE FROM positions;');
+    // Same-session (replayable) and an overnight hold (not — intraday bars
+    // would span two days and the replay would degenerate).
+    const sameDay = createPosition({
+      assetType: 'stock',
+      symbol: 'RPLAY',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      entryDate: '2026-06-10',
+      stopPrice: 95,
+    });
+    addExit(sameDay.id, { quantity: 10, exitPrice: 103, exitDate: '2026-06-10' });
+    const overnight = createPosition({
+      assetType: 'stock',
+      symbol: 'RPOVN',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      entryDate: '2026-06-10',
+      stopPrice: 95,
+    });
+    addExit(overnight.id, { quantity: 10, exitPrice: 101, exitDate: '2026-06-12' });
+
+    const rep = (await getJson('/api/journal/exit-replay')) as {
+      rules: { breakevenTriggerR: number; trailStartR: number; trailStopR: number; targetR: number };
+      replay: { trades: number };
+      actual: { trades: number };
+      coverage: {
+        closedStockTrades: number;
+        undated: number;
+        notSameSession: number;
+        overCap: number;
+        unreplayable: number;
+      };
+    };
+    // Defaults are the LIVE config, not hardcoded — a bare call has to answer
+    // "what would today's geometry have done".
+    const cfg = getAutotradeConfig();
+    expect(rep.rules.trailStopR).toBe(cfg.trailStopRMultiple);
+    expect(rep.rules.targetR).toBe(cfg.targetRMultiple);
+    // The overnight trade is EXCLUDED and counted, never silently dropped.
+    expect(rep.coverage.closedStockTrades).toBe(2);
+    expect(rep.coverage.notSameSession).toBe(1);
+    // Every closed trade is accounted for by exactly one bucket.
+    const c = rep.coverage;
+    expect(rep.replay.trades + c.undated + c.notSameSession + c.overCap + c.unreplayable).toBe(c.closedStockTrades);
+  });
+
+  it('exit-replay takes rule overrides from the query, and ignores junk', async () => {
+    const over = (await getJson('/api/journal/exit-replay?trailStopR=0.15&targetR=1.5')) as {
+      rules: { trailStopR: number; targetR: number };
+    };
+    expect(over.rules.trailStopR).toBe(0.15);
+    expect(over.rules.targetR).toBe(1.5);
+
+    // NaN must not silently disable a rule — `Number('abc')` is NaN and every
+    // comparison against it is false, so the trail would just never engage.
+    const cfg = getAutotradeConfig();
+    const junk = (await getJson('/api/journal/exit-replay?trailStopR=abc&targetR=-3')) as {
+      rules: { trailStopR: number; targetR: number };
+    };
+    expect(junk.rules.trailStopR).toBe(cfg.trailStopRMultiple);
+    expect(junk.rules.targetR).toBe(cfg.targetRMultiple);
+  });
+
+  it('exit-tune-validation fits the tuner’s own rule and prices it at the ROUTE', async () => {
+    // The rule is exercised by its own unit tests; those prove nothing about
+    // whether this handler hands it any trades, or hands it the LIVE bounds.
+    // Two of the four dead values on 2026-08-27 were of exactly this shape.
+    db.exec('DELETE FROM position_exits; DELETE FROM positions;');
+    const minTradesBefore = getAutotradeConfig().autoTuneMinTrades;
+    setAutotradeConfig({ autoTuneMinTrades: 2 }); // restored at the end of this test
+    // 5-minute bars for every fetch: a dip to 97.40 (−0.52R off the 5-point
+    // stop) and then a run to 112. Dated inside the ET day each trade was held.
+    const candles = vi
+      .spyOn(getProvider(), 'getCandles')
+      .mockImplementation(async (_symbol: string, _timeframe, q?: { start?: string }) => {
+        const day = q?.start ?? '2026-06-10';
+        return [
+          { time: Date.parse(`${day}T15:00:00Z`), open: 100, high: 100.5, low: 97.4, close: 100, volume: 1000 },
+          { time: Date.parse(`${day}T15:05:00Z`), open: 100, high: 112, low: 100, close: 111, volume: 1000 },
+        ];
+      });
+    for (let i = 0; i < 6; i++) {
+      const day = `2026-06-${String(10 + i).padStart(2, '0')}`;
+      const p = createPosition({
+        assetType: 'stock',
+        symbol: `ETV${i}`,
+        side: 'long',
+        quantity: 10,
+        entryPrice: 100,
+        entryDate: day,
+        stopPrice: 95,
+      });
+      addExit(p.id, { quantity: 10, exitPrice: 103, exitDate: day });
+    }
+    // An overnight hold: measured on daily bars, so excluded and COUNTED.
+    const overnight = createPosition({
+      assetType: 'stock',
+      symbol: 'ETVOVN',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      entryDate: '2026-06-20',
+      stopPrice: 95,
+    });
+    addExit(overnight.id, { quantity: 10, exitPrice: 101, exitDate: '2026-06-22' });
+
+    const v = (await getJson('/api/journal/exit-tune-validation')) as {
+      current: { stopAtrMultiple: number; targetRMultiple: number };
+      carried: { breakevenTriggerR: number; trailStartR: number; trailStopR: number };
+      autoTuneExitsEnabled: boolean;
+      holdout: {
+        train: { trades: number };
+        test: { trades: number };
+        oneStep: { fit: { winners: number; runs: number }; comparison: { verdict: string; trades: number } };
+        fixedPoint: { fit: { runs: number; converged: boolean }; comparison: { verdict: string } };
+      };
+      inSample: { fixedPoint: { fit: { geometry: { stopAtrMultiple: number } } } };
+      coverage: { closedStockTrades: number; notSameSession: number; supplied: number; unmeasured: number };
+    };
+
+    // The geometry under test is the LIVE one, not a hardcoded pair.
+    const cfg = getAutotradeConfig();
+    expect(v.current.stopAtrMultiple).toBe(cfg.stopAtrMultiple);
+    expect(v.current.targetRMultiple).toBe(cfg.targetRMultiple);
+    expect(v.carried.trailStopR).toBe(cfg.trailStopRMultiple);
+    // Reading it must never be confused with acting on it.
+    expect(v.autoTuneExitsEnabled).toBe(cfg.autoTuneExitsEnabled);
+
+    expect(v.coverage.closedStockTrades).toBe(7);
+    expect(v.coverage.notSameSession).toBe(1); // the overnight hold
+    expect(v.coverage.supplied).toBe(6); // the six same-session trades, all measured
+    expect(v.coverage.supplied + v.coverage.unmeasured + v.coverage.notSameSession).toBe(7);
+    // Split chronologically, and every supplied trade lands in one slice.
+    expect(v.holdout.train.trades + v.holdout.test.trades).toBe(6);
+
+    // The rule ran on real rows and produced a real geometry: heat p90 0.52 x
+    // 1.1 of room walks the stop off 1.5, and MFE 2.4 x 0.8 pulls the target
+    // under 2. A handler that fitted on nothing would echo the current pair.
+    expect(v.holdout.oneStep.fit.winners).toBeGreaterThan(0);
+    expect(v.inSample.fixedPoint.fit.geometry.stopAtrMultiple).toBeLessThan(cfg.stopAtrMultiple);
+    expect(v.holdout.fixedPoint.fit.runs).toBeGreaterThan(1);
+
+    candles.mockRestore();
+    setAutotradeConfig({ autoTuneMinTrades: minTradesBefore });
   });
 
   it('benchmark survives a book whose closed trades are all undated', async () => {
@@ -3758,5 +3993,70 @@ describe('the daily goal held constant in R (integration, 2026-09-08)', () => {
       giveBackArmPct: 2,
       giveBackFloorPct: 1,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Re-arm a protective bracket on shares already held.
+//
+// The naked-position alarm tells the operator to "re-arm protection by hand",
+// and until 2026-09-08 there was no hand to do it with — the no-MASTER
+// standalone bracket was reachable only from the scale-out's cancel-replace,
+// behind a flag that is off.
+//
+// The guard that matters is the LAST one: a protective sell larger than the
+// position is a naked short wearing protection's clothes, and the broker's own
+// held quantity is the only honest source for it.
+// ---------------------------------------------------------------------------
+describe('autotrade standalone bracket route (integration)', () => {
+  const post = (body: unknown) =>
+    fetch(`${base}/api/autotrade/live/standalone-bracket`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  const ok = { symbol: 'SMCI', quantity: 1, stopLossPrice: 30, takeProfitPrice: 60, confirmation: 'SMCI' };
+
+  beforeEach(() => {
+    setAutotradeConfig({ liveAccountId: 'ACC1' });
+    config.trading.placeEnabled = true;
+  });
+
+  it('refuses a confirmation that is not the symbol', async () => {
+    const r = await post({ ...ok, confirmation: 'yes' });
+    expect(r.status).toBe(400);
+    expect(((await r.json()) as { error: string }).error).toMatch(/Confirmation must be the symbol/);
+  });
+
+  it('refuses with neither a take-profit nor a stop', async () => {
+    const r = await post({ symbol: 'SMCI', quantity: 1, confirmation: 'SMCI' });
+    expect(r.status).toBe(400);
+    // buildStandaloneBracketRequest returns null here; posting zero orders would
+    // read as success, so the refusal has to happen before the provider.
+    expect(((await r.json()) as { error: string }).error).toMatch(/At least one of takeProfitPrice/);
+  });
+
+  it('refuses when order placement is disabled', async () => {
+    config.trading.placeEnabled = false;
+    const r = await post(ok);
+    expect(r.status).toBe(400);
+    expect(((await r.json()) as { error: string }).error).toMatch(/placement is disabled/);
+  });
+
+  it('refuses when no live account is configured', async () => {
+    setAutotradeConfig({ liveAccountId: null });
+    const r = await post(ok);
+    expect(r.status).toBe(400);
+    expect(((await r.json()) as { error: string }).error).toMatch(/No live account/);
+  });
+
+  it('FAILS CLOSED when the broker account cannot be read', async () => {
+    // Webull is unconfigured in this suite, so this is the real unreadable-account
+    // path. It must refuse rather than fall through to a placement it cannot size
+    // against — the held-quantity guard is the only thing standing between this
+    // route and a naked short, and it needs a number to work with.
+    const r = await post(ok);
+    expect(r.status).toBe(502);
+    expect(((await r.json()) as { error: string }).error).toMatch(/Could not read the account/);
   });
 });

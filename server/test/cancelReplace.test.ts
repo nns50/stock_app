@@ -5,6 +5,7 @@ import {
   safePartialQuantity,
   stopWasCancelled,
   verifyLegsGone,
+  verifyLegsResized,
 } from '../src/services/autotrading/cancelReplace';
 
 const leg = (clientOrderId: string, status = 'OPEN'): WebullOpenOrder => ({
@@ -138,5 +139,82 @@ describe('stopWasCancelled', () => {
     // The defence the liveExecute branch relies on: if the ordering rule were
     // ever removed, this must say the protection is gone rather than stay quiet.
     expect(stopWasCancelled([sl('S'), tp('T')], 1)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// verifyLegsResized — ACCEPTED IS NOT APPLIED.
+//
+// The scale-out went straight from the broker's 200 to selling the difference.
+// If a modify were ever accepted without being applied, that sale would have
+// gone out against a FULL-SIZE bracket still resting, and the surplus sell
+// shares are a short. It stayed latent only because the request was refused 148
+// times out of 148; the moment the payload changed it stopped being latent.
+// ---------------------------------------------------------------------------
+describe('verifyLegsResized', () => {
+  const leg = (o: Partial<WebullOpenOrder>): WebullOpenOrder => ({
+    clientOrderId: 'TGT-1',
+    symbol: 'FCX',
+    side: 'sell',
+    status: 'SUBMITTED',
+    quantity: 10,
+    limitPrice: 110,
+    ...o,
+  });
+  const before = [leg({}), leg({ clientOrderId: 'STOP-1', limitPrice: undefined, stopPrice: 96 })];
+  const resized = (q: number) => [
+    leg({ quantity: q }),
+    leg({ clientOrderId: 'STOP-1', quantity: q, limitPrice: undefined, stopPrice: 96 }),
+  ];
+
+  it('passes when both legs carry the new size and their original prices', () => {
+    expect(verifyLegsResized(resized(4), before, 4)).toEqual({ ok: true });
+  });
+
+  it('fails CLOSED when the book cannot be re-read', () => {
+    const v = verifyLegsResized(null, before, 4);
+    expect(v.ok).toBe(false);
+    // Nothing was touched, so the position keeps its full bracket — skip, don't page.
+    expect(v).toMatchObject({ applied: false });
+  });
+
+  it('reports a no-op resize as NOT applied, so the partial is skipped and nothing is naked', () => {
+    // The broker said yes and changed nothing. The bracket still covers the
+    // whole position; the only correct response is to decline the partial.
+    const v = verifyLegsResized(resized(10), before, 4);
+    expect(v).toMatchObject({ ok: false, applied: false });
+    expect((v as { reason: string }).reason).toMatch(/accepted the resize but no leg changed/);
+  });
+
+  it('treats a VANISHED leg as applied — it filled, and selling against it goes short', () => {
+    const v = verifyLegsResized([resized(4)[0]!], before, 4);
+    expect(v).toMatchObject({ ok: false, applied: true });
+    expect((v as { reason: string }).reason).toMatch(/no longer resting/);
+  });
+
+  it('catches a stop price the resize moved — a bracket nobody chose is an alarm', () => {
+    // The whole basis for sending no price is that the endpoint patches only
+    // the fields it is given. This is that assumption being CHECKED rather than
+    // trusted: if a quantity-only modify ever clears or moves a stop, it is
+    // caught here instead of by the position running unprotected.
+    const bad = resized(4);
+    bad[1] = leg({ clientOrderId: 'STOP-1', quantity: 4, limitPrice: undefined, stopPrice: 88 });
+    const v = verifyLegsResized(bad, before, 4);
+    expect(v).toMatchObject({ ok: false, applied: true });
+    expect((v as { reason: string }).reason).toMatch(/stop price changed 96 -> 88/);
+  });
+
+  it('catches a partly-applied resize — one leg moved, the other did not', () => {
+    const half = [
+      leg({ quantity: 4 }),
+      leg({ clientOrderId: 'STOP-1', quantity: 10, stopPrice: 96, limitPrice: undefined }),
+    ];
+    const v = verifyLegsResized(half, before, 4);
+    expect(v).toMatchObject({ ok: false, applied: true });
+  });
+
+  it('refuses a leg with no client order id rather than guessing which one it is', () => {
+    const v = verifyLegsResized(resized(4), [leg({ clientOrderId: undefined })], 4);
+    expect(v).toMatchObject({ ok: false, applied: false });
   });
 });

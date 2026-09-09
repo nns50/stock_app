@@ -208,6 +208,8 @@ const okResult = (signal: SingleLegOptionsSignal | DebitSpreadOptionsSignal): Op
     mlRegimeSizeCutPct: 35,
     todayRangePct: null,
     regimeShockRangeRatio: 0,
+    priorSameDayExits: 0,
+    repeatEntrySizeCutPct: 0,
   });
 
 const origPlaceEnabled = config.trading.placeEnabled;

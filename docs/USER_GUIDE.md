@@ -1311,7 +1311,20 @@ equally-weighted cards in the order they happened to be built:
   measured by a rule written in advance. Leave
   the overlay off until the enabling rules in the model card are met; the plain-English
   walkthrough with worked numbers is [AUTOTRADE_RISK_SETTINGS.md](AUTOTRADE_RISK_SETTINGS.md)
-  §"Regime size cut — three triggers, one cut". Finally, **equity-curve
+  §"Regime size cut — three triggers, one cut". Next, **same-day re-entry
+  size cut (%)** (2026-09-08, off by default) trims an entry into a name the loop
+  already closed a trade in _that Eastern trading day_. It is measured rather than
+  assumed: over 89 closed live trades, first entries in a name averaged +$7.12 and
+  repeats -$3.67. It trims rather than blocks because only the direction of that gap
+  is robust — 86% of the repeat deficit came from one trade, and dropping the worst
+  trade from each side leaves repeats at -$0.55 apiece. It counts positions closed
+  today rather than exit rows, so a scaled-out trade is one repeat and not two; the
+  cut is the same for a second attempt in a name as for a fourth; and yesterday's
+  close never suppresses this morning's first entry. **Live equity only** — the paper
+  book takes every signal at full size on purpose, so it stays a clean control arm to
+  re-measure this against. Its `repeat_entry_sizing` line appears in every
+  risk-check's own entry under **Recent activity**, and it never calls a 0% cut
+  "active". Finally, **equity-curve
   de-risking** (2026-07-24, off by default) is the same idea keyed to your _own_
   results instead of the market: when the strategy's cumulative closed-P&L curve —
   tracked separately for paper and live — is below its **equity-curve lookback
@@ -1401,6 +1414,23 @@ equally-weighted cards in the order they happened to be built:
   `excluded_rel_vol_pace` with the pace, the floor and the median it was divided
   by, so any figure can be checked rather than taken on faith; when too few
   symbols are scored to estimate a median it fails **open**),
+  **score relative volume on pace** (2026-09-08, off by default — the same
+  replacement, applied to the *score* rather than the entry gate. The
+  relative-volume scoring component reads raw relative volume, which is why it
+  scored **exactly 0 for 8 of 15 live entries** on 20% of the weight: before
+  roughly midday almost nothing can reach the 2× target, so the component says
+  "unremarkable" about every stock in the market at once. On pace it scores 1.0×
+  — keeping up with the market, which half the universe does by definition — at
+  0 and **rel-vol pace target (×)** (default 2.5, roughly the 95th percentile) at
+  100. The two targets are in different units and are separate settings. When the
+  pace can't be measured it falls back to the raw measure rather than to zero.
+  It ships **off** and the screen journals a `relvol_pace_scoring_shadow` row
+  every tick either way — how many names score zero under each scoring, the mean
+  change in total, and how many candidates each one lets through that the other
+  doesn't — so you can read the shift *before* enabling it. That matters because
+  turning it on rescales the whole score distribution, and **live min signal
+  score** was fitted to the raw distribution against realized P&L, so enabling it
+  without re-fitting that floor moves the live entry gate silently),
   **min move today (%)** (2026-08-25 — a candidate must have moved at least this far
   in the trade's own direction *today*: a long needs +this, a short −this. 0 = off. The
   rest of the screener is largely positional — momentum averages today's change with the
@@ -1530,7 +1560,29 @@ equally-weighted cards in the order they happened to be built:
   recycled too, and a position with no stop is never scratched on a guess. Every
   scratch journals its held time and R (`live_time_exit_placed` with
   `trigger: "stagnation"`), so you can audit whether it's cutting losers or
-  winners. Their end-of-session sibling is the **end-of-day flatten**
+  winners. A separate **per-lot brackets** setting (`livePerLotBracketsEnabled`,
+  2026-09-09, default off, visible under **All settings**) offers a different way
+  to take a partial: instead of resizing a resting bracket, the position is built
+  from **two bracketed entries**, so banking the partial is just the smaller
+  group's target filling. The larger lot enters first, the smaller follows a tick
+  later and merges into the same position, and each carries its own stop and
+  target from the moment it exists — so there is no moment where anything is
+  unprotected. With it on, the cancel-and-replace scale-out is switched off
+  automatically, since the two are different answers to the same question. It
+  costs a second entry order per trade (halving the daily order allowance for
+  entries) and leaves the position smaller than intended if the second lot never
+  fills. Leave it off until a first live entry has been watched. A separate
+  **Only scratch when the slot is scarce** toggle (2026-09-09,
+  default off) narrows it to the case its own justification describes: with it on,
+  a stagnant position is scratched only when the book is at **Max concurrent
+  positions** or the aggregate risk budget has no room for another full-size
+  entry, and otherwise keeps its optionality with a
+  `stagnation_exit_held_slot_free` row in the journal. Over 2026-08-24..09-04 the
+  "recycle the slot" rationale held in only **7 of 31** firings — the other 24 fired
+  with slots to spare — and the rule was the live book's dominant exit at 30 of 52
+  closes, averaging −0.036R. Every scratch and every hold now records which it was,
+  so the paper book (running without the stagnation exit since 2026-09-08) can be
+  compared against it before you flip the toggle. Their end-of-session sibling is the **end-of-day flatten**
   (2026-08-25, default off): set it to a number of **minutes
   before the 16:00 ET close** and every open live position is closed through
   that same cancel-bracket-then-close path rather than carried overnight —
@@ -1610,8 +1662,9 @@ equally-weighted cards in the order they happened to be built:
   if the record says so) are in [Tune from target daily gain](TUNE_FROM_TARGET.md) §6b.
 
 - **"Why wasn't this traded today?"** — `GET /api/autotrade/explain/:symbol` answers it for
-  any symbol, on demand. The screener journals *some* rejections per symbol (real estate,
-  relative-volume pace, volatility, earnings, unknown sector) and says nothing about the
+  any symbol, on demand. The screener journals *some* rejections per symbol (real estate —
+  **once a day**, since the classification is the same on every tick and the repeats were
+  31% of the whole journal; relative-volume pace, volatility, earnings, unknown sector) and says nothing about the
   filters inside the score — today's move, the score minimum, weekly-trend alignment,
   price, average volume. Those reasons were computed and dropped, so a name that simply
   never appeared left no trace of what stopped it. This runs a **real screen over the whole
@@ -1754,6 +1807,23 @@ equally-weighted cards in the order they happened to be built:
   checks always used before they were configurable (delta 0.30-0.60, max spread
   10%, min open interest 100, min volume 10, DTE 7-60 days, IV rank ceiling 70,
   floor 0, IV/RV gate off), so leaving them untouched changes nothing; the manual
+  **Options affordability filter** (2026-09-09, off by default) is a different kind of
+  gate — it asks not whether a contract is a good trade but whether this account can
+  buy one at all. The largest premium the per-order risk budget can cover is derived,
+  not configured: `(equity x risk per trade %) / options disaster stop %`, the same
+  inequality the options risk check already applies when it sizes a leg. A candidate's
+  contract cost is estimated ahead of the chain fetch as **options ATM premium ratio %**
+  of the underlying's price (default 1.0), and anything over the ceiling is dropped
+  before the options decision runs, journaled once per symbol per day as
+  `options_underlying_unaffordable` with the price, the estimate and the ceiling. This
+  matters because the loop holds **one options position at a time**: a candidate whose
+  contract costs four times the budget can otherwise consume the day's only slot on a
+  refusal that was certain in advance. Because the ceiling is derived it re-scales
+  itself as equity, risk % or the disaster stop moves — no setting to revisit as the
+  account grows. The ratio is deliberately set BELOW observed ATM premium (1.4-1.7% of
+  spot across single names on 2026-09-09), so the filter under-states cost and errs
+  toward keeping: a symbol it keeps still faces the real risk check, while one it drops
+  could not have been bought. Leave it off to change nothing.
   Screen/Decision preview below defaults to these same saved values too. Backtesting
   is unaffected by what's SAVED here — options backtests keep using the original
   fixed constants unless a request supplies its own values, the same
@@ -1816,11 +1886,16 @@ equally-weighted cards in the order they happened to be built:
   trade actually took sizes the stop, how far it actually ran sizes the target — and nudges
   each toward that, capped per day by its own **max exit step** so one sample can't swing
   your exits. Winners only, deliberately: a stopped-out loser can't tell you whether a
-  different stop was better. It also only reads trades **entered since its last change**:
-  both signals are measured against each trade's own stop at entry, so a trade taken under
-  the previous geometry can't judge the one that replaced it — re-reading them would keep
-  re-applying a correction it had already made, walking your stop toward its floor. After
-  an adjustment it waits for enough fresh trades to close before moving again. Every adjustment shows up in **Recent activity** the moment it happens, and
+  different stop was better. It also reads only trades measured on **intraday bars**
+  (2026-09-09) — a trade held overnight is measured on daily bars, whose high and low
+  cover whole calendar days including hours the position didn't exist, so its "heat" is
+  the market's range rather than the trade's. It also only reads trades **entered since
+  the last change to your stop or target** — including one you made yourself on this
+  page, not just one the tuner made: both signals are measured against each trade's own
+  stop at entry, so a trade taken under the previous geometry can't judge the one that
+  replaced it — re-reading them would keep re-applying a correction it had already made,
+  walking your stop toward its floor. After any change it waits for enough fresh trades
+  to close before moving again. Every adjustment shows up in **Recent activity** the moment it happens, and
   also pushes a notification through your configured webhooks (see **Alerts** below) —
   a live change to what the loop does is worth more than a line you'd only see if you
   went looking. See `docs/STRATEGY_PLAYBOOK.md`'s sizing and execution-quality sections
@@ -2025,13 +2100,24 @@ because the loop is the only caller that is always flat by the bell, so it is
   badges that position with a **+N add** count so a pyramid is visible at a glance. Like the
   rest of the live-order surface, treat the first few real adds as confirmation before trusting
   it with size — **validate in paper + backtest first.**
+- **What the broker holds** — `GET /api/autotrade/live/holdings` answers "does the broker
+  still hold this?" directly, reading the account and writing nothing. Add `?symbol=NOK`
+  for one name. A symbol the broker reported but the app could not parse comes back under
+  **unknownSymbols** (or `known: false`) — that means *held, quantity unknown*, *never*
+  flat, because an unparseable row still proves something is held there. An unreadable
+  broker is an error rather than an empty list, for the same reason.
 - **Stop-still-there check** — a bracket is submitted as one request (entry plus its
   stop/target), and the broker's reply doesn't say whether the *exit legs* were accepted, only
   that the request as a whole was. So if Webull ever takes the entry and drops the exits, the
   position is unprotected while this app still shows a stop price against it. Every cycle the
   loop asks the one question the broker can answer — is there a resting exit-side order on that
   symbol? — for each live **stock** position opened with a bracket, and alerts on any that has
-  none. It only ever **reports**: placing a replacement stop automatically would risk a second
+  none. Before it alerts it asks a second question — **does the broker still hold the
+  shares?** — because a stop that has just *filled* leaves exactly the same empty book as a
+  stop that was never accepted. Zero held means the position closed and the alert is skipped;
+  any shares still held with no stop under them is the real thing and pages. If that account
+  read fails the alert still fires, but says the held count is unconfirmed rather than claiming
+  it. It only ever **reports**: placing a replacement stop automatically would risk a second
   stop on the same position if the check simply failed to see the first, and two stops on one
   position sell it twice. Re-arm by hand at the broker. (Options are excluded on purpose:
   Webull only allows DAY orders on the option sell side, so an option bracket's exits

@@ -46,6 +46,7 @@ function candidate(symbol = 'AAPL', price = 100, direction: 'long' | 'short' = '
       atr: 2,
       atrPct: 2,
       relVolume: null,
+      relVolPace: null,
       avgVolume: null,
       volume: null,
       gapPct: null,

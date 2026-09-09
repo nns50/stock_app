@@ -52,8 +52,8 @@ export interface FinishLineFactorResult {
  * preFinishLineRiskPct — not the raw config value.
  *
  * The distinction is the whole correctness of this function. Its own answer
- * becomes one of six multipliers beside step-down, the regime cut, the equity
- * -curve cut and the two edge multipliers. Handed the raw config %, it reasons
+ * becomes one of seven multipliers beside step-down, the regime cut, the
+ * same-day re-entry cut, the equity-curve cut and the two edge multipliers. Handed the raw config %, it reasons
  * about a payoff bigger than the trade will produce, so it fires when it
  * should not and cuts deeper when it does — and then its factor multiplies
  * with the very cut it ignored. At the live config (1.25% risk, 2R target, a

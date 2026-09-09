@@ -27,7 +27,7 @@ import { join } from 'node:path';
 import { getProvider } from '../src/providers';
 import { webullAccountState } from '../src/providers/webull/accountState';
 import { initDb, db } from '../src/db';
-import { setAutotradeConfig } from '../src/db/autotradeConfig';
+import { defaultAutotradeConfig, setAutotradeConfig } from '../src/db/autotradeConfig';
 import { setTradingConfig } from '../src/db/trading';
 import { saveDailyBaseline } from '../src/db/dailyBaseline';
 import { config } from '../src/config';
@@ -53,7 +53,30 @@ import { evaluateEntryCutoff } from '../src/services/autotrading/endOfDayFlatten
 const EQUITY = 5_161;
 const BASELINE = EQUITY - 80; // day is up $80; the bank line is another $80 away
 
+// STARTS FROM THE DEFAULTS, DELIBERATELY (2026-09-08).
+//
+// setAutotradeConfig is a PARTIAL patch over one config row every test file in
+// the suite shares, so any field this object does not name is inherited from
+// whichever file happened to run before it. That has now bitten this exact file
+// three times, each time as an "intermittent" failure with a different culprit
+// field:
+//
+//   A/B  endOfDayFlattenMinutes, left at 5 by autotradeLiveExecute.test.ts
+//   C    liveMinSignalScore, left at 72 by explainRoute.test.ts — the signal
+//        here scores 70, so runLiveExecution refused the batch before it ever
+//        reached the sizing code these tests are about
+//
+// Signature C surfaced when two unrelated test files GREW. Vitest's default
+// sequencer orders by file size, so adding tests elsewhere reordered the run
+// and moved explainRoute in front of this file. Nothing about the fix under
+// test changed; the hazard was always here, waiting for an ordering.
+//
+// Pinning fields one at a time only ever fixes the field that happened to bite.
+// Spreading the full defaults first fixes the CLASS: every patch below now
+// writes a complete config, so this file inherits nothing from anyone. Pins
+// after the spread still win.
 const cfgFields = {
+  ...defaultAutotradeConfig(),
   accountEquityUsd: EQUITY,
   riskProfile: 'MODERATE' as const,
   liveAccountId: 'ACC1',
@@ -83,15 +106,21 @@ const cfgFields = {
   // failure mode, `seenContexts.length` 0 in all four wiring tests.
   //
   // setAutotradeConfig is a PARTIAL patch over a config row every test file
-  // shares, and autotradeLiveExecute.test.ts (which sorts earlier, so it always
-  // runs first) leaves endOfDayFlattenMinutes at 5. Inheriting that put the
-  // cutoff at 5 + max(runway, stagnationExitMinutes) ≈ 95 minutes, so this file
-  // failed whenever the suite happened to run inside a real ET session within
-  // ~95 minutes of the close — and passed every other time.
+  // shares, and autotradeLiveExecute.test.ts leaves endOfDayFlattenMinutes at
+  // 5. Inheriting that put the cutoff at 5 + max(runway, stagnationExitMinutes)
+  // ≈ 95 minutes, so this file failed whenever the suite happened to run inside
+  // a real ET session within ~95 minutes of the close — and passed otherwise.
   //
-  // That is task #46's Signature B: intermittent under a deterministic file
-  // order, clustered rather than spread, and impossible to reproduce outside
-  // market hours because minutesUntilClose() returns null there.
+  // That is task #46's Signature B: clustered rather than spread, and
+  // impossible to reproduce outside market hours because minutesUntilClose()
+  // returns null there.
+  //
+  // An earlier revision of this comment said "intermittent under a DETERMINISTIC
+  // file order", and named autotradeLiveExecute.test.ts as one that "always runs
+  // first". Both were wrong, and vitest.config.ts now records why: until the
+  // sequencer was pinned there, file order came from the RESULTS CACHE — failed
+  // files first, then slowest first — so it changed with the previous run's
+  // timings. Nothing "always" ran first.
   endOfDayFlattenMinutes: 0,
   // Same shape of leak (2026-09-08): explainRoute.test.ts leaves the live
   // conviction floor at 72, and the 70-score fixture signal below is refused
@@ -164,9 +193,9 @@ const factorAfterRun = async (): Promise<number> => {
 //
 // runLiveExecution gates on evaluateEntryCutoff(cfg, Date.now()) and returns
 // BEFORE evaluateRiskCheck when it blocks. Until cfgFields pinned
-// endOfDayFlattenMinutes to 0, this file inherited 5 from an earlier test file
+// endOfDayFlattenMinutes to 0, this file inherited 5 from another test file
 // (setAutotradeConfig is a partial patch over a config row every file shares,
-// and autotradeLiveExecute.test.ts sorts earlier so it always runs first).
+// and autotradeLiveExecute.test.ts happened to run ahead of it).
 // That put the cutoff at 5 + max(runway, stagnationExitMinutes) ~= 95 minutes,
 // so all four wiring tests failed whenever the suite happened to run inside a
 // real ET session within ~95 minutes of the close, and passed at every other

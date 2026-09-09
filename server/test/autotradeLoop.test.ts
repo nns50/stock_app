@@ -22,6 +22,7 @@ vi.mock('../src/services/autotrading/liveExecute', () => ({
   syncAccountEquityFromBroker: vi.fn(),
   checkLiveEquityTimeExits: vi.fn(),
   checkLiveScaleIns: vi.fn(),
+  checkLivePerLotSecondLots: vi.fn().mockResolvedValue([]),
 }));
 vi.mock('../src/services/autotrading/liveOptionsExecute', () => ({
   runLiveOptionsExecution: vi.fn(),
@@ -96,6 +97,7 @@ import {
   syncAccountEquityFromBroker,
   checkLiveEquityTimeExits,
   checkLiveScaleIns,
+  checkLivePerLotSecondLots,
 } from '../src/services/autotrading/liveExecute';
 import {
   runLiveOptionsExecution,
@@ -139,6 +141,7 @@ const mockReconcileLive = vi.mocked(reconcileLiveOrders);
 const mockSyncEquity = vi.mocked(syncAccountEquityFromBroker);
 const mockCheckLiveTimeExits = vi.mocked(checkLiveEquityTimeExits);
 const mockCheckLiveScaleIns = vi.mocked(checkLiveScaleIns);
+const mockCheckPerLotSecondLots = vi.mocked(checkLivePerLotSecondLots);
 const mockLiveOptionsExecute = vi.mocked(runLiveOptionsExecution);
 const mockCheckLiveOptionsExits = vi.mocked(checkLiveOptionsExits);
 const mockReconcileLiveOptions = vi.mocked(reconcileLiveOptionsOrders);
@@ -171,6 +174,7 @@ function candidate(symbol: string, atrPct: number | null): ScreenCandidate {
       atr: 2,
       atrPct,
       relVolume: null,
+      relVolPace: null,
       avgVolume: null,
       volume: null,
       gapPct: null,
@@ -259,6 +263,7 @@ beforeEach(() => {
   mockReconcileLive.mockReset().mockResolvedValue([]);
   mockCheckLiveTimeExits.mockReset().mockResolvedValue([]);
   mockCheckLiveScaleIns.mockReset().mockResolvedValue([]);
+  mockCheckPerLotSecondLots.mockReset().mockResolvedValue([]);
   mockSyncEquity.mockReset().mockResolvedValue({ ok: false, error: 'No liveAccountId configured' });
   mockPositionsSync.mockReset().mockResolvedValue({
     ok: true,
@@ -892,6 +897,8 @@ describe('runAutotradeLoopTick', () => {
           sentiment: 0,
         },
         momentumIntradayOnly: false,
+        relVolUsePaceScoring: false,
+        relVolPaceTarget: 2.5,
         benchmarkSymbol: 'SPY',
         relativeStrengthLookbackDays: 20,
       },
@@ -1440,6 +1447,80 @@ describe('runAutotradeLoopTick', () => {
     expect(summary.optionsCandidatesConsidered).toBe(1);
   });
 
+  it("drops an unaffordable underlying before the options decision spends the day's only slot on it", async () => {
+    // Task #59. optionsMaxConcurrentPositions is 1, so a candidate whose ATM
+    // contract the risk budget cannot buy does not merely waste a chain fetch
+    // — it can consume the single options slot on a refusal that was certain
+    // before the chain was read. Asserted HERE, at the consumer, and not only
+    // in optionsAffordability.test.ts: a filter that computes a verdict and
+    // then hands the unfiltered list on anyway passes every unit test it has.
+    const cheap = { ...candidate('RIOT', 2), price: 21.91 };
+    const dear = { ...candidate('META', 2), price: 650.81 };
+    setAutotradeConfig({
+      optionsAffordabilityFilterEnabled: true,
+      optionsAtmPremiumRatioPct: 1,
+      accountEquityUsd: 5137.44,
+      riskPerTradePct: 1.25,
+      optionsDisasterStopPct: 70,
+      methodWeightingEnabled: false,
+    });
+    mockScreen.mockResolvedValue({
+      generatedAt: Date.now(),
+      candidates: [cheap, dear],
+      excluded: [],
+      skipped: [],
+      errors: [],
+      rejected: [],
+      relVolMedian: null,
+      discovery: { universeCount: 2, moversCount: 0, scannedCount: 2, moversError: null },
+    });
+    mockDecide.mockReturnValue({ signals: [signal('RIOT'), signal('META')], skipped: [] });
+    mockExecute.mockResolvedValue([{ symbol: 'RIOT', ok: true }]);
+    mockOptionsDecide.mockResolvedValue({ signals: [], skipped: [] });
+
+    const summary = await runAutotradeLoopTick();
+
+    // The ceiling is (5137.44 * 1.25 / 100) / 70 = $0.9174 per share, so at a
+    // 1% assumed ratio META's $650.81 underlying implies $6.51 and cannot fit;
+    // RIOT's $21.91 implies $0.22 and can.
+    const optionsArgs = mockOptionsDecide.mock.calls.at(-1)?.[0];
+    expect(optionsArgs?.map((c) => c.symbol)).toEqual(['RIOT']);
+    expect(summary.optionsCandidatesConsidered).toBe(1);
+    // Equity is untouched by the options affordability filter.
+    expect(mockDecide).toHaveBeenCalledWith([cheap, dear], {
+      stopAtrMultiple: 1.5,
+      targetRMultiple: 2,
+      maxStopDistancePct: 0,
+    });
+  });
+
+  it('leaves the options candidate list alone while the affordability filter is off', async () => {
+    const cheap = { ...candidate('RIOT', 2), price: 21.91 };
+    const dear = { ...candidate('META', 2), price: 650.81 };
+    setAutotradeConfig({
+      optionsAffordabilityFilterEnabled: false,
+      accountEquityUsd: 5137.44,
+    });
+    mockScreen.mockResolvedValue({
+      generatedAt: Date.now(),
+      candidates: [cheap, dear],
+      excluded: [],
+      skipped: [],
+      errors: [],
+      rejected: [],
+      relVolMedian: null,
+      discovery: { universeCount: 2, moversCount: 0, scannedCount: 2, moversError: null },
+    });
+    mockDecide.mockReturnValue({ signals: [signal('RIOT'), signal('META')], skipped: [] });
+    mockExecute.mockResolvedValue([{ symbol: 'RIOT', ok: true }]);
+    mockOptionsDecide.mockResolvedValue({ signals: [], skipped: [] });
+
+    const summary = await runAutotradeLoopTick();
+
+    expect(mockOptionsDecide.mock.calls.at(-1)?.[0]?.map((c) => c.symbol)).toEqual(['RIOT', 'META']);
+    expect(summary.optionsCandidatesConsidered).toBe(2);
+  });
+
   it('filters out a high-ATR candidate before Decision ever sees it', async () => {
     mockScreen.mockResolvedValue({
       generatedAt: Date.now(),
@@ -1673,6 +1754,24 @@ describe('runAutotradeLoopTick', () => {
       });
       mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
     }
+
+    // The second lot of a per-lot bracketed entry has to be REACHED by the loop.
+    // Nothing else calls it, so without this the whole feature could ship,
+    // configure, journal its plan and never place a single second order —
+    // exactly the shape of the four dead values found on 2026-08-27.
+    it('reaches the per-lot second-bracket check whenever live entries are active', async () => {
+      setAutotradeConfig({ enabled: false, liveTradingEnabled: true, liveAccountId: 'ACC1' });
+      setTradingConfig({ enabled: true, killSwitch: false });
+      armScreenAndDecide();
+      mockLiveExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
+      mockCheckPerLotSecondLots.mockResolvedValue([{ symbol: 'AAPL', positionId: 7, requested: true, quantity: 5 }]);
+
+      const summary = await runAutotradeLoopTick();
+
+      expect(mockCheckPerLotSecondLots).toHaveBeenCalledTimes(1);
+      // And its outcome is CONSUMED, not just produced.
+      expect(summary.perLotSecondLotsRequested).toBe(1);
+    });
 
     it('runs live entries when paper is disabled but live is active', async () => {
       setAutotradeConfig({ enabled: false, liveTradingEnabled: true, liveAccountId: 'ACC1' });

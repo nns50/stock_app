@@ -694,6 +694,8 @@ export const NEVER_TUNED_KEYS = [
   'addOnSizePct',
   'maxAddOns',
   'liveScaleInEnabled',
+  // Per-lot brackets: a protective-order SHAPE, not an aggressiveness dial.
+  'livePerLotBracketsEnabled',
   'liveMaxAddOns',
   'optionsBreakevenTriggerPct',
   'optionsTrailStartPct',
@@ -702,6 +704,7 @@ export const NEVER_TUNED_KEYS = [
   'optionsPartialExitPct',
   'regimeAtrThresholdPct',
   'regimeSizeCutPct',
+  'repeatEntrySizeCutPct',
   'mlRegimeEnabled',
   'mlRegimeSizeCutPct',
   'mlRegimeSwitchThreshold',
@@ -717,6 +720,11 @@ export const NEVER_TUNED_KEYS = [
   'finishLineSizingEnabled',
   'finishLineMinSignalScore',
   'minRelVolPace',
+  'relVolUsePaceScoring',
+  // Slot-scarcity gate on the stagnation exit — a policy question about WHEN a
+  // rule applies, not an aggressiveness dial the target solve should move.
+  'stagnationExitRequiresScarcity',
+  'relVolPaceTarget',
   'minChangePct',
   'momentumIntradayOnly',
   'maxStopDistancePct',
@@ -733,6 +741,11 @@ export const NEVER_TUNED_KEYS = [
   'optionsStagnationMinutes',
   'optionsStagnationMinMovePct',
   'optionsDisasterStopPct',
+  // Affordability filtering is a claim about what the broker will sell for the
+  // budget, not a risk appetite the tune gets to lean on: the ceiling already
+  // moves on its own whenever equity or the risk % does.
+  'optionsAffordabilityFilterEnabled',
+  'optionsAtmPremiumRatioPct',
   'stagnationExitMinutes',
   'stagnationExitMinR',
   'endOfDayFlattenMinutes',

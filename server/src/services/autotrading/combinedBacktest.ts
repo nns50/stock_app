@@ -1021,6 +1021,9 @@ export async function simulateCombinedBacktest(
         riskParams.correlationThreshold,
       );
       const ctx: RiskCheckContext = {
+        // A backtest replays historical signals with no notion of "today".
+        priorSameDayExits: 0,
+        repeatEntrySizeCutPct: 0,
         equity,
         dailyPnl,
         tradesToday,
@@ -1258,6 +1261,9 @@ export async function simulateCombinedBacktest(
         riskParams.correlationThreshold,
       );
       const ctx: RiskCheckContext = {
+        // A backtest replays historical signals with no notion of "today".
+        priorSameDayExits: 0,
+        repeatEntrySizeCutPct: 0,
         equity,
         dailyPnl,
         tradesToday,

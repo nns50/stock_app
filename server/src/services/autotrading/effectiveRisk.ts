@@ -41,6 +41,8 @@ export interface SizingFactors {
   stepDown: number;
   /** The market-regime cut — one factor with three triggers (regimeTriggers). */
   regime: number;
+  /** Same-day re-entry cut — this symbol already closed a position today. */
+  repeatEntry: number;
   /** Equity-curve de-risking — strategy equity below its recent average. */
   equityCurveDerisk: number;
   /** Per-grade realized-edge multiplier (expectancySizing.ts). */
@@ -74,7 +76,14 @@ export function cutFactor(active: boolean, cutPct: number): number {
  */
 export function effectiveRiskPct(riskPerTradePct: number, f: SizingFactors): number {
   const product =
-    riskPerTradePct * f.stepDown * f.regime * f.equityCurveDerisk * f.expectancy * f.method * f.finishLine;
+    riskPerTradePct *
+    f.stepDown *
+    f.regime *
+    f.repeatEntry *
+    f.equityCurveDerisk *
+    f.expectancy *
+    f.method *
+    f.finishLine;
   return Number.isFinite(product) ? Math.max(0, product) : 0;
 }
 
@@ -133,7 +142,7 @@ export function isRegimeActive(marketAtrPct: number | null | undefined, threshol
 //          read through FRED labels the morning AFTER a shock; this is the one
 //          trigger that can see day one.
 //
-// They are not three factors. The About page enumerates six sizing factors and
+// They are not three factors. The About page enumerates seven sizing factors and
 // two market-volatility cuts multiplying each other would count one condition
 // twice, so the DEEPER configured cut applies once: ATR 40% + ML 35% is a 40%
 // cut, never 61%. A cut of 100 or more means "no entries in this regime" —
@@ -286,10 +295,34 @@ export function regimeStamp(t: TickRegime): MlRegime | null {
   return t.effectiveRegime === 'unknown' ? null : t.effectiveRegime;
 }
 
+/**
+ * Is this a SAME-DAY re-entry into a name this book already exited today?
+ *
+ * Measured 2026-09-08 over 89 closed live-autotrade trades: first entries
+ * n=56 +$398.98 (mean +$7.12), repeats n=33 -$121.03 (mean -$3.67). The
+ * direction survives trimming; the size of it does not — 86% of the repeat
+ * deficit is a single DELL trade, and dropping the worst from each side leaves
+ * repeats at -$0.55 a trade. Hence a size CUT rather than a block.
+ *
+ * Counts EXITS today, not entries: a position opened yesterday and closed this
+ * morning makes this morning's second attempt a repeat, which entry-counting
+ * would miss. The cut % is not consulted here — cutFactor turns 0 into NEUTRAL
+ * on its own, and folding the off-switch into the predicate is what made the
+ * regime cut pin ON at a 0 threshold (see isRegimeActive above).
+ */
+export function isRepeatEntryActive(priorSameDayExits: number): boolean {
+  return priorSameDayExits > 0;
+}
+
 export interface PreFinishLineInputs extends RegimeTriggerInputs {
   consecutiveLosses: number;
   stepDownAfterLosses: number;
   stepDownSizeCutPct: number;
+  /** How many times THIS symbol already closed a position today, for this book.
+   *  Zero on the paper path by written opt-out — paper takes every signal so the
+   *  repeat-vs-first comparison keeps a clean control arm. */
+  priorSameDayExits: number;
+  repeatEntrySizeCutPct: number;
   /** Already-decided multipliers. Pass NEUTRAL where a book deliberately does
    *  not apply one — a written opt-out, not an omission. */
   equityCurveDerisk: number;
@@ -301,6 +334,7 @@ export function preFinishLineFactors(i: PreFinishLineInputs): PreFinishLineFacto
   return {
     stepDown: cutFactor(isStepDownActive(i.consecutiveLosses, i.stepDownAfterLosses), i.stepDownSizeCutPct),
     regime: regimeTriggers(i).factor,
+    repeatEntry: cutFactor(isRepeatEntryActive(i.priorSameDayExits), i.repeatEntrySizeCutPct),
     equityCurveDerisk: i.equityCurveDerisk,
     expectancy: i.expectancy,
     method: i.method,

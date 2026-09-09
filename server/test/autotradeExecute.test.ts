@@ -17,6 +17,7 @@ import { setAutotradeConfig } from '../src/db/autotradeConfig';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { hasOpenPaperPosition, listPaperPositions, openPaperPosition } from '../src/db/autotradePaperPositions';
 import { createPosition, addExit } from '../src/db/positions';
+import { etToday } from '../src/util/marketDate';
 import * as paperPositionsDb from '../src/db/autotradePaperPositions';
 import { attemptPaperEntry, checkPaperExits, runPaperExecution } from '../src/services/autotrading/execute';
 import { evaluateRiskCheck, RiskCheckResult } from '../src/services/autotrading/riskCheck';
@@ -86,6 +87,8 @@ describe('attemptPaperEntry', () => {
     mlRegimeSizeCutPct: 35,
     todayRangePct: null,
     regimeShockRangeRatio: 0,
+    priorSameDayExits: 0,
+    repeatEntrySizeCutPct: 0,
   });
 
   it('fills at a freshly-fetched quote, not the signal price', async () => {
@@ -745,5 +748,59 @@ describe('runPaperExecution — the ATR reachability gate does NOT apply here', 
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as never);
     const outcomes = await runPaperExecution([{ signal: { ...signal(), atr: 1 } }]);
     expect(outcomes[0]).toMatchObject({ ok: true });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The same-day re-entry size cut (#49) is LIVE-ONLY, by written decision.
+//
+// The finding — first entries +$7.12 a trade, repeats -$3.67, over 89 closed
+// live trades — has a direction that survives trimming and a magnitude that
+// does not: 86% of the repeat deficit is one DELL trade. So it gets re-measured
+// at ~60 repeats, and paper is the arm it gets re-measured AGAINST. A control
+// arm that takes the same treatment as the test arm cannot settle anything, so
+// paper deliberately passes priorSameDayExits: 0 and takes every signal at full
+// size, exactly as it does for the loss cooldown and the re-entry cooldown.
+//
+// Asserted at the paper POSITION, not at the call site's literal 0: the point
+// is what paper actually sizes, and a source-level assertion would go green on
+// a call site that passes the right constant into a path that ignores it.
+// ---------------------------------------------------------------------------
+describe('runPaperExecution — paper is the control arm for the repeat-entry cut', () => {
+  /** A concluded paper trade in the name today — the exact history that cuts
+   *  the LIVE book's next entry in that name. */
+  function concludedPaperTradeToday(symbol: string) {
+    const pos = createPosition({
+      assetType: 'stock',
+      symbol,
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      entryDate: etToday(),
+      tags: ['autotrade', 'paper'],
+    });
+    addExit(pos.id, { quantity: 10, exitPrice: 100.01, exitDate: etToday() });
+  }
+
+  async function paperEntryQty() {
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 101 }) as never);
+    await runPaperExecution([{ signal: signal({ symbol: 'AAPL' }) }]);
+    return listPaperPositions({ status: 'open' })[0].quantity;
+  }
+
+  it('sizes a repeat exactly as the feature-off book would, with the cut turned up', async () => {
+    // The baseline is pinned by the SETTING being off, not by another run of
+    // the same treated path: comparing two treated runs to each other is how a
+    // regression that cuts EVERY paper entry passes unnoticed — both sides move
+    // together and the difference stays zero. (Found doing exactly that here.)
+    setAutotradeConfig({ accountEquityUsd: 100_000, riskProfile: 'MODERATE', repeatEntrySizeCutPct: 0 });
+    const featureOff = await paperEntryQty();
+    expect(featureOff).toBeGreaterThan(1); // a 1-share baseline could not show a cut
+
+    db.exec('DELETE FROM autotrade_paper_positions;');
+    setAutotradeConfig({ repeatEntrySizeCutPct: 80 });
+    concludedPaperTradeToday('AAPL');
+
+    expect(await paperEntryQty()).toBe(featureOff);
   });
 });

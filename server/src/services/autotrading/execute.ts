@@ -416,6 +416,10 @@ export async function runPaperExecution(
       sectorOf,
     );
     const ctx: RiskCheckContext = {
+      // PAPER opts out on purpose: paper takes every signal so it stays the control
+      // arm this finding will be re-measured against at ~60 repeats.
+      priorSameDayExits: 0,
+      repeatEntrySizeCutPct: 0,
       equity,
       dailyPnl,
       tradesToday,

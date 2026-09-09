@@ -123,6 +123,21 @@ function ExcursionsPanel({ active }: { active: boolean }) {
           sub="of the move kept"
         />
       </div>
+      {mix != null && mix.daily > 0 && mix.intraday > 0 && data.data.byResolution != null && (
+        // The tiles above pool both resolutions, and once daily rows stop being
+        // a rounding error that pooled number describes neither: on 2026-09-09
+        // it read 1.74 where intraday was 0.54 and daily 3.60. The note above
+        // says the mix exists; this says what each half actually measured, so
+        // the tile can't be read as one quantity.
+        <p className="text-[11px] text-slate-500">
+          Split by how it was measured — intraday avg MFE{' '}
+          <span className="tabular-nums text-slate-300">{r(data.data.byResolution.intraday.avgMfeR)}</span> over{' '}
+          {data.data.byResolution.intraday.trades}, daily{' '}
+          <span className="tabular-nums text-slate-300">{r(data.data.byResolution.daily.avgMfeR)}</span> over{' '}
+          {data.data.byResolution.daily.trades}. Compare R against the intraday figure; the daily one is an upper bound,
+          not a bigger sample of the same thing.
+        </p>
+      )}
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>

@@ -138,6 +138,24 @@ describe('the reasons reach the route because the screen stopped discarding them
       })
       .join('\n');
     // BOTH scoring paths must record: single-direction and both-directions.
-    expect((code.match(/rejected\.push\(/g) ?? []).length).toBeGreaterThanOrEqual(2);
+    //
+    // Counted at the two RETURNS rather than at two pushes. The paths were
+    // inline blocks with a `rejected.push(` each until 2026-09-08, when the
+    // relative-volume pace scoring needed the same selection run twice (once
+    // per scoring) and they were unified into selectFromSnapshot — which now
+    // RETURNS a rejection from each non-picking path, and one caller pushes
+    // it. The property this test exists for is unchanged and is now enforced
+    // by the return type; what changed is where to count it.
+    //
+    // The SHORTHAND `{ symbol,` is what makes this count the two returns and
+    // not the two TYPE DECLARATIONS of the same field, which spell it
+    // `{ symbol: string`. Without that the scan matched 4 and would have
+    // passed with BOTH return sites deleted — a test that cannot fail is worse
+    // than no test, and this one was written to catch a real regression.
+    // autotradeScreen.test.ts covers the same property behaviourally, through
+    // runAutotradeScreen in both direction modes; this scan is the cheap
+    // backstop, not the proof.
+    expect((code.match(/rejected: \{ symbol,/g) ?? []).length).toBeGreaterThanOrEqual(2);
+    expect((code.match(/rejected\.push\(/g) ?? []).length).toBeGreaterThanOrEqual(1);
   });
 });

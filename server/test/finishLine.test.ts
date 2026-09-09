@@ -120,6 +120,8 @@ describe('the finish-line trim reasons about the risk the trade will really take
       mlRegimeSizeCutPct: 35,
       todayRangePct: null,
       regimeShockRangeRatio: 0,
+      priorSameDayExits: 0,
+      repeatEntrySizeCutPct: 0,
       equityCurveDerisk: NEUTRAL,
       expectancy: NEUTRAL,
       method: NEUTRAL,

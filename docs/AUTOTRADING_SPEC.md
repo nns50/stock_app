@@ -6508,3 +6508,1215 @@ changes.
 | date | window / split | symbols | chosen cell | baseline ret% / DD% / ratio | chosen ret% / DD% / ratio | note                                        |
 | ---- | -------------- | ------- | ----------- | --------------------------- | ------------------------- | ------------------------------------------- |
 | —    | —              | —       | not run yet | —                           | —                         | the overlay stays OFF until this row exists |
+---
+
+## 2026-09-08 — the OTOCO probe: two findings, neither of them the one it was for
+
+The plan was narrow. Place a second, standalone bracket group on a symbol that
+already carried one, and count the resting combo groups. Four legs across two
+`combo_order_id` values would have proved per-lot brackets are placeable and
+settled a design question that had been open since 09-02.
+
+The probe never got that far, and what it hit instead is more useful.
+
+### Finding 1 — `held` was never the broker's bound
+
+FCX was open: 38 shares, one combo group, a stop at 77.34 and a target at 80.05.
+A **one share** protective bracket with deliberately unreachable prices was
+refused outright:
+
+```
+OPENAPI_ORDER_NOT_SUPPORT_REVERSE_OPTION
+This order cannot be entered because it will reverse an existing position.
+You may need to close an open position, or cancel an open order, before you
+can submit this order.
+```
+
+One share against thirty-eight held is not a reversal by any reading of the
+holding alone. *"or cancel an open order"* is the half that explains it: the
+broker compares a new protective order against the shares held **minus the
+shares already committed to resting exits**. FCX had a full-size bracket
+resting, so the available quantity was zero and no protective order of any size
+could be added.
+
+Two counting rules follow, and the same book evidences both:
+
+| Scope | Rule | Evidence |
+|---|---|---|
+| Within one combo group | take the **max** leg, not the sum | a 38-share stop and a 38-share target rest together over 38 held, accepted at entry |
+| Across combo groups | **sum** them | 38 committed plus a new 1-share group was refused as a reversal |
+
+`committedProtectiveQuantity` in `providers/webull/orders.ts` implements exactly
+that, and the standalone-bracket route now refuses against `held - committed`
+with both numbers named, rather than passing a doomed order to the broker and
+relaying a string that sounds like the position is wrong.
+
+Three consequences worth stating plainly, because they decide designs:
+
+- **You cannot place a replacement bracket before cancelling the old one.**
+  Cancel-then-place is not a stylistic preference, it is the only ordering this
+  broker permits. `cancelReplaceBracket` already does it in that order, so the
+  naked window between the two is **structural**, not an implementation flaw to
+  be engineered away.
+- **The two-lot design still fits — with zero headroom.** Nineteen plus
+  nineteen over thirty-eight held is exactly the bound, not comfortably inside
+  it. A partial fill, or a race where the entry is not yet booked when the
+  second bracket goes out, refuses that bracket and leaves those shares naked.
+  Any build of it needs the second placement's failure path designed first.
+- **The probe did not refute per-lot brackets.** It sent 39 shares of exits
+  against 38 held, which the design never would. The question of whether two
+  combo groups can coexist on one symbol is still open, and answering it needs
+  either an account holding shares with no resting bracket, or the design built
+  and tried at entry.
+
+### Finding 2 — the scale-out's "fix" did not work, and nobody looked for four days
+
+Chasing the refusal into the journal turned up something worse. The 144
+`live_scale_out_blocked` events split cleanly on the day the both-legs replace
+request shipped:
+
+| Window | Refusals | Request shape |
+|---|---|---|
+| 09-02 .. 09-03 | 98 | one leg per request (the original bug) |
+| 09-04 .. 09-08 | 46 | **both legs in one request** |
+
+Same broker message on both sides of the split, verbatim: *"The number of
+take-profit orders and the number of stop-loss orders must be the same."* The
+46 later attempts span SMCI, IOT, DELL and FCX over five sessions, and each one
+sends exactly one `STOP_LOSS` and one `STOP_PROFIT` — the balance the message
+asks for. Scale-out fills to date: still **zero**.
+
+The diagnosis was right and the remedy was wrong.
+
+**But the endpoint is not broken.** FCX's stop ratcheted three times in four
+minutes the same morning — 77.34 to 77.35 to 77.41 to 77.44, all inside the same
+combo group — and `live_stop_adjust_failed` has *never* been journalled, across
+DELL, SNDK, IOT, SMCI and FCX. That path calls `webullReplaceOrder` (singular),
+which delegates to this very function with a one-element array. So
+`/order/replace` works; it refuses this particular request.
+
+That also kills the first suspect. The resting group's **FILLED MASTER** leg
+looked like the obvious culprit, and it cannot be: the MASTER is equally present
+every time the stop ratchet succeeds. Three differences remain between the call
+that works and the call that does not:
+
+| | stop ratchet (works, always) | scale-out (refused, 46/46) |
+|---|---|---|
+| legs in `modify_orders` | one | two |
+| what the patch changes | price | quantity |
+| `client_combo_order_id` | not sent | **sent** |
+
+### What shipped instead: the ratchet's shape, whole
+
+Picking one of those three to change would have been the sixth guess in a row.
+Every earlier one shipped the same way — a plausible reason, a unit test
+asserting the new shape, and no check on what the broker did with it:
+
+| Date | Added | Result |
+|---|---|---|
+| 09-03 | quantity only, one leg per request | 9 refusals |
+| 09-04 | + the echoed defining price | refused |
+| 09-04 | + `combo_type` | refused |
+| 09-05 | + `order_type` | refused |
+| 09-04+ | both legs in one request, + `client_combo_order_id` | 46 refusals |
+
+So the resize now stops guessing and **copies the request that works**. The
+ratchet sends the client order id and the single field it is changing —
+`webullReplaceOrder(id, { stopPrice })` — and nothing else. The resize sends the
+client order ids and `quantity`, and nothing else. No `combo_type`, no
+`order_type`, no echoed price, no combo id. Two legs stay in one request,
+because single-leg quantity modifies are what drew the original 98 refusals and
+one leg alone genuinely does unbalance the pair the broker complains about.
+
+Dropping the echoed price has a second benefit worth naming: the old payload put
+a live protective price on the wire on every partial, to "identify" a leg the
+client order id already identifies. A stale read or a typo there would have
+moved a real stop.
+
+### And the check that had to ship with it
+
+`replaced.ok` means the broker ACCEPTED the request. It does not mean the
+resting legs changed — the same distinction `verifyLegsGone` exists for on the
+cancel side. The scale-out did not draw it: it went from a 200 straight to
+selling the difference. **Had a modify ever been accepted without being applied,
+that sale would have gone out against a full-size bracket still resting, and the
+surplus sell shares are a short.**
+
+That was latent only because the request was refused 148 times out of 148. The
+moment the payload changes it stops being latent, so `verifyLegsResized` lands in
+the same commit — it re-reads the book and confirms both legs carry the new size
+*and* still carry their original prices before anything sells:
+
+- **legs unchanged** → the broker no-opped. The bracket still covers the whole
+  position, so the partial is skipped and nothing is naked. Journals
+  `live_scale_out_blocked`.
+- **legs changed into something else** — a moved price, a vanished leg, one leg
+  applied and not the other → protection nobody chose. Journals
+  `live_position_unprotected`, which pages, and sells nothing.
+
+The price half also guards the one assumption the new payload rests on: that
+`/order/replace` patches only the fields it is given. The ratchet evidences that
+in one direction (it sends a price, no quantity, and the quantity survives); the
+converse is assumed here and **checked rather than trusted**.
+
+Cancel-and-replace is exempt, deliberately — it destroys those leg ids on
+purpose and does its own verification, so checking for the old ids would condemn
+its success as a vanished leg. That exemption was found by a consumer test, not
+by reading the code.
+
+### If this one also fails
+
+Then the remaining difference from the ratchet is only the leg count and
+quantity-vs-price, and the honest conclusion is that this broker does not
+support resizing a resting combo leg at all. At that point the choice is between
+cancel-and-replace's structural naked window and per-lot brackets at entry
+(#26) — and it is a decision about which risk to take, not another payload.
+
+The comment in `webullReplaceOrders` asserted the fix as settled fact. It has
+been corrected in place, because a future reader would otherwise re-derive the
+wrong conclusion from it.
+
+**The process failure is the point.** The unit tests were green throughout, and
+they were always going to be: they assert the *request shape*, which was never
+in doubt. The broker's answer to that shape was the thing in question, and only
+production could give it. This is CLAUDE.md's rule verbatim — *if a change
+should move a user-visible number, go look at that number* — and the number
+here was "scale-out fills", which sat at zero for four days while the code said
+the problem was solved.
+
+### Where this leaves the scale-out
+
+Three candidate paths, and the probe removed one of them:
+
+1. **Modify the resting legs** — 144 refusals, 0 fills, dead unless the FILLED
+   MASTER theory pans out. Not to be re-enabled on hope.
+2. **Cancel then place** (`liveScaleOutCancelReplaceEnabled`, still off) — uses
+   the place path, so Finding 2 does not touch it, and Finding 1 confirms its
+   ordering is the only legal one. Its naked window is structural.
+3. **Two brackets at entry** — untested, fits the quantity bound exactly, and
+   needs the second-placement failure path designed before any build.
+
+No config was changed. The test order was refused, so nothing rested in the
+book and there was nothing to cancel; FCX finished the probe with its original
+three legs and its protection intact.
+
+---
+
+## 2026-09-08 — the naked-position alarm was paging on stops that had just filled
+
+`checkLiveBracketProtection` asked one question: is there a resting exit-side
+order on this symbol? A `no` was treated as "unprotected, wake someone".
+
+But a bracket whose stop has just **filled** answers `no` too. The two states
+are identical from the open-orders book, and the alarm could not tell them
+apart. On 09-08 it paged on SMCI:
+
+```
+13:52:45  live_position_unprotected — "the broker shows no resting sell order on
+          SMCI — its stop may never have been accepted, or was cancelled. Check
+          the broker and re-arm protection by hand."  restingExitLegs 0
+13:52:53  position_reconcile_skipped — bracket_leg_reconcile_pending, brokerQty 0
+13:54     exit recorded: exitReason 'stop', 52 @ 40.77
+```
+
+Nothing was ever unprotected. The stop was in the act of working, and the
+reconcile knew it eight seconds later — `brokerQty 0` is the position being
+**gone**, not naked.
+
+### The fix
+
+The alarm now reads the held quantity before it pages, and only on the branch
+that is about to page — every position that still has its stop returns earlier,
+so this costs one account read per position genuinely at risk, not one per
+position per tick.
+
+| Broker says held | Verdict |
+|---|---|
+| 0 | closed, not unprotected. Skipped, and the reconcile will book it. |
+| more than 0 | real. Pages, and the detail names the confirmed count. |
+| read failed | still pages — fail-loud is right for a protection alarm — but the message says the held count is **unconfirmed** rather than claiming it. |
+
+A partial fill lands in the second row correctly: the shares that remain
+genuinely have no stop under them.
+
+### Why it was worth fixing on one instance
+
+Seven `live_position_unprotected` rows exist in the whole journal. Exactly
+**one** is a confirmed false page — today's SMCI, followed by a `stop` exit the
+same day. The other six exited with no recorded reason, so they cannot be
+classified either way and no rate should be claimed from them.
+
+The argument is not the count. It is that **this is the alarm that pages**, its
+text tells the operator to go re-arm protection by hand, and it fires on a state
+that occurs every single time a stop does its job. Left alone it would page on
+every stop fill from here on, and an alarm that cries wolf on healthy positions
+trains you to ignore the one case it exists for — the same reasoning already
+written into this function for account scoping and for parse misses.
+
+---
+
+## 2026-09-08 — a read-only way to ask what the broker holds
+
+There wasn't one. The question came up three times in a single session and every
+time the answer had to be inferred from a side effect:
+
+| Incident | How the held quantity was actually obtained |
+|---|---|
+| SMCI mid-adoption | read off a `position_reconcile_skipped` detail |
+| FCX bracket probe | the broker's own rejection string |
+| NOK scale-out remainder | a deliberately oversized protective order, sent so its own guard would refuse it and name the count |
+
+That last one is the tell. It is a **read dressed as a write** — an order
+placement endpoint invoked with a quantity chosen to be refused — and it was
+blocked by a permission classifier, correctly. Nothing about the shape of that
+request says "I only want to look".
+
+`GET /api/autotrade/live/holdings` is the read. It calls
+`previewWebullPositions`, which fetches `/openapi/assets/positions` and maps it
+without writing anything, and rolls the equity rows up per symbol.
+`?symbol=NOK` answers the single-symbol question directly, which is the form
+every one of the three incidents actually needed.
+
+### The one thing it must never get wrong
+
+A broker row the mapper cannot parse **still proves the account holds something
+in that symbol**. Reporting such a symbol as quantity 0 would be exactly the
+false negative this endpoint exists to prevent — and it is the same trap the
+close-detector already guards with its `unmappedSymbols` freeze list, where an
+unparseable row must never be read as evidence of a sale.
+
+So unmapped symbols are surfaced separately (`unknownSymbols`), and the
+single-symbol form returns `known: false` alongside the zero. Callers must read
+that as *held, quantity unknown* — never as flat. An unreadable broker is a 502,
+not an empty list, for the same reason.
+
+Option rows are excluded from the share roll-up: an option row's quantity is
+contracts on one specific contract, and summing it beside share counts produces
+a number that means nothing.
+
+### Why it matters beyond convenience
+
+Zero resting exit legs looks identical whether a stop was never accepted or has
+just **filled**. The held quantity is the only thing that separates them — the
+same distinction that made the naked-position alarm page on a stop that was in
+the act of working, earlier the same day. Until this endpoint existed, the only
+component that could ask the question directly was the alarm itself.
+
+---
+
+## 2026-09-08 — a booked exit pinned its position against the broker-truth sync
+
+The first live cancel-and-replace scale-out ran at 16:36Z. Within minutes NOK 600
+was flat at the broker and still open in the journal, and it stayed that way for
+an hour — holding one of three concurrency slots, against a 3%/day target sitting
+at 0.53% with two hours of session left. Nothing was unprotected; this cost
+opportunity, not money.
+
+### The cycle
+
+`runWebullPositionsSync` refuses to close a position while the loop has a closing
+order in flight for it — the 2026-08-24 fix, which exists because this sync was
+beating the loop's own reconcile to a fill and booking a *quoted estimate* over a
+real price, losing both fidelity and the exit reason (VALE, then DELL 587).
+
+It decided "in flight" by membership of `listPendingLiveOrders()`. But that query
+deliberately keeps a **filled** exit row alive while its position is open, so
+`reconcileLiveOrders` can still work with it. Read as "in flight", that is
+circular:
+
+```
+position stays open  ->  because the sync defers
+sync defers          ->  because the exit row is pending
+exit row is pending  ->  because the position is open
+```
+
+The bracket-leg defer directly above it is bounded by the miss streak and
+self-releases. This branch has **no bound at all**.
+
+### Why it had never fired before
+
+It needed a **partial** exit to exist. A full exit's reconcile closes the
+position, which drops its row out of the pending list and ends the cycle. A
+partial books its slice and *correctly* leaves the position open — and from that
+moment its filled exit row pins the position permanently.
+
+No partial had ever executed. The scale-out had been refused ~150 times across
+six payload shapes and had never once filled. **The bug shipped long ago and was
+unreachable until the day the scale-out started working.**
+
+### The fix
+
+Filter on the intent's own state (`isTerminal`) rather than on membership of a
+list that answers a different question. A filled exit has already been booked by
+whoever placed it — which is the entire point of deferring — so it has no claim
+to defer any longer. An exit still `submitted` or `acknowledged` defers exactly
+as before.
+
+### And the reason it hid for an hour
+
+The journal row for this branch is gated on `justConfirmed`, which is true only on
+the sync that first crosses the miss threshold. NOK spent its early syncs in the
+*bracket* branch, logged there once at streak 2, then fell through to this branch
+at streak 4+ where `justConfirmed` was already false — so it logged nothing, ever.
+Every `position_reconcile_skipped` row in the journal reads "streak 2" for the
+same reason, which makes them look like fresh defers no matter how old they are.
+
+A defer that reaches `STUCK_DEFER_STREAK` (10 syncs, roughly twenty minutes) now
+journals once, carrying the streak and an `overdue` flag. Keyed on **equality**,
+not a threshold, so the streak passes through the value and it fires exactly once
+per episode without needing state of its own. It **reports and does not act** —
+the defer stays, a human decides. Shortening the grace window would reopen the
+DELL bug; the defect was the release condition, never the deferral.
+
+---
+
+## Same-day re-entry size cut (2026-09-08)
+
+`repeatEntrySizeCutPct`, default `0` (off). Live equity book only.
+
+### The finding
+
+Over 89 closed live-autotrade trades: first entries in a name **n=56, +$398.98
+(mean +$7.12)**; same-day repeats **n=33, −$121.03 (mean −$3.67)**.
+
+`symbolCooldown.ts` does not catch these and was never going to. It needs two
+**losing** closed trades inside a rolling window measured in **calendar days**,
+and the exit producing most of these repeats is the stagnation exit — which by
+definition closes near scratch, so it is not a loss, never counts, and the
+cooldown never engages. `reentryCooldown.ts` (`symbolReentryCooldownMinutes`)
+does address the reflexive re-entry, but it ships at `0` and blocks outright,
+which is a stronger claim than the data supports.
+
+### Why a cut and not a block
+
+The **direction** of the gap survives trimming; the **magnitude** does not. 86%
+of the −$121.03 repeat deficit is a single DELL trade, and dropping the worst
+trade from each side leaves repeats at **−$0.55 a trade**. And the counter-case
+is on the record in `symbolCooldown.ts`'s own header: LVWR lost −0.98R at 12:30
+and its same-day re-entry won +1.93R. So repeats are worth *less*, not
+*nothing* — a trim is the honest expression of that, a block is not.
+
+For the same reason the cut is **flat, not a ladder**: `isRepeatEntryActive` is
+a boolean over the count, so the fourth attempt in a name is cut exactly as much
+as the second. Compounding per prior exit was never measured, and third entries
+are rare enough that a ladder would be tuned on almost no data.
+
+### How it is counted
+
+`sameDaySymbolExits(symbol, closedPositions, etDay)` in `reentryCooldown.ts`:
+
+- **Positions, not exit rows.** A scaled-out trade books a partial exit and a
+  final exit on the same day. Counting rows would score that single trade as two
+  repeats and cut the next entry twice as hard for no reason — and since the
+  scale-out started filling on 2026-09-05, that is now the ordinary shape of a
+  live trade, not an edge case.
+- **Exits, not entries.** A position opened yesterday and closed this morning
+  makes this morning's second attempt a repeat; entry-counting would miss it.
+- **The ET trading date, not a rolling 24h window.** The finding is about
+  re-entering inside the same *session*. An overnight gap resets the thesis, and
+  a wall-clock window would keep yesterday afternoon's exit suppressing this
+  morning's first entry.
+
+### Wiring
+
+- `SizingFactors` gains a required `repeatEntry` field, so neither risk check
+  compiles until both books state what it does. It is the **seventh**
+  multiplicative factor; `effectiveRiskPct` multiplies it with the rest.
+- `liveExecute.ts` derives `priorSameDayExits` **once per signal** and passes
+  the same value to `preFinishLineFactors` and to `RiskCheckContext` — the
+  finish-line trim and the sizer must reason about the same count.
+- The closed-position read is shared with the re-entry cooldown behind an **OR**
+  (`symbolReentryCooldownMinutes > 0 || repeatEntrySizeCutPct > 0`). Tying it to
+  either feature's own setting would hand the other an empty list and it would
+  do nothing, silently.
+- `evaluateRiskCheck` emits a `repeat_entry_sizing` check derived from the
+  **factor**, not the trigger, so a 0% cut reads `triggered … size unchanged`
+  rather than `active` — the `regime_sizing` lie of 2026-09-05, avoided by
+  construction.
+
+### Scope: LIVE only, by decision
+
+Paper passes `priorSameDayExits: 0` **and** `repeatEntrySizeCutPct: 0`, with the
+reason written at the call site: this finding gets re-measured at ~60 repeats,
+and paper is the arm it gets re-measured *against*. A control arm that takes the
+same treatment as the test arm cannot settle anything. Both options books and
+all three backtest engines opt out the same way, each with its own note.
+
+### What the tests assert
+
+At the **consumer**, throughout — `evaluateRiskCheck`'s `suggestedQuantity` and
+the quantity that reaches `webullPlaceOrder`, never the factor. That is not
+ceremony: this feature's own first draft computed `repeatEntry` in
+`preFinishLineFactors` and left it out of `effectiveRiskPct`'s product, and
+every unit test on the builder stayed green. The generalised guard in
+`effectiveRisk.test.ts` — set each `SizingFactors` key to 0.5 alone and the
+result must halve — is what catches that class of defect for the next factor
+too, since the required-field type forces the new key into the fixture it
+iterates.
+
+The live-path tests measure their own full-size baseline rather than hardcoding
+a share count: live probation is halving the same orders, and a literal would
+quietly start asserting the probation factor the day either number moves.
+
+---
+
+## Relative-volume PACE scoring (2026-09-08)
+
+`relVolUsePaceScoring` (default `false`) and `relVolPaceTarget` (default `2.5`).
+
+### The gap this closes
+
+`minRelVolPace` replaced raw relative volume for the entry **gate** on
+2026-08-25. The **score** was never touched, so `scoreRelVol` still reads raw
+`relVolume` — today's cumulative volume over an average FULL day, which climbs
+mechanically through the session.
+
+The consequence, measured on the live book: **8 of 15 entries scored exactly 0**
+on the relative-volume component, which carries **20% of the weight** by
+default. Not because those names were quiet — because before roughly midday
+almost nothing can reach `relVolTarget` (2×), so the component says
+"unremarkable" about every stock in the market at the same time. At 10:47 ET on
+2026-08-25 the median of 261 scored symbols read `0.10` and exactly one reached
+`1.0`.
+
+### The scoring
+
+`scale01(relVolPace, 1.0, relVolPaceTarget)`.
+
+The floor is **1.0 pace, not 0.5**. A stock at 1.0 is keeping up with the median
+stock, which half the universe does by definition, so it earns nothing. That is
+a different number in a different unit from the raw branch's 0.5 floor, and the
+two must never be swapped — hence `PACE_UNREMARKABLE` as a named constant beside
+a comment saying so.
+
+`relVolPaceTarget` is likewise **not** `relVolTarget`. One is a multiple of the
+market's current pace, the other a multiple of the symbol's own 20-day average;
+both are plain positive numbers, so reading the wrong one would be silent. The
+default 2.5 puts full marks at about the 95th percentile of the pace
+distribution — the same "clearly unusual, not merely above average" place
+`relVolTarget` occupies in its own units.
+
+**Falls back to the raw measure when the pace is unmeasurable** (fewer than
+`MIN_PACE_SAMPLES` = 20 usable symbols this tick, or no `relVolume` for this
+symbol) — never to 0. Scoring 0 is precisely what this change exists to stop
+doing, and a thin tick reintroducing it under a different cause would be no
+better.
+
+### Ordering: why the screen now scores after the fetch loop, not inside it
+
+The pace needs the universe median, and the median needs every symbol's
+`relVolume` — so **no symbol can be scored until all of them have been read**.
+`computeIndicators` therefore always sets `relVolPace: null` (it sees one symbol
+and cannot know better), the fetch loop retains each snapshot, and scoring runs
+once afterwards. Snapshots are flat objects of ~17 numbers; holding 560 of them
+is nothing next to the candle arrays already live during the fetch.
+
+`selectFromSnapshot` is the single implementation of "score this snapshot, pick
+a direction, else record a rejection", called for both scorings. Two copies that
+agree today would drift, and the drift would be invisible in the worst possible
+way: flag-on and flag-off differing for reasons unrelated to the flag, in the
+middle of the measurement meant to decide whether to keep the flag on.
+
+### Why a flag, and why it ships off
+
+Turning this on rescales the entire score distribution. `liveMinSignalScore`
+(72) was fitted to the **raw** distribution against realized P&L in PR #44 —
+enabling pace scoring without re-fitting that floor moves the live entry gate
+without anyone deciding to.
+
+So the flag is off **and both scorings are computed every tick**, with one
+aggregate row journaled as `relvol_pace_scoring_shadow`:
+
+| field | meaning |
+|---|---|
+| `enabled` | which scoring is live |
+| `universeMedian` | the denominator; `null` when unmeasurable |
+| `compared` | scored symbols, **including those that failed filters** |
+| `relVolComponentZeroRaw` / `…Pace` | the headline: how many score 0 on the component under each |
+| `meanTotalDelta` | mean change in total score |
+| `wouldNewlyPass` / `wouldNewlyFail` | the **set** change — an average can be flat while the candidate set turns over completely |
+
+One row per tick, not one per symbol: `excluded_re`'s per-tick volume is already
+an open question (task #43), and this must not add to it.
+
+The counts cover **every scored symbol, not just the survivors**. Restricting
+them to candidates would measure the component exactly where the rest of the
+score already carried the symbol through, and would report a shrinking sample as
+the score floor rises — the moment the measurement matters most.
+
+### Deciding it
+
+Read a few sessions of `relvol_pace_scoring_shadow`. If `wouldNewlyPass` and
+`wouldNewlyFail` are both small the change is cosmetic and the flag is not worth
+the risk. If the set turns over materially, then `liveMinSignalScore` has to be
+re-fitted against the pace-scored distribution **before** the flag goes on — not
+after.
+
+---
+
+## Raising the excursion cap, and what it did NOT unblock (2026-09-08, corrected 2026-09-09)
+
+`GET /api/journal/excursions` capped its analysis at **50** trades. The book held
+117 closed stock trades: 25 undated (genuinely unmeasurable — an excursion walks
+candles from the entry), leaving **92 measurable**, of which **42 were reported
+as `overCap`**. The report was honest about dropping them; nothing was hidden.
+It was still analysing barely half the evidence.
+
+That mattered the moment task #32's gate was reached. With 24 winners the
+target-multiple question became answerable, so the counterfactual was run: for
+each trade, if its MFE reached candidate target `T` it exits at `+T`, otherwise
+it keeps the outcome it actually had.
+
+| T | hit % | mean R | paired Δ vs 2.0R | trades that differ |
+|---|---|---|---|---|
+| 0.5 | 35% | +0.120 | −0.023 (t −0.37) | 17 |
+| 1.0 | 12% | +0.111 | −0.032 (t −0.77) | 6 |
+| 1.5 | 8% | +0.122 | −0.021 (t −1.06) | 4 |
+| **2.0** | 6% | **+0.143** | baseline | — |
+| 2.5 | 4% | +0.165 | +0.022 (t +1.53) | 3 |
+
+**Verdict: HOLD at 2.0.** Every alternative sits inside noise — all |t| < 2, every
+95% CI straddles zero — and above 1.25R only three or four trades differ at all.
+
+**The naive read is backwards**, which is why it is written down here. "Only 12%
+of winners reach 2R, so lower the target" would have *cost* expectancy: median
+realized R is 0.00, so the book is carried by a thin tail, and a lower target
+clips exactly that tail while changing nothing for the trades that exit by stop,
+trail or stagnation anyway.
+
+### What changed
+
+- `EXCURSION_TRADE_CAP` 50 → **250**, so the whole measurable book is analysed.
+- **`?limit=`** narrows it on demand, clamped to the cap, so a growing book never
+  needs a deploy to be measured — and a junk limit (`abc`, `0`, `-5`, empty)
+  falls back to the full cap rather than to `slice(0, NaN)`, which returns an
+  empty array and would have reported a clean zero-trade analysis.
+- Fetches now run through **`mapPool` at 6**, not `Promise.all` over everything.
+  Raising the cap without this would have fired 92+ concurrent candle requests at
+  a provider that already costs the screener ~47 of 559 symbols a tick to rate
+  limiting — and a throttled fetch here does not fail loudly, it lands in
+  `unavailable` and *shrinks* the sample, which is the exact opposite of the point.
+
+### Still open
+
+Winners capture a median **48%** of their peak favourable move. That is an EXIT
+question — trail, stagnation, scale-out — not a target question, and it belongs
+with the exit-tuning work rather than here.
+
+
+---
+
+## Correction: the cap was not the binding constraint (2026-09-09)
+
+The section above claims raising `EXCURSION_TRADE_CAP` unblocked task #32's
+target-multiple question. **It did not, and the claim was wrong when written.**
+
+Re-run on the uncapped route: the sample went 50 → 92 rows, but the *usable*
+sample went **46 → 48**. Every one of the 27 added trades falls back to **daily**
+bars.
+
+| resolution | n | entry dates | mfeR median | mfeR max | reached 2.0R |
+|---|---|---|---|---|---|
+| intraday | 48 | 2026-07-15 → 09-08 | 0.34 | 2.60 | 3 (6%) |
+| daily | 31 | 2026-07-09 → 08-24 | 1.29 | **55.51** | 11 (35%) |
+
+The daily rows are the **older** trades: the provider's intraday history reaches
+back to roughly 2026-07-15 and no further. So the binding constraint is the
+**intraday history horizon**, not a constant — and more evidence for this
+question can only come from time passing.
+
+A daily-bar MFE is the high across whole calendar days, not the excursion during
+the hold. Worst case in the sample: ELAB entered 2026-07-10, `mfeR 55.51`,
+`mfePct 979.58` — a penny stock's multi-day range, not a day trade's excursion.
+Pooled, the 92-row run reported 35% of trades reaching 1.0R where the intraday
+truth is 15%.
+
+**The HOLD at 2.0 stands** — on the intraday subset the picture is unchanged, 6%
+reach 2.0R and every candidate target stays inside noise.
+
+### The regression this exposed
+
+Raising the cap took daily rows from 4/50 (8%) to 31/79 (39%), and the report's
+pooled averages moved with them — `avgMfeR` 0.70 → **1.74** without a single
+trade changing. Measured apart: **intraday 0.54, daily 3.60**. `resolutionMix`
+disclosed that a mix existed, which was enough while daily rows were a rounding
+error and stopped being enough the moment they were a third of the sample.
+
+`aggregateExcursions` now also returns **`byResolution`** — the same four
+averages computed separately, from the same partition `resolutionMix` counts, via
+one `averagesOf` both paths call. The pooled fields stay (callers read them, and
+"across everything measured" is still a real answer), but anything denominated in
+R should read `byResolution.intraday`. The Journal analytics modal shows the
+split beneath the tiles for the same reason.
+
+### Known, unfixed at the time: `computeExcursionTune` did not filter by resolution
+
+**Fixed 2026-09-09 — see "the exit auto-tune's three preconditions" at the end of
+this document.** The tuner now reads intraday rows only, `autoTuneExitTunedAt` is
+stamped by every writer of the geometry (not just the tuner), and
+`autoTuneExitsEnabled` is OFF. The rest of this section is the reasoning as it
+stood, kept because the "non-binding, not correct" distinction is the reason the
+fix is not on its own sufficient.
+
+`excursionTune.ts` derives `targetRMultiple` from `avgMfeR` over winners and
+`stopAtrMultiple` from their MAE percentile, with **no resolution filter**, so an
+inflated daily MFE can reach live exit geometry. Two things bound it today, and
+neither is a fix:
+
+- `TARGET_R_MIN/MAX` (1..6) and `stepToward(maxStep)` clamp any single run.
+- Simulated on the current book it proposes the *same* `targetRMultiple 1.75` /
+  `stopAtrMultiple 1.25` whether daily winners are included (n=30, avgMfeR 1.43)
+  or excluded (n=22, avgMfeR 0.75) — both raw targets land on the `TARGET_R_MIN`
+  floor, and the step limit caps the move either way.
+
+So it was **non-binding, not correct**. `sampleSince` would normally exclude the
+older daily rows, but `autoTuneExitTunedAt` was `0` in production, so that filter
+admitted everything. Left as an operator decision rather than changed under them
+while it was a live-money path — the flag has since been turned off (task #47)
+and both defects fixed (task #58).
+
+---
+
+## Exit-rule path replay (2026-09-09)
+
+`GET /api/journal/exit-replay` — walks each same-session trade's 5-minute bars
+**in order** against a candidate exit geometry and reports where it would really
+have been closed.
+
+### Why /excursions cannot answer this
+
+`computeExcursion` collapses a trade to its high and low. It answers "how far did
+this run" and structurally cannot answer "would a tighter stop have survived the
+dip that came first". Reasoning about exit rules from MFE alone is not merely
+imprecise — it is **biased, always in the same direction**. Model a trail as
+"exit at peak − D" and it can never be punished for tightening D, because a
+peak-and-distance model contains no dip.
+
+Run over the live book on 2026-09-09, that model reported every trail distance
+from 0.5R down to 0.1R as monotonically better, mean R **+0.032 → +0.315**. That
+is the signature of a question the data cannot answer, not a finding, and it was
+discarded rather than acted on.
+
+### What prompted it
+
+Three live thresholds are all set at **0.5R**:
+
+| setting | value | against this book |
+|---|---|---|
+| `trailStartRMultiple` | 0.5 | reached by only **17 of 48** intraday trades (35%) |
+| `trailStopRMultiple` | 0.5 | the stop's distance behind the peak |
+| `stagnationExitMinR` | 0.5 | below this for 90 min and the slot recycles |
+
+The book's **median trade peaks at 0.34R** and its **median winner at 0.58R**. A
+stop trailing 0.5R behind the peak of a 0.58R move sits at breakeven — which is
+exactly what IOT (peak 1.04R, booked 0.25R) and TSLA (peak 0.64R, booked 0.05R)
+did. Those are arithmetic and need no simulation; choosing replacements does.
+
+Also worth recording, because the framing was wrong first: the 48% median capture
+is **not** the scale-out (only 3 of 22 winners had a partial fill — it began
+working on 2026-09-08) and **not** mainly the trail (which rarely binds). The
+dominant winner exit is `time_exit`, **12 of 22**, peaking at 0.54R and booking
+0.30R. The clock closes them.
+
+### Intrabar order is unknowable and is resolved ADVERSELY
+
+Within one 5-minute bar the high and low are known; their order is not. Every
+ambiguity is resolved **against** the trade: if the stop and the target both sit
+inside one bar's range, the stop fills. That assumption is the point — a replay
+whose assumptions all flatter the change under test is the peak-and-distance
+model again, wearing more code.
+
+### Scope and what it reports
+
+Same-session trades only. An overnight hold has no usable intraday window, and
+replaying it on daily bars would degenerate into the very model this replaces —
+so it is **excluded and counted** (`coverage.notSameSession`), never dropped.
+Coverage buckets sum to the whole population, as on `/excursions`.
+
+Rule defaults come from the **live config**, so a bare call answers "what would
+today's geometry have done"; `?breakevenR=`, `?trailStartR=`, `?trailStopR=`,
+`?targetR=` each answer "what would this one change". Junk falls back to the live
+value rather than to `NaN`, which would silently disable the rule it belongs to
+since every comparison against NaN is false. The response pairs the replay
+against the **actual realized R on the same trades** — comparing a replay over
+one population to a headline average over another is how a rule change comes to
+look like an improvement it never made.
+
+### Not yet done
+
+Nothing has been tuned from this. The replay is the instrument; running the grid
+and deciding the three 0.5R thresholds is the next step, and `autoTuneExitsEnabled`
+stays off until it has been done (task #58).
+
+
+---
+
+## Two attributions of realized R, and why they don't reconcile (2026-09-09)
+
+Reading the live sweep, `realized.avgR × realized.rTrades` came to **1.00R**
+while `actual.totalR` read **1.65R** in the same payload. That looks exactly
+like a defect and is not one — they are attributed differently, and both are
+right for what they answer.
+
+| | attributed to | over which sessions |
+|---|---|---|
+| `realized.avgR` | the **entry** | every closed trade in the window |
+| `actual.totalR` | the **exit** | **active** sessions only |
+
+`tradesPerSession × avgR` is a forward identity: on a day the book trades it
+makes N entries, and each will eventually realize `avgR`. Every trade is
+entered on a session that has entries — and so is active by definition — so
+both factors come from the same population even though only one of them
+mentions sessions.
+
+`actual.totalR` is a policy **baseline**. A session with no entries cannot be
+changed by a stopping rule, so including it would add the same constant to the
+baseline and to every level, and the deltas are the whole point. The ~0.65R gap
+on the live book is exits landing on sessions that had no entries of their own —
+trades opened the day before, which are net negative there.
+
+`totalRAllSessions` was added so this is visible rather than something a reader
+has to derive. It equals `avgR × rTrades` (to rounding) and is used by nothing:
+the baseline and every level must share one session set.
+
+### What this does NOT change
+
+`impliedDailyGainPct` stays as it was. It reads **0.07%** against a stored 3%
+goal — `targetOverImplied ≈ 43` — and the mismatch above is not a reason to
+doubt it. Recomputing the live book by hand agrees: same-session stock trades
+average **+0.033R** (n=48), overnight ones **−0.030R** (n=29), all live stock
+**+0.009R** (n=77) against the sweep's 0.013.
+
+A first pass at this reported **+0.105R** and read as though the dashboard were
+understating the edge by an order of magnitude. That figure covered only the 45
+trades carrying an `entryScore`, and the three it dropped lack a score *because
+they predate score stamping* — all three were near-full losers (−0.98, −1.21,
+−1.00). Filtering on a field correlated with age, where age correlates with
+outcome, is selection. The correction is recorded here because the wrong number
+briefly looked like good news.
+
+---
+
+## Per-lot protective brackets — the planner (2026-09-09, task #26)
+
+`services/autotrading/perLotBrackets.ts`. **Pure and not yet wired**: nothing
+places these orders. The placement path needs a live entry to answer the one
+question the design still has open, and this is the half that can be built and
+tested without one.
+
+### Why two brackets at entry
+
+Three ways to take a partial out of one bracket have been tried:
+
+| approach | outcome |
+|---|---|
+| modify the resting legs | 144 refusals, 0 fills — dead (#54) |
+| cancel then place | ships and works (#29/#31), but the window between the cancel and the replace is **structural** — if the replace fails, the remainder rests naked. Live today, disclosed, not fixed |
+| **two brackets at entry** | this module |
+
+With the scale-out placed as its own bracket group at entry, taking a partial is
+just that group's target filling. No modify, no cancel, no window.
+
+### The bound, and the part still unknown
+
+From the 2026-09-08 FCX probe, encoded in `committedProtectiveQuantity`: a new
+protective order is compared against **held minus already-committed**. Within one
+combo group the **max** leg counts; **across** groups they **sum**. So two lots of
+19 over 38 held sit *exactly* on the bound with zero headroom — and anything that
+makes the held count smaller at the moment the second bracket goes out (a partial
+fill, an entry not yet booked) refuses it. `lotsFitProtectiveBound` checks this
+before either order is sent.
+
+**Answered 2026-09-09 — see the SIRI probe below.** That bound is the STANDALONE
+rule and does not govern the OTOCO entry path, so `lotsFitProtectiveBound` must
+not gate it. It remains correct for the re-arm endpoint.
+
+### The failure branch, designed before the build
+
+`classifySecondBracketRefusal` turns the probe into a decision. A
+reverse-position refusal on the **second** bracket, when the arithmetic already
+fits, can only mean the broker is counting the **first** bracket against us — the
+group-count answer. That is a fact about the account, not a transient, so it
+**does not retry**. Anything else gets one retry; a second failure falls back
+regardless, because one lot protected and one naked is not a state to keep
+probing from.
+
+`planRollbackToSingle` then returns to **one full-size bracket — today's
+behaviour** — so the failure mode is never worse than the status quo. It reports
+`reopensNakedWindow` rather than leaving the caller to infer it: the first
+bracket must be cancelled *before* the full one is placed, because the broker
+counts it against the new order. That window is accepted only on the branch where
+two groups have already been refused.
+
+### Degenerate cases collapse to one lot
+
+Quantity below 2, `partialExitPct` at 0 or ≥ 100, no near target, or a percentage
+that rounds either lot to zero — all return a single lot, which is current
+behaviour. The single lot is always the **runner** at the full target: if only one
+bracket can exist it must not cap the trade at 0.25R. Lots always sum to the
+**filled** quantity, checked exhaustively from 1 to 200 shares, since a plan that
+sums high is refused and one that sums low leaves shares unprotected.
+
+---
+
+## 2026-09-09 — the exit auto-tune's three preconditions (task #58)
+
+`autoTuneExitsEnabled` is **off in production** (task #47) because
+`computeExcursionTune` converges to *both* its safety clamps in about five 0.25
+steps: `stopAtrMultiple` 1.5 → **0.50** (`STOP_MULT_MIN`) and `targetRMultiple`
+2.0 → **1.00–1.15** (`TARGET_R_MIN`). A 3× tightening of the stop, reached in
+increments small enough that no single day's run looks alarming.
+
+Three things had to exist before that switch could be argued about again. All
+three now do; **the switch stays off**, because the third one is a measurement
+and it has not been read yet.
+
+### (a) The tuner reads INTRADAY rows only
+
+`computeExcursionTune` took every row in the report. A daily-bar row's `mfeR` and
+`maeR` are that whole *calendar day's* high and low — including the hours the
+position did not exist — which for a loop running `maxHoldDays 1` and a 90-minute
+stagnation exit is most of them. On 2026-09-09's book the 79 measured rows split
+48 intraday / 31 daily, and their mean MFE was **0.54R** and **3.60R**
+respectively (worst single daily row: 55.51R, a penny stock held several days).
+Averaging the two is not a noisier estimate of one quantity; it is the mean of
+two different quantities.
+
+The same partition now also feeds `diagnostics.capturePct`, which used to read
+the *pooled* figure and print it beside two intraday-only averages.
+`diagnostics.dailyExcluded` reports what was dropped, and a warning names it.
+
+**This is a correctness fix and NOT a sufficiency argument.** Measured on the
+same book, intraday-only (n=22 winners, avgMfeR 0.75, heat p90 0.32) walks to the
+**same two clamps**. Re-enabling on (a) alone was the first instinct and it is
+wrong.
+
+### (b) `GET /api/journal/exit-tune-validation` — do the rules make money?
+
+The two rules —
+
+| | rule |
+|---|---|
+| target | `0.8 × mean winner MFE` |
+| stop | `stopAtrMultiple × (winners' heat p90 × 1.1)` |
+
+— have never been checked against a realized outcome. `liveMinSignalScore` was
+fitted that way in PR #44; `targetRMultiple` was tested that way in task #32,
+where **no candidate beat 2.0 outside noise and 1.0 was among the weaker
+options** — so the target rule's own answer disagrees with the only direct
+expectancy test that exists. The stop rule additionally reasons from a **censored
+sample**: a winner's MAE is bounded by the very stop being tuned.
+
+The route fits the rules on the older half of the same-session trades and replays
+the newer half under what they produced, against the geometry actually traded,
+using `exitReplay.ts`'s bar-path walk (never an MFE model — see that section
+above for why a peak-minus-distance model reported every tightening as an
+improvement and was discarded).
+
+Two candidates are priced, not one:
+
+- **one step** — what a single day's tune would do.
+- **the fixed point** — where repeated runs come to rest if the trades keep
+  looking like the ones recorded. That is the case worth pricing, because it is
+  what actually happened. Each run is bounded to `maxStep`, so the strategy
+  change is the *sum* of them and only the fixed point shows it.
+
+**Units, since the two arms are denominated differently.** 1R is the trade's
+initial risk in dollars. A candidate that tightens `stopAtrMultiple` makes 1R a
+smaller *price* distance, and the sizer answers by buying more shares — because
+`riskPerTradePct × equity` is what it holds fixed. So both arms' R are the same
+number of dollars and their means compare directly; the replay is therefore run
+with a **scaled stop price** rather than by rescaling results afterwards. Three
+things that assumption ignores all **flatter the tighter candidate**: the extra
+shares may not fit the per-order cap or buying power; `levelPlan` can override
+the ATR stop on some trades; and intrabar order is resolved adversely. A
+candidate that fails to win here fails on generous terms.
+
+A directional verdict (`better` / `worse`) requires a **reliable** sample
+(significance.ts's 20-trade floor) *and* a bootstrap CI on the paired
+per-trade differences that excludes zero — the same pair of conditions
+`checkOosEdgeConfirmation` uses. Below that it reports `insufficient` rather than
+reading a confidence interval off four numbers.
+
+### (c) `autoTuneExitTunedAt` is stamped by every writer
+
+The field is documented as "when the exit geometry last changed" and the tuner
+uses it to ignore trades taken under the previous geometry. **Only `autoTune.ts`
+ever wrote it** — so a change made from the Settings page, which is how both
+multiples actually got their current values, left the stamp behind and the next
+tune judged the new geometry on trades taken under the old one. That is the
+re-applied-correction loop `sampleSince` exists to prevent, entered through the
+other door. It is now stamped in `setAutotradeConfig`, where every writer passes;
+an explicit stamp in the patch still wins, so restoring a known state does not
+date it to now.
+
+Production read `autoTuneExitTunedAt: 0`, which is not "never" — it is a
+timestamp older than every trade ever recorded, so `sampleSince` admitted the
+entire journal. The cause: `Number(null)` is `0` and `Number.isFinite(0)` is
+true, so `sanitize()` rewrote the default `null` to the epoch on the first read.
+`null` now survives the round trip and a stored `0` reads back as the "never" it
+always meant.
+
+### The measurement, taken 2026-09-09
+
+Run against the live book: 117 closed stock trades → **48 same-session
+measurable** (25 undated, 32 not same-session, 12 with no intraday history
+left). Carried rules from the live config: breakeven 0.25R, trail start 0.5R,
+trail stop 0.5R.
+
+**Out of sample — fit on 2026-07-15..09-02, scored on 09-02..09-08, 24 trades
+each:** `no_change`. The training half holds **10 winners** against the live
+`autoTuneMinTrades` of **20**, so the rule refuses to act at all. On a proper
+walk-forward the tuner does nothing — not because the geometry fits, but
+because the sample cannot support a fit.
+
+**In sample — fit and scored on all 48, optimistic by construction:**
+
+| candidate | geometry | mean R | vs current +0.08R | 95% CI | verdict |
+|---|---|---|---|---|---|
+| one step | stop 1.25 / target 1.75 | +0.10R | +0.02R | (−0.05, +0.08) | `inside_noise` |
+| fixed point (5 runs) | **stop 0.50 / target 1.00** | +0.12R | +0.04R | (−0.13, +0.20) | `inside_noise` |
+
+The fixed point reproduces task #47's finding exactly — five bounded steps to
+**both clamps**. What it actually does is visible in the exit-reason mix:
+
+| reason | current | converged |
+|---|---|---|
+| time_exit | 22 | 5 |
+| stop | 1 | 8 |
+| target | 1 | 11 |
+| breakeven | 13 | 16 |
+| trail | 11 | 8 |
+
+It converts held trades into stops and targets — a **different strategy** — for
+a difference indistinguishable from zero, on the arm that has already seen every
+trade it is scored on.
+
+### DECISION: `autoTuneExitsEnabled` stays OFF
+
+The precondition was a `better` verdict on the fixed point, out of sample. What
+came back was `no_change` out of sample and `inside_noise` in sample. Re-run
+`/api/journal/exit-tune-validation` when a training half holds enough winners to
+clear `minTrades`; until then the rule cannot be validated at all, and a rule
+that walks to both clamps does not go back on unvalidated.
+
+---
+
+## 2026-09-09 — `excluded_re` is journaled once a day, not once a tick (task #43)
+
+The autotrade journal is a table that **only ever grows** — `db/index.ts` says
+so outright, there is no retention. It stood at **506,945 rows** growing
+~21,300/day, and `excluded_re` ("Classified as real estate") was **155,162** of
+them: 31% of the whole journal and 24% of daily growth. A 30-minute production
+sample on 2026-09-04 held 500 of those rows across just **31 distinct symbols** —
+the same static classification re-logged on every screener tick, of every
+session, forever. The first entry says everything the 5,000th does.
+
+`claimOncePerDay(action, symbol)` (`services/autotrading/oncePerDayEvents.ts`)
+now gates both `excluded_re` sites. The row still lands **every day the fact is
+true**, carrying `firstOfDay: true`, so "was PLD excluded on the 4th" stays
+answerable; what stops being answerable is "how many *ticks* excluded PLD on the
+4th", which is a question about the loop's cadence and is already answered by
+`autotrade_last_tick` and the per-tick rows that remain.
+
+**Not retention.** Deleting history is worse for a system whose whole point is a
+measurable track record. What is dropped here is repetition, decided before it
+was written rather than deleted after.
+
+**In memory, per process**, like `unplaceableSymbols.ts`. A mid-session deploy
+costs one extra row per symbol — ~31 against the ~7,700/day this removes. The
+set is dropped whole when the ET day rolls, so memory is bounded by one day's
+distinct pairs rather than by uptime.
+
+**What this is NOT for.** Only STANDING facts — true for the whole day by
+construction, so a later tick's row would be a copy. `candidate_found` (72,478)
+and `signal_generated` (58,456) are genuinely per-tick observations that mean
+something different each time they are written, and they stay.
+
+### A test-suite consequence, recorded because it is the #46 class
+
+Module-level state outlives a test *file*, and `DELETE FROM autotrade_events` in
+a `beforeEach` does not touch it — the same invisible coupling as the shared
+config row, one layer up. `test/setupProcessState.ts` now resets these caches
+before **every test** (config isolation is per file; these are per test, because
+a cache exists to suppress repeat work and any test wanting the first call's
+behaviour must start empty). Add each new process-global cache to that file.
+
+---
+
+## 2026-09-09 — the stagnation exit learns whether the slot was scarce (task #41)
+
+The 90-minute stagnation exit is the live book's **dominant exit** — 30 of 52
+closes (58%) over 2026-08-24..09-04 — and it does what it says: it scratches.
+Mean **−0.036R**, 14W/16L, **−$65.77** total.
+
+Its stated justification is "recycling the slot for fresh signals". **That
+applied in 7 of 31 firings.** The other 24 fired while the book was BELOW
+`maxConcurrentPositions`, so nothing scarce was freed — the rule paid the spread
+to close a trade at flat, and the next signal could have opened anyway. On the
+two days the cap really was binding (09-02, 09-04) there were dozens of
+`max_concurrent_positions` blocks inside the same half hour, so the rationale is
+real there and only there.
+
+### What shipped, and what deliberately did not
+
+`stagnationExitRequiresScarcity` (**off by default**) narrows the rule to that
+case. The DECISION is not in this change: the paper book has run without the
+stagnation exit since 2026-09-08 and, since the end-of-day flatten landed
+2026-09-05, without overnight carry either — so paper is now
+same-signals-minus-the-90-minute-cut, exactly this counterfactual. Flip the flag
+when ~2 weeks of paper closes are in, and exclude any close carrying
+`pnlIsNotAMeasurement` when reading it.
+
+### Scarcity is STATE, not history
+
+"Scarce" is asked as *would a fresh full-size entry be refused for want of room
+right now*, against the same two quantities the entry gate itself compares —
+`combinedLiveOpenRisk()`'s count and risk:
+
+| arm | test |
+|---|---|
+| concurrency | `openPositions >= maxConcurrentPositions` |
+| risk budget | `openRiskUsd + nextTradeRiskUsd > (maxAggregateOpenRiskPct / 100) x equity` |
+
+`nextTradeRiskUsd` is the **pre-cut** full-size figure (`riskPerTradePct / 100 x
+equity`): the question is whether the budget has room for a trade at all, and a
+step-down/regime/finish-line-cut trade is a smaller ask that would fit more
+often. Both sides of that comparison are dollars, stated here because the
+2026-08-27 bugs were unit mismatches inside honest-looking formulas.
+
+Scanning the journal for recent `max_concurrent_positions` blocks was the
+alternative and was rejected: it answers a question about the last few minutes
+with a query shape nothing else depends on, and it would disagree with the entry
+gate the moment either changed.
+
+**Not modelled: buying power.** When BP is the binding constraint this reports
+"not scarce" and holds the trade — the wrong direction for the rule's purpose,
+since the slot really is blocking entries. Named in the source rather than left
+to be discovered.
+
+### The read is recorded whether or not the gate is on
+
+Every stagnation decision now carries its `scarcity` verdict — on the scratch
+(`live_time_exit_placed`, `trigger: "stagnation"`) and on the hold
+(`stagnation_exit_held_slot_free`, once per position per ET day) alike. A
+suppression-only record could not answer "was the cap binding when this fired",
+which is half the question. That evidence accrues from now on, with the flag off.
+
+When the flag is on and the book's room could not be measured this tick, the
+position is **held**, not scratched: a gate that fires on an assumption is not a
+gate.
+
+---
+
+## 2026-09-09 — the SIRI probe: two OTOCO groups DO coexist on one symbol
+
+The 2026-09-08 FCX probe placed a **standalone** bracket (exits only, no MASTER)
+over shares already held, and the broker compared it to held-minus-committed. It
+could not answer the question per-lot brackets actually turn on, because its
+refusal was fully explained by quantity and
+`OPENAPI_ORDER_NOT_SUPPORT_REVERSE_OPTION` conflates the two causes.
+
+Answered with **one share and six cents**, live, at 09:55 ET:
+
+| | order | result |
+|---|---|---|
+| OTOCO #1 | BUY 1 SIRI @ 28.95, stop 28.26 / target 29.99 | **FILLED @ 28.80**, both exit legs resting → 1 held, 1 committed, available **0** |
+| OTOCO #2 | BUY 1 SIRI @ 24.50 (15% below market, unfillable), stop 24.00 / target 25.50, **same symbol** | **ACCEPTED** — combo `C0JGQD5J959H6P10EU6AIK135B`, all three legs SUBMITTED |
+
+Verified at the broker rather than from the acknowledgement:
+`GET /api/autotrade/live/open-orders` showed **two SIRI combo groups resting
+simultaneously**, the second carrying two SELL exit legs against a single share
+already fully committed to the first.
+
+**Two facts, both new:**
+
+1. An OTOCO's **contingent** exit legs are **not** counted against holdings.
+2. **Two OTOCO combo groups coexist on one symbol.**
+
+**Consequence:** `lotsFitProtectiveBound` encodes the standalone rule and would
+refuse the very plan the broker accepted. It must not gate the OTOCO entry path.
+`planLotBrackets`, `classifySecondBracketRefusal` and `planRollbackToSingle` are
+unaffected — though the *premise* of the refusal classifier changed and its
+comment now says so, while its behaviour stays put.
+
+**What the probe did NOT show, recorded because it bounds the claim.** OTOCO #2's
+entry never filled, so its exits were contingent-pending throughout — never
+ACTIVE protective orders over held shares. The steady state (both entries
+filled, both groups' exits live, summing to exactly the held quantity) was not
+observed. The arithmetic fits by construction, but so did the FCX bound before
+it was measured, so **the wiring must submit both entries before either fills** —
+the shape the probe validated — rather than adding a second group against an
+already-filled first.
+
+**Bonus, useful for the wiring:** cancelling an OTOCO's **MASTER** by client
+order id **cascades** — the entire combo, both contingent legs included,
+disappeared in one call.
+
+**Method note.** The manual `/api/trade/place` path is governed by
+`trading_config.maxExposureUsd`, which at $2,000 sits below the loop's own
+routine book, so the probe was refused at 09:40 by a guardrail that had nothing
+to do with the question. The operator authorised raising it to $5,500 for the
+duration; it was restored to $2,000 immediately after and verified by read-back,
+with every other guardrail untouched. Unwind: OTOCO #2 cancelled (cascaded),
+OTOCO #1's take-profit cancelled first and its stop last, 1 share sold @ 28.74,
+broker quantity 0, zero working orders, intent reconciled to `cancelled`.
+
+### The wiring, and why it turned out small — `livePerLotBracketsEnabled`
+
+The first estimate here was that one signal becomes **two positions**, breaking
+six consumers that count a position as a trade. That was wrong, and the reason
+is worth recording: **the merge already exists.**
+
+```
+autotrade_live_orders.addon_of_position_id
+  -- scale-in add-on: the already-open position this order pyramids into.
+  -- Its fill MERGES into that position (blended entry) rather than creating a new one.
+```
+
+`materializeAddOnFill()` sets the order's position id, blends the entry price,
+sums the quantity and journals it — live code, on the scale-in path. Per-lot
+brackets ride it, so the two lots become **one position** and concurrency, the
+cooldown and every exit path still see one trade.
+
+| | |
+|---|---|
+| **Lot 1** | the LARGER lot, entered normally with its own bracket at its own target |
+| **Lot 2** | placed on a later tick as a bracketed ADD-ON, merging into the same position |
+
+**Neither lot is ever unprotected, at any ordering** — each OTOCO is atomic,
+entry plus its own exits. Simultaneity was never what protection needed; that
+was the standalone bound's problem, not this design's.
+
+**Which lot goes first is a P&L choice, not a safety one.** Between the two the
+position is under-sized, and if lot 2 never fills it stays that way. The larger
+lot therefore goes first, so the failure mode is "most of the intended size,
+capped at the near target" rather than "a third of the size". A 50/50 tie breaks
+toward the runner — an uncapped small trade beats a capped one.
+
+**What actually changed, beyond the placement:**
+
+- The **scale-out is turned off entirely** while this flag is on. They are two
+  answers to one question, and running both would have the scale-out
+  cancel-and-replace a bracket whose near target is already resting — reopening
+  the very window per-lot brackets remove. Mutually exclusive in code, not by
+  the operator remembering.
+- `liveMaxOrdersPerDay` (20) is effectively **halved for entries**.
+- The position row carries ONE `targetPrice` while the two groups have two. The
+  runner's goes on the position, the partial's on the order row — a genuine
+  modelling mismatch, named rather than hidden.
+- The second lot's plan is journaled as `per_lot_entry_planned` and read back by
+  the placer. **Journal-as-state**, deliberately: the plan must outlive the
+  entry call and there is no column for it. A migration is the right home if
+  this flag ever ships ON, and the event is wanted as evidence regardless —
+  without it a position that never got its second lot is indistinguishable from
+  one that was never meant to have one.
+
+**Still off by default.** The probe proved two groups can be *submitted*; the
+steady state — both groups' exits ACTIVE over one holding, summing to held — is
+what the first live entry under this flag settles. Every outcome is journaled
+(`per_lot_second_lot_placed` / `_blocked` / `_failed`) rather than only
+returned, so that first entry can be read rather than reconstructed.
+
+No bespoke settings control: `AllSettingsSection` renders every config field, and
+the sibling flag `liveScaleOutEnabled` has no hand-written toggle either.

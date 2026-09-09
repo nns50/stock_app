@@ -948,6 +948,10 @@ export function simulateBacktest(
         riskParams.correlationThreshold,
       );
       const ctx: RiskCheckContext = {
+        // A backtest replays historical signals with no notion of "today", so the
+        // same-day re-entry cut has nothing to measure against.
+        priorSameDayExits: 0,
+        repeatEntrySizeCutPct: 0,
         equity,
         dailyPnl,
         // Trades actually filled today (step 1, above) — matches the live

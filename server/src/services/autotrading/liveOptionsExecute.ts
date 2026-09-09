@@ -1003,6 +1003,11 @@ export async function runLiveOptionsExecution(
           mlRegimeSizeCutPct: cfg.mlRegimeSizeCutPct,
           todayRangePct: regime.todayRangePct,
           regimeShockRangeRatio: cfg.regimeShockRangeRatio,
+          // Options opt out: the repeat finding was measured on 89 closed EQUITY
+          // trades and says nothing about a premium book. 0 exits + 0 cut is the
+          // written opt-out, not an omission.
+          priorSameDayExits: 0,
+          repeatEntrySizeCutPct: 0,
           equityCurveDerisk: NEUTRAL,
           expectancy: NEUTRAL,
           method: methodMultiplier,
@@ -1014,6 +1019,9 @@ export async function runLiveOptionsExecution(
       rewardMultiple: regimeAdjustedTargets(cfg, regime.effectiveRegime).optionsTakeProfitPct / 100,
     });
     const ctx: RiskCheckContext = {
+      // Options opt out — the finding was measured on 89 closed EQUITY trades.
+      priorSameDayExits: 0,
+      repeatEntrySizeCutPct: 0,
       equity,
       dailyPnl,
       tradesToday,
@@ -1645,6 +1653,12 @@ export async function checkLiveOptionsExits(): Promise<LiveOptionsExitCheckOutco
             rule: sd.rule,
             reason: sd.detail,
             premiumGainPct: sd.premiumGainPct,
+            // The high-water mark this contract actually reached. Rule L5 asks
+            // whether a give_back trail was too tight, which is unanswerable
+            // from the exit price alone — but a peak below optionsTakeProfitPct
+            // could never have exited at the target however long it was held.
+            peakGainPct: sd.peakGainPct,
+            peakPremium: sd.peakPremium,
             underlyingMovePct: sd.underlyingMovePct,
             expiration: pos.expiration,
           },

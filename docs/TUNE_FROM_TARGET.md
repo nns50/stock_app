@@ -449,7 +449,7 @@ Say it beside the table, not only here:
   every line **later** than the real day would — a lower bound on how often the stack
   engages.
 - The two-tick confirmation and the cash-flow re-basing.
-- The six sizing multipliers and probation — the % column assumes full-size trades; the
+- The seven sizing multipliers and probation — the % column assumes full-size trades; the
   R axis is the truth.
 - Finish-line sizing, the armed-day score bar and the day-protective stop — the replay
   keeps or drops whole trades, it never resizes or re-stops them.

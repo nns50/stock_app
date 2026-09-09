@@ -64,6 +64,15 @@ import { computeTargetTune, realizedBasisAvailability, resetToModerate } from '.
 import { collectBook, DEFAULT_LOOKBACK_SESSIONS, realizedEdgeOf } from '../services/autotrading/dailyTargetSweepData';
 import { runDailyTargetSweep } from '../services/autotrading/dailyTargetSweep';
 import { listUniverseSymbols } from '../db/universe';
+import { previewWebullPositions } from '../providers/webull/positions';
+import {
+  committedProtectiveQuantity,
+  listWebullOpenOrders,
+  webullCancelOrder,
+  webullPlaceStandaloneBracket,
+} from '../providers/webull/orders';
+import { webullAccountState } from '../providers/webull/accountState';
+import { config } from '../config';
 
 export const autotradeRouter = Router();
 
@@ -184,6 +193,7 @@ const configBody = z.object({
   // --- Regime-aware sizing (live + paper only; 0 disables) -------------------
   regimeAtrThresholdPct: z.number().min(0).max(100).optional(),
   regimeSizeCutPct: z.number().min(0).max(100).optional(),
+  repeatEntrySizeCutPct: z.number().min(0).max(100).optional(),
   // --- The ML regime overlay (2026-09-08; live + paper; off by default) -------
   mlRegimeEnabled: z.boolean().optional(),
   mlRegimeSizeCutPct: z.number().min(0).max(100).optional(),
@@ -224,6 +234,7 @@ const configBody = z.object({
   stopAtrMultiple: z.number().positive().optional(),
   maxStopDistancePct: z.number().min(0).max(100).optional(),
   liveScaleOutEnabled: z.boolean().optional(),
+  livePerLotBracketsEnabled: z.boolean().optional(),
   liveScaleOutCancelReplaceEnabled: z.boolean().optional(),
   liveTrailingEnabled: z.boolean().optional(),
   dayProtectiveStopEnabled: z.boolean().optional(),
@@ -236,10 +247,14 @@ const configBody = z.object({
   optionsStagnationMinutes: z.number().nonnegative().optional(),
   optionsStagnationMinMovePct: z.number().nonnegative().optional(),
   optionsDisasterStopPct: z.number().nonnegative().optional(),
+  optionsAffordabilityFilterEnabled: z.boolean().optional(),
+  optionsAtmPremiumRatioPct: z.number().nonnegative().optional(),
   targetRMultiple: z.number().positive().optional(),
   sessionBufferMinutes: z.number().int().nonnegative().optional(),
   earningsBlackoutDays: z.number().int().nonnegative().optional(),
   minRelVolPace: z.number().min(0).max(50).optional(),
+  relVolUsePaceScoring: z.boolean().optional(),
+  relVolPaceTarget: z.number().min(0).max(50).optional(),
   minChangePct: z.number().min(0).max(100).optional(),
   momentumIntradayOnly: z.boolean().optional(),
   macroEventBlackoutHours: z.number().nonnegative().optional(),
@@ -321,6 +336,7 @@ const configBody = z.object({
   liveMinSignalScore: z.number().min(0).max(100).optional(),
   stagnationExitMinutes: z.number().int().nonnegative().optional(),
   stagnationExitMinR: z.number().min(0).optional(),
+  stagnationExitRequiresScarcity: z.boolean().optional(),
   // Capped at one session (390 minutes): a longer window would mean "always
   // flattening", which is a way of saying "never hold a position".
   endOfDayFlattenMinutes: z.number().int().nonnegative().max(390).optional(),
@@ -480,6 +496,7 @@ autotradeRouter.put(
     if (body.maxTradesPerDay !== undefined) patch.maxTradesPerDay = body.maxTradesPerDay;
     if (body.regimeAtrThresholdPct !== undefined) patch.regimeAtrThresholdPct = body.regimeAtrThresholdPct;
     if (body.regimeSizeCutPct !== undefined) patch.regimeSizeCutPct = body.regimeSizeCutPct;
+    if (body.repeatEntrySizeCutPct !== undefined) patch.repeatEntrySizeCutPct = body.repeatEntrySizeCutPct;
     if (body.mlRegimeEnabled !== undefined) patch.mlRegimeEnabled = body.mlRegimeEnabled;
     if (body.mlRegimeSizeCutPct !== undefined) patch.mlRegimeSizeCutPct = body.mlRegimeSizeCutPct;
     if (body.mlRegimeSwitchThreshold !== undefined) patch.mlRegimeSwitchThreshold = body.mlRegimeSwitchThreshold;
@@ -517,6 +534,7 @@ autotradeRouter.put(
     if (body.stopAtrMultiple !== undefined) patch.stopAtrMultiple = body.stopAtrMultiple;
     if (body.maxStopDistancePct !== undefined) patch.maxStopDistancePct = body.maxStopDistancePct;
     if (body.liveScaleOutEnabled !== undefined) patch.liveScaleOutEnabled = body.liveScaleOutEnabled;
+    if (body.livePerLotBracketsEnabled !== undefined) patch.livePerLotBracketsEnabled = body.livePerLotBracketsEnabled;
     if (body.liveScaleOutCancelReplaceEnabled !== undefined)
       patch.liveScaleOutCancelReplaceEnabled = body.liveScaleOutCancelReplaceEnabled;
     if (body.liveTrailingEnabled !== undefined) patch.liveTrailingEnabled = body.liveTrailingEnabled;
@@ -533,10 +551,15 @@ autotradeRouter.put(
     if (body.optionsStagnationMinMovePct !== undefined)
       patch.optionsStagnationMinMovePct = body.optionsStagnationMinMovePct;
     if (body.optionsDisasterStopPct !== undefined) patch.optionsDisasterStopPct = body.optionsDisasterStopPct;
+    if (body.optionsAffordabilityFilterEnabled !== undefined)
+      patch.optionsAffordabilityFilterEnabled = body.optionsAffordabilityFilterEnabled;
+    if (body.optionsAtmPremiumRatioPct !== undefined) patch.optionsAtmPremiumRatioPct = body.optionsAtmPremiumRatioPct;
     if (body.targetRMultiple !== undefined) patch.targetRMultiple = body.targetRMultiple;
     if (body.sessionBufferMinutes !== undefined) patch.sessionBufferMinutes = body.sessionBufferMinutes;
     if (body.earningsBlackoutDays !== undefined) patch.earningsBlackoutDays = body.earningsBlackoutDays;
     if (body.minRelVolPace !== undefined) patch.minRelVolPace = body.minRelVolPace;
+    if (body.relVolUsePaceScoring !== undefined) patch.relVolUsePaceScoring = body.relVolUsePaceScoring;
+    if (body.relVolPaceTarget !== undefined) patch.relVolPaceTarget = body.relVolPaceTarget;
     if (body.minChangePct !== undefined) patch.minChangePct = body.minChangePct;
     if (body.momentumIntradayOnly !== undefined) patch.momentumIntradayOnly = body.momentumIntradayOnly;
     if (body.macroEventBlackoutHours !== undefined) patch.macroEventBlackoutHours = body.macroEventBlackoutHours;
@@ -602,6 +625,8 @@ autotradeRouter.put(
     if (body.liveMinSignalScore !== undefined) patch.liveMinSignalScore = body.liveMinSignalScore;
     if (body.stagnationExitMinutes !== undefined) patch.stagnationExitMinutes = body.stagnationExitMinutes;
     if (body.stagnationExitMinR !== undefined) patch.stagnationExitMinR = body.stagnationExitMinR;
+    if (body.stagnationExitRequiresScarcity !== undefined)
+      patch.stagnationExitRequiresScarcity = body.stagnationExitRequiresScarcity;
     if (body.endOfDayFlattenMinutes !== undefined) patch.endOfDayFlattenMinutes = body.endOfDayFlattenMinutes;
     if (body.levelExitsEnabled !== undefined) patch.levelExitsEnabled = body.levelExitsEnabled;
     if (body.levelMinStrength !== undefined) patch.levelMinStrength = body.levelMinStrength;
@@ -2230,5 +2255,289 @@ autotradeRouter.get(
       events: listAutotradeEvents({ ...q, ...(list ? { actions: list } : {}) }),
       ...neverSeen(list),
     });
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Re-arm a protective bracket on shares ALREADY HELD (2026-09-08).
+//
+// checkLiveBracketProtection's own alert says "check the broker and re-arm
+// protection by hand" — and until now there was no hand to do it with. The
+// no-MASTER standalone bracket existed in the provider
+// (webullPlaceStandaloneBracket) but was reachable only from
+// cancelReplaceBracket, behind a flag that is off. So the one action the
+// naked-position alarm asks for could only be taken in Webull's own UI.
+//
+// Vendor-documented shape, quoted from Place Order:
+//   "To sell and close an existing position with take-profit/stop-loss, submit
+//    only STOP_PROFIT/STOP_LOSS sub-orders (side = SELL) grouped under the same
+//    client_combo_order_id; no MASTER order is required in this scenario."
+// and, on combo_type: "no MASTER order is required OR SUPPORTED in this
+// scenario, since no new position is being opened."
+//
+// THE GUARD THAT MATTERS: quantity may not exceed the shares the BROKER says
+// are held right now. A protective sell for more than you own is a naked short
+// dressed as protection, and it is the one way this route could lose real
+// money. Read fresh from the broker every call — a stale ledger is exactly how
+// that mistake gets made.
+// ---------------------------------------------------------------------------
+const standaloneBracketBody = z.object({
+  symbol: z.string().min(1).max(12),
+  quantity: z.number().int().positive(),
+  takeProfitPrice: z.number().positive().optional(),
+  stopLossPrice: z.number().positive().optional(),
+  /** Typed confirmation: the symbol itself, same posture as the other routes
+   *  here that send real orders. */
+  confirmation: z.string().min(1),
+});
+
+autotradeRouter.post(
+  '/live/standalone-bracket',
+  asyncHandler(async (req, res) => {
+    const body = parseBody(standaloneBracketBody, req);
+    const symbol = body.symbol.trim().toUpperCase();
+    if (body.confirmation.trim().toUpperCase() !== symbol) {
+      throw new HttpError(400, `Confirmation must be the symbol ("${symbol}").`);
+    }
+    // buildStandaloneBracketRequest returns null with neither price and the
+    // caller must not read that as success — refuse here with a reason instead.
+    if (body.takeProfitPrice === undefined && body.stopLossPrice === undefined) {
+      throw new HttpError(400, 'At least one of takeProfitPrice / stopLossPrice is required.');
+    }
+    if (!config.trading.placeEnabled) throw new HttpError(400, 'Order placement is disabled (TRADING_PLACE_ENABLED).');
+    const cfg = getAutotradeConfig();
+    const accountId = cfg.liveAccountId;
+    if (!accountId) throw new HttpError(400, 'No live account is configured.');
+
+    const account = await webullAccountState(accountId, symbol);
+    if (!account.ok) throw new HttpError(502, `Could not read the account: ${account.error ?? 'unknown'}`);
+    const held = account.state?.currentPositionQty ?? 0;
+    if (!(held > 0)) throw new HttpError(400, `The account holds no ${symbol} to protect (broker says ${held}).`);
+    if (body.quantity > held) {
+      throw new HttpError(
+        400,
+        `Refusing to protect ${body.quantity} ${symbol} against ${held} held — a protective sell larger than the position is a short, not protection.`,
+      );
+    }
+
+    // HELD IS NOT THE BROKER'S BOUND. Shipped 2026-09-08 with the check above
+    // and only that; the first real call — 1 share of FCX against 38 held —
+    // was refused as a position reversal, because a full-size bracket was
+    // already resting and the broker counts held MINUS committed. This guard
+    // says so before the order leaves, with both numbers named, instead of
+    // handing back a broker string that sounds like the position is wrong.
+    // committedProtectiveQuantity carries the measurement and the two counting
+    // rules it implies.
+    const book = await listWebullOpenOrders(accountId);
+    if (!book.ok) throw new HttpError(502, `Could not read resting orders: ${book.error ?? 'unknown'}`);
+    // 'sell' because this route arms protection over a LONG — the intent below
+    // is side 'buy' with openClose 'close', whose legs rest on the sell side.
+    const committed = committedProtectiveQuantity(book.orders, symbol, 'sell');
+    if (committed === null) {
+      throw new HttpError(
+        502,
+        `A resting ${symbol} order carries no quantity, so the protected size cannot be computed. Refusing rather than guessing it low.`,
+      );
+    }
+    const available = held - committed;
+    if (body.quantity > available) {
+      throw new HttpError(
+        400,
+        `Refusing to protect ${body.quantity} ${symbol}: ${held} held, ${committed} already committed to resting exits, ` +
+          `so ${available} can be protected. The broker refuses the rest as a position reversal — cancel a resting leg first.`,
+      );
+    }
+
+    const placed = await webullPlaceStandaloneBracket(
+      accountId,
+      {
+        symbol,
+        assetKind: 'stock',
+        // The ENTRY side; bracketExit emits the legs on the closing side.
+        side: 'buy',
+        openClose: 'close',
+        quantity: body.quantity,
+        orderType: 'limit',
+      },
+      body.takeProfitPrice,
+      body.stopLossPrice,
+    );
+    logAutotradeEvent({
+      symbol,
+      stage: 'execution',
+      action: placed.ok ? 'live_bracket_rearmed' : 'live_bracket_rearm_failed',
+      detail: {
+        quantity: body.quantity,
+        heldAtBroker: held,
+        takeProfitPrice: body.takeProfitPrice ?? null,
+        stopLossPrice: body.stopLossPrice ?? null,
+        clientComboOrderId: placed.ok ? placed.clientComboOrderId : null,
+        error: placed.ok ? null : (placed.error ?? null),
+        ambiguous: placed.ok ? false : (placed.ambiguous ?? false),
+      },
+      riskProfile: cfg.riskProfile,
+    });
+    // The RAW broker payload is returned deliberately: this route exists partly
+    // to answer questions the docs cannot, and a summarized response would lose
+    // the combo ids that answer them.
+    res.json({ heldAtBroker: held, ...placed });
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// See and cancel what is actually resting at the broker (2026-09-08).
+//
+// The other half of the standalone-bracket route above. Two gaps it closes:
+//
+//  1. When the naked-position alarm says "check the broker", there was nothing
+//     in this app to check it WITH — you had to open Webull. GET open-orders is
+//     that read, returning the mapped legs with their comboOrderId so a
+//     protective group can be told apart from a stray order.
+//  2. A bracket you can place but not cancel is half a tool. The standalone
+//     route could arm protection and nothing here could take it back.
+//
+// CANCELLING IS NOT GATED ON placeEnabled, deliberately. Placement is the
+// direction that adds risk; cancelling is the direction that removes an order,
+// and an operator who has just killed placement is exactly the operator who
+// most needs to pull a resting order. Gating it behind the same switch would
+// disarm the brake along with the accelerator.
+//
+// BUT IT CAN LEAVE A POSITION NAKED. Cancelling a STOP_LOSS leg removes the
+// protection on live shares — the state checkLiveBracketProtection alarms on.
+// So it takes the client order id as its own typed confirmation (no fat-finger
+// path from a symbol name to a specific leg) and journals every attempt.
+// ---------------------------------------------------------------------------
+autotradeRouter.get(
+  '/live/open-orders',
+  asyncHandler(async (_req, res) => {
+    const cfg = getAutotradeConfig();
+    const accountId = cfg.liveAccountId;
+    if (!accountId) throw new HttpError(400, 'No live account is configured.');
+    const open = await listWebullOpenOrders(accountId);
+    if (!open.ok) throw new HttpError(502, `Could not read open orders: ${open.error ?? 'unknown'}`);
+    // Grouped by comboOrderId as well as listed flat: "how many distinct combo
+    // groups rest on this symbol" is the question this endpoint exists to
+    // answer, and counting it here beats every caller re-deriving it.
+    const byCombo = new Map<string, number>();
+    for (const o of open.orders) {
+      const key = o.comboOrderId ?? '(none)';
+      byCombo.set(key, (byCombo.get(key) ?? 0) + 1);
+    }
+    res.json({
+      count: open.orders.length,
+      comboGroups: [...byCombo].map(([comboOrderId, legs]) => ({ comboOrderId, legs })),
+      orders: open.orders,
+    });
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// WHAT DOES THE BROKER ACTUALLY HOLD? (2026-09-08)
+//
+// There was no read-only way to ask. The question came up three times in one
+// session — an adopted SMCI position, the FCX bracket probe, and a NOK
+// scale-out whose remainder looked naked — and each time the answer had to be
+// INFERRED from a side effect: a position_reconcile_skipped detail, or the
+// refusal message of the standalone-bracket route.
+//
+// Using an ORDER PLACEMENT endpoint as a read is the wrong shape and it showed:
+// the probe that finally answered the NOK question was a deliberately oversized
+// protective order, sent only so its own guard would refuse it and name the
+// held quantity. That is a read dressed as a write, and it deserved the
+// suspicion it got.
+//
+// It also matters for a specific, recurring confusion: zero resting exit legs
+// looks identical whether a stop was never accepted or has just FILLED. The
+// held quantity is what separates them (see checkLiveBracketProtection), and
+// until now nothing could ask it directly.
+//
+// WRITES NOTHING. previewWebullPositions fetches /openapi/assets/positions and
+// maps it; the import path is a different call.
+autotradeRouter.get(
+  '/live/holdings',
+  asyncHandler(async (req, res) => {
+    const cfg = getAutotradeConfig();
+    const accountId = cfg.liveAccountId;
+    if (!accountId) throw new HttpError(400, 'No live account is configured.');
+    const preview = await previewWebullPositions(accountId);
+    if (!preview.ok) throw new HttpError(502, `Could not read holdings: ${preview.error ?? 'unknown'}`);
+
+    // Equities only for the quantity roll-up: an option row's "quantity" is
+    // contracts on a specific contract, so summing it next to share counts
+    // would produce a number that means nothing.
+    const holdings = new Map<string, number>();
+    for (const p of preview.positions) {
+      if (p.assetType !== 'stock') continue;
+      const sym = p.symbol.toUpperCase();
+      const signed = p.side === 'short' ? -p.quantity : p.quantity;
+      holdings.set(sym, (holdings.get(sym) ?? 0) + signed);
+    }
+    // A row the mapper could not parse still PROVES the broker holds something
+    // in that symbol. Reporting such a symbol as "not held" would be exactly
+    // the false negative this endpoint exists to prevent, so it is surfaced
+    // separately and callers must treat it as "held, quantity unknown" — never
+    // as zero. The same reasoning already governs the close-detector's freeze
+    // list; see PositionsPreview.unmappedSymbols.
+    const unknown = preview.unmappedSymbols.map((s) => s.toUpperCase());
+
+    const wanted = typeof req.query.symbol === 'string' ? req.query.symbol.trim().toUpperCase() : null;
+    if (wanted) {
+      const isUnknown = unknown.includes(wanted);
+      res.json({
+        accountId,
+        symbol: wanted,
+        quantity: holdings.get(wanted) ?? 0,
+        // false means DO NOT trust the quantity: the broker returned a row for
+        // this symbol that could not be mapped.
+        known: !isUnknown,
+        unmapped: preview.unmapped,
+      });
+      return;
+    }
+    res.json({
+      accountId,
+      holdings: [...holdings]
+        .map(([symbol, quantity]) => ({ symbol, quantity }))
+        .sort((a, b) => a.symbol.localeCompare(b.symbol)),
+      /** Symbols the broker reported but the mapper could not parse. Held,
+       *  quantity unknown — NOT zero. */
+      unknownSymbols: unknown,
+      unmapped: preview.unmapped,
+    });
+  }),
+);
+
+const cancelOrderBody = z.object({
+  clientOrderId: z.string().min(1).max(64),
+  /** The client order id again. Not the symbol: a symbol would let a slip cancel
+   *  the wrong leg of the right stock, which is how a stop gets pulled by
+   *  accident. */
+  confirmation: z.string().min(1).max(64),
+});
+
+autotradeRouter.post(
+  '/live/cancel-order',
+  asyncHandler(async (req, res) => {
+    const body = parseBody(cancelOrderBody, req);
+    if (body.confirmation.trim() !== body.clientOrderId.trim()) {
+      throw new HttpError(400, 'Confirmation must repeat the clientOrderId exactly.');
+    }
+    const cfg = getAutotradeConfig();
+    const accountId = cfg.liveAccountId;
+    if (!accountId) throw new HttpError(400, 'No live account is configured.');
+    const result = await webullCancelOrder(accountId, body.clientOrderId.trim());
+    logAutotradeEvent({
+      stage: 'execution',
+      action: result.ok ? 'live_order_cancelled_by_hand' : 'live_order_cancel_by_hand_failed',
+      detail: {
+        clientOrderId: body.clientOrderId.trim(),
+        error: result.ok ? null : (result.error ?? null),
+        note: result.ok
+          ? 'Cancelled through the manual route. If this was a STOP_LOSS leg the position is now unprotected.'
+          : null,
+      },
+      riskProfile: cfg.riskProfile,
+    });
+    res.json(result);
   }),
 );

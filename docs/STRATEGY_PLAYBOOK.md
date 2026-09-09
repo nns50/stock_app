@@ -181,9 +181,22 @@ risk-% tune) does the same thing for your **stop and target** using the
 of your _winning_ autotrade trades and nudges `stopAtrMultiple` toward the heat a good trade
 actually takes (plus a buffer) and `targetRMultiple` toward how far a good trade actually
 runs — winners only, since a stopped-out loser's drawdown is censored at the stop and can't
-tell you whether a wider or tighter one was better. Bounded by its own max daily step, and
-journaled/notified the same way. Same caveat as the risk-% tune: it moves toward the reading
-a little at a time and never replaces reading the MAE/MFE report yourself.
+tell you whether a wider or tighter one was better, and from trades measured on **intraday
+bars** only, since a daily bar's high/low spans hours the position did not exist. Bounded by
+its own max daily step, and journaled/notified the same way. Same caveat as the risk-% tune:
+it moves toward the reading a little at a time and never replaces reading the MAE/MFE report
+yourself.
+
+**It is OFF in this book, and the reason is worth knowing before you turn it on.** Both of
+its rules — target at `0.8 x` mean winner MFE, stop at `heat p90 x 1.1` — describe what
+winners did, and neither has ever been checked against what would have been *earned*. On
+this book they converge to **both safety clamps** (stop `1.5 -> 0.50 x ATR`, target
+`2.0 -> ~1.0R`) in about five bounded steps: a 3x tightening reached in increments small
+enough that no single day looks alarming. `GET /api/journal/exit-tune-validation` prices
+that directly — it fits the rules on the older half of your same-session trades and replays
+the newer half under what they produced, against the geometry you actually traded, and
+reports a paired significance verdict. Read it before flipping the toggle; a
+`better` verdict there is the evidence this feature has never had.
 
 Did a past adjustment actually help? The Journal page's **Auto-tune efficacy** card
 answers that directly — before/after win rate and expectancy around each adjustment's
@@ -234,6 +247,28 @@ set %, restoring full size once the curve climbs back above the average. It's th
 patch, just smaller, which blunts the string of full-size losses a drawdown can inflict
 without the whiplash of a hard stop. It stacks multiplicatively with step-down and regime
 sizing, and like them applies to paper and live only, not backtests.
+
+**The second trade in a name is not the first one.** Over 89 closed live trades, first
+entries in a symbol averaged **+$7.12** and same-day repeats **−$3.67** — the loop kept
+handing a freed slot straight back to the name it had just exited, usually via the
+stagnation exit, which by design closes near scratch and so never trips the losing-trade
+cooldown. **Same-day re-entry size cut (%)** (Config → risk settings, 0 = off) trims those
+repeats instead of blocking them, and the reason it trims is worth keeping in mind when
+you pick the number: only the _direction_ of that gap survives scrutiny. 86% of the repeat
+deficit is one DELL trade, and dropping the worst trade from each side leaves repeats at
+−$0.55 apiece — a rounding error, not a leak. So the honest reading is "repeats are worth
+less, not worthless", and a cut in the 25–50% range matches that; a block would be pricing
+in a certainty the data doesn't support. The counter-case is real and on the record: LVWR
+lost −0.98R at 12:30 and its same-day re-entry made +1.93R. A genuine second setup hours
+later still deserves a position, just a smaller one.
+
+It counts positions closed today, not exit rows — a scaled-out trade is one repeat, not
+two — and it uses the Eastern trading date, so an overnight gap resets the thesis and
+yesterday's close never suppresses this morning's first entry. It is **live equity only**:
+the paper book keeps taking every signal at full size so it stays a clean control arm to
+re-measure this against at ~60 repeats. Watch the `repeat_entry_sizing` line in each
+risk-check under **Recent activity** to see what it actually did — it reports itself from
+the factor, so a 0% cut reads as "triggered, size unchanged" rather than "active".
 
 **Don't size bigger than you can exit.** Risk-based sizing only looks at your stop
 distance, not the stock's liquidity — so a tight stop on a thin name can hand you a
@@ -429,6 +464,22 @@ premium), while respecting that **time and volatility work against long options.
   before trusting it live.
 - Give yourself **enough DTE** that time decay isn't brutal for your hold (swing trades
   generally want weeks, not days).
+- **Check the contract is affordable before it costs you the slot.** The largest
+  premium your per-order risk budget can buy is not a setting you pick — it falls
+  out of the ones you already have: `(equity × risk per trade %) ÷ options disaster
+  stop %`. On a $5,137 book at 1.25% risk and a 70% disaster stop that is **$0.92 a
+  share, ~$92 a contract**. Underlying price is the practical proxy — ATM short-dated
+  premium ran **1.4–1.7% of spot** across single names measured on 2026-09-09 — so a
+  $650 mega-cap's ~$3 call is out of reach at that equity while a $20–40 name's
+  $0.38–0.60 call is not. Because the automated loop holds **one options position at
+  a time**, evaluating a contract you cannot buy can burn the whole day's options
+  opportunity. **Auto-Trade → Configuration → Options affordability filter** (2026-09-09,
+  off by default) drops those candidates up front, using that same derived ceiling
+  rather than a fixed price cap — so it widens by itself as the account grows, and
+  the assumed premium ratio is deliberately set low so it only removes the
+  certainly-unaffordable. This is not a risk setting and must not be used as one: if
+  the funnel is starved because contracts cost more than the budget, the honest
+  answers are a cheaper universe or more equity, **not** a bigger risk %.
 
 **Size & log:** the premium-at-risk math is the same — risk per contract is
 `|entry − exit| × 100`. Size so total premium risk ≈ your 1R, then log the option
@@ -971,13 +1022,25 @@ unobservable there. A paper book running the same setups to stop, target or the
 flatten is the missing half — and it only became a *valid* missing half once the
 flatten landed, because before that "ran on" silently meant "held overnight."
 
+While that reads out, the live side now records the other half of the question. The
+rule's justification is "recycle the slot for fresh signals", and over
+2026-08-24..09-04 that held in **7 of 31** firings: the other 24 fired while the book
+was *below* `maxConcurrentPositions`, so nothing scarce was freed and the rule simply
+paid the spread to close a trade at flat. Every stagnation decision now carries a
+`scarcity` read — whether a fresh full-size entry would have been refused for want of
+room at that moment — on the scratch and on the hold alike, so "was the cap binding
+when this fired" is answerable from the journal rather than reconstructed. The
+`stagnationExitRequiresScarcity` flag turns that read into a gate; it ships **off**,
+because this table's experiment is what should decide it.
+
 Anything else that diverges is a bug, not a counterfactual.
 
 **A sizing rule that reasons about size must read the size that will be used.** The
 finish-line trim asks "would a full-size winner overshoot what is left to the goal?"
-— and its own answer is then one of six multipliers applied to the entry, beside the
+— and its own answer is then one of seven multipliers applied to the entry, beside the
 losing-streak step-down, the market-regime cut (SPY ATR, the ML regime reading, or a
-shock day — one cut, the deeper) and the two realized-edge multipliers. Given the *raw* risk-per-trade % it reasoned about a payoff the trade
+shock day — one cut, the deeper), the same-day re-entry cut and the two realized-edge
+multipliers. Given the *raw* risk-per-trade % it reasoned about a payoff the trade
 was never going to produce: it fired when it should not have, cut deeper when it did,
 and then multiplied with the very cut it had ignored. At a 1.25% risk, 2R target and
 a 50% step-down, an $80 gap against a real $64.51 payoff should leave the trim off
@@ -1007,6 +1070,24 @@ Two lessons, both general:
   The pending verdict on this very scale-out would have been read from a book where the
   scale-out's every dollar was missing. Before judging a feature, confirm the evidence
   can see it.
+
+**A fix you have not watched the broker accept is not a fix.** The same scale-out
+supplied a third failure mode on 2026-09-08, and it is the most expensive of the
+three because it cost four sessions of false confidence. The trigger worked and the
+accounting was repaired; the *order* was still being refused. A change went in on
+09-04 to send both bracket legs in one replace request, on a correct diagnosis of why
+single-leg requests were refused. The journal since: 46 more refusals across four
+symbols, the broker's message unchanged word for word, and fills still at zero. The
+unit tests were green the whole time, and they always would have been — they assert
+what the request *looks like*, and the open question was what the broker *does with
+it*. Only the live account could answer that, and nothing asked it.
+
+The operating rule: **when a change is supposed to move a number you can see, go and
+look at that number, on a date after the deploy.** Not the test that passes, not the
+code that reads correctly — the count. "Scale-out fills" sat at zero for four days
+underneath a code comment asserting the problem was solved. A mechanism that has never
+once executed has no measured value, however well its logic reads, and it must not be
+counted on in sizing or in a plan until the broker has been seen to accept it.
 
 ---
 
@@ -1347,6 +1428,25 @@ half the slots for a month while the intraday strategy that owns the daily targe
 short of room to trade. If you set a hold limit and a flatten because your edge is
 intraday, they have to bind on calls and puts too, or the book quietly drifts back to
 being a swing book with a day-trading label on it.
+
+**Per-lot brackets (`livePerLotBracketsEnabled`, off by default, 2026-09-09).** An
+alternative way to bank a partial that does not touch a resting bracket at all:
+the position is built from **two bracketed entries** instead of one, so taking
+the partial is simply the smaller group's target filling. The larger lot enters
+first and the smaller follows a tick later as an add-on that merges into the
+same position — one trade, one concurrency slot, one cooldown — and each order
+carries its own stop and target from the moment it exists, so neither lot is
+ever unprotected.
+
+It **replaces** the scale-out rather than complementing it: with this on, the
+cancel-and-replace scale-out is turned off in code, because running both would
+have it cancel a bracket whose near target is already resting. The costs are an
+extra entry order per signal (so the 20/day order cap is effectively 10 entries)
+and a window between the two lots where the position is smaller than intended —
+if the second lot never fills, it stays that way, capped at the near target.
+That is why the larger lot goes first. Leave it off until a first live entry has
+been watched: a 2026-09-09 probe proved the broker accepts two bracket groups on
+one symbol, but not yet that both sets of exits sit happily over one holding.
 
 Two exceptions worth being deliberate about. A **stagnation** scratch does not
 transfer: a stock that goes nowhere is holding a slot for free, while a long option that

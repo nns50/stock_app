@@ -31,6 +31,7 @@ import { defaultAutotradeConfig } from '../src/db/autotradeConfig';
 const none: SizingFactors = {
   stepDown: NEUTRAL,
   regime: NEUTRAL,
+  repeatEntry: NEUTRAL,
   equityCurveDerisk: NEUTRAL,
   expectancy: NEUTRAL,
   method: NEUTRAL,

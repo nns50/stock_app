@@ -447,8 +447,11 @@ export async function maybeAutoTune(now: number = Date.now()): Promise<AutoTuneR
       },
     );
     if (result.patch.stopAtrMultiple !== undefined || result.patch.targetRMultiple !== undefined) {
-      // Stamp the change so the next run only judges it on trades taken under it.
-      setAutotradeConfig({ ...result.patch, autoTuneExitTunedAt: Date.now() });
+      // autoTuneExitTunedAt is stamped by setAutotradeConfig itself, for every
+      // writer of the two multiples rather than only this one — see its comment
+      // there. Passing it here too would be a second derivation of the same
+      // quantity, which is how the hand-made changes came to go unstamped.
+      setAutotradeConfig(result.patch);
       const nextStop = result.patch.stopAtrMultiple ?? config.stopAtrMultiple;
       const nextTarget = result.patch.targetRMultiple ?? config.targetRMultiple;
       logAutotradeEvent({

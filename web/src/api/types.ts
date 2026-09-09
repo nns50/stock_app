@@ -693,6 +693,14 @@ export interface ExcursionCoverage {
   unavailable: number;
 }
 
+export interface ExcursionAverages {
+  trades: number;
+  avgMfeR: number | null;
+  avgMaeR: number | null;
+  avgRealizedR: number | null;
+  capturePct: number | null;
+}
+
 export interface ExcursionReport {
   /** Trades actually analysed — the `rows` below. See `coverage` for the rest. */
   trades: number;
@@ -705,6 +713,14 @@ export interface ExcursionReport {
   /** How many rows came from intraday vs daily bars — a mixed report averages
    *  measurements together with upper bounds, so the split is worth showing. */
   resolutionMix: { intraday: number; daily: number };
+  /** The same averages per resolution. A daily-bar MFE is the high across whole
+   *  calendar days, not the excursion during the hold, so the pooled figures
+   *  above blend two different quantities once daily rows stop being rare —
+   *  read `intraday` for anything denominated in R. */
+  byResolution: {
+    intraday: ExcursionAverages;
+    daily: ExcursionAverages;
+  };
 }
 
 /** One closed stock trade whose target the ML regime overlay tightened at
@@ -1541,7 +1557,17 @@ export interface AutotradeConfig {
   optionsStagnationMinutes: number;
   optionsStagnationMinMovePct: number;
   optionsDisasterStopPct: number;
+  optionsAffordabilityFilterEnabled: boolean;
+  optionsAtmPremiumRatioPct: number;
   minRelVolPace: number;
+  /** Score the relative-volume COMPONENT on pace instead of raw relVolume.
+   *  Default false — turning it on rescales the score distribution that
+   *  liveMinSignalScore was fitted to. */
+  relVolUsePaceScoring: boolean;
+  /** Full marks for that component at this multiple of the MARKET's current
+   *  pace (1.0 = the median stock). A different unit from the screener's own
+   *  relVolTarget, which is a multiple of the symbol's 20-day average. */
+  relVolPaceTarget: number;
   minChangePct: number;
   momentumIntradayOnly: boolean;
   endOfDayFlattenMinutes: number;
@@ -1576,6 +1602,9 @@ export interface AutotradeConfig {
   // --- Regime-aware sizing (live + paper only; 0 disables) ---
   regimeAtrThresholdPct: number;
   regimeSizeCutPct: number;
+  /** % cut to risk-per-trade when this name already closed a trade today, LIVE
+   *  only. 0 disables it (default). Paper opts out to stay the control arm. */
+  repeatEntrySizeCutPct: number;
   // --- The ML regime overlay (2026-09-08; live + paper; off by default) ---
   mlRegimeEnabled: boolean;
   mlRegimeSizeCutPct: number;
@@ -1744,6 +1773,7 @@ export interface AutotradeConfig {
    *  its slot. 0 = off. */
   stagnationExitMinutes: number;
   stagnationExitMinR: number;
+  stagnationExitRequiresScarcity: boolean;
   liveOptionsFatFingerPct: number;
   liveOptionsProbationTrades: number;
   liveOptionsProbationSizeMultiplier: number;
@@ -2470,6 +2500,7 @@ export interface LoopTickSummary {
   liveTimeExitsRequested: number;
   /** Live scale-in add-ons placed at the broker this tick. */
   liveScaleInsRequested: number;
+  perLotSecondLotsRequested: number;
   /** Live equity scale-out orders placed this tick. */
   liveScaleOutsRequested: number;
   /** Live stops moved by breakeven/trailing this tick (stopAdjust.ts). */

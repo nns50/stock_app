@@ -53,7 +53,90 @@ import { AutotradeConfig } from '../../db/autotradeConfig';
 // in the quote and places the actual close.
 // ---------------------------------------------------------------------------
 
-export type StagnationConfig = Pick<AutotradeConfig, 'stagnationExitMinutes' | 'stagnationExitMinR'>;
+export type StagnationConfig = Pick<
+  AutotradeConfig,
+  'stagnationExitMinutes' | 'stagnationExitMinR' | 'stagnationExitRequiresScarcity'
+>;
+
+// ---------------------------------------------------------------------------
+// IS THE SLOT ACTUALLY SCARCE? (2026-09-09, task #41)
+//
+// This rule's whole justification is "recycling the slot for fresh signals".
+// Over 08-24..09-04 it was the live book's DOMINANT exit — 30 of 52 closes
+// (58%), mean −0.036R, 14W/16L, −$65.77 — and the justification held in only
+// **7 of 31** firings. The other 24 fired while the book was BELOW
+// maxConcurrentPositions, so nothing scarce was freed: the rule paid the
+// spread to close a trade at flat, and the next signal could have opened
+// anyway. On the two days the cap really was binding (09-02, 09-04) there were
+// dozens of max_concurrent_positions blocks inside the same half hour, so the
+// rationale is real there and only there.
+//
+// OFF BY DEFAULT, deliberately. The clean experiment is running: the paper
+// book has no stagnation exit and, since the end-of-day flatten landed
+// 2026-09-05, no overnight carry either — so from 2026-09-08 paper is
+// same-signals-minus-the-90-minute-cut, which is exactly this counterfactual.
+// The mechanism ships now; the DECISION is a config flip once ~2 weeks of
+// paper closes are in. Deciding it off the numbers above is what task #41
+// says not to do.
+//
+// STATE, NOT HISTORY. "Scarce" is asked as "would a fresh full-size entry be
+// refused for want of room RIGHT NOW", against the same two quantities the
+// entry gate itself compares — combinedLiveOpenRisk()'s count and risk. The
+// alternative (scan the journal for recent max_concurrent_positions blocks)
+// would answer a question about the last few minutes with a query whose shape
+// nothing else depends on, and would disagree with the entry gate the moment
+// either was changed.
+//
+// NOT MODELLED: buying power. When BP is the binding constraint this reports
+// "not scarce" and holds the trade, which is the WRONG direction for the
+// rule's purpose — the slot is genuinely blocking entries and does not get
+// recycled. Named here rather than left to be discovered; the caller has the
+// buying-power number and can be extended to pass it.
+// ---------------------------------------------------------------------------
+
+/** The room a fresh entry would need, measured the way the entry gate measures
+ *  it. All dollars, so the two comparisons below cannot mix units. */
+export interface SlotPressure {
+  /** Open + pending positions across BOTH books — `combinedLiveOpenRisk().count`,
+   *  the same number riskCheck's `max_concurrent_positions` compares. */
+  openPositions: number;
+  maxConcurrentPositions: number;
+  /** Dollars of open risk, same source and same both-books scope. */
+  openRiskUsd: number;
+  /** `(maxAggregateOpenRiskPct / 100) x equity` — the cap the entry gate uses. */
+  aggregateRiskCapUsd: number;
+  /** Dollars one more FULL-SIZE entry would add: `riskPerTradePct / 100 x
+   *  equity`, BEFORE the step-down/regime/finish-line cuts. Deliberately the
+   *  pre-cut figure: the question is whether the budget has room for a trade
+   *  at all, and a cut trade is a smaller ask that would fit more often. */
+  nextTradeRiskUsd: number;
+}
+
+export interface ScarcityVerdict {
+  scarce: boolean;
+  /** Which constraint said so — journaled, so "the gate held this trade" and
+   *  "the cap was binding" can be counted apart later. */
+  reason: string;
+}
+
+/** Would a fresh full-size entry be refused for want of room right now? */
+export function slotScarcity(p: SlotPressure): ScarcityVerdict {
+  if (p.maxConcurrentPositions > 0 && p.openPositions >= p.maxConcurrentPositions) {
+    return { scarce: true, reason: `at the concurrency cap (${p.openPositions}/${p.maxConcurrentPositions})` };
+  }
+  if (p.aggregateRiskCapUsd > 0 && p.openRiskUsd + p.nextTradeRiskUsd > p.aggregateRiskCapUsd) {
+    return {
+      scarce: true,
+      reason:
+        `no room in the aggregate risk budget ($${Math.round(p.openRiskUsd)} open + ` +
+        `$${Math.round(p.nextTradeRiskUsd)} next > $${Math.round(p.aggregateRiskCapUsd)} cap)`,
+    };
+  }
+  return {
+    scarce: false,
+    reason: `${p.openPositions}/${p.maxConcurrentPositions} slots used and the risk budget has room — nothing to free`,
+  };
+}
 
 /** Realized-so-far progress of an open position in R, at `price`. Null when
  *  the position has no stop at all or a degenerate zero risk distance.
@@ -155,6 +238,14 @@ export interface StagnationDecision {
   /** Progress in R at the supplied price — null when unmeasurable. */
   progress: number | null;
   detail: string;
+  /** The scarcity read, when one was supplied. Present whether or not it
+   *  changed the outcome, and present on a TRIGGERED decision too — that is
+   *  what makes "the cap was binding when this fired" countable after the
+   *  fact, which is the whole question task #41 is waiting on. */
+  scarcity: ScarcityVerdict | null;
+  /** True when the position was stagnant by every other measure and was held
+   *  ONLY because the slot was not scarce. The event to count. */
+  heldForFreeSlot: boolean;
 }
 
 /**
@@ -166,40 +257,59 @@ export function evaluateStagnation(
   price: number,
   cfg: StagnationConfig,
   now: number,
+  /** The book's current room. Optional so the pure tests and the paper/backtest
+   *  paths need not build one; REQUIRED in effect when
+   *  stagnationExitRequiresScarcity is on — without it the gate cannot be
+   *  evaluated and the exit is held rather than fired on an assumption. */
+  pressure?: SlotPressure,
 ): StagnationDecision {
   const heldMinutes = sessionMinutesBetween(pos.createdAt, now);
-  if (!(cfg.stagnationExitMinutes > 0)) {
-    return { triggered: false, heldMinutes, progress: null, detail: 'stagnation exit off' };
-  }
+  const scarcity = pressure ? slotScarcity(pressure) : null;
+  const no = (progress: number | null, detail: string): StagnationDecision => ({
+    triggered: false,
+    heldMinutes,
+    progress,
+    detail,
+    scarcity,
+    heldForFreeSlot: false,
+  });
+  if (!(cfg.stagnationExitMinutes > 0)) return no(null, 'stagnation exit off');
   if (heldMinutes < cfg.stagnationExitMinutes) {
-    return {
-      triggered: false,
-      heldMinutes,
-      progress: null,
-      detail: `held ${heldMinutes}m of ${cfg.stagnationExitMinutes}m`,
-    };
+    return no(null, `held ${heldMinutes}m of ${cfg.stagnationExitMinutes}m`);
   }
   const progress = progressR(pos, price);
   if (progress === null) {
-    return {
-      triggered: false,
-      heldMinutes,
-      progress,
-      detail: 'no measurable R progress (no stop on this position) — never scratched on a guess',
-    };
+    return no(null, 'no measurable R progress (no stop on this position) — never scratched on a guess');
   }
   if (progress >= cfg.stagnationExitMinR) {
+    return no(
+      progress,
+      `+${progress}R after ${heldMinutes}m — working, ≥ the ${cfg.stagnationExitMinR}R stagnation bar`,
+    );
+  }
+  // Stagnant by every other measure. The last question is whether closing it
+  // buys anything — see the scarcity header above.
+  if (cfg.stagnationExitRequiresScarcity && !scarcity?.scarce) {
     return {
       triggered: false,
       heldMinutes,
       progress,
-      detail: `+${progress}R after ${heldMinutes}m — working, ≥ the ${cfg.stagnationExitMinR}R stagnation bar`,
+      detail: scarcity
+        ? `${progress}R after ${heldMinutes}m, but ${scarcity.reason} — the trade keeps its optionality`
+        : `${progress}R after ${heldMinutes}m, but the book's room was not measured this tick — held rather than ` +
+          `scratched on an assumption`,
+      scarcity,
+      heldForFreeSlot: true,
     };
   }
   return {
     triggered: true,
     heldMinutes,
     progress,
-    detail: `${progress}R after ${heldMinutes}m (< ${cfg.stagnationExitMinR}R) — recycling the slot for fresh signals`,
+    detail:
+      `${progress}R after ${heldMinutes}m (< ${cfg.stagnationExitMinR}R) — recycling the slot for fresh signals` +
+      (scarcity?.scarce ? ` (${scarcity.reason})` : ''),
+    scarcity,
+    heldForFreeSlot: false,
   };
 }

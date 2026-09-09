@@ -150,6 +150,25 @@ export interface AutotradeConfig {
    *  behavior this config merely made tunable), this is a brand-new feature,
    *  so an untouched config changes nothing. */
   regimeSizeCutPct: number;
+  /** % cut to riskPerTradePct when this symbol ALREADY closed a position today
+   *  — a same-day re-entry into a name that has just been exited.
+   *
+   *  Measured 2026-09-08 over 89 closed live-autotrade trades: first entries
+   *  n=56 +$398.98 (mean +$7.12, 41% win), repeats n=33 -$121.03 (mean -$3.67,
+   *  33% win). The DIRECTION survives trimming — first entries beat repeats by
+   *  roughly $8-11 a trade under every treatment — but the claim "repeats lose
+   *  money" does NOT: 86% of that deficit is one DELL trade, and dropping the
+   *  single worst from each side leaves repeats at -$0.55 a trade.
+   *
+   *  So this cuts SIZE rather than blocking the entry. A hard block would spend
+   *  real opportunity on a finding one trade could reverse; a size cut shrinks
+   *  the tail doing the damage and stays reversible. Defaults to 0 (off) — the
+   *  evidence supports acting, not acting hard.
+   *
+   *  LIVE ONLY by design, like liveMinSignalScore: paper takes every signal so
+   *  the repeat-vs-first comparison keeps a clean control arm to be re-measured
+   *  against at ~60 repeats. */
+  repeatEntrySizeCutPct: number;
   /** The ML regime overlay (2026-09-08; docs/MARKET_REGIME_MODEL.md and
    *  docs/AUTOTRADE_RISK_SETTINGS.md "Regime size cut"): the master switch for
    *  everything that ACTS on the HMM market-regime reading. Today that is the
@@ -164,7 +183,7 @@ export interface AutotradeConfig {
   /** % cut to riskPerTradePct while the EFFECTIVE regime is High Volatility/
    *  Bearish — the model's reading, or a shock day promoted by the nowcast.
    *  The SAME `regime` sizing factor the ATR trigger above drives, not a
-   *  seventh: when both fire the deeper cut applies once, never the product
+   *  factor of its own: when both fire the deeper cut applies once, never the product
    *  (ATR 40 + ML 35 → 40, not 61). 100 = skip every new entry in that regime.
    *  Default 35, below the operator's 40% ATR cut on purpose: the HMM's
    *  High-Vol state is a broad condition (roughly one session in four over the
@@ -390,6 +409,31 @@ export interface AutotradeConfig {
    *  has been 1.5 since the paper-only implementation, so reusing it alone
    *  would have switched live scale-outs on the moment this deployed. */
   liveScaleOutEnabled: boolean;
+  /** PER-LOT BRACKETS (2026-09-09, task #26,
+   *  services/autotrading/perLotBrackets.ts): build a live position out of TWO
+   *  bracketed entries instead of one, so taking a partial is just the smaller
+   *  group's target filling. No modify, no cancel-then-replace, and therefore
+   *  none of the scale-out's structural naked window.
+   *
+   *  Lot 1 is the LARGER lot and enters normally. Lot 2 is placed on a later
+   *  tick as a bracketed ADD-ON (autotrade_live_orders.addon_of_position_id),
+   *  so its fill MERGES into the same position — downstream sees one trade,
+   *  one concurrency slot, one cooldown. Each OTOCO is atomic (entry plus its
+   *  own exits), so neither lot is ever unprotected.
+   *
+   *  FAILURE MODE, accepted deliberately: if lot 2 never fills the position is
+   *  smaller than intended and capped at the near target — a smaller trade that
+   *  takes profit early, fully protected. That is why lot 1 is the larger lot.
+   *
+   *  Costs an extra entry order per signal, so liveMaxOrdersPerDay is
+   *  effectively halved for entries.
+   *
+   *  OFF by default. The 2026-09-09 SIRI probe proved two OTOCO groups coexist
+   *  on one symbol, but it could not show both groups' exits ACTIVE over one
+   *  holding at once — that is what the first live entry under this flag
+   *  settles. Suppresses the scale-out on positions it builds (their partial
+   *  target is already resting; cancel-and-replace would fight it). */
+  livePerLotBracketsEnabled: boolean;
   /** LAST-RESORT scale-out route: CANCEL the resting bracket, sell the partial,
    *  then place a fresh bracket for the remainder.
    *
@@ -457,6 +501,20 @@ export interface AutotradeConfig {
   optionsStagnationMinMovePct: number;
   /** Premium-percentage backstop for a gap or volatility collapse — NOT management. Deliberately wide: at anything tighter, ordinary decay fires it with no adverse move at all. 0 disables. */
   optionsDisasterStopPct: number;
+  /** Drop options candidates whose ATM contract the per-order risk budget
+   *  could not buy, BEFORE the single options slot is spent on them
+   *  (optionsAffordability.ts, task #59). Not a new limit — the ceiling is an
+   *  exact inversion of the `quantity` rule optionsRiskCheck already applies,
+   *  so this only moves an inevitable refusal earlier, where it still leaves
+   *  the slot free for a name that can fill. */
+  optionsAffordabilityFilterEnabled: boolean;
+  /** Assumed ATM short-dated premium as a % of the underlying's price, used to
+   *  estimate a contract's cost before the chain is fetched. LOWER is more
+   *  permissive (a low ratio implies a high price cap), and the 1.0 default
+   *  sits under every single-name observation from 2026-09-09 (1.42%-1.73%)
+   *  on purpose, so the filter removes only the certainly-unaffordable. 0
+   *  disables the filter. */
+  optionsAtmPremiumRatioPct: number;
 
   /** Target distance = stop distance × this (a reward:risk multiple). */
   targetRMultiple: number;
@@ -488,6 +546,25 @@ export interface AutotradeConfig {
    *  mean the same thing at any hour, and cancels market-wide quiet/busy days.
    *  0 = off (raw minRelVol alone). */
   minRelVolPace: number;
+  /** Score the relative-volume COMPONENT on pace instead of raw relVolume
+   *  (indicators/screener.ts — ScreenerConfig.relVolUsePaceScoring). Default
+   *  false. minRelVolPace above replaced the raw measure for the entry GATE;
+   *  this is the same replacement for the SCORE, which that change never
+   *  touched — 8 of 15 live entries scored exactly 0 on a component carrying
+   *  20% of the weight, because before midday nothing can reach relVolTarget.
+   *
+   *  OFF by default because turning it on rescales the score distribution, and
+   *  liveMinSignalScore (72) was fitted to the RAW distribution against
+   *  realized P&L — enabling this without re-fitting that floor silently moves
+   *  the live entry gate. The screen journals the shift every tick either way
+   *  (`relvol_pace_scoring_shadow`), so the decision can be made on data
+   *  BEFORE the flag ever changes an entry. */
+  relVolUsePaceScoring: boolean;
+  /** Full marks for the relative-volume component at this multiple of the
+   *  MARKET's current pace, when relVolUsePaceScoring is on. Units: pace
+   *  multiple (1.0 = the median stock) — NOT the same unit as the screener's
+   *  relVolTarget, which is a multiple of the symbol's own 20-day average. */
+  relVolPaceTarget: number;
   /** Minimum move TODAY in the trade's direction, % (a long needs +this, a
    *  short -this). 0 = off. The screener is largely POSITIONAL — momentum
    *  averages today's change with distance from both MAs, and `trend` scores
@@ -837,6 +914,20 @@ export interface AutotradeConfig {
    *  deadline = recycled. May be 0 ("scratch only if not even at breakeven
    *  progress"); a slow bleeder below 0R is recycled too. */
   stagnationExitMinR: number;
+  /** Only fire the stagnation exit when the slot it frees is actually SCARCE —
+   *  the book at maxConcurrentPositions, or the aggregate risk budget with no
+   *  room for one more full-size entry (2026-09-09, task #41).
+   *
+   *  The rule's stated justification is "recycling the slot for fresh
+   *  signals", and over 08-24..09-04 that held in only 7 of 31 firings: the
+   *  other 24 fired while the book was BELOW the cap, paying the spread to
+   *  close a trade at flat when the next signal could have opened anyway. It
+   *  was the live book's dominant exit at 30 of 52 closes, mean −0.036R.
+   *
+   *  OFF by default — the mechanism, not the decision. The paper book has run
+   *  without the stagnation exit since 2026-09-08, which is the clean
+   *  counterfactual; flip this once ~2 weeks of paper closes are in. */
+  stagnationExitRequiresScarcity: boolean;
   /** END-OF-DAY FLATTEN (services/autotrading/endOfDayFlatten.ts): inside the
    *  last N minutes of the regular session, close every open LIVE EQUITY
    *  position at a marketable limit rather than carrying it overnight —
@@ -1075,12 +1166,21 @@ export interface AutotradeConfig {
    *  exit-tune (in multiple units, not a %), so one noisy sample can't swing
    *  the loop's exits — the exit-geometry analogue of autoTuneMaxStepPct. */
   autoTuneExitMaxStep: number;
-  /** When the exit-geometry tuner last moved stopAtrMultiple/targetRMultiple.
-   *  Server-owned bookkeeping (like liveEnabledAt) — not settable via the config
-   *  route. Excursion is measured in R, i.e. against each trade's OWN stop at
-   *  entry, so trades taken before a change can't tell you anything about the
-   *  geometry that replaced them; the tuner uses this to ignore them and wait
-   *  for fresh evidence. See services/autotrading/excursionTune.ts. */
+  /** When stopAtrMultiple/targetRMultiple last CHANGED — by anyone. Stamped in
+   *  setAutotradeConfig, so the Settings page, a script and the tuner itself
+   *  all record it; it was previously written only by the tuner, which made it
+   *  read "never tuned" after a hand-made change. Server-owned bookkeeping
+   *  (like liveEnabledAt) — not settable via the config route.
+   *
+   *  Excursion is measured in R, i.e. against each trade's OWN stop at entry,
+   *  so trades taken before a change can't tell you anything about the geometry
+   *  that replaced them; the tuner uses this to ignore them and wait for fresh
+   *  evidence. See services/autotrading/excursionTune.ts.
+   *
+   *  null means the geometry has never moved since this database existed —
+   *  every trade in it was taken under the current one, so none are excluded.
+   *  That is a real state, not a missing value, which is why it must survive
+   *  sanitize() rather than collapsing to the epoch. */
   autoTuneExitTunedAt: number | null;
   /** Walk-forward guard on the Kelly risk-% auto-tune (2026-07-24, ON by
    *  default). When on, a risk-% INCREASE is only applied if the edge still
@@ -1124,6 +1224,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     maxTradesPerDay: 6,
     regimeAtrThresholdPct: 3,
     regimeSizeCutPct: 0,
+    repeatEntrySizeCutPct: 0,
     mlRegimeEnabled: false,
     mlRegimeSizeCutPct: 35,
     mlRegimeSwitchThreshold: 0.6,
@@ -1157,6 +1258,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     stopAtrMultiple: 1.5,
     maxStopDistancePct: 0,
     liveScaleOutEnabled: false,
+    livePerLotBracketsEnabled: false,
     liveScaleOutCancelReplaceEnabled: false,
     liveTrailingEnabled: false,
     dayProtectiveStopEnabled: false,
@@ -1169,10 +1271,14 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     optionsStagnationMinutes: 30,
     optionsStagnationMinMovePct: 0.3,
     optionsDisasterStopPct: 70,
+    optionsAffordabilityFilterEnabled: false,
+    optionsAtmPremiumRatioPct: 1,
     targetRMultiple: 2,
     sessionBufferMinutes: 15,
     earningsBlackoutDays: 0,
     minRelVolPace: 0,
+    relVolUsePaceScoring: false,
+    relVolPaceTarget: 2.5,
     minChangePct: 0,
     momentumIntradayOnly: false,
     macroEventBlackoutHours: 0,
@@ -1232,6 +1338,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     liveMinSignalScore: 0,
     stagnationExitMinutes: 0,
     stagnationExitMinR: 0.5,
+    stagnationExitRequiresScarcity: false,
     endOfDayFlattenMinutes: 0,
     levelExitsEnabled: false,
     levelMinStrength: 0.35,
@@ -1370,6 +1477,7 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     maxTradesPerDay: posInt(input.maxTradesPerDay, d.maxTradesPerDay),
     regimeAtrThresholdPct: pct(input.regimeAtrThresholdPct, d.regimeAtrThresholdPct),
     regimeSizeCutPct: pct(input.regimeSizeCutPct, d.regimeSizeCutPct),
+    repeatEntrySizeCutPct: pct(input.repeatEntrySizeCutPct, d.repeatEntrySizeCutPct),
     mlRegimeEnabled: typeof input.mlRegimeEnabled === 'boolean' ? input.mlRegimeEnabled : d.mlRegimeEnabled,
     mlRegimeSizeCutPct: pct(input.mlRegimeSizeCutPct, d.mlRegimeSizeCutPct),
     mlRegimeSwitchThreshold: unitInterval(input.mlRegimeSwitchThreshold, d.mlRegimeSwitchThreshold),
@@ -1419,6 +1527,10 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     maxStopDistancePct: nonNeg(input.maxStopDistancePct, d.maxStopDistancePct),
     liveScaleOutEnabled:
       typeof input.liveScaleOutEnabled === 'boolean' ? input.liveScaleOutEnabled : d.liveScaleOutEnabled,
+    livePerLotBracketsEnabled:
+      typeof input.livePerLotBracketsEnabled === 'boolean'
+        ? input.livePerLotBracketsEnabled
+        : d.livePerLotBracketsEnabled,
     liveScaleOutCancelReplaceEnabled:
       typeof input.liveScaleOutCancelReplaceEnabled === 'boolean'
         ? input.liveScaleOutCancelReplaceEnabled
@@ -1443,10 +1555,18 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     optionsStagnationMinutes: nonNeg(input.optionsStagnationMinutes, d.optionsStagnationMinutes),
     optionsStagnationMinMovePct: nonNeg(input.optionsStagnationMinMovePct, d.optionsStagnationMinMovePct),
     optionsDisasterStopPct: nonNeg(input.optionsDisasterStopPct, d.optionsDisasterStopPct),
+    optionsAffordabilityFilterEnabled:
+      typeof input.optionsAffordabilityFilterEnabled === 'boolean'
+        ? input.optionsAffordabilityFilterEnabled
+        : d.optionsAffordabilityFilterEnabled,
+    optionsAtmPremiumRatioPct: nonNeg(input.optionsAtmPremiumRatioPct, d.optionsAtmPremiumRatioPct),
     targetRMultiple: posDecimal(input.targetRMultiple, d.targetRMultiple),
     sessionBufferMinutes: posInt(input.sessionBufferMinutes, d.sessionBufferMinutes),
     earningsBlackoutDays: posInt(input.earningsBlackoutDays, d.earningsBlackoutDays),
     minRelVolPace: nonNeg(input.minRelVolPace, d.minRelVolPace),
+    relVolUsePaceScoring:
+      typeof input.relVolUsePaceScoring === 'boolean' ? input.relVolUsePaceScoring : d.relVolUsePaceScoring,
+    relVolPaceTarget: nonNeg(input.relVolPaceTarget, d.relVolPaceTarget),
     minChangePct: nonNeg(input.minChangePct, d.minChangePct),
     momentumIntradayOnly:
       typeof input.momentumIntradayOnly === 'boolean' ? input.momentumIntradayOnly : d.momentumIntradayOnly,
@@ -1543,6 +1663,10 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     liveMinSignalScore: pct(input.liveMinSignalScore, d.liveMinSignalScore),
     stagnationExitMinutes: posInt(input.stagnationExitMinutes, d.stagnationExitMinutes),
     stagnationExitMinR: nonNeg(input.stagnationExitMinR, d.stagnationExitMinR),
+    stagnationExitRequiresScarcity:
+      typeof input.stagnationExitRequiresScarcity === 'boolean'
+        ? input.stagnationExitRequiresScarcity
+        : d.stagnationExitRequiresScarcity,
     // Capped at the session's own length: a window longer than the trading day
     // would mean "always flattening", which is a way of saying "never enter".
     endOfDayFlattenMinutes: Math.min(posInt(input.endOfDayFlattenMinutes, d.endOfDayFlattenMinutes), 390),
@@ -1602,14 +1726,28 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     autoTuneExitsEnabled:
       typeof input.autoTuneExitsEnabled === 'boolean' ? input.autoTuneExitsEnabled : d.autoTuneExitsEnabled,
     autoTuneExitMaxStep: posDecimal(input.autoTuneExitMaxStep, d.autoTuneExitMaxStep),
-    autoTuneExitTunedAt: Number.isFinite(Number(input.autoTuneExitTunedAt))
-      ? Number(input.autoTuneExitTunedAt)
-      : d.autoTuneExitTunedAt,
+    autoTuneExitTunedAt: epochMsOrNull(input.autoTuneExitTunedAt, d.autoTuneExitTunedAt),
     autoTuneRequireOosConfirmation:
       typeof input.autoTuneRequireOosConfirmation === 'boolean'
         ? input.autoTuneRequireOosConfirmation
         : d.autoTuneRequireOosConfirmation,
   };
+}
+
+/** An epoch-ms stamp that may legitimately be "never".
+ *
+ *  The old guard was `Number.isFinite(Number(x)) ? Number(x) : dflt`, and
+ *  `Number(null)` is 0, which IS finite — so the default `null` was rewritten
+ *  to 0 the first time a config was sanitized. 0 is not "never": it is a
+ *  timestamp older than every trade ever recorded, which is exactly how
+ *  production came to read `autoTuneExitTunedAt: 0` and the exit tuner's
+ *  `sampleSince` came to admit the entire journal instead of the trades taken
+ *  under the current geometry (task #58c). A stored 0 is likewise treated as
+ *  the unset it always meant. */
+function epochMsOrNull(v: unknown, dflt: number | null): number | null {
+  if (v === null) return null;
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : dflt;
 }
 
 /** The current persisted auto-trading config, or defaults (off, MODERATE) if unset/corrupt. */
@@ -1625,7 +1763,24 @@ export function getAutotradeConfig(): AutotradeConfig {
 
 /** Merge a partial patch over the current config and persist it (singleton upsert). */
 export function setAutotradeConfig(patch: Partial<AutotradeConfig>): AutotradeConfig {
-  const next = sanitize({ ...getAutotradeConfig(), ...patch });
+  const prev = getAutotradeConfig();
+  const merged = sanitize({ ...prev, ...patch });
+  // The exit geometry's clock is stamped HERE, where every writer passes,
+  // rather than at the one call site that remembered to (task #58c).
+  //
+  // `autoTuneExitTunedAt` is documented as "when the exit geometry last
+  // changed" and the tuner uses it to ignore trades taken under the previous
+  // geometry. Only autoTune.ts ever set it, so a change made from the Settings
+  // page or a script — which is how BOTH multiples actually got their current
+  // values — left the stamp untouched, and the next tune judged the new
+  // geometry on trades taken under the old one. Two paths deriving the same
+  // quantity, one of which forgot: the fix is that there is now one.
+  const geometryMoved =
+    merged.stopAtrMultiple !== prev.stopAtrMultiple || merged.targetRMultiple !== prev.targetRMultiple;
+  // An explicit stamp in the patch wins — a caller restoring a known state
+  // (a test, a rollback) is not making a fresh change.
+  const next =
+    geometryMoved && patch.autoTuneExitTunedAt === undefined ? { ...merged, autoTuneExitTunedAt: Date.now() } : merged;
   db.prepare(
     `INSERT INTO autotrade_config (id, config, updated_at) VALUES (1, ?, ?)
      ON CONFLICT(id) DO UPDATE SET config = excluded.config, updated_at = excluded.updated_at`,

@@ -773,3 +773,65 @@ describe('autotrade config persistence', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// task #58c. `autoTuneExitTunedAt` is documented as "when the exit geometry
+// last changed" and the exit tuner uses it to ignore trades taken under the
+// previous geometry. Only autoTune.ts ever wrote it, so a change made from the
+// Settings page — which is how both multiples actually got their values —
+// left the stamp behind. Stamping in setAutotradeConfig means every writer
+// records it, by construction rather than by remembering to.
+// ---------------------------------------------------------------------------
+describe('exit-geometry clock (autoTuneExitTunedAt)', () => {
+  it('is null on a fresh config: the geometry has never moved, so no trade is stale', () => {
+    expect(getAutotradeConfig().autoTuneExitTunedAt).toBeNull();
+  });
+
+  it('survives sanitize as null instead of collapsing to the epoch', () => {
+    // Number(null) is 0 and Number.isFinite(0) is true, so the old guard turned
+    // "never" into 1970 on the first read — a timestamp older than every trade
+    // ever recorded, which reads as a stamp and admits the entire journal.
+    setAutotradeConfig({ enabled: true });
+    expect(getAutotradeConfig().autoTuneExitTunedAt).toBeNull();
+    const stored = JSON.parse(
+      (db.prepare('SELECT config FROM autotrade_config WHERE id = 1').get() as { config: string }).config,
+    ) as Record<string, unknown>;
+    expect(stored.autoTuneExitTunedAt).toBeNull();
+  });
+
+  it('reads a stored 0 back as the "never" it always meant', () => {
+    db.prepare('INSERT INTO autotrade_config (id, config, updated_at) VALUES (1, ?, ?)').run(
+      JSON.stringify({ ...defaultAutotradeConfig(), autoTuneExitTunedAt: 0 }),
+      Date.now(),
+    );
+    expect(getAutotradeConfig().autoTuneExitTunedAt).toBeNull();
+  });
+
+  it('stamps when stopAtrMultiple moves', () => {
+    const before = Date.now();
+    const cfg = setAutotradeConfig({ stopAtrMultiple: 1.75 });
+    expect(cfg.autoTuneExitTunedAt).toBeGreaterThanOrEqual(before);
+  });
+
+  it('stamps when targetRMultiple moves', () => {
+    const before = Date.now();
+    const cfg = setAutotradeConfig({ targetRMultiple: 2.5 });
+    expect(cfg.autoTuneExitTunedAt).toBeGreaterThanOrEqual(before);
+  });
+
+  it('does not stamp on a patch that leaves the geometry where it was', () => {
+    const stamped = setAutotradeConfig({ stopAtrMultiple: 1.75 }).autoTuneExitTunedAt;
+    // A patch naming the same value is not a change, and neither is an
+    // unrelated one — otherwise every settings save would reset the clock and
+    // the tuner would never accumulate a sample at all.
+    expect(setAutotradeConfig({ stopAtrMultiple: 1.75 }).autoTuneExitTunedAt).toBe(stamped);
+    expect(setAutotradeConfig({ riskProfile: 'AGGRESSIVE' }).autoTuneExitTunedAt).toBe(stamped);
+  });
+
+  it('lets an explicit stamp in the patch win, so a known state can be restored', () => {
+    // defaultAutotradeConfig() carries an explicit null, which is how a test
+    // reset puts the config back without dating it to now.
+    setAutotradeConfig({ stopAtrMultiple: 1.75 });
+    expect(setAutotradeConfig(defaultAutotradeConfig()).autoTuneExitTunedAt).toBeNull();
+  });
+});
