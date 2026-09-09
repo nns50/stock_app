@@ -627,6 +627,14 @@ export interface ExcursionCoverage {
   unavailable: number;
 }
 
+export interface ExcursionAverages {
+  trades: number;
+  avgMfeR: number | null;
+  avgMaeR: number | null;
+  avgRealizedR: number | null;
+  capturePct: number | null;
+}
+
 export interface ExcursionReport {
   /** Trades actually analysed — the `rows` below. See `coverage` for the rest. */
   trades: number;
@@ -639,6 +647,14 @@ export interface ExcursionReport {
   /** How many rows came from intraday vs daily bars — a mixed report averages
    *  measurements together with upper bounds, so the split is worth showing. */
   resolutionMix: { intraday: number; daily: number };
+  /** The same averages per resolution. A daily-bar MFE is the high across whole
+   *  calendar days, not the excursion during the hold, so the pooled figures
+   *  above blend two different quantities once daily rows stop being rare —
+   *  read `intraday` for anything denominated in R. */
+  byResolution: {
+    intraday: ExcursionAverages;
+    daily: ExcursionAverages;
+  };
 }
 
 /** One live-traded fill's execution quality vs. the order's limit price. */

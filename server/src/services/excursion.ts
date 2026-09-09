@@ -248,6 +248,34 @@ export interface ExcursionReport {
    *  averaging the two is mixing measurements with upper bounds — visible here
    *  rather than left for the reader to assume. */
   resolutionMix: { intraday: number; daily: number };
+  /** The same four averages, computed SEPARATELY per resolution.
+   *
+   *  Disclosing the mix (above) was enough while daily rows were a rounding
+   *  error. On 2026-09-09, with the journal route's cap raised, they became 31
+   *  of 79 — and the pooled `avgMfeR` jumped 0.70 -> 1.74 without a single
+   *  trade changing. Measured apart: intraday 0.54, daily 3.60. A daily-bar MFE
+   *  is the high across whole calendar days, not the excursion during the hold
+   *  (worst case in that sample: mfeR 55.51 on a penny stock held over several
+   *  days), so the two are not the same quantity and their mean is not a
+   *  quantity at all.
+   *
+   *  The pooled fields above are kept — existing callers read them and the
+   *  blend is still the honest answer to "across everything measured" — but any
+   *  R-denominated comparison should read `intraday` here. Null where that
+   *  resolution has no rows. */
+  byResolution: {
+    intraday: ExcursionAverages;
+    daily: ExcursionAverages;
+  };
+}
+
+/** The averages a single resolution's rows support. */
+export interface ExcursionAverages {
+  trades: number;
+  avgMfeR: number | null;
+  avgMaeR: number | null;
+  avgRealizedR: number | null;
+  capturePct: number | null;
 }
 
 function mean(xs: number[]): number | null {
@@ -260,7 +288,10 @@ function mean(xs: number[]): number | null {
  * counts. It is deliberately not optional-and-ignored: a default that claimed
  * full coverage while the caller had truncated would reintroduce the bug.
  */
-export function aggregateExcursions(rows: TradeExcursion[], coverage?: Partial<ExcursionCoverage>): ExcursionReport {
+/** The four averages over one set of rows. Used for the pooled figures and,
+ *  through the same function, for each resolution — so a per-resolution average
+ *  can never drift from the pooled one's definition. */
+function averagesOf(rows: TradeExcursion[]): ExcursionAverages {
   const withR = rows.filter((r) => r.mfeR !== null);
   const captures = rows.filter((r) => r.capturedPct !== null).map((r) => r.capturedPct as number);
   return {
@@ -269,11 +300,24 @@ export function aggregateExcursions(rows: TradeExcursion[], coverage?: Partial<E
     avgMaeR: mean(withR.map((r) => r.maeR as number)),
     avgRealizedR: mean(withR.map((r) => r.realizedR as number)),
     capturePct: mean(captures),
+  };
+}
+
+export function aggregateExcursions(rows: TradeExcursion[], coverage?: Partial<ExcursionCoverage>): ExcursionReport {
+  const pooled = averagesOf(rows);
+  const intraday = rows.filter((r) => r.resolution === 'intraday');
+  const daily = rows.filter((r) => r.resolution !== 'intraday');
+  return {
+    trades: rows.length,
+    avgMfeR: pooled.avgMfeR,
+    avgMaeR: pooled.avgMaeR,
+    avgRealizedR: pooled.avgRealizedR,
+    capturePct: pooled.capturePct,
+    byResolution: { intraday: averagesOf(intraday), daily: averagesOf(daily) },
     rows,
-    resolutionMix: {
-      intraday: rows.filter((r) => r.resolution === 'intraday').length,
-      daily: rows.filter((r) => r.resolution !== 'intraday').length,
-    },
+    // From the SAME partition the averages use — two independent filters on one
+    // predicate is how a count comes to disagree with the number beside it.
+    resolutionMix: { intraday: intraday.length, daily: daily.length },
     coverage: {
       closedStockTrades: rows.length,
       undated: 0,

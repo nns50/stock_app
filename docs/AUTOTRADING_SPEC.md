@@ -6717,7 +6717,7 @@ after.
 
 ---
 
-## The excursion cap was the binding constraint on the target multiple (2026-09-08)
+## Raising the excursion cap, and what it did NOT unblock (2026-09-08, corrected 2026-09-09)
 
 `GET /api/journal/excursions` capped its analysis at **50** trades. The book held
 117 closed stock trades: 25 undated (genuinely unmeasurable — an excursion walks
@@ -6765,3 +6765,67 @@ trail or stagnation anyway.
 Winners capture a median **48%** of their peak favourable move. That is an EXIT
 question — trail, stagnation, scale-out — not a target question, and it belongs
 with the exit-tuning work rather than here.
+
+
+---
+
+## Correction: the cap was not the binding constraint (2026-09-09)
+
+The section above claims raising `EXCURSION_TRADE_CAP` unblocked task #32's
+target-multiple question. **It did not, and the claim was wrong when written.**
+
+Re-run on the uncapped route: the sample went 50 → 92 rows, but the *usable*
+sample went **46 → 48**. Every one of the 27 added trades falls back to **daily**
+bars.
+
+| resolution | n | entry dates | mfeR median | mfeR max | reached 2.0R |
+|---|---|---|---|---|---|
+| intraday | 48 | 2026-07-15 → 09-08 | 0.34 | 2.60 | 3 (6%) |
+| daily | 31 | 2026-07-09 → 08-24 | 1.29 | **55.51** | 11 (35%) |
+
+The daily rows are the **older** trades: the provider's intraday history reaches
+back to roughly 2026-07-15 and no further. So the binding constraint is the
+**intraday history horizon**, not a constant — and more evidence for this
+question can only come from time passing.
+
+A daily-bar MFE is the high across whole calendar days, not the excursion during
+the hold. Worst case in the sample: ELAB entered 2026-07-10, `mfeR 55.51`,
+`mfePct 979.58` — a penny stock's multi-day range, not a day trade's excursion.
+Pooled, the 92-row run reported 35% of trades reaching 1.0R where the intraday
+truth is 15%.
+
+**The HOLD at 2.0 stands** — on the intraday subset the picture is unchanged, 6%
+reach 2.0R and every candidate target stays inside noise.
+
+### The regression this exposed
+
+Raising the cap took daily rows from 4/50 (8%) to 31/79 (39%), and the report's
+pooled averages moved with them — `avgMfeR` 0.70 → **1.74** without a single
+trade changing. Measured apart: **intraday 0.54, daily 3.60**. `resolutionMix`
+disclosed that a mix existed, which was enough while daily rows were a rounding
+error and stopped being enough the moment they were a third of the sample.
+
+`aggregateExcursions` now also returns **`byResolution`** — the same four
+averages computed separately, from the same partition `resolutionMix` counts, via
+one `averagesOf` both paths call. The pooled fields stay (callers read them, and
+"across everything measured" is still a real answer), but anything denominated in
+R should read `byResolution.intraday`. The Journal analytics modal shows the
+split beneath the tiles for the same reason.
+
+### Known, unfixed: `computeExcursionTune` does not filter by resolution
+
+`excursionTune.ts` derives `targetRMultiple` from `avgMfeR` over winners and
+`stopAtrMultiple` from their MAE percentile, with **no resolution filter**, so an
+inflated daily MFE can reach live exit geometry. Two things bound it today, and
+neither is a fix:
+
+- `TARGET_R_MIN/MAX` (1..6) and `stepToward(maxStep)` clamp any single run.
+- Simulated on the current book it proposes the *same* `targetRMultiple 1.75` /
+  `stopAtrMultiple 1.25` whether daily winners are included (n=30, avgMfeR 1.43)
+  or excluded (n=22, avgMfeR 0.75) — both raw targets land on the `TARGET_R_MIN`
+  floor, and the step limit caps the move either way.
+
+So it is currently **non-binding, not correct**. `sampleSince` would normally
+exclude the older daily rows, but `autoTuneExitTunedAt` is `0` in production, so
+that filter admits everything. Left as an operator decision rather than changed
+under them: it is a live-money path and `autoTuneExitsEnabled` is on.
