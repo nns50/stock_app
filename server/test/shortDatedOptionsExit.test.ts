@@ -130,6 +130,37 @@ describe('evaluateShortDatedExit', () => {
       expect(d.detail).toMatch(/gave back/);
     });
 
+    it('reports the peak it armed on, so rule L5 is answerable later', () => {
+      // The give-back rule arms on the peak; the exit journal reports it. If
+      // those were two derivations they could disagree, so peakGainPct is
+      // computed once and both read it. L5 asks whether the trail was too
+      // tight — a peak BELOW optionsTakeProfitPct could never have exited at
+      // the target however long it was held, which settles the question
+      // without any post-exit price.
+      const d = evaluateShortDatedExit(pos({ peakPremium: 0.664 }), 0.5125, 100.4, cfg, MID);
+      expect(d.rule).toBe('give_back');
+      expect(d.peakGainPct).toBeCloseTo(62, 0);
+      // The number in the human-readable reason is the SAME number.
+      expect(d.detail).toContain(`peaked +${d.peakGainPct}%`);
+      // ...and it is above the 60% target here, so this one really did give
+      // back a gain the target would have banked.
+      expect(d.peakGainPct!).toBeGreaterThan(cfg.optionsTakeProfitPct);
+    });
+
+    it('reports a peak that never reached the target, which is what settles L5 the other way', () => {
+      // Peaked +45% (past the 40% arm, short of the 60% target), now +5%.
+      // Holding for the target would never have filled.
+      const d = evaluateShortDatedExit(pos({ peakPremium: 0.5945 }), 0.4305, 100.1, cfg, MID);
+      expect(d.rule).toBe('give_back');
+      expect(d.peakGainPct!).toBeLessThan(cfg.optionsTakeProfitPct);
+    });
+
+    it('carries the peak even on cycles that do not fire', () => {
+      const d = evaluateShortDatedExit(pos({ peakPremium: 0.492 }), 0.4305, 100.1, cfg, MID);
+      expect(d.exit).toBe(false);
+      expect(d.peakGainPct).toBeCloseTo(20, 0);
+    });
+
     it('stays armed only above the arm threshold', () => {
       // Peaked +20%, now +5%: a 75% retrace, but of a gain too small to call a
       // fade rather than noise.
