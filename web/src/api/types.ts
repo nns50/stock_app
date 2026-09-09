@@ -1436,6 +1436,8 @@ export interface AutotradeConfig {
   optionsStagnationMinutes: number;
   optionsStagnationMinMovePct: number;
   optionsDisasterStopPct: number;
+  optionsAffordabilityFilterEnabled: boolean;
+  optionsAtmPremiumRatioPct: number;
   minRelVolPace: number;
   /** Score the relative-volume COMPONENT on pace instead of raw relVolume.
    *  Default false — turning it on rescales the score distribution that

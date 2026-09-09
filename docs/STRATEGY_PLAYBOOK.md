@@ -464,6 +464,22 @@ premium), while respecting that **time and volatility work against long options.
   before trusting it live.
 - Give yourself **enough DTE** that time decay isn't brutal for your hold (swing trades
   generally want weeks, not days).
+- **Check the contract is affordable before it costs you the slot.** The largest
+  premium your per-order risk budget can buy is not a setting you pick — it falls
+  out of the ones you already have: `(equity × risk per trade %) ÷ options disaster
+  stop %`. On a $5,137 book at 1.25% risk and a 70% disaster stop that is **$0.92 a
+  share, ~$92 a contract**. Underlying price is the practical proxy — ATM short-dated
+  premium ran **1.4–1.7% of spot** across single names measured on 2026-09-09 — so a
+  $650 mega-cap's ~$3 call is out of reach at that equity while a $20–40 name's
+  $0.38–0.60 call is not. Because the automated loop holds **one options position at
+  a time**, evaluating a contract you cannot buy can burn the whole day's options
+  opportunity. **Auto-Trade → Configuration → Options affordability filter** (2026-09-09,
+  off by default) drops those candidates up front, using that same derived ceiling
+  rather than a fixed price cap — so it widens by itself as the account grows, and
+  the assumed premium ratio is deliberately set low so it only removes the
+  certainly-unaffordable. This is not a risk setting and must not be used as one: if
+  the funnel is starved because contracts cost more than the budget, the honest
+  answers are a cheaper universe or more equity, **not** a bigger risk %.
 
 **Size & log:** the premium-at-risk math is the same — risk per contract is
 `|entry − exit| × 100`. Size so total premium risk ≈ your 1R, then log the option

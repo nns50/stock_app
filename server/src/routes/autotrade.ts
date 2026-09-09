@@ -238,6 +238,8 @@ const configBody = z.object({
   optionsStagnationMinutes: z.number().nonnegative().optional(),
   optionsStagnationMinMovePct: z.number().nonnegative().optional(),
   optionsDisasterStopPct: z.number().nonnegative().optional(),
+  optionsAffordabilityFilterEnabled: z.boolean().optional(),
+  optionsAtmPremiumRatioPct: z.number().nonnegative().optional(),
   targetRMultiple: z.number().positive().optional(),
   sessionBufferMinutes: z.number().int().nonnegative().optional(),
   earningsBlackoutDays: z.number().int().nonnegative().optional(),
@@ -533,6 +535,9 @@ autotradeRouter.put(
     if (body.optionsStagnationMinMovePct !== undefined)
       patch.optionsStagnationMinMovePct = body.optionsStagnationMinMovePct;
     if (body.optionsDisasterStopPct !== undefined) patch.optionsDisasterStopPct = body.optionsDisasterStopPct;
+    if (body.optionsAffordabilityFilterEnabled !== undefined)
+      patch.optionsAffordabilityFilterEnabled = body.optionsAffordabilityFilterEnabled;
+    if (body.optionsAtmPremiumRatioPct !== undefined) patch.optionsAtmPremiumRatioPct = body.optionsAtmPremiumRatioPct;
     if (body.targetRMultiple !== undefined) patch.targetRMultiple = body.targetRMultiple;
     if (body.sessionBufferMinutes !== undefined) patch.sessionBufferMinutes = body.sessionBufferMinutes;
     if (body.earningsBlackoutDays !== undefined) patch.earningsBlackoutDays = body.earningsBlackoutDays;

@@ -90,6 +90,8 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     optionsStagnationMinutes: 30,
     optionsStagnationMinMovePct: 0.3,
     optionsDisasterStopPct: 70,
+    optionsAffordabilityFilterEnabled: false,
+    optionsAtmPremiumRatioPct: 1,
     minRelVolPace: 0,
     relVolUsePaceScoring: false,
     relVolPaceTarget: 2.5,

@@ -9,6 +9,8 @@ import { resolveScoringWeights } from './regimeWeights';
 import { selectCorrelationAware } from './correlationSelection';
 import { runAutotradeDecision } from './decide';
 import { runOptionsDecision } from './optionsDecide';
+import { filterAffordableUnderlyings, riskPctUpperBound } from './optionsAffordability';
+import { claimOncePerDay } from './oncePerDayEvents';
 import { runPaperExecution, checkPaperExits } from './execute';
 import {
   runOptionsPaperExecution,
@@ -757,8 +759,48 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     // over time — equity autotrading keeps using movers for momentum/
     // breakout, unaffected.
     const universeOnly = selectedCandidates.filter((c) => c.discoverySource === 'universe');
-    summary.optionsCandidatesConsidered = universeOnly.length;
-    const optionsDecision = await runOptionsDecision(universeOnly, {
+    // Then drop the ones whose ATM contract the per-order risk budget cannot
+    // buy (task #59). optionsMaxConcurrentPositions is 1, so an unaffordable
+    // candidate does not merely waste a chain fetch — it can spend the day's
+    // only options slot on a refusal that was arithmetically certain before
+    // the chain was ever read. The ceiling is optionsRiskCheck's own sizing
+    // rule inverted, not a second opinion about risk; see
+    // optionsAffordability.ts on why it can only ever drop a candidate the
+    // sizer would also have refused.
+    let optionsCandidates = universeOnly;
+    if (config.optionsAffordabilityFilterEnabled && config.accountEquityUsd !== null) {
+      const affordability = filterAffordableUnderlyings(
+        universeOnly,
+        {
+          equityUsd: config.accountEquityUsd,
+          riskPctUpperBound: riskPctUpperBound(config),
+          disasterStopPct: config.optionsDisasterStopPct,
+        },
+        config.optionsAtmPremiumRatioPct,
+      );
+      optionsCandidates = affordability.kept;
+      for (const d of affordability.dropped) {
+        // Once per symbol per ET day, the shape task #43 settled on: this runs
+        // every tick over a persistent universe, so a row per drop per tick is
+        // how excluded_re became 31% of the events table.
+        if (claimOncePerDay('options_underlying_unaffordable', d.symbol)) {
+          logAutotradeEvent({
+            stage: 'decision',
+            action: 'options_underlying_unaffordable',
+            symbol: d.symbol,
+            detail: {
+              underlyingPrice: d.underlyingPrice,
+              estimatedPremiumPerShare: d.estimatedPremiumPerShare,
+              maxPremiumPerShare: d.maxPremiumPerShare,
+              maxUnderlyingPrice: affordability.maxUnderlyingPrice,
+              atmPremiumRatioPct: config.optionsAtmPremiumRatioPct,
+            },
+          });
+        }
+      }
+    }
+    summary.optionsCandidatesConsidered = optionsCandidates.length;
+    const optionsDecision = await runOptionsDecision(optionsCandidates, {
       strategyType: config.optionsStrategyType,
       maxIvRvRatio: config.optionsMaxIvRvRatio,
       entryConfig: {

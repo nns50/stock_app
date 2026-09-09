@@ -1740,6 +1740,23 @@ equally-weighted cards in the order they happened to be built:
   checks always used before they were configurable (delta 0.30-0.60, max spread
   10%, min open interest 100, min volume 10, DTE 7-60 days, IV rank ceiling 70,
   floor 0, IV/RV gate off), so leaving them untouched changes nothing; the manual
+  **Options affordability filter** (2026-09-09, off by default) is a different kind of
+  gate — it asks not whether a contract is a good trade but whether this account can
+  buy one at all. The largest premium the per-order risk budget can cover is derived,
+  not configured: `(equity x risk per trade %) / options disaster stop %`, the same
+  inequality the options risk check already applies when it sizes a leg. A candidate's
+  contract cost is estimated ahead of the chain fetch as **options ATM premium ratio %**
+  of the underlying's price (default 1.0), and anything over the ceiling is dropped
+  before the options decision runs, journaled once per symbol per day as
+  `options_underlying_unaffordable` with the price, the estimate and the ceiling. This
+  matters because the loop holds **one options position at a time**: a candidate whose
+  contract costs four times the budget can otherwise consume the day's only slot on a
+  refusal that was certain in advance. Because the ceiling is derived it re-scales
+  itself as equity, risk % or the disaster stop moves — no setting to revisit as the
+  account grows. The ratio is deliberately set BELOW observed ATM premium (1.4-1.7% of
+  spot across single names on 2026-09-09), so the filter under-states cost and errs
+  toward keeping: a symbol it keeps still faces the real risk check, while one it drops
+  could not have been bought. Leave it off to change nothing.
   Screen/Decision preview below defaults to these same saved values too. Backtesting
   is unaffected by what's SAVED here — options backtests keep using the original
   fixed constants unless a request supplies its own values, the same
