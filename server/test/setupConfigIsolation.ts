@@ -33,7 +33,49 @@ import { initDb, db } from '../src/db';
 // initDb() first because a test file's own `beforeAll` has not run yet at this
 // point, so the table may not exist. It is `CREATE TABLE IF NOT EXISTS`
 // throughout, so calling it here is free and idempotent.
+// ---------------------------------------------------------------------------
+// AND FROM AN EMPTY BOOK (2026-09-09, #46's residual sweep).
+//
+// The config row was half of it. The other half is ROWS: signature D was
+// liveOptionsExpiry.test.ts closing a $200 option at $0 and clearing
+// autotrade_live_options_positions only in `beforeEach`, so the closed position
+// survived the file and realizedTodayFromBook() handed livePreview.test.ts's
+// guardrails a $200 realized loss it never traded — two tests failing on money
+// no fixture there had. Occasional while the file order moved; permanent once
+// it was pinned.
+//
+// Cleaning up at the WRITER does not generalise: the next file to leave rows
+// behind has no idea who reads them, and a survey found several already doing
+// it (stopAdjust.test.ts creates positions and never deletes any). Starting
+// every file from an empty book does generalise, and it is the same argument
+// the config reset above already won.
+//
+// Order note: vitest runs setupFiles' hooks BEFORE the test file's own
+// `beforeAll`, so a file that seeds in `beforeAll` and relies on it across its
+// cases is unaffected — this wipes first, then it seeds.
+//
+// Deliberately NOT every table. These are the volatile ones a test writes as
+// fixture data and another file's assertions read as money or as counts.
+// Reference data a suite seeds once (universe, macro events) is left alone.
+const VOLATILE_TABLES = [
+  'position_exits',
+  'positions',
+  'order_events',
+  'order_intents',
+  'autotrade_events',
+  'autotrade_paper_positions',
+  'autotrade_options_paper_positions',
+  'autotrade_live_orders',
+  'autotrade_live_options_orders',
+  'autotrade_live_options_positions',
+];
+
 beforeAll(() => {
   initDb();
-  db.exec('DELETE FROM autotrade_config');
+  // trading_config alongside autotrade_config: setTradingConfig is the same
+  // partial-patch-over-one-shared-row shape, and two files patch it without
+  // ever clearing it. A killSwitch left engaged by one file is a whole suite's
+  // worth of confusing refusals in the next.
+  db.exec('DELETE FROM autotrade_config; DELETE FROM trading_config');
+  for (const table of VOLATILE_TABLES) db.exec(`DELETE FROM ${table}`);
 });

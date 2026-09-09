@@ -72,6 +72,22 @@ Guidelines:
   file, which is where leakage would show. It asserts DEEP equality against
   `defaultAutotradeConfig()` on purpose: naming individual fields only ever catches the
   ones that have already bitten, which is the mistake the earlier per-field pinning made.
+- **So is the BOOK, and `trading_config`** (2026-09-09, same file). Signature D was a
+  leaked POSITION, not a leaked setting: `liveOptionsExpiry.test.ts` left a closed $200
+  option behind and `livePreview.test.ts`'s guardrails read it as a realized loss it
+  never traded. Cleaning up at the WRITER does not generalise — the next file to leave
+  rows has no idea who reads them — so every file now starts from an empty
+  `positions` / `order_intents` / `autotrade_events` / paper- and live-position set.
+  `setupFiles` hooks run BEFORE a test file's own `beforeAll`, so a file that seeds
+  there is unaffected. `configIsolation.test.ts` asserts the counts are zero and the
+  trading config is at defaults; both fail if the reset is removed.
+- **In-memory module state gets its own reset, per TEST** (`test/setupProcessState.ts`)
+  — a module-level Map outlives the file that filled it, and `DELETE FROM …` does not
+  touch it. **Only LEAF modules may go in that file.** A setup file is imported before
+  every test file, so whatever it imports is already in the registry when that file's
+  `vi.mock` factories run: adding `screen.ts`, `services/events.ts` and `splitCheck.ts`
+  there failed **321 tests** across files that had nothing to do with the caches being
+  reset. A file that warms a heavy cache resets it in its own `beforeEach` instead.
 - Demo data: `npm run seed` (idempotent; `--force` to add anyway).
 - Run locally: `npm run dev` → API `:3001` + web `:5173`.
 
