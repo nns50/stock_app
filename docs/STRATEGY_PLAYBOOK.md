@@ -181,9 +181,22 @@ risk-% tune) does the same thing for your **stop and target** using the
 of your _winning_ autotrade trades and nudges `stopAtrMultiple` toward the heat a good trade
 actually takes (plus a buffer) and `targetRMultiple` toward how far a good trade actually
 runs — winners only, since a stopped-out loser's drawdown is censored at the stop and can't
-tell you whether a wider or tighter one was better. Bounded by its own max daily step, and
-journaled/notified the same way. Same caveat as the risk-% tune: it moves toward the reading
-a little at a time and never replaces reading the MAE/MFE report yourself.
+tell you whether a wider or tighter one was better, and from trades measured on **intraday
+bars** only, since a daily bar's high/low spans hours the position did not exist. Bounded by
+its own max daily step, and journaled/notified the same way. Same caveat as the risk-% tune:
+it moves toward the reading a little at a time and never replaces reading the MAE/MFE report
+yourself.
+
+**It is OFF in this book, and the reason is worth knowing before you turn it on.** Both of
+its rules — target at `0.8 x` mean winner MFE, stop at `heat p90 x 1.1` — describe what
+winners did, and neither has ever been checked against what would have been *earned*. On
+this book they converge to **both safety clamps** (stop `1.5 -> 0.50 x ATR`, target
+`2.0 -> ~1.0R`) in about five bounded steps: a 3x tightening reached in increments small
+enough that no single day looks alarming. `GET /api/journal/exit-tune-validation` prices
+that directly — it fits the rules on the older half of your same-session trades and replays
+the newer half under what they produced, against the geometry you actually traded, and
+reports a paired significance verdict. Read it before flipping the toggle; a
+`better` verdict there is the evidence this feature has never had.
 
 Did a past adjustment actually help? The Journal page's **Auto-tune efficacy** card
 answers that directly — before/after win rate and expectancy around each adjustment's

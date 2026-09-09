@@ -3471,6 +3471,89 @@ describe('journal analysis routes tell you what they could not cover (integratio
     expect(junk.rules.targetR).toBe(cfg.targetRMultiple);
   });
 
+  it('exit-tune-validation fits the tuner’s own rule and prices it at the ROUTE', async () => {
+    // The rule is exercised by its own unit tests; those prove nothing about
+    // whether this handler hands it any trades, or hands it the LIVE bounds.
+    // Two of the four dead values on 2026-08-27 were of exactly this shape.
+    db.exec('DELETE FROM position_exits; DELETE FROM positions;');
+    const minTradesBefore = getAutotradeConfig().autoTuneMinTrades;
+    setAutotradeConfig({ autoTuneMinTrades: 2 }); // restored at the end of this test
+    // 5-minute bars for every fetch: a dip to 97.40 (−0.52R off the 5-point
+    // stop) and then a run to 112. Dated inside the ET day each trade was held.
+    const candles = vi
+      .spyOn(getProvider(), 'getCandles')
+      .mockImplementation(async (_symbol: string, _timeframe, q?: { start?: string }) => {
+        const day = q?.start ?? '2026-06-10';
+        return [
+          { time: Date.parse(`${day}T15:00:00Z`), open: 100, high: 100.5, low: 97.4, close: 100, volume: 1000 },
+          { time: Date.parse(`${day}T15:05:00Z`), open: 100, high: 112, low: 100, close: 111, volume: 1000 },
+        ];
+      });
+    for (let i = 0; i < 6; i++) {
+      const day = `2026-06-${String(10 + i).padStart(2, '0')}`;
+      const p = createPosition({
+        assetType: 'stock',
+        symbol: `ETV${i}`,
+        side: 'long',
+        quantity: 10,
+        entryPrice: 100,
+        entryDate: day,
+        stopPrice: 95,
+      });
+      addExit(p.id, { quantity: 10, exitPrice: 103, exitDate: day });
+    }
+    // An overnight hold: measured on daily bars, so excluded and COUNTED.
+    const overnight = createPosition({
+      assetType: 'stock',
+      symbol: 'ETVOVN',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      entryDate: '2026-06-20',
+      stopPrice: 95,
+    });
+    addExit(overnight.id, { quantity: 10, exitPrice: 101, exitDate: '2026-06-22' });
+
+    const v = (await getJson('/api/journal/exit-tune-validation')) as {
+      current: { stopAtrMultiple: number; targetRMultiple: number };
+      carried: { breakevenTriggerR: number; trailStartR: number; trailStopR: number };
+      autoTuneExitsEnabled: boolean;
+      holdout: {
+        train: { trades: number };
+        test: { trades: number };
+        oneStep: { fit: { winners: number; runs: number }; comparison: { verdict: string; trades: number } };
+        fixedPoint: { fit: { runs: number; converged: boolean }; comparison: { verdict: string } };
+      };
+      inSample: { fixedPoint: { fit: { geometry: { stopAtrMultiple: number } } } };
+      coverage: { closedStockTrades: number; notSameSession: number; supplied: number; unmeasured: number };
+    };
+
+    // The geometry under test is the LIVE one, not a hardcoded pair.
+    const cfg = getAutotradeConfig();
+    expect(v.current.stopAtrMultiple).toBe(cfg.stopAtrMultiple);
+    expect(v.current.targetRMultiple).toBe(cfg.targetRMultiple);
+    expect(v.carried.trailStopR).toBe(cfg.trailStopRMultiple);
+    // Reading it must never be confused with acting on it.
+    expect(v.autoTuneExitsEnabled).toBe(cfg.autoTuneExitsEnabled);
+
+    expect(v.coverage.closedStockTrades).toBe(7);
+    expect(v.coverage.notSameSession).toBe(1); // the overnight hold
+    expect(v.coverage.supplied).toBe(6); // the six same-session trades, all measured
+    expect(v.coverage.supplied + v.coverage.unmeasured + v.coverage.notSameSession).toBe(7);
+    // Split chronologically, and every supplied trade lands in one slice.
+    expect(v.holdout.train.trades + v.holdout.test.trades).toBe(6);
+
+    // The rule ran on real rows and produced a real geometry: heat p90 0.52 x
+    // 1.1 of room walks the stop off 1.5, and MFE 2.4 x 0.8 pulls the target
+    // under 2. A handler that fitted on nothing would echo the current pair.
+    expect(v.holdout.oneStep.fit.winners).toBeGreaterThan(0);
+    expect(v.inSample.fixedPoint.fit.geometry.stopAtrMultiple).toBeLessThan(cfg.stopAtrMultiple);
+    expect(v.holdout.fixedPoint.fit.runs).toBeGreaterThan(1);
+
+    candles.mockRestore();
+    setAutotradeConfig({ autoTuneMinTrades: minTradesBefore });
+  });
+
   it('benchmark survives a book whose closed trades are all undated', async () => {
     // startDate came from `.filter(...).sort()[0]`, which is undefined on an
     // empty array while the type predicate lets TypeScript call it `string`.

@@ -1053,12 +1053,21 @@ export interface AutotradeConfig {
    *  exit-tune (in multiple units, not a %), so one noisy sample can't swing
    *  the loop's exits — the exit-geometry analogue of autoTuneMaxStepPct. */
   autoTuneExitMaxStep: number;
-  /** When the exit-geometry tuner last moved stopAtrMultiple/targetRMultiple.
-   *  Server-owned bookkeeping (like liveEnabledAt) — not settable via the config
-   *  route. Excursion is measured in R, i.e. against each trade's OWN stop at
-   *  entry, so trades taken before a change can't tell you anything about the
-   *  geometry that replaced them; the tuner uses this to ignore them and wait
-   *  for fresh evidence. See services/autotrading/excursionTune.ts. */
+  /** When stopAtrMultiple/targetRMultiple last CHANGED — by anyone. Stamped in
+   *  setAutotradeConfig, so the Settings page, a script and the tuner itself
+   *  all record it; it was previously written only by the tuner, which made it
+   *  read "never tuned" after a hand-made change. Server-owned bookkeeping
+   *  (like liveEnabledAt) — not settable via the config route.
+   *
+   *  Excursion is measured in R, i.e. against each trade's OWN stop at entry,
+   *  so trades taken before a change can't tell you anything about the geometry
+   *  that replaced them; the tuner uses this to ignore them and wait for fresh
+   *  evidence. See services/autotrading/excursionTune.ts.
+   *
+   *  null means the geometry has never moved since this database existed —
+   *  every trade in it was taken under the current one, so none are excluded.
+   *  That is a real state, not a missing value, which is why it must survive
+   *  sanitize() rather than collapsing to the epoch. */
   autoTuneExitTunedAt: number | null;
   /** Walk-forward guard on the Kelly risk-% auto-tune (2026-07-24, ON by
    *  default). When on, a risk-% INCREASE is only applied if the edge still
@@ -1568,14 +1577,28 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     autoTuneExitsEnabled:
       typeof input.autoTuneExitsEnabled === 'boolean' ? input.autoTuneExitsEnabled : d.autoTuneExitsEnabled,
     autoTuneExitMaxStep: posDecimal(input.autoTuneExitMaxStep, d.autoTuneExitMaxStep),
-    autoTuneExitTunedAt: Number.isFinite(Number(input.autoTuneExitTunedAt))
-      ? Number(input.autoTuneExitTunedAt)
-      : d.autoTuneExitTunedAt,
+    autoTuneExitTunedAt: epochMsOrNull(input.autoTuneExitTunedAt, d.autoTuneExitTunedAt),
     autoTuneRequireOosConfirmation:
       typeof input.autoTuneRequireOosConfirmation === 'boolean'
         ? input.autoTuneRequireOosConfirmation
         : d.autoTuneRequireOosConfirmation,
   };
+}
+
+/** An epoch-ms stamp that may legitimately be "never".
+ *
+ *  The old guard was `Number.isFinite(Number(x)) ? Number(x) : dflt`, and
+ *  `Number(null)` is 0, which IS finite — so the default `null` was rewritten
+ *  to 0 the first time a config was sanitized. 0 is not "never": it is a
+ *  timestamp older than every trade ever recorded, which is exactly how
+ *  production came to read `autoTuneExitTunedAt: 0` and the exit tuner's
+ *  `sampleSince` came to admit the entire journal instead of the trades taken
+ *  under the current geometry (task #58c). A stored 0 is likewise treated as
+ *  the unset it always meant. */
+function epochMsOrNull(v: unknown, dflt: number | null): number | null {
+  if (v === null) return null;
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : dflt;
 }
 
 /** The current persisted auto-trading config, or defaults (off, MODERATE) if unset/corrupt. */
@@ -1591,7 +1614,24 @@ export function getAutotradeConfig(): AutotradeConfig {
 
 /** Merge a partial patch over the current config and persist it (singleton upsert). */
 export function setAutotradeConfig(patch: Partial<AutotradeConfig>): AutotradeConfig {
-  const next = sanitize({ ...getAutotradeConfig(), ...patch });
+  const prev = getAutotradeConfig();
+  const merged = sanitize({ ...prev, ...patch });
+  // The exit geometry's clock is stamped HERE, where every writer passes,
+  // rather than at the one call site that remembered to (task #58c).
+  //
+  // `autoTuneExitTunedAt` is documented as "when the exit geometry last
+  // changed" and the tuner uses it to ignore trades taken under the previous
+  // geometry. Only autoTune.ts ever set it, so a change made from the Settings
+  // page or a script — which is how BOTH multiples actually got their current
+  // values — left the stamp untouched, and the next tune judged the new
+  // geometry on trades taken under the old one. Two paths deriving the same
+  // quantity, one of which forgot: the fix is that there is now one.
+  const geometryMoved =
+    merged.stopAtrMultiple !== prev.stopAtrMultiple || merged.targetRMultiple !== prev.targetRMultiple;
+  // An explicit stamp in the patch wins — a caller restoring a known state
+  // (a test, a rollback) is not making a fresh change.
+  const next =
+    geometryMoved && patch.autoTuneExitTunedAt === undefined ? { ...merged, autoTuneExitTunedAt: Date.now() } : merged;
   db.prepare(
     `INSERT INTO autotrade_config (id, config, updated_at) VALUES (1, ?, ?)
      ON CONFLICT(id) DO UPDATE SET config = excluded.config, updated_at = excluded.updated_at`,
