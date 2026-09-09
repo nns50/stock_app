@@ -1082,6 +1082,26 @@ describe('short-dated options — the paper book', () => {
       expect(JSON.parse(ev.detail!)).toMatchObject({ rule: 'underlying_stop', underlyingMovePct: -0.6 });
     });
 
+    it('journals the peak the contract reached, which is what makes rule L5 answerable', async () => {
+      // Asserted on the EVENT, not on the decision that produced it. The peak
+      // was computed and returned all along; it simply never reached the
+      // journal, so L5 ("was the give-back trail too tight?") could not be
+      // evaluated from any of the 15 trades closed before 2026-09-09.
+      atClock(EARLY);
+      shortDated();
+      openShortDated();
+      mockGetProvider.mockReturnValue(
+        withQuote(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 0.24 } }), 99.4) as never,
+      );
+
+      await checkOptionsPaperExits();
+
+      const ev = listAutotradeEvents({}).find((e) => e.action === 'short_dated_options_exit')!;
+      const detail = JSON.parse(ev.detail!) as { peakGainPct: number | null; peakPremium: number | null };
+      expect(typeof detail.peakGainPct).toBe('number');
+      expect(typeof detail.peakPremium).toBe('number');
+    });
+
     it('does NOT cut when only theta has moved the premium — the whole point', async () => {
       // Underlying perfectly still, premium down 27% on decay alone. A 40%
       // premium stop would be minutes from firing here on nothing at all.

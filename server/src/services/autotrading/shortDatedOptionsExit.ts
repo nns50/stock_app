@@ -61,6 +61,13 @@ export interface ShortDatedExitDecision {
    *  exits — the give-back trail is useless if the peak is only recorded on
    *  the cycles that fire. Null when the premium is unusable. */
   peakPremium: number | null;
+  /** The peak above, expressed as a % of entry — the SAME derivation the
+   *  give-back rule arms on, exposed rather than recomputed so the journal and
+   *  the rule can never disagree. Needed to answer tuning rule L5 ("was the
+   *  trail too tight?"): a give_back whose peak never reached
+   *  optionsTakeProfitPct could not have exited at the target no matter how
+   *  long it was held, which settles the question without post-exit prices. */
+  peakGainPct: number | null;
   /** Gain vs entry as a % of premium, for the journal. Null when unmeasurable. */
   premiumGainPct: number | null;
   /** Underlying move since entry, signed so positive always means "in this
@@ -79,10 +86,12 @@ const no = (
   peakPremium: number | null = null,
   premiumGainPct: number | null = null,
   underlyingMovePct: number | null = null,
+  peakGainPct: number | null = null,
 ): ShortDatedExitDecision => ({
   exit: false,
   rule: null,
   peakPremium,
+  peakGainPct,
   premiumGainPct,
   underlyingMovePct,
   detail,
@@ -118,6 +127,12 @@ export function evaluateShortDatedExit(
   // about peaks on the cycles it acts is measuring the wrong thing.
   const priorPeak = pos.peakPremium ?? entryBasis;
   const peakPremium = usablePremium !== null ? Math.max(priorPeak, usablePremium) : null;
+  // Derived ONCE, here, because two consumers need it and they must not derive
+  // it separately: the give-back rule below arms on it, and the exit journal
+  // reports it so rule L5 can be answered later. It is the peak as a % of
+  // entry, the same basis premiumGainPct uses.
+  const peakGainPct =
+    peakPremium !== null && entryBasis > 0 ? round2(((peakPremium - entryBasis) / entryBasis) * 100) : null;
 
   // Underlying move, signed so positive is always "in our favour": a put gains
   // when the underlying falls.
@@ -137,6 +152,7 @@ export function evaluateShortDatedExit(
     exit: true,
     rule,
     peakPremium,
+    peakGainPct,
     premiumGainPct,
     underlyingMovePct,
     detail,
@@ -177,8 +193,7 @@ export function evaluateShortDatedExit(
     premiumGainPct !== null &&
     entryBasis > 0
   ) {
-    const peakGainPct = round2(((peakPremium - entryBasis) / entryBasis) * 100);
-    if (peakGainPct >= cfg.optionsGiveBackArmPct) {
+    if (peakGainPct !== null && peakGainPct >= cfg.optionsGiveBackArmPct) {
       const givenBack = peakGainPct - premiumGainPct;
       if (givenBack >= (peakGainPct * cfg.optionsGiveBackPct) / 100) {
         return fire(
@@ -223,5 +238,6 @@ export function evaluateShortDatedExit(
     peakPremium,
     premiumGainPct,
     underlyingMovePct,
+    peakGainPct,
   );
 }

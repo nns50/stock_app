@@ -821,6 +821,12 @@ export async function checkOptionsPaperExits(): Promise<OptionsExitCheckOutcome[
               rule: sd.rule,
               reason: sd.detail,
               premiumGainPct: sd.premiumGainPct,
+              // The high-water mark this contract actually reached. Rule L5 asks
+              // whether a give_back trail was too tight, which is unanswerable
+              // from the exit price alone — but a peak below optionsTakeProfitPct
+              // could never have exited at the target however long it was held.
+              peakGainPct: sd.peakGainPct,
+              peakPremium: sd.peakPremium,
               underlyingMovePct: sd.underlyingMovePct,
               expiration: pos.expiration,
               exitReason: sdReason,
