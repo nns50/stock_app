@@ -7126,3 +7126,45 @@ always meant.
 Read `/api/journal/exit-tune-validation` on the live book. A `better` verdict on
 the **fixed point**, out of sample, is the evidence this feature has never had.
 `inside_noise` — the expected outcome at this sample size — is not permission.
+
+---
+
+## 2026-09-09 — `excluded_re` is journaled once a day, not once a tick (task #43)
+
+The autotrade journal is a table that **only ever grows** — `db/index.ts` says
+so outright, there is no retention. It stood at **506,945 rows** growing
+~21,300/day, and `excluded_re` ("Classified as real estate") was **155,162** of
+them: 31% of the whole journal and 24% of daily growth. A 30-minute production
+sample on 2026-09-04 held 500 of those rows across just **31 distinct symbols** —
+the same static classification re-logged on every screener tick, of every
+session, forever. The first entry says everything the 5,000th does.
+
+`claimOncePerDay(action, symbol)` (`services/autotrading/oncePerDayEvents.ts`)
+now gates both `excluded_re` sites. The row still lands **every day the fact is
+true**, carrying `firstOfDay: true`, so "was PLD excluded on the 4th" stays
+answerable; what stops being answerable is "how many *ticks* excluded PLD on the
+4th", which is a question about the loop's cadence and is already answered by
+`autotrade_last_tick` and the per-tick rows that remain.
+
+**Not retention.** Deleting history is worse for a system whose whole point is a
+measurable track record. What is dropped here is repetition, decided before it
+was written rather than deleted after.
+
+**In memory, per process**, like `unplaceableSymbols.ts`. A mid-session deploy
+costs one extra row per symbol — ~31 against the ~7,700/day this removes. The
+set is dropped whole when the ET day rolls, so memory is bounded by one day's
+distinct pairs rather than by uptime.
+
+**What this is NOT for.** Only STANDING facts — true for the whole day by
+construction, so a later tick's row would be a copy. `candidate_found` (72,478)
+and `signal_generated` (58,456) are genuinely per-tick observations that mean
+something different each time they are written, and they stay.
+
+### A test-suite consequence, recorded because it is the #46 class
+
+Module-level state outlives a test *file*, and `DELETE FROM autotrade_events` in
+a `beforeEach` does not touch it — the same invisible coupling as the shared
+config row, one layer up. `test/setupProcessState.ts` now resets these caches
+before **every test** (config isolation is per file; these are per test, because
+a cache exists to suppress repeat work and any test wanting the first call's
+behaviour must start empty). Add each new process-global cache to that file.

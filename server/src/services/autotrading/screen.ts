@@ -20,6 +20,7 @@ import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { mapPool } from '../../util/async';
 import { relVolMedian, relVolPace } from '../../indicators/relVolPace';
 import { classifySector, buildUniverseSectorMap } from './realEstateClassifier';
+import { claimOncePerDay } from './oncePerDayEvents';
 import { getSymbolEvents } from '../events';
 import { getNews } from '../news';
 import { computeHeadlineSentiment } from '../sentiment';
@@ -76,10 +77,11 @@ export interface ScreenResult {
    *  and zero signals on 2026-09-04 with no record anywhere of what stopped
    *  them.
    *
-   *  Kept IN MEMORY and never journaled: `excluded_re` alone is already 31% of
-   *  a 507k-row table that nothing prunes, and a per-symbol reason for all 528
-   *  names every tick would dwarf it. The explain route reads this from a live
-   *  screen instead — a question you ask, not a query you had to anticipate. */
+   *  Kept IN MEMORY and never journaled: a per-symbol reason for all 528 names
+   *  every tick would dwarf even `excluded_re`, which was itself 31% of a
+   *  507k-row table that nothing prunes until it was cut to one row per symbol
+   *  per day (task #43). The explain route reads this from a live screen
+   *  instead — a question you ask, not a query you had to anticipate. */
   rejected: { symbol: string; direction: Direction; total: number; reasons: string[] }[];
   /** The universe's median relVolume this tick — the market's current pace, and
    *  the denominator every relVolPace was measured against. Computed every tick
@@ -455,7 +457,16 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
     if (isExcluded(symbol)) {
       const reason = 'On the real-estate exclusion list';
       excluded.push({ symbol, reason });
-      logAutotradeEvent({ symbol, stage: 'screen', action: 'excluded_re', detail: { reason, source: 'list' } });
+      // Once per symbol per ET day — the classification is a standing fact and
+      // every later tick's row was a copy of the first. See oncePerDayEvents.ts.
+      if (claimOncePerDay('excluded_re', symbol)) {
+        logAutotradeEvent({
+          symbol,
+          stage: 'screen',
+          action: 'excluded_re',
+          detail: { reason, source: 'list', firstOfDay: true },
+        });
+      }
       return;
     }
 
@@ -463,17 +474,20 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
     if (classification.outcome === 'real_estate') {
       const reason = `Classified as real estate (${classification.sector ?? classification.industry ?? 'sector match'})`;
       excluded.push({ symbol, reason });
-      logAutotradeEvent({
-        symbol,
-        stage: 'screen',
-        action: 'excluded_re',
-        detail: {
-          reason,
-          source: classification.source,
-          sector: classification.sector,
-          industry: classification.industry,
-        },
-      });
+      if (claimOncePerDay('excluded_re', symbol)) {
+        logAutotradeEvent({
+          symbol,
+          stage: 'screen',
+          action: 'excluded_re',
+          detail: {
+            reason,
+            source: classification.source,
+            sector: classification.sector,
+            industry: classification.industry,
+            firstOfDay: true,
+          },
+        });
+      }
       return;
     }
     if (classification.outcome === 'unknown') {
