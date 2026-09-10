@@ -299,8 +299,12 @@ a non-positive baseline return makes that clause "must not be worse"); ties go t
 smaller cut, then the smaller tighten, then the lower floor; no cell beating the baseline
 on the ratio → the overlay stays **OFF**. The chosen cell goes into the config through the
 decision log in `docs/AUTOTRADING_SPEC.md` — never this document's or the request's numbers
-on their own — and the grid re-runs after every retrain (section 10). The grid has not been
-run yet; every overlay field ships at its default, off.
+on their own — and the grid re-runs after every retrain (section 10). The grid was first run
+on 2026-09-10 (50 names from the live book, 2024-09-03 → 2026-09-03, split 2025-12-01); its
+verdict — `cut 50 / tighten 15`, no conviction floor — and the numbers behind it are the dated
+row under "The decision-log row" in `docs/AUTOTRADING_SPEC.md` (2026-09-08, backtest parity
+for the overlay). Every overlay field still ships at its default, off, until the operator
+sets the values that row implies.
 
 ## 7. What it does NOT do
 

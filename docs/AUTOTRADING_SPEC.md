@@ -6505,9 +6505,20 @@ changes.
 
 ### The decision-log row (filled in by the first run)
 
-| date | window / split | symbols | chosen cell | baseline ret% / DD% / ratio | chosen ret% / DD% / ratio | note                                        |
-| ---- | -------------- | ------- | ----------- | --------------------------- | ------------------------- | ------------------------------------------- |
-| —    | —              | —       | not run yet | —                           | —                         | the overlay stays OFF until this row exists |
+| date       | window / split                            | symbols                                                                                                                     | chosen cell         | baseline ret% / DD% / ratio | chosen ret% / DD% / ratio | note                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ---------- | ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- | ------------------- | --------------------------- | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-09-10 | 2024-09-03 → 2026-09-03, split 2025-12-01 | 50 names: the live book's most-traded (64 distinct live+autotrade symbols, so none of the README's ten were needed as fill) | cut 50 / tighten 15 | 21.24 / 4.74 / 4.48         | 33.71 / 3.04 / 11.10      | stage 1: cut 50 / tighten 15: OOS return 33.71% over a 3.04% max drawdown (ratio 11.10) beats the baseline's 21.24% / 4.74% (ratio 4.48) while keeping ≥ 75% of its return; ties break toward the smaller cut, then tighten, then floor. Stage 2 (the conviction bar at that cell): no cell beats the baseline (33.71% over a 3.04% max drawdown, ratio 11.10) on OOS return ÷ max drawdown while keeping ≥ 75% of its return — the overlay stays OFF — read as: no floor; the stage-1 cell stands with floor 0 |
+
+The row implies `mlRegimeSizeCutPct` 50, `mlRegimeTargetTightenPct` 15 and
+`mlRegimeHighVolMinSignalScore` 0 (stage 2 found floor 72 identical to no floor in return,
+drawdown and trade count, and floor 76 below the 75% keep-share, so no floor is chosen). The
+overlay stays OFF until the operator sets these and every other enabling rule is met — rule 1
+of the four pre-committed enabling rules (2026-09-08, "an HMM market-regime reading, as an
+observer") is now answered; rules 2–4 are not, and the Auto page's overlay checkbox says to
+leave it off until the model card's enabling rules are met. The run itself is
+`ml/reports/regime-grid-2026-09-10.json` and `.log` (18 walk-forward runs, no data issues
+reported; a 50-symbol book, one history, no multiple-comparisons correction — a hypothesis to
+confirm forward, per the script's own discipline notes).
 ---
 
 ## 2026-09-08 — the OTOCO probe: two findings, neither of them the one it was for

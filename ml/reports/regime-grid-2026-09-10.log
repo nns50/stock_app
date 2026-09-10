@@ -1,0 +1,85 @@
+
+> stock-app@0.1.0 research
+> npm run research -w server -- --symbols CJMB,SMCI,DELL,LITE,CHYM,FCX,IOT,ADVB,ANF,BBY,CF,CRWD,DE,ESTC,GEHC,GTLB,IRD,IT,LVWR,MOS,NOW,ORCL,SKYQ,SLND,SNDK,SOBR,AMC,AMD,BIAF,COIN,CTVA,DG,ELAB,FSLR,GAP,GRMN,HAL,HOOD,HPE,HPQ,IOTR,JZXN,LGPS,MRNA,MU,NOK,NWL,ODD,PGY,PKG --from 2024-09-03 --to 2026-09-03 --split 2025-12-01 --experiments mlregime --base http://localhost:3101 --equity 100000 --risk MODERATE --max-concurrent 3 --out ml/reports/regime-grid-2026-09-10.json
+
+
+> server@0.1.0 research
+> tsx src/scripts/researchSweep.ts --symbols CJMB,SMCI,DELL,LITE,CHYM,FCX,IOT,ADVB,ANF,BBY,CF,CRWD,DE,ESTC,GEHC,GTLB,IRD,IT,LVWR,MOS,NOW,ORCL,SKYQ,SLND,SNDK,SOBR,AMC,AMD,BIAF,COIN,CTVA,DG,ELAB,FSLR,GAP,GRMN,HAL,HOOD,HPE,HPQ,IOTR,JZXN,LGPS,MRNA,MU,NOK,NWL,ODD,PGY,PKG --from 2024-09-03 --to 2026-09-03 --split 2025-12-01 --experiments mlregime --base http://localhost:3101 --equity 100000 --risk MODERATE --max-concurrent 3 --out ml/reports/regime-grid-2026-09-10.json
+
+Sweeping 15 variants over 50 symbols, 2024-09-03 → 2026-09-03 (split 2025-12-01).
+First variant warms the bar cache (provider fetches); the rest are local compute.
+
+[1/15] mlregime · cut 0 / tighten 0 (baseline) … OOS expectancy $461.81/trade over 46 trades (2s)
+[2/15] mlregime · cut 0 / tighten 15 … OOS expectancy $446.08/trade over 46 trades (0s)
+[3/15] mlregime · cut 0 / tighten 30 … OOS expectancy $156.92/trade over 61 trades (0s)
+[4/15] mlregime · cut 25 / tighten 0 … OOS expectancy $403.48/trade over 50 trades (0s)
+[5/15] mlregime · cut 25 / tighten 15 … OOS expectancy $407.54/trade over 61 trades (0s)
+[6/15] mlregime · cut 25 / tighten 30 … OOS expectancy $310.24/trade over 65 trades (0s)
+[7/15] mlregime · cut 35 / tighten 0 … OOS expectancy $245.36/trade over 43 trades (0s)
+[8/15] mlregime · cut 35 / tighten 15 … OOS expectancy $418.05/trade over 52 trades (0s)
+[9/15] mlregime · cut 35 / tighten 30 … OOS expectancy $335.15/trade over 67 trades (0s)
+[10/15] mlregime · cut 50 / tighten 0 … OOS expectancy $435.10/trade over 52 trades (0s)
+[11/15] mlregime · cut 50 / tighten 15 … OOS expectancy $648.18/trade over 52 trades (0s)
+[12/15] mlregime · cut 50 / tighten 30 … OOS expectancy $273.43/trade over 68 trades (0s)
+[13/15] mlregime · cut 100 / tighten 0 (skip High Vol) … OOS expectancy $328.58/trade over 58 trades (0s)
+[14/15] mlregime · cut 100 / tighten 15 (skip High Vol) … OOS expectancy $328.58/trade over 58 trades (0s)
+[15/15] mlregime · cut 100 / tighten 30 (skip High Vol) … OOS expectancy $328.58/trade over 58 trades (0s)
+
+=== ML regime overlay, stage 1 — size cut × target tighten — OOS return ÷ max drawdown, cells keeping ≥ 75% of the baseline return ===
+  cut 0 / tighten 0 (baseline)         ret%   21.24  DD%   4.74  ratio    4.48  regime-day fills    0/46  baseline
+  cut 0 / tighten 15                   ret%   20.52  DD%   6.23  ratio    3.29  regime-day fills   10/46  does not beat the baseline ratio
+  cut 0 / tighten 30                   ret%    9.57  DD%  10.24  ratio    0.93  regime-day fills   13/61  keeps < 75% of the baseline return
+  cut 25 / tighten 0                   ret%   20.17  DD%   4.47  ratio    4.51  regime-day fills    6/50  beats the baseline ratio
+  cut 25 / tighten 15                  ret%   24.86  DD%   7.76  ratio    3.20  regime-day fills   13/61  does not beat the baseline ratio
+  cut 25 / tighten 30                  ret%   20.17  DD%   8.04  ratio    2.51  regime-day fills   14/65  does not beat the baseline ratio
+  cut 35 / tighten 0                   ret%   10.55  DD%   6.95  ratio    1.52  regime-day fills    8/43  keeps < 75% of the baseline return
+  cut 35 / tighten 15                  ret%   21.74  DD%   8.13  ratio    2.67  regime-day fills   14/52  does not beat the baseline ratio
+  cut 35 / tighten 30                  ret%   22.45  DD%   8.18  ratio    2.74  regime-day fills   16/67  does not beat the baseline ratio
+  cut 50 / tighten 0                   ret%   22.63  DD%   6.59  ratio    3.44  regime-day fills   11/52  does not beat the baseline ratio
+  cut 50 / tighten 15                  ret%   33.71  DD%   3.04  ratio   11.10  regime-day fills   18/52  beats the baseline ratio
+  cut 50 / tighten 30                  ret%   18.59  DD%   8.00  ratio    2.32  regime-day fills   18/68  does not beat the baseline ratio
+  cut 100 / tighten 0 (skip High Vol)  ret%   19.06  DD%   7.32  ratio    2.60  regime-day fills    0/58  does not beat the baseline ratio
+  cut 100 / tighten 15 (skip High Vol) ret%   19.06  DD%   7.32  ratio    2.60  regime-day fills    0/58  does not beat the baseline ratio
+  cut 100 / tighten 30 (skip High Vol) ret%   19.06  DD%   7.32  ratio    2.60  regime-day fills    0/58  does not beat the baseline ratio
+  → chosen: cut 50 / tighten 15 — cut 50 / tighten 15: OOS return 33.71% over a 3.04% max drawdown (ratio 11.10) beats the baseline's 21.24% / 4.74% (ratio 4.48) while keeping ≥ 75% of its return; ties break toward the smaller cut, then tighten, then floor
+
+Stage 2 — the High-Vol conviction bar at cut 50 / tighten 15:
+[1/3] mlregime-floor · cut 50 / tighten 15 … OOS expectancy $648.18/trade over 52 trades (0s)
+[2/3] mlregime-floor · cut 50 / tighten 15 / floor 72 … OOS expectancy $648.18/trade over 52 trades (0s)
+[3/3] mlregime-floor · cut 50 / tighten 15 / floor 76 … OOS expectancy $364.46/trade over 68 trades (0s)
+
+=== ML regime overlay, stage 2 — the High-Vol conviction bar — OOS return ÷ max drawdown, cells keeping ≥ 75% of the baseline return ===
+  cut 50 / tighten 15                  ret%   33.71  DD%   3.04  ratio   11.10  regime-day fills   18/52  baseline
+  cut 50 / tighten 15 / floor 72       ret%   33.71  DD%   3.04  ratio   11.10  regime-day fills   18/52  does not beat the baseline ratio
+  cut 50 / tighten 15 / floor 76       ret%   24.78  DD%   8.33  ratio    2.98  regime-day fills   19/68  keeps < 75% of the baseline return
+  → no cell chosen — no cell beats the baseline (33.71% over a 3.04% max drawdown, ratio 11.10) on OOS return ÷ max drawdown while keeping ≥ 75% of its return — the overlay stays OFF
+
+The cell that ships ON, by the written rule: cut 50 / tighten 15 → mlRegimeSizeCutPct 50, mlRegimeTargetTightenPct 15, mlRegimeHighVolMinSignalScore 0. Record it in docs/AUTOTRADING_SPEC.md's decision log before enabling anything.
+
+=== mlregime — ranked by OUT-OF-SAMPLE expectancy ===
+  cut 50 / tighten 15          OOS exp $  648.18/trade  trades  52  win%  65.4  avgR   0.83  ret%   33.71  maxDD $ 3038.22  CI [301.67, 969.37]  p 0.001  reliable
+  cut 0 / tighten 0 (baseline) OOS exp $  461.81/trade  trades  46  win%  56.5  avgR   0.53  ret%   21.24  maxDD $ 4741.58  CI [51.55, 866.39]  p 0.030  reliable
+  cut 0 / tighten 15           OOS exp $  446.08/trade  trades  46  win%  58.7  avgR   0.53  ret%   20.52  maxDD $ 6229.39  CI [29.31, 849.54]  p 0.034  reliable
+  cut 50 / tighten 0           OOS exp $  435.10/trade  trades  52  win%  59.6  avgR   0.58  ret%   22.63  maxDD $ 6586.15  CI [77.47, 777.02]  p 0.021  reliable
+  cut 35 / tighten 15          OOS exp $  418.05/trade  trades  52  win%  57.7  avgR   0.53  ret%   21.74  maxDD $ 8132.61  CI [76.11, 760.22]  p 0.023  reliable
+  cut 25 / tighten 15          OOS exp $  407.54/trade  trades  61  win%  55.7  avgR   0.49  ret%   24.86  maxDD $ 7764.91  CI [89.81, 752.18]  p 0.024  reliable
+  cut 25 / tighten 0           OOS exp $  403.48/trade  trades  50  win%  56.0  avgR   0.53  ret%   20.17  maxDD $ 4468.38  CI [48.60, 759.95]  p 0.036  reliable
+  cut 35 / tighten 30          OOS exp $  335.15/trade  trades  67  win%  55.2  avgR   0.47  ret%   22.45  maxDD $ 8183.05  CI [24.93, 639.46]  p 0.039  reliable
+  cut 100 / tighten 0 (skip High Vol) OOS exp $  328.58/trade  trades  58  win%  51.7  avgR   0.34  ret%   19.06  maxDD $ 7318.48  CI [-12.50, 669.04]  p 0.069  reliable
+  cut 100 / tighten 15 (skip High Vol) OOS exp $  328.58/trade  trades  58  win%  51.7  avgR   0.34  ret%   19.06  maxDD $ 7318.48  CI [-7.36, 671.11]  p 0.079  reliable
+  cut 100 / tighten 30 (skip High Vol) OOS exp $  328.58/trade  trades  58  win%  51.7  avgR   0.34  ret%   19.06  maxDD $ 7318.48  CI [-8.30, 665.68]  p 0.066  reliable
+  cut 25 / tighten 30          OOS exp $  310.24/trade  trades  65  win%  53.9  avgR   0.43  ret%   20.17  maxDD $ 8040.69  CI [6.85, 617.95]  p 0.060  reliable
+  cut 50 / tighten 30          OOS exp $  273.43/trade  trades  68  win%  52.9  avgR   0.39  ret%   18.59  maxDD $ 7996.76  CI [-1.48, 574.75]  p 0.067  reliable
+  cut 35 / tighten 0           OOS exp $  245.36/trade  trades  43  win%  48.8  avgR   0.31  ret%   10.55  maxDD $ 6945.92  CI [-109.02, 619.23]  p 0.206  reliable
+  cut 0 / tighten 30           OOS exp $  156.92/trade  trades  61  win%  50.8  avgR   0.26  ret%    9.57  maxDD $10244.79  CI [-137.72, 467.04]  p 0.306  reliable
+
+=== mlregime-floor — ranked by OUT-OF-SAMPLE expectancy ===
+  cut 50 / tighten 15          OOS exp $  648.18/trade  trades  52  win%  65.4  avgR   0.83  ret%   33.71  maxDD $ 3038.22  CI [327.19, 943.07]  p 0.001  reliable
+  cut 50 / tighten 15 / floor 72 OOS exp $  648.18/trade  trades  52  win%  65.4  avgR   0.83  ret%   33.71  maxDD $ 3038.22  CI [330.62, 960.56]  p 0.001  reliable
+  cut 50 / tighten 15 / floor 76 OOS exp $  364.46/trade  trades  68  win%  55.9  avgR   0.48  ret%   24.78  maxDD $ 8325.00  CI [68.70, 673.18]  p 0.017  reliable
+
+Wrote ml/reports/regime-grid-2026-09-10.json.
+Discipline notes: judge the OOS column only; 'thin' means fewer than 20 OOS trades — not evidence either way.
+These are 15 looks at the same history with no multiple-comparisons correction: treat a winner
+as a hypothesis to CONFIRM (fresh split date, or forward via snapshots/the Edge Report), not a conclusion.
+Backtests here model zero slippage/commissions — see docs/STRATEGY_PLAYBOOK.md's backtest-reality section.
