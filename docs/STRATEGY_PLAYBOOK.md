@@ -500,6 +500,43 @@ with a take-profit around 50–100% is a sane starting shape. Whatever numbers y
 they're % of premium (net debit for a spread), and the Journal's exit-reason badges
 will show you which rule is actually doing the closing.
 
+### Measuring a direction you are not trading (2026-09-10)
+
+Deciding whether to switch on a direction the live book currently declines is a
+measurement problem before it is a trading one, and the obvious instrument is the wrong
+one. The paper book takes the trades live turns down, so it looks like the natural
+control arm — but it has its own slots and its own, lower score floor. On 2026-09-10 every
+one of 1,000 sampled paper risk checks was refused on the concurrent-position cap, and two
+of five paper entries scored below the live floor. Those two slots were then unavailable
+when higher-scoring shorts arrived later in the session.
+
+So a record built from paper's closed trades is a **slot lottery skewed toward
+early-session signals**, diluted by names the live book would never take. It accrues
+slowly for a structural reason, and the expectancy it reports is not the expectancy the
+live book would have earned.
+
+The fix is to measure the *declined signals themselves*. Every one is already journaled
+with its score, entry, stop and the moment it was declined, so the only thing missing is
+bars. `GET /api/journal/short-shadow-record` replays each live-eligible declined short on
+real 5-minute bars under the book's own exit geometry and reports the sample size, average
+R and win rate — the three numbers the enabling rule reads — free of paper's slots.
+
+Three things it is not, and each matters when quoting it:
+
+- **Not a P&L.** It ignores slots, aggregate-risk room and cooldowns, so it measures
+  per-trade expectancy rather than money the book could have made. That is the right
+  quantity for an expectancy gate and the wrong one for "what did we leave on the table".
+- **Not a fill.** The entry is the signal's price, with no slippage and no assumption that
+  the name was borrowable at that moment.
+- **Not neutral about ambiguity, on purpose.** It reuses the exit replay, which resolves
+  every intrabar stop-and-target collision *against* the trade. It therefore understates.
+  A gate that passes on this reading passes pessimistically, which is the only direction
+  worth being wrong in when the question is whether to point real money somewhere new.
+
+The general lesson outlives the shorts question: when a control arm has constraints the
+thing it is standing in for does not share, it is not a control arm. Replay the decision
+that was actually made.
+
 ### The live conviction floor
 
 The screener's score is not decoration — it predicts outcome. Measured 2026-09-06 over the

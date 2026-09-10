@@ -876,6 +876,34 @@ describe('runLiveExecution — funding capacity and unplaceable shorts', () => {
     expect(mockPlaceOrder).not.toHaveBeenCalled();
   });
 
+  // 2026-09-10: this skip runs BEFORE the score floor, both cooldowns and the
+  // risk check, so a row exists for every scoring short candidate rather than
+  // for the ones live would actually have taken — 39 distinct symbols against
+  // THREE above the floor on 2026-09-10, a 13x overstatement of the one number
+  // task #21's enabling decision reads. The row now says which it is.
+  it('stamps whether the declined short was LIVE-ELIGIBLE, with the floor it was judged against', async () => {
+    setAutotradeConfig({ ...cfgFields, liveAllowNakedShort: false, liveMinSignalScore: 72 });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100, MSFT: 100 }));
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+
+    await runLiveExecution([
+      { signal: signal({ symbol: 'AAPL', side: 'sell', entry: 100, stop: 105, target: 90, score: 80 }) },
+      { signal: signal({ symbol: 'MSFT', side: 'sell', entry: 100, stop: 105, target: 90, score: 65 }) },
+    ]);
+
+    const detailFor = (sym: string) =>
+      JSON.parse(
+        listAutotradeEvents({ stage: 'execution', actions: ['live_short_skipped'] }).find((e) => e.symbol === sym)!
+          .detail!,
+      ) as { liveEligible: boolean; liveMinSignalScore: number; score: number };
+
+    expect(detailFor('AAPL')).toMatchObject({ score: 80, liveEligible: true, liveMinSignalScore: 72 });
+    // Below the floor: journaled (the sub-floor short flow is still worth
+    // seeing) but marked so it cannot be counted as flow live turned down.
+    expect(detailFor('MSFT')).toMatchObject({ score: 65, liveEligible: false, liveMinSignalScore: 72 });
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
   it('journals nothing for a short that is actually allowed', async () => {
     setAutotradeConfig({ ...cfgFields, liveAllowNakedShort: true });
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }));
