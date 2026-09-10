@@ -19,6 +19,7 @@ import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { listPendingLiveOrders } from '../../db/autotradeLiveOrders';
 import { getIntent } from '../../db/orders';
 import { isTerminal } from '../../services/trading/orderLifecycle';
+import { inferBracketExitReason } from '../../services/trading/bracketExitReason';
 import { classifyExpiredOptions, ExpiredOptionFinding } from '../../services/expiredOptions';
 import { resolveExpiryCloses } from '../../services/expiredOptionsSweep';
 
@@ -539,6 +540,12 @@ const NOTE_AUTO_CLOSED =
   'Auto-closed via Webull sync — no longer held at the broker. Exit price is an ESTIMATE from the ' +
   'latest quote (not a confirmed fill); edit it if you have your broker confirmation.';
 
+/** Appended when the exit REASON was inferred from the estimated price rather
+ *  than observed on a fill, so the note never reads as more certain than it is
+ *  (the price itself already carries NOTE_AUTO_CLOSED's own estimate warning). */
+const noteInferredReason = (detail: string) =>
+  ` Exit reason inferred from a resting bracket leg, not observed on a fill: ${detail}.`;
+
 const NOTE_EXPIRED_AUTO_CLOSED =
   'Auto-closed via Webull sync — no longer listed at the broker, and the contract finished clearly out of ' +
   'the money at expiry, so a $0 exit dated on the expiry is recorded (the same disposition the expired-option ' +
@@ -899,15 +906,40 @@ async function closePositionsFromPreview(
     let remaining = qty;
     let reconciled = 0;
     let claimedUnassigned = false;
+    const exitReasonsUsed = new Set<string>();
     for (const p of lots) {
       if (remaining <= 1e-9) break;
       const take = Math.min(remaining, p.remainingQuantity);
       if (take <= 1e-9) continue;
-      // 'manual': everything still reaching this point closed outside the
-      // loop's own order flow (a human sold it, or the broker retired it).
-      // An autotrade-placed close never lands here — it is skipped above so
-      // its own reconcile can record the true reason.
-      const result = addExit(p.id, { quantity: take, exitPrice, exitDate, notes, exitReason: 'manual' });
+      // 'manual' is the DEFAULT, not the only answer. It is right for
+      // everything that closed outside the loop's own order flow — a human
+      // sold it, or the broker retired it — and an autotrade-placed close
+      // never lands here at all, being skipped above so its own reconcile can
+      // record the true reason.
+      //
+      // But one case does reach here with the answer already known: a resting
+      // BRACKET leg filled and the entry order's reconcile did not catch up
+      // inside the grace window, which is the very situation the deferral
+      // above exists for. `bracketPendingPositionIds` is that fact. Booking
+      // those as 'manual' put SWKS's 2026-09-10 stop fill (11 shares, estimate
+      // 83.845 against a ratcheted stop of 83.85) into the journal as a human
+      // sale, and every exit-reason count downstream inherited the error.
+      // Inference only, never on an expired contract (priced at 0, and no
+      // bracket explains it), and only when the price is at or beyond exactly
+      // one level — otherwise it stays 'manual'. See bracketExitReason.ts.
+      const inferred =
+        !expired && bracketPendingPositionIds.has(p.id)
+          ? inferBracketExitReason(p, exitPrice)
+          : { reason: null, detail: '' };
+      const exitReason = inferred.reason ?? 'manual';
+      exitReasonsUsed.add(exitReason);
+      const result = addExit(p.id, {
+        quantity: take,
+        exitPrice,
+        exitDate,
+        notes: inferred.reason ? notes + noteInferredReason(inferred.detail) : notes,
+        exitReason,
+      });
       if (result) {
         closed++;
         reconciled += take;
@@ -947,6 +979,10 @@ async function closePositionsFromPreview(
           // a live-quote ESTIMATE vs the $0 an expired-worthless contract
           // factually ended at (dated on the expiry, not today).
           pricedBy: expired ? 'expired_worthless' : 'live_quote',
+          // What this close was actually BOOKED as. 'manual' alone used to be
+          // the only possible value, so a stop that the sync had to price
+          // itself was indistinguishable in the journal from a human sale.
+          exitReasons: [...exitReasonsUsed],
           fullyClosed: journalQtyBefore - reconciled <= 1e-9,
           // Flags the self-heal path (a legacy unassigned row closed + claimed
           // in a single-account setup) so it's auditable as distinct from a

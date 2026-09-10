@@ -1524,6 +1524,138 @@ describe('syncClosedWebullPositions vs an autotrade close already in flight', ()
     expect(getPosition(p.id)!.status).toBe('closed');
   });
 
+  // 2026-09-10: the grace window above is bounded, so a bracket leg whose own
+  // reconcile never caught up DOES get closed here at an estimate. It used to
+  // be labelled 'manual' as well — SWKS booked 11 shares at a quoted 83.845
+  // against a ratcheted stop of 83.85, so a stop fill entered the journal as a
+  // human sale and every exit-reason count downstream inherited it. The levels
+  // the bracket was resting at are enough to say which leg it was.
+  describe('attributing a bracket close the sync had to price itself', () => {
+    function bracketedPosition(opts: { stopPrice: number | null; targetPrice: number | null; cid: string }) {
+      const p = createPosition({
+        assetType: 'stock',
+        symbol: 'SWKS',
+        side: 'long',
+        quantity: 11,
+        entryPrice: 83.85,
+        entryDate: etToday(),
+        stopPrice: opts.stopPrice,
+        targetPrice: opts.targetPrice,
+        tags: ['live', 'autotrade'],
+        accountId: 'ACC1',
+      });
+      const intent = createIntent(
+        {
+          symbol: 'SWKS',
+          assetKind: 'stock',
+          side: 'buy',
+          openClose: 'open',
+          quantity: 11,
+          orderType: 'limit',
+          limitPrice: 84.25,
+          bracket: { takeProfitPrice: 86.92, stopLossPrice: 83.85 },
+        },
+        opts.cid,
+      );
+      recordLiveOrder({
+        intentId: intent.id,
+        symbol: 'SWKS',
+        stopPrice: opts.stopPrice ?? 83.85,
+        targetPrice: opts.targetPrice ?? 86.92,
+        riskAmount: 66,
+        riskProfile: 'MODERATE',
+        accountId: 'ACC1',
+      });
+      setLiveOrderPositionId(intent.id, p.id);
+      return p;
+    }
+    /** The quote the sync will price the exit from. */
+    const priceAt = (price: number) =>
+      vi
+        .mocked(priceMap)
+        .mockImplementation(
+          async (positions) => new Map(positions.map((p) => [p.id, { price, stale: false, asOf: 0 }])),
+        );
+    /** MISS_CONFIRM_THRESHOLD (2) + BRACKET_RECONCILE_GRACE_SYNCS (2). */
+    const spendGraceWindow = async () => {
+      for (let i = 0; i < 4; i++) await syncClosedWebullPositions('ACC1');
+    };
+
+    it('books the SWKS case as a STOP, not a human sale', async () => {
+      const p = bracketedPosition({ stopPrice: 83.85, targetPrice: 86.92, cid: 'cid-swks-stop' });
+      mockPositions([]);
+      priceAt(83.845); // half a cent under the ratcheted stop — the real 2026-09-10 number
+
+      await spendGraceWindow();
+
+      const closed = getPosition(p.id)!;
+      expect(closed.status).toBe('closed');
+      expect(closed.exits[0].exitReason).toBe('stop');
+      // The note must not let an INFERENCE read as an observed fill.
+      expect(closed.exits[0].notes).toMatch(/inferred from a resting bracket leg/i);
+      const row = listAutotradeEvents({ actions: ['position_reconciled_from_broker'] })[0];
+      expect(JSON.parse(row.detail!)).toMatchObject({ exitReasons: ['stop'], pricedBy: 'live_quote' });
+    });
+
+    it('books a close at the other end as a TARGET', async () => {
+      const p = bracketedPosition({ stopPrice: 83.85, targetPrice: 86.92, cid: 'cid-swks-target' });
+      mockPositions([]);
+      priceAt(86.95);
+
+      await spendGraceWindow();
+
+      expect(getPosition(p.id)!.exits[0].exitReason).toBe('target');
+    });
+
+    it('stays MANUAL when the price sits between the levels', async () => {
+      // Neither leg explains it, so the honest answer is still "we do not know".
+      const p = bracketedPosition({ stopPrice: 83.85, targetPrice: 86.92, cid: 'cid-swks-mid' });
+      mockPositions([]);
+      priceAt(85.1);
+
+      await spendGraceWindow();
+
+      const closed = getPosition(p.id)!;
+      expect(closed.exits[0].exitReason).toBe('manual');
+      expect(closed.exits[0].notes ?? '').not.toMatch(/inferred/i);
+    });
+
+    it('stays MANUAL when the position carries no bracket levels at all', async () => {
+      const p = bracketedPosition({ stopPrice: null, targetPrice: null, cid: 'cid-swks-nolevels' });
+      mockPositions([]);
+      priceAt(83.845);
+
+      await spendGraceWindow();
+
+      expect(getPosition(p.id)!.exits[0].exitReason).toBe('manual');
+    });
+
+    it('stays MANUAL for a position with no bracket order behind it, even priced at the stop', async () => {
+      // A human sale that happens to land on the stop must NOT be relabelled:
+      // the "a bracket leg filled" fact comes from the pending entry order, and
+      // this position has none.
+      const p = createPosition({
+        assetType: 'stock',
+        symbol: 'SWKS',
+        side: 'long',
+        quantity: 11,
+        entryPrice: 83.85,
+        entryDate: etToday(),
+        stopPrice: 83.85,
+        targetPrice: 86.92,
+        tags: ['webull'],
+        accountId: 'ACC1',
+      });
+      mockPositions([]);
+      priceAt(83.845);
+
+      await syncClosedWebullPositions('ACC1');
+      await syncClosedWebullPositions('ACC1');
+
+      expect(getPosition(p.id)!.exits[0].exitReason).toBe('manual');
+    });
+  });
+
   it('still closes a position with no autotrade order behind it, and labels the exit manual', async () => {
     const p = createPosition({
       assetType: 'stock',
