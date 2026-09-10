@@ -1,4 +1,5 @@
 import { MlRegimeReading, peekMarketRegime } from '../mlRegime';
+import { getMlRegimeReadiness, MlRegimeReadiness } from '../mlRegimeReadiness';
 import { getDailyBaseline } from '../../db/dailyBaseline';
 import { MethodStats, computeMethodPerformance } from './methodSizing';
 import { SymbolCooldownState, activeSymbolCooldowns } from './symbolCooldown';
@@ -122,6 +123,13 @@ export interface AutotradeDashboard {
    *  dashboard poll costs nothing and can never be the first to hit FRED.
    *  Null before the loop has read today. */
   mlRegime: MlRegimeReading | null;
+
+  /** The enabling rules, counted (2026-09-10; services/mlRegimeReadiness.ts):
+   *  rules 2–4 over the last 20 sessions' persisted readings — the same
+   *  object GET /api/market/regime-ml/readiness serves, rendered beside the
+   *  overlay switch. Rows only, never a fetch; `ready` never covers rule 1
+   *  (the grid), which is the decision log's. */
+  mlRegimeReadiness: MlRegimeReadiness;
 
   /** Per-method recent realized performance and the sizing multiplier each
    *  method currently carries (methodSizing.ts) — the "which methods are
@@ -338,6 +346,7 @@ export function getAutotradeDashboard(): AutotradeDashboard {
       config.targetDailyGainPct,
     ),
     mlRegime: peekMarketRegime(),
+    mlRegimeReadiness: getMlRegimeReadiness(now.getTime()),
     regimeTighten: {
       tightenedClosedTrades: tightenedLive + tightenedPaper,
       paper: tightenedPaper,

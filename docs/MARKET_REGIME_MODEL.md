@@ -186,10 +186,24 @@ and `server/test/regimeModelParity.test.ts` holds the port to it (section 8).
   data date, source, drift, previous), `ml_regime_changed` when the sticky switch changes the
   regime, `ml_regime_drift` once per day while drift is raised, `ml_regime_fetch_failed` once
   per day, and `ml_regime_override` when `ML_REGIME_DEV_OVERRIDE` forces a label (refused in
-  production).
+  production). `ml_regime_parity` (2026-09-10) records a rule-3 comparison — once per day and
+  verdict, with the day it is about in `date`, which for a back-filled check is not today.
 - **Display.** `GET /api/market/regime-ml` (`?force=true` refetches now), the Market regime
   tile's ML block, the tick summary's `mlRegime` mirror and the dashboard's `mlRegime` (a
   peek at today's reading — never a fetch).
+- **Readiness (2026-09-10).** The enabling rules are counted by the app, from the persisted
+  rows for the last 20 sessions plus the journaled switch dates
+  (`server/src/services/mlRegimeReadiness.ts`): `GET /api/market/regime-ml/readiness` and the
+  dashboard's `mlRegimeReadiness` serve one object, and the Auto page prints it beside the
+  overlay switch on both views. A session **counts** when its reading is actionable (known and
+  not stale — the sizer's own predicate), came from the model rather than the dev override,
+  and was read by the current model version (a retrain restarts the count). "Per week" is
+  read as **any 5 consecutive sessions** — a calendar week would pass two switches on a Friday
+  and two more on the Monday. Rule 4's "5 stale sessions" is an **inert streak**: a stale or
+  unknown reading, or no row at all, counted newest-first (today is skipped only while it has
+  no row yet). Drift on the latest counted reading and a passed `retrainBy` also block —
+  stricter than the spec's wording, on purpose. `ready` means rules 2–4 hold; rule 1 (the
+  grid) is the decision log's and the object says so rather than guessing.
 - **Freshness.** `server/test/regimeModelFreshness.test.ts` fails once today passes the
   artifact's `retrainBy`; the fix is section 10, never deleting the test.
 - **Consumers (2026-09-08).** With the auto-trade config's `mlRegimeEnabled` on (off by
@@ -323,6 +337,17 @@ run yet; every overlay field ships at its default, off.
 - `ml/tests` (pytest, developer machine only) checks the labeling rule including its
   refusals, the export round trip (`precision · covariance ≈ I`), the sticky rule's five
   cases, drift, and `forward_filter` against hmmlearn on a synthetic fit.
+- **At runtime, rule 3 is the same parity, recorded per day (2026-09-10).** A daily check runs
+  `npm run regime:predict -- --as-of <asOf> --previous <previous> --threshold <threshold>` with
+  the server's OWN values for that day (the readiness object's `parity.unchecked` lists them —
+  the server derives `previous` from its persisted rows, so it must be handed over, not
+  re-derived) and POSTs the Python `regime`, `asOf` and `probabilities` to
+  `/api/market/regime-ml/parity` (cookie auth like every route). The server compares against
+  its persisted reading — same data date, same label, every probability within 1e-6 — stores
+  the verdict on the row together with the vector it compared, and journals `ml_regime_parity`.
+  Because the loop overwrites a day's reading on each refresh, agreement is re-derived from
+  that stored vector against the row's current one on every read: a reading refreshed after
+  its check shows as unchecked again, never as agreed.
 
 ## 9. The artifact
 

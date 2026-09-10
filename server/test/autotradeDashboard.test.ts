@@ -11,6 +11,8 @@ import { getAutotradeDashboard } from '../src/services/autotrading/dashboard';
 import { seedClosedAutotradeSessions } from './helpers/autotradeSessions';
 import { saveMlRegimeReading } from '../src/db/mlRegimeReadings';
 import { resetMlRegimeCache } from '../src/services/mlRegime';
+import { getMlRegimeReadiness } from '../src/services/mlRegimeReadiness';
+import { loadRegimeModel } from '../src/services/regimeModel';
 import { etToday } from '../src/util/marketDate';
 
 // Unit coverage for the Phase 7 dashboard snapshot (docs/AUTOTRADING_SPEC.md —
@@ -531,5 +533,35 @@ describe("mlRegime — the dashboard peeks at today's reading, never fetches", (
       modelVersion: 'test',
     });
     expect(getAutotradeDashboard().mlRegime).toMatchObject(reading);
+  });
+
+  it('carries the enabling-rules readiness the route serves — the same object, from the same rows', () => {
+    // The latest session in the window (today when today is one), so the
+    // seeded row counts whatever weekday the suite runs on.
+    const day = getMlRegimeReadiness().windowSessions.at(-1)!;
+    const P = { high_vol_bearish: 0.1, low_vol_bullish: 0.7, sideways: 0.2 };
+    saveMlRegimeReading({
+      etDate: day,
+      regime: 'sideways',
+      asOf: '2026-09-03',
+      reading: {
+        regime: 'sideways',
+        asOf: '2026-09-03',
+        stale: false,
+        source: 'fred',
+        drift: false,
+        previous: null,
+        threshold: 0.6,
+        probabilities: P,
+      },
+      modelVersion: loadRegimeModel()?.version ?? null,
+    });
+    const dash = getAutotradeDashboard();
+    expect(dash.mlRegimeReadiness).toEqual(getMlRegimeReadiness());
+    expect(dash.mlRegimeReadiness).toMatchObject({ sessionsWithReading: 1, ready: false });
+    expect(dash.mlRegimeReadiness.parity.unchecked).toEqual([
+      { etDate: day, asOf: '2026-09-03', previous: null, threshold: 0.6 },
+    ]);
+    expect(dash.mlRegimeReadiness.blockers[0]).toBe('1 of 20 sessions have a counted reading');
   });
 });

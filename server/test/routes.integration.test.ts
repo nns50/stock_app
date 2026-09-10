@@ -6,6 +6,7 @@ import { db } from '../src/db';
 import { addExclusion } from '../src/db/autotradeExclusions';
 import { config } from '../src/config';
 import { MlRegimeReading, resetMlRegimeCache } from '../src/services/mlRegime';
+import { loadRegimeModel } from '../src/services/regimeModel';
 import { saveMlRegimeReading } from '../src/db/mlRegimeReadings';
 import { saveDailyBaseline, setDailyGoalScale } from '../src/db/dailyBaseline';
 import { totp } from '../src/services/totp';
@@ -3785,7 +3786,7 @@ describe('ML market-regime reading (integration)', () => {
     config.mlRegime.source = 'off';
     config.mlRegime.devOverride = '';
     resetMlRegimeCache();
-    db.exec('DELETE FROM ml_regime_readings');
+    db.exec("DELETE FROM ml_regime_readings; DELETE FROM autotrade_events WHERE action = 'ml_regime_parity'");
   });
 
   it('reads unknown/source_off in the test environment, in the operator’s words', async () => {
@@ -3805,6 +3806,103 @@ describe('ML market-regime reading (integration)', () => {
     expect(r).toMatchObject({ regime: 'high_vol_bearish', label: 'High Volatility/Bearish', source: 'override' });
     const dash = (await getJson('/api/autotrade/dashboard')) as { mlRegime: { regime: string; source: string } | null };
     expect(dash.mlRegime).toMatchObject({ regime: 'high_vol_bearish', source: 'override' });
+  });
+
+  it('records rule 3 against the persisted reading, and the readiness counts it the same way the dashboard does', async () => {
+    const P = { high_vol_bearish: 0.1, low_vol_bullish: 0.7, sideways: 0.2 };
+    const parity = (body: unknown) => post('/api/market/regime-ml/parity', body);
+    // Nothing persisted for that day: nothing to compare against.
+    expect(
+      (await parity({ etDate: '2001-01-02', asOf: '2001-01-01', regime: 'sideways', probabilities: P })).status,
+    ).toBe(404);
+    // A body the schema refuses.
+    expect((await parity({ etDate: '2026-09-10', regime: 'sideways' })).status).toBe(400);
+
+    // The latest session in the window — today when today is one — so the
+    // seeded row counts whatever weekday the suite runs on.
+    const before = (await getJson('/api/market/regime-ml/readiness')) as { windowSessions: string[] };
+    const day = before.windowSessions[before.windowSessions.length - 1];
+    const reading = {
+      regime: 'low_vol_bullish',
+      asOf: '2026-09-09',
+      stale: false,
+      source: 'fred',
+      drift: false,
+      previous: null,
+      threshold: 0.6,
+      probabilities: P,
+    };
+    const modelVersion = loadRegimeModel()?.version ?? null;
+    saveMlRegimeReading({ etDate: day, regime: 'low_vol_bullish', asOf: '2026-09-09', reading, modelVersion });
+
+    const agree = (await (
+      await parity({ etDate: day, asOf: '2026-09-09', regime: 'low_vol_bullish', probabilities: P })
+    ).json()) as {
+      agrees: boolean;
+      maxAbsDiff: number;
+      reasons: string[];
+      server: { previous: string | null; threshold: number };
+    };
+    expect(agree).toMatchObject({
+      agrees: true,
+      maxAbsDiff: 0,
+      reasons: [],
+      server: { previous: null, threshold: 0.6 },
+    });
+
+    type Readiness = {
+      sessionsWithReading: number;
+      ready: boolean;
+      parity: { checked: number; agreed: number; disagreed: number; unchecked: unknown[] };
+      blockers: string[];
+    };
+    let r = (await getJson('/api/market/regime-ml/readiness')) as Readiness;
+    expect(r).toMatchObject({
+      sessionsWithReading: 1,
+      ready: false,
+      parity: { checked: 1, agreed: 1, disagreed: 0, unchecked: [] },
+    });
+    expect(r.blockers[0]).toBe('1 of 20 sessions have a counted reading');
+    // The dashboard carries the SAME object — one computation, two readers.
+    const dash = (await getJson('/api/autotrade/dashboard')) as { mlRegimeReadiness: Readiness };
+    expect(dash.mlRegimeReadiness).toEqual(r);
+
+    // A Python vector 2e-6 off is a disagreement, and it is journaled as one.
+    const off = (await (
+      await parity({
+        etDate: day,
+        asOf: '2026-09-09',
+        regime: 'low_vol_bullish',
+        probabilities: { ...P, low_vol_bullish: 0.7 + 2e-6, sideways: 0.2 - 2e-6 },
+      })
+    ).json()) as { agrees: boolean; reasons: string[] };
+    expect(off.agrees).toBe(false);
+    expect(off.reasons[0]).toMatch(/probabilities differ/);
+    r = (await getJson('/api/market/regime-ml/readiness')) as Readiness;
+    expect(r.parity).toMatchObject({ checked: 1, agreed: 0, disagreed: 1, unchecked: [] });
+    expect(r.blockers).toContain('1 counted session(s) disagree with regime:predict');
+
+    // The loop refreshes the reading with another vector: the stored verdict
+    // no longer describes the row, so the day is unchecked again — with the
+    // inputs the next predict run must be given.
+    saveMlRegimeReading({
+      etDate: day,
+      regime: 'low_vol_bullish',
+      asOf: '2026-09-09',
+      reading: { ...reading, probabilities: { high_vol_bearish: 0.2, low_vol_bullish: 0.6, sideways: 0.2 } },
+      modelVersion,
+    });
+    r = (await getJson('/api/market/regime-ml/readiness')) as Readiness;
+    expect(r.parity).toMatchObject({ checked: 0, agreed: 0, disagreed: 0 });
+    expect(r.parity.unchecked).toEqual([{ etDate: day, asOf: '2026-09-09', previous: null, threshold: 0.6 }]);
+
+    const events = (await getJson('/api/autotrade/events?actions=ml_regime_parity&limit=10')) as {
+      events: { action: string; detail: string }[];
+    };
+    expect(events.events.map((e) => (JSON.parse(e.detail) as { key: string }).key).sort()).toEqual([
+      'agrees',
+      'disagrees',
+    ]);
   });
 });
 

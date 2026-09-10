@@ -553,6 +553,45 @@ export interface MlRegimeTickSummary {
   probability: number | null;
 }
 
+/** One counted session still waiting for its rule-3 parity check, with the
+ *  inputs `regime:predict` must be given to reproduce the server's reading. */
+export interface MlRegimeParityCheck {
+  etDate: string;
+  asOf: string | null;
+  previous: MlRegime | null;
+  threshold: number | null;
+}
+
+/** The enabling rules, counted by the app (2026-09-10): rules 2–4 over the
+ *  last 20 sessions' persisted readings. `ready` never covers rule 1 (the
+ *  grid), which is recorded by hand in the decision log. */
+export interface MlRegimeReadiness {
+  today: string;
+  windowSessions: string[];
+  sessionsRequired: number;
+  sessionsWithReading: number;
+  switches: { total: number; maxIn5Sessions: number; limitPerWeek: number; dates: string[] };
+  inertStreak: number;
+  inertRevertAt: number;
+  drift: boolean;
+  driftSessions: number;
+  parity: {
+    checked: number;
+    agreed: number;
+    disagreed: number;
+    unchecked: MlRegimeParityCheck[];
+    tolerance: number;
+  };
+  overrideSessions: number;
+  otherModelSessions: number;
+  modelVersion: string | null;
+  retrainBy: string | null;
+  retrainOverdue: boolean;
+  ready: boolean;
+  blockers: string[];
+  gridDecision: string;
+}
+
 export type RotationBasis = 'relative-to-benchmark' | 'absolute-return';
 
 export interface SectorRotationEntry {
@@ -2739,6 +2778,9 @@ export interface AutotradeDashboard {
   /** Today's ML market-regime reading as the loop last computed it (never a
    *  fetch) — null before the loop has read today. */
   mlRegime: MlRegimeReading | null;
+  /** The enabling rules, counted (rules 2–4 over the last 20 sessions) — the
+   *  same object GET /api/market/regime-ml/readiness serves. */
+  mlRegimeReadiness: MlRegimeReadiness;
   /** Per-method recent realized performance + current sizing multiplier. */
   methodPerformance: MethodStats[];
   /** Symbols currently in a loss cooldown — live entries skipped until each

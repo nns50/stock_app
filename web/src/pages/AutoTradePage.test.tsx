@@ -8,6 +8,7 @@ import { client } from '../api/client';
 import type {
   AutotradeConfig,
   AutotradeDashboard,
+  MlRegimeReadiness,
   AutotradeDecideResponse,
   AutotradeLivePosition,
   AutotradeRiskCheckResult,
@@ -249,6 +250,38 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
   };
 }
 
+/** The enabling rules as the app counts them (2026-09-10): one session in,
+ *  nothing checked yet — the shape the dashboard carries on day one. */
+function readinessFixture(overrides: Partial<MlRegimeReadiness> = {}): MlRegimeReadiness {
+  return {
+    today: '2026-09-10',
+    windowSessions: [],
+    sessionsRequired: 20,
+    sessionsWithReading: 1,
+    switches: { total: 0, maxIn5Sessions: 0, limitPerWeek: 2, dates: [] },
+    inertStreak: 0,
+    inertRevertAt: 5,
+    drift: false,
+    driftSessions: 0,
+    parity: {
+      checked: 0,
+      agreed: 0,
+      disagreed: 0,
+      unchecked: [{ etDate: '2026-09-10', asOf: '2026-09-09', previous: null, threshold: 0.6 }],
+      tolerance: 1e-6,
+    },
+    overrideSessions: 0,
+    otherModelSessions: 0,
+    modelVersion: '2026.09.1',
+    retrainBy: '2027-01-01',
+    retrainOverdue: false,
+    ready: false,
+    blockers: ['1 of 20 sessions have a counted reading', '1 counted session(s) have no parity check yet'],
+    gridDecision: 'rule 1 (the grid) is recorded by hand in docs/AUTOTRADING_SPEC.md — not tracked here',
+    ...overrides,
+  };
+}
+
 function dashboardFixture(overrides: Partial<AutotradeDashboard> = {}): AutotradeDashboard {
   return {
     enabled: false,
@@ -257,6 +290,7 @@ function dashboardFixture(overrides: Partial<AutotradeDashboard> = {}): Autotrad
     equity: 100_000,
     dailyTarget: { active: false, reached: false, giveBackArmed: false, giveBackHalted: false, entriesHalted: false },
     mlRegime: null,
+    mlRegimeReadiness: readinessFixture(),
     regimeTighten: { tightenedClosedTrades: 0, paper: 0, live: 0, minForReading: 30 },
     dailyGoalEvidence: {
       avgR: null,
@@ -3453,6 +3487,34 @@ describe('AutoTradePage', () => {
       renderDashboard();
       await screen.findByTestId('daily-goal-evidence');
       expect(screen.queryByTestId('regime-tighten-evidence')).toBeNull();
+    });
+
+    it('counts the enabling rules beside the goal card and names the first blocker', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(dashboardFixture());
+      renderDashboard();
+      const line = await screen.findByTestId('ml-regime-readiness');
+      expect(line).toHaveTextContent(
+        /1 of 20 sessions with a reading · 0 switches in any 5 sessions \(limit 2\) · inert streak 0 · parity 0 of 1 agreed · model 2026\.09\.1, retrain by 2027-01-01 · grid: see the decision log\./,
+      );
+      expect(line).toHaveTextContent(/Not ready — 1 of 20 sessions have a counted reading\./);
+    });
+
+    it('says ready once rules 2–4 hold, and still sends the operator to the decision log for the grid', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({
+          mlRegimeReadiness: readinessFixture({
+            sessionsWithReading: 20,
+            parity: { checked: 20, agreed: 20, disagreed: 0, unchecked: [], tolerance: 1e-6 },
+            ready: true,
+            blockers: [],
+          }),
+        }),
+      );
+      renderDashboard();
+      const line = await screen.findByTestId('ml-regime-readiness');
+      expect(line).toHaveTextContent(/20 of 20 sessions with a reading/);
+      expect(line).toHaveTextContent(/parity 20 of 20 agreed/);
+      expect(line).toHaveTextContent(/Ready — rules 2–4 hold; flip only with the grid's cell from the decision log\./);
     });
 
     it('shows "no candidate checked yet" for correlated exposure before any risk-check has run', async () => {
