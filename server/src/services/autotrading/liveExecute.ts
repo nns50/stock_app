@@ -1247,6 +1247,29 @@ export async function runLiveExecution(
       continue;
     }
     if (candidateSignal.side === 'sell' && !cfg.liveAllowNakedShort) {
+      // Journaled once per symbol per ET day (task #61, the shape #43 settled
+      // on). Until 2026-09-10 this skip left NO row, so the journal could not
+      // say how many live-eligible shorts the live book declined on a day, or
+      // which — the one number a decision to enable shorts needs. On 2026-09-09
+      // 785 of 1,000 journaled signals were SELL and 15 of 17 of those names
+      // closed below their open, and nothing recorded that live saw any of it.
+      // The paper book takes shorts and records the outcome; this records the
+      // decline, so the two can be joined. Not a behaviour change.
+      if (claimOncePerDay('live_short_skipped', symbol)) {
+        logAutotradeEvent({
+          symbol,
+          stage: 'execution',
+          action: 'live_short_skipped',
+          detail: {
+            score: candidateSignal.score,
+            entry: candidateSignal.entry,
+            stop: candidateSignal.stop,
+            target: candidateSignal.target,
+            reason: 'liveAllowNakedShort is off',
+          },
+          riskProfile: cfg.riskProfile,
+        });
+      }
       outcomes.push({
         symbol,
         ok: false,

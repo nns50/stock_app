@@ -1400,7 +1400,11 @@ equally-weighted cards in the order they happened to be built:
   this app's long stock and long-option positions, so it stays gated by the existing
   **Allow naked short** guardrail under Live trading, below — with Short or Both
   selected but that box unchecked, the loop still screens, decides, and paper-trades
-  the short side normally, it just can't send a live short order to the broker. Options
+  the short side normally, it just can't send a live short order to the broker. Each
+  short the live book declines this way is journaled once per symbol per day as
+  `live_short_skipped` (2026-09-10) with its score, entry, stop and target, so the
+  live-eligible short flow can be counted and joined to the paper book's outcomes when
+  deciding whether to enable live shorts — until then it left no row at all. Options
   entries are unaffected either way — an autotrade options position is always long the
   contract, a put for a bearish read instead of a call, which is already defined-risk),
   **min relative volume** (a candidate's volume must be at least this many
