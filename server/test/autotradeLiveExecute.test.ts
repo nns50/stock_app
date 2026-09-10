@@ -598,6 +598,62 @@ describe('attemptLiveEntry', () => {
     expect(plan.second.targetPrice).toBe(110);
   });
 
+  it('builds the RUNNER lot at the regime-tightened target, the same one decide.ts and the finish line use', async () => {
+    // Found on the 2026-09-10 merge review. The loop hands decide.ts a target
+    // already tightened by regimeAdjustedTargets, and stamps the factor on the
+    // order row — but the per-lot split read autotradeCfg.targetRMultiple RAW,
+    // so with both features on in a High-Vol tape the runner would have been
+    // built at the full 2R while regime_target_factor on the row said 0.7. Two
+    // derivations of one target, and a stamp the MFE ledger would have trusted.
+    // Asserted at the PLAN the second lot is actually placed from, in price.
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-LOT1' });
+
+    const cfg = liveConfig({
+      livePerLotBracketsEnabled: true,
+      partialExitPct: 67,
+      partialExitRMultiple: 0.25,
+      targetRMultiple: 2,
+      mlRegimeEnabled: true,
+      mlRegimeTargetTightenPct: 30,
+    });
+    const r = await attemptLiveEntry(signal(), okResult, 'MODERATE', cfg, null, null, 'high_vol_bearish', 0.7);
+    expect(r.ok).toBe(true);
+
+    const [, placedIntent] = mockPlaceOrder.mock.calls[0];
+    // The partial lot's near target is partialExitRMultiple, which the tighten
+    // does not touch: still 101.25 on a $5 R.
+    expect(placedIntent.bracket).toEqual({ takeProfitPrice: 101.25, stopLossPrice: 95 });
+
+    const planned = listAutotradeEvents({ stage: 'execution', actions: ['per_lot_entry_planned'] });
+    expect(planned).toHaveLength(1);
+    const plan = JSON.parse(planned[0].detail!) as { second: { targetR: number; targetPrice: number } };
+    // 2R × (1 − 30/100) = 1.4R; entry 100 + 1.4 × $5 = 107 — not the raw 110.
+    expect(plan.second.targetR).toBeCloseTo(1.4, 6);
+    expect(plan.second.targetPrice).toBe(107);
+  });
+
+  it('leaves the runner at the full target when the overlay is on but the tick is not High Vol', async () => {
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-LOT1' });
+
+    const cfg = liveConfig({
+      livePerLotBracketsEnabled: true,
+      partialExitPct: 67,
+      partialExitRMultiple: 0.25,
+      targetRMultiple: 2,
+      mlRegimeEnabled: true,
+      mlRegimeTargetTightenPct: 30,
+    });
+    // A Low-Vol stamp, and separately an unknown (null) one: neither tightens.
+    await attemptLiveEntry(signal(), okResult, 'MODERATE', cfg, null, null, 'low_vol_bullish', 1);
+    const planned = listAutotradeEvents({ stage: 'execution', actions: ['per_lot_entry_planned'] });
+    expect(planned).toHaveLength(1);
+    expect(JSON.parse(planned[0].detail!).second.targetPrice).toBe(110);
+  });
+
   it('is exactly today’s entry when the flag is off', async () => {
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
     mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);

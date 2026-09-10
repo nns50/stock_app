@@ -6342,6 +6342,17 @@ counterfactual ledger's pre-committed reading after 30 tightened trades decides 
 stays: an optimistic full-target counterfactual that beats realized R with a CI excluding zero
 sets the tighten to 0 for that regime and re-runs the grid.
 
+**2026-09-10 follow-up (merge review).** A fourth reader of the tighten was missed: the per-lot
+bracket split (`liveExecute.ts`, #550) rebuilds each lot's target from entry/stop/R rather than
+reading the signal's already-tightened target, and it read `autotradeCfg.targetRMultiple` raw. With
+both `livePerLotBracketsEnabled` and the overlay on in a High-Vol tape the runner lot would have
+carried the full 2R while `regime_target_factor` on the row said 0.7 — two derivations of one
+target, and a stamp the MFE ledger would have trusted. It now takes
+`regimeAdjustedTargets(cfg, stamp).targetRMultiple`, the same helper as the other three consumers;
+the partial lot's near target (`partialExitRMultiple`) is untouched, as before. Both flags were OFF
+in production, so nothing traded under the gap. Regression test asserts the plan's runner price
+(107, not 110, on a $5 R at 30%).
+
 ## 2026-09-08 — the daily goal follows the regime cut: held constant in R
 
 **What shipped.** The baseline row (`autotrade_daily_baseline`) carries a nullable

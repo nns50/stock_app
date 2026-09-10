@@ -780,12 +780,21 @@ export async function attemptLiveEntry(
   // A null target price means the R geometry was unusable (zero-width risk), so
   // the split is abandoned and this becomes an ordinary full-size entry —
   // degrading to today's behaviour rather than to a half-built position.
+  //
+  // The runner's target is the TIGHTENED one when the regime overlay says so —
+  // regimeAdjustedTargets from the stamp this entry carries, the same helper
+  // the loop used for decide.ts's target and the finish line reads. Reading
+  // autotradeCfg.targetRMultiple raw here (as this did until 2026-09-10) would
+  // have built an untightened runner while regime_target_factor on the row
+  // said otherwise — two derivations of one target, and a stamp the MFE
+  // ledger would have trusted. `mlRegime` is null when unknown, and null
+  // tightens nothing, so a plain entry is byte-for-byte unchanged.
   const perLotSplit = autotradeCfg.livePerLotBracketsEnabled
     ? splitEntryForPerLot({
         filledQuantity: quantity,
         partialExitPct: autotradeCfg.partialExitPct,
         partialExitRMultiple: autotradeCfg.partialExitRMultiple,
-        targetRMultiple: autotradeCfg.targetRMultiple,
+        targetRMultiple: regimeAdjustedTargets(autotradeCfg, mlRegime).targetRMultiple,
       })
     : null;
   const firstLotTarget = perLotSplit
