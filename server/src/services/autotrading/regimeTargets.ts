@@ -8,7 +8,7 @@ import { AutotradeConfig } from '../../db/autotradeConfig';
 // reversal, so the profit target is brought in: targetRMultiple (the equity
 // bracket's reward multiple) and optionsTakeProfitPct (the options books'
 // take-profit) are both multiplied by the SAME factor, 1 − tighten%/100, and
-// nothing else. Three consumers, one helper, so the equity target, the options
+// nothing else. Four consumers, one helper, so the equity target, the options
 // target and the finish-line's idea of "what a winner pays" cannot disagree:
 //
 //   1. decide.ts's targetRMultiple — new equity entries (the loop, and the
@@ -18,7 +18,12 @@ import { AutotradeConfig } from '../../db/autotradeConfig';
 //      entry (ml_regime), so a position opened on a High-Vol morning keeps its
 //      tightened take-profit through a calm afternoon, and one opened in calm
 //      tape is not tightened by a later switch. Equity targets are fixed at
-//      entry anyway (the bracket leg), so both instruments tighten at entry.
+//      entry anyway (the bracket leg), so both instruments tighten at entry;
+//   4. the per-lot bracket split's RUNNER lot (liveExecute.ts, 2026-09-10) —
+//      it rebuilds lot targets from entry/stop/R rather than reading the
+//      signal's target, so it has to be handed the tightened R here or the
+//      runner would carry the full target under a regime_target_factor stamp
+//      that says otherwise. Found on the merge review the day after #527.
 //
 // Never below MIN_TARGET_FACTOR: a tighten of 100 would make a 0R target,
 // which is not a target. The factor is stamped on every position
