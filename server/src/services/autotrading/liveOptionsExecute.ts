@@ -27,11 +27,13 @@ import {
   createIntent,
   transitionIntent,
   countTodaysOrders,
+  getIntent,
   getIntents,
   recordIntentNoteOnce,
   OrderIntentRecord,
 } from '../../db/orders';
 import { canTransition, isTerminal } from '../trading/orderLifecycle';
+import { cancelIntent } from '../trading/cancelOrder';
 import { ackUnknownPlacement, canRetireUnknownPlacement, mapWebullStatus } from '../trading/reconcile';
 import { computeFillDelta } from '../trading/fillDelta';
 import {
@@ -64,6 +66,7 @@ import { OptionsTradeSignal } from './optionsDecide';
 import { evaluateOptionsRiskCheck, OptionsRiskCheckResult, optionsPositionNotionalUsd } from './optionsRiskCheck';
 import { journalMethodMultipliers, methodOfOptionsSignal } from './methodSizing';
 import { activeSymbolCooldowns, journalEntrySkipOncePerDay } from './symbolCooldown';
+import { claimOncePerDay } from './oncePerDayEvents';
 import { computeFinishLineFactor, finishLineScoreGate } from './finishLine';
 import { regimeAdjustedTargets, withRegimeAdjustedTargets } from './regimeTargets';
 import {
@@ -1504,6 +1507,36 @@ function liveExitReasonFor(activeRule: string): LiveOptionsExitReason {
  *  so a restart re-journaling one extra line per held position is harmless. */
 const killSwitchHeldPositions = new Set<number>();
 
+/**
+ * Which CLOCK rule, if any, means this position has to be flat TODAY.
+ *
+ * The three quote-independent rules whose cost is certain rather than a
+ * judgement about price: the short-dated hard exit, the end-of-day flatten,
+ * and maxHoldDays. Its ONLY job is to decide whether a stale working close may
+ * be replaced (see the loop below) -- so it is deliberately allowed to be
+ * OVER-inclusive relative to the rules the loop body actually evaluates. A
+ * false positive costs nothing: no rule fires, nothing is cancelled, the
+ * existing close is left working. A false negative would let a contract ride
+ * to expiry behind an order that cannot fill, which is the bug this exists for.
+ *
+ * Pure, and exported for its own test.
+ */
+export function clockForcesCloseToday(
+  cfg: AutotradeConfig,
+  pos: Pick<LiveOptionsPosition, 'entryAt'>,
+  now: number,
+): { forced: boolean; rule: 'hard_time' | 'end_of_day' | 'max_hold_days' | null } {
+  if (cfg.shortDatedOptionsEnabled && cfg.optionsHardExitMinutesBeforeClose > 0) {
+    const left = minutesUntilClose(now);
+    if (left !== null && left <= cfg.optionsHardExitMinutesBeforeClose) return { forced: true, rule: 'hard_time' };
+  }
+  if (evaluateEndOfDayFlatten(cfg, now).active) return { forced: true, rule: 'end_of_day' };
+  if (cfg.maxHoldDays > 0 && now - pos.entryAt >= cfg.maxHoldDays * MS_PER_DAY) {
+    return { forced: true, rule: 'max_hold_days' };
+  }
+  return { forced: false, rule: null };
+}
+
 export async function checkLiveOptionsExits(): Promise<LiveOptionsExitCheckOutcome[]> {
   // The deploy-level master gate, checked FIRST -- mirrors attemptLiveOptionsEntry()'s
   // own ordering exactly. Unlike equity (whose exits are 100% broker-bracket-driven --
@@ -1537,16 +1570,16 @@ export async function checkLiveOptionsExits(): Promise<LiveOptionsExitCheckOutco
     : listOpenLiveOptionsPositions();
   if (open.length === 0) return [];
 
-  const pendingExitPositionIds = new Set(
-    listPendingLiveOptionsOrders()
-      .filter((o) => o.role === 'exit' && o.positionId !== null)
-      .map((o) => o.positionId!),
-  );
+  // The working CLOSE order itself per position, not just its id: deciding
+  // whether that order is still able to fill needs the intent behind it (its
+  // resting limit price), and replacing it needs the intent id to cancel.
+  const workingExitByPosition = new Map<number, LiveOptionsOrderMeta>();
+  for (const o of listPendingLiveOptionsOrders()) {
+    if (o.role === 'exit' && o.positionId !== null) workingExitByPosition.set(o.positionId, o);
+  }
 
   const outcomes: LiveOptionsExitCheckOutcome[] = [];
   for (const pos of open) {
-    if (pendingExitPositionIds.has(pos.id)) continue;
-
     // Fresh config per POSITION (not one snapshot for the sweep), same
     // reasoning as runLiveOptionsExecution()'s own per-candidate refresh (an
     // adversarial review caught this file reusing one stale snapshot here) --
@@ -1556,13 +1589,37 @@ export async function checkLiveOptionsExits(): Promise<LiveOptionsExitCheckOutco
     // trigger evaluation now, since the stop/take-profit thresholds
     // themselves come from it.
     const freshCfg = getAutotradeConfig();
+
+    // A position whose close is ALREADY working is normally left alone: the
+    // trigger condition does not change within the day, so re-evaluating would
+    // just submit a second closing order for the same still-open position.
+    //
+    // The one exception is a CLOCK rule. Past the short-dated hard exit, the
+    // flatten, or maxHoldDays the position must be flat today, and a close
+    // resting above where the contract can actually be sold will not make that
+    // happen -- it only looks, from the outside, exactly like nothing going
+    // wrong. NKE, 2026-09-10: a $0.20 sell placed at 10:27 against a mark that
+    // fell to $0.12 sat unfilled for 4h20m and closed only because the
+    // underlying happened to reverse into it. Had NKE kept rising, a 1 DTE
+    // contract would have expired worthless behind its own protective order,
+    // because this skip also hid it from the hard time exit meant to catch
+    // exactly that.
+    const workingExit = workingExitByPosition.get(pos.id) ?? null;
+    const clock = clockForcesCloseToday(freshCfg, pos, Date.now());
+    if (workingExit && !clock.forced) continue;
+
     // The ladder needs a mark every cycle regardless of the premium rules:
     // its give-back trail is only as good as the peak it has seen.
     const priceRulesActive =
       freshCfg.optionsStopLossPct > 0 || freshCfg.optionsTakeProfitPct > 0 || freshCfg.shortDatedOptionsEnabled;
 
+    // `workingExit` forces the fetch too: judging whether that close can still
+    // fill needs a mark, and with every %-of-premium rule switched off (and the
+    // ladder off) priceRulesActive is false — so without this a stale close
+    // could never be proven stale, and the replacement below would never run
+    // on exactly the configuration that has no other exit rules to save it.
     let currentBasis: number | null = null;
-    if (priceRulesActive) {
+    if (priceRulesActive || workingExit) {
       try {
         if (pos.kind === 'debit_spread') {
           const [longQ, shortQ] = await Promise.all([
@@ -1583,6 +1640,118 @@ export async function checkLiveOptionsExits(): Promise<LiveOptionsExitCheckOutco
         currentBasis = null; // quote unavailable — time exit still evaluates below
       }
     }
+
+    // Is that working close still able to fill? Judged against the CURRENT
+    // mark, which is the only comparison available here (fetchContractQuote
+    // returns a midpoint, not a bid), and the conservative direction: a sell
+    // resting at or below the mark has a buyer within reach and is left alone.
+    //
+    // Leaving a fillable order alone is the whole profit-preserving half of
+    // this rule, and it is not hypothetical -- NKE's own $0.20 close came back
+    // into the money and filled for +$6. Cancelling it while the mark was
+    // $0.12 and re-selling would have booked -$14 instead. So the replacement
+    // path is reached ONLY when the clock has run out AND the resting limit is
+    // above the mark, i.e. exactly when waiting can no longer pay.
+    let replaceExit: LiveOptionsOrderMeta | null = null;
+    let restingLimit: number | null = null;
+    if (workingExit) {
+      restingLimit = getIntent(workingExit.intentId)?.limitPrice ?? null;
+      if (currentBasis === null || restingLimit === null) {
+        // Not provably stale (no usable quote, or a market order with no
+        // limit at all) -- never cancel protection on a guess. Retried next
+        // cycle, and the mark is usually back within one tick.
+        if (claimOncePerDay('live_options_stale_exit_unjudgeable', String(pos.id))) {
+          logAutotradeEvent({
+            symbol: pos.symbol,
+            stage: 'execution',
+            action: 'live_options_stale_exit_unjudgeable',
+            detail: {
+              positionId: pos.id,
+              intentId: workingExit.intentId,
+              clockRule: clock.rule,
+              reason:
+                currentBasis === null
+                  ? 'no usable mark this cycle — cannot tell whether the working close can still fill'
+                  : 'working close carries no limit price',
+            },
+            riskProfile: pos.riskProfile,
+          });
+        }
+        continue;
+      }
+      if (restingLimit <= currentBasis) {
+        if (claimOncePerDay('live_options_exit_left_working', String(pos.id))) {
+          logAutotradeEvent({
+            symbol: pos.symbol,
+            stage: 'execution',
+            action: 'live_options_exit_left_working',
+            detail: {
+              positionId: pos.id,
+              intentId: workingExit.intentId,
+              clockRule: clock.rule,
+              restingLimit,
+              mark: currentBasis,
+              reason: 'close is at or below the mark — still fillable, left to work rather than re-priced down',
+            },
+            riskProfile: pos.riskProfile,
+          });
+        }
+        continue;
+      }
+      replaceExit = workingExit;
+    }
+
+    /**
+     * Place the close, first CANCELLING a stale one when this position has one.
+     *
+     * Cancel-then-place, never the reverse, and never speculatively: the cancel
+     * happens only here, at the moment a rule has actually chosen to exit, so a
+     * position can never be left with NO working close because a cancel
+     * succeeded and nothing replaced it. A refused cancel places nothing this
+     * cycle -- two working sells on one long option is how a covered close
+     * becomes a naked short -- and the clock keeps re-trying on the next tick.
+     *
+     * A cancel that RACED A FILL is caught one layer down, not here.
+     * cancelIntent reconciles after cancelling, but reconcileIntent defers
+     * entirely on an autotrade options intent (it must: transitioning to the
+     * terminal 'filled' would permanently lock out this book's OWN reconcile
+     * from materializing the position -- see its guard), so the state it hands
+     * back is unchanged and cannot report the race. The real guard is
+     * placeLiveOptionsExit's own naked-short check, which re-queries the
+     * BROKER's held quantity and refuses at 0 -- exactly what a filled close
+     * leaves behind. The state check below is only for an intent already known
+     * terminal, and is belt-and-braces: cancelIntent refuses that one outright.
+     */
+    const placeExit = async (acct: string, exitReason: LiveOptionsExitReason): Promise<LiveOptionsExitCheckOutcome> => {
+      if (replaceExit) {
+        const cancelled = await cancelIntent(replaceExit.intentId, acct);
+        const state = cancelled.reconciled?.intent?.state ?? cancelled.intent?.state ?? null;
+        const ok = cancelled.requested && state !== 'filled';
+        logAutotradeEvent({
+          symbol: pos.symbol,
+          stage: 'execution',
+          action: ok ? 'live_options_stale_exit_cancelled' : 'live_options_stale_exit_cancel_failed',
+          detail: {
+            positionId: pos.id,
+            intentId: replaceExit.intentId,
+            clockRule: clock.rule,
+            restingLimit,
+            mark: currentBasis,
+            state,
+            ...(ok ? {} : { reason: cancelled.error ?? 'cancel not accepted by the broker' }),
+          },
+          riskProfile: pos.riskProfile,
+        });
+        if (!ok) {
+          return {
+            symbol: pos.symbol,
+            requested: false,
+            reason: `stale close could not be cancelled — ${cancelled.error ?? state ?? 'not accepted'}`,
+          };
+        }
+      }
+      return placeLiveOptionsExit(pos, acct, freshCfg, exitReason);
+    };
 
     const entryBasis = pos.kind === 'debit_spread' ? pos.entryPrice - (pos.shortEntryPrice ?? 0) : pos.entryPrice;
     // The take-profit this position exits on is the one tightened by the ML
@@ -1702,7 +1871,7 @@ export async function checkLiveOptionsExits(): Promise<LiveOptionsExitCheckOutco
             : sd.rule === 'underlying_stop' || sd.rule === 'disaster_stop'
               ? 'stop_loss'
               : 'time_exit';
-        outcomes.push(await placeLiveOptionsExit(pos, acct, freshCfg, mapped));
+        outcomes.push(await placeExit(acct, mapped));
         continue;
       }
     }
@@ -1786,14 +1955,7 @@ export async function checkLiveOptionsExits(): Promise<LiveOptionsExitCheckOutco
 
     const accountId = freshCfg.liveAccountId;
     if (!accountId) continue; // account cleared mid-loop -- don't use a stale id
-    outcomes.push(
-      await placeLiveOptionsExit(
-        pos,
-        accountId,
-        freshCfg,
-        ev.activeRule ? liveExitReasonFor(ev.activeRule) : 'time_exit',
-      ),
-    );
+    outcomes.push(await placeExit(accountId, ev.activeRule ? liveExitReasonFor(ev.activeRule) : 'time_exit'));
   }
   return outcomes;
 }

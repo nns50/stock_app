@@ -3583,6 +3583,17 @@ freed slot straight back to the name that just failed to move is the opposite of
 a fresh signal: the same thesis, at a worse time of day, with less of the session
 left to work in.
 
+**Exception, 2026-09-10 — a clock rule outranks a working close.** The skip
+above hid a position from the HARD TIME exit too, so a close resting above where
+the contract could be sold silently switched off the one rule whose cost is
+certain (NKE: a $0.20 sell against a $0.12 mark, unfilled for 4h20m on a 1 DTE
+contract). Once `clockForcesCloseToday()` is true — the short-dated hard exit,
+the end-of-day flatten, or `maxHoldDays` — a working close whose limit sits ABOVE
+the current mark is cancelled and re-placed; one at or below the mark is left to
+work, because it can still fill and re-pricing it downward would give up real
+money. The cancel is issued only at the moment an exit rule has chosen to place,
+never speculatively, and a refused cancel places nothing.
+
 `symbolReentryCooldownMinutes` (0 = off) blocks a NEW live entry for N minutes
 after that symbol's own autotrade position closes. `reentryCooldown.ts` is pure;
 `liveExecute` supplies autotrade-tagged closed positions only, so a human's

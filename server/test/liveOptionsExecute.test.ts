@@ -12,6 +12,7 @@ vi.mock('../src/providers/webull/orders', async (importOriginal) => {
   return {
     ...actual,
     webullPlaceOrder: vi.fn(),
+    webullCancelOrder: vi.fn(),
     webullOrderStatus,
     webullOrderStatusBatch: batchFromSingle(webullOrderStatus),
   };
@@ -27,7 +28,12 @@ vi.mock('../src/providers/webull/positions', async (importOriginal) => {
 import { config } from '../src/config';
 import { getProvider } from '../src/providers';
 import { webullAccountState, webullAccountType } from '../src/providers/webull/accountState';
-import { webullPlaceOrder, webullOrderStatus, WebullOrderStatus } from '../src/providers/webull/orders';
+import {
+  webullPlaceOrder,
+  webullOrderStatus,
+  webullCancelOrder,
+  WebullOrderStatus,
+} from '../src/providers/webull/orders';
 import { previewWebullPositions } from '../src/providers/webull/positions';
 import { initDb, db } from '../src/db';
 import { UNKNOWN_PLACEMENT_RETIRE_GRACE_MS } from '../src/services/trading/reconcile';
@@ -36,9 +42,13 @@ import { setTradingConfig } from '../src/db/trading';
 import { createPosition } from '../src/db/positions';
 import { addSymbols } from '../src/db/universe';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
-import { listIntents, createIntent } from '../src/db/orders';
+import { listIntents, createIntent, transitionIntent } from '../src/db/orders';
 import { recordLiveOrder } from '../src/db/autotradeLiveOrders';
-import { getLiveOptionsOrder, listPendingLiveOptionsOrders } from '../src/db/autotradeLiveOptionsOrders';
+import {
+  getLiveOptionsOrder,
+  listPendingLiveOptionsOrders,
+  recordLiveOptionsExitOrder,
+} from '../src/db/autotradeLiveOptionsOrders';
 import {
   createLiveOptionsPosition,
   getLiveOptionsPosition,
@@ -55,6 +65,7 @@ import {
   getLiveOptionsPortfolioSnapshot,
   runLiveOptionsExecution,
   checkLiveOptionsExits,
+  clockForcesCloseToday,
   reconcileLiveOptionsOrders,
   syncLiveOptionsPositionsFromBroker,
 } from '../src/services/autotrading/liveOptionsExecute';
@@ -66,6 +77,7 @@ const mockAccountState = vi.mocked(webullAccountState);
 const mockAccountType = vi.mocked(webullAccountType);
 const mockPlaceOrder = vi.mocked(webullPlaceOrder);
 const mockOrderStatus = vi.mocked(webullOrderStatus);
+const mockCancelOrder = vi.mocked(webullCancelOrder);
 
 function optionSignal(overrides: Partial<SingleLegOptionsSignal> = {}): SingleLegOptionsSignal {
   return {
@@ -232,6 +244,7 @@ beforeEach(() => {
   mockAccountType.mockReset();
   mockPlaceOrder.mockReset();
   mockOrderStatus.mockReset();
+  mockCancelOrder.mockReset();
 });
 afterEach(() => {
   config.trading.placeEnabled = origPlaceEnabled;
@@ -1061,6 +1074,226 @@ describe('optionsOwnExposurePool — the options book measures concentration aga
     expect(mockPlaceOrder).not.toHaveBeenCalled();
     expect(blockedDetail().failedRules).toContain('max_sector_exposure');
     expect(blockedDetail().exposurePool).toBe('options_only');
+  });
+});
+
+// A close that is already WORKING used to hide its position from every exit
+// rule, the hard time exit included (liveOptionsExecute.ts's own note: "a close
+// that is already working is left to work", on the assumption that a limit
+// priced 5% through the mark is far likelier to fill than to be stranded).
+// That assumption breaks on the short-dated ladder: the underlying stop fires
+// PRECISELY when the underlying is moving against the position, which is when
+// the mark is falling fastest, and on a 0-2 DTE contract theta compounds it
+// within minutes. NKE, 2026-09-10: a $0.20 sell placed at 10:27 against a mark
+// that fell to $0.12 sat unfilled for 4h20m and closed only because the
+// underlying happened to reverse into it.
+describe('clockForcesCloseToday', () => {
+  const base = () => ({ ...defaultAutotradeConfig(), endOfDayFlattenMinutes: 0, maxHoldDays: 0 });
+  const heldSince = (daysAgo: number) => ({ entryAt: Date.now() - daysAgo * 24 * 60 * 60 * 1000 });
+
+  it('is not forced when every clock rule is off', () => {
+    expect(clockForcesCloseToday({ ...base(), shortDatedOptionsEnabled: false }, heldSince(0), Date.now())).toEqual({
+      forced: false,
+      rule: null,
+    });
+  });
+
+  it('is forced once the position is past maxHoldDays', () => {
+    const cfg = { ...base(), shortDatedOptionsEnabled: false, maxHoldDays: 1 };
+    expect(clockForcesCloseToday(cfg, heldSince(3), Date.now())).toEqual({ forced: true, rule: 'max_hold_days' });
+    // ...and not one held inside the window, so the check cannot just always
+    // return true (which would silently re-enable replacement everywhere).
+    expect(clockForcesCloseToday(cfg, heldSince(0), Date.now())).toEqual({ forced: false, rule: null });
+  });
+
+  it('needs BOTH the short-dated flag and a configured hard-exit window', () => {
+    const at = Date.UTC(2026, 8, 10, 19, 55); // 15:55 ET — 5m to the close
+    expect(
+      clockForcesCloseToday(
+        { ...base(), shortDatedOptionsEnabled: true, optionsHardExitMinutesBeforeClose: 30 },
+        heldSince(0),
+        at,
+      ),
+    ).toEqual({ forced: true, rule: 'hard_time' });
+    expect(
+      clockForcesCloseToday(
+        { ...base(), shortDatedOptionsEnabled: false, optionsHardExitMinutesBeforeClose: 30 },
+        heldSince(0),
+        at,
+      ),
+    ).toEqual({ forced: false, rule: null });
+  });
+});
+
+describe('checkLiveOptionsExits — replacing a STALE working close', () => {
+  const rows = (action: string) => listAutotradeEvents({}).filter((e) => e.action === action);
+  const detailOf = (action: string) => JSON.parse(rows(action)[0].detail!) as Record<string, unknown>;
+
+  /** maxHoldDays is the one clock rule that does not depend on the wall clock
+   *  agreeing to be inside a market session, so every case below forces the
+   *  close that way and the test is deterministic at any hour. */
+  const clockCfg = (overrides: Partial<AutotradeConfig> = {}) =>
+    liveConfig({
+      maxHoldDays: 1,
+      endOfDayFlattenMinutes: 0,
+      shortDatedOptionsEnabled: false,
+      // A %-of-premium stop, so that once a stale close IS replaced some rule
+      // has actually chosen to exit — the replacement is deliberately wired to
+      // happen only at the moment an exit is placed, never speculatively.
+      optionsStopLossPct: 40,
+      optionsTakeProfitPct: 0,
+      ...overrides,
+    });
+
+  /** An open position held past maxHoldDays, plus a real working exit order
+   *  resting at `limitPrice` — an acknowledged intent with a broker id, which
+   *  is what cancelIntent needs to be able to pull it. */
+  function positionWithWorkingClose(limitPrice: number, opts: { acknowledge?: boolean } = {}) {
+    const pos = openLivePosition({ expiration: '2030-01-18', quantity: 2, entryPrice: 3 });
+    db.prepare('UPDATE autotrade_live_options_positions SET entry_at = ? WHERE id = ?').run(
+      Date.now() - 3 * 24 * 60 * 60 * 1000,
+      pos.id,
+    );
+    const intent = createIntent(
+      {
+        symbol: 'AAPL',
+        assetKind: 'option',
+        side: 'sell',
+        openClose: 'close',
+        quantity: 2,
+        orderType: 'limit',
+        limitPrice,
+        optionType: 'call',
+        strike: 100,
+        expiration: '2030-01-18',
+      },
+      `CID-STALE-${pos.id}`,
+    );
+    if (opts.acknowledge !== false) {
+      transitionIntent(intent.id, 'validated');
+      transitionIntent(intent.id, 'confirmed');
+      transitionIntent(intent.id, 'submitted', { brokerOrderId: 'WB-RESTING' });
+      transitionIntent(intent.id, 'acknowledged');
+    }
+    recordLiveOptionsExitOrder({
+      intentId: intent.id,
+      symbol: 'AAPL',
+      kind: 'single_leg',
+      riskProfile: 'MODERATE',
+      positionId: pos.id,
+      exitReason: 'stop_loss',
+    });
+    return { pos, intent };
+  }
+
+  const armBroker = (mark: number) => {
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark } }) as never);
+    mockAccountState.mockResolvedValue(holdingAccountState(2) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-REPLACED' });
+  };
+  /** The broker accepts the cancel, and the post-cancel reconcile confirms the
+   *  order really is dead rather than having raced us to a fill. */
+  const cancelSucceeds = () => {
+    mockCancelOrder.mockResolvedValue({ ok: true });
+    mockOrderStatus.mockResolvedValue({ ok: true, found: true, status: 'CANCELLED' } as WebullOrderStatus);
+  };
+
+  it('leaves a working close alone while no clock rule forces the position flat', async () => {
+    // The unchanged behaviour, and the reason the replacement is gated on the
+    // clock at all: before then, waiting is free and the order may still fill.
+    setAutotradeConfig(clockCfg({ maxHoldDays: 0 }));
+    positionWithWorkingClose(0.6);
+    armBroker(0.2);
+    cancelSucceeds();
+
+    await checkLiveOptionsExits();
+
+    expect(mockCancelOrder).not.toHaveBeenCalled();
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('leaves a STILL-FILLABLE close working even past the clock — the profit half of the rule', async () => {
+    // NKE's own $0.20 close came back into the money and filled for +$6.
+    // Cancelling it while the mark was below it and re-selling would have
+    // booked a loss instead, so a sell at or under the mark is never touched.
+    setAutotradeConfig(clockCfg());
+    positionWithWorkingClose(0.1);
+    armBroker(0.2); // mark ABOVE the resting sell — a buyer is within reach
+    cancelSucceeds();
+
+    await checkLiveOptionsExits();
+
+    expect(mockCancelOrder).not.toHaveBeenCalled();
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(rows('live_options_exit_left_working')).toHaveLength(1);
+    expect(detailOf('live_options_exit_left_working')).toMatchObject({ restingLimit: 0.1, mark: 0.2 });
+  });
+
+  it('cancels an UNFILLABLE close past the clock and places a fresh one', async () => {
+    setAutotradeConfig(clockCfg());
+    const { intent } = positionWithWorkingClose(0.6);
+    armBroker(0.2); // mark has fallen far below the resting sell
+    cancelSucceeds();
+
+    await checkLiveOptionsExits();
+
+    expect(mockCancelOrder).toHaveBeenCalledTimes(1);
+    expect(mockPlaceOrder).toHaveBeenCalledTimes(1);
+    expect(rows('live_options_stale_exit_cancelled')).toHaveLength(1);
+    expect(detailOf('live_options_stale_exit_cancelled')).toMatchObject({
+      intentId: intent.id,
+      clockRule: 'max_hold_days',
+      restingLimit: 0.6,
+      mark: 0.2,
+    });
+  });
+
+  it('places NOTHING when the cancel is refused — two working sells is a naked short', async () => {
+    setAutotradeConfig(clockCfg());
+    positionWithWorkingClose(0.6);
+    armBroker(0.2);
+    mockCancelOrder.mockResolvedValue({ ok: false, error: 'broker refused' });
+
+    const outcomes = await checkLiveOptionsExits();
+
+    expect(mockCancelOrder).toHaveBeenCalledTimes(1);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(outcomes[0]).toMatchObject({ requested: false, reason: expect.stringMatching(/could not be cancelled/i) });
+    expect(rows('live_options_stale_exit_cancel_failed')).toHaveLength(1);
+  });
+
+  it('places NOTHING when the cancel raced a FILL — the contracts are already gone', async () => {
+    // The race is NOT caught by the cancel's own reconcile: reconcileIntent
+    // defers on an autotrade options intent, so the state it returns is
+    // unchanged. It is caught one layer down, by placeLiveOptionsExit
+    // re-querying the broker — which, the close having filled, now holds
+    // nothing. Selling again there would open a naked short.
+    setAutotradeConfig(clockCfg());
+    positionWithWorkingClose(0.6);
+    armBroker(0.2);
+    cancelSucceeds();
+    mockPreviewPositions.mockResolvedValue(previewOf([])); // filled — broker holds 0
+
+    await checkLiveOptionsExits();
+
+    expect(mockCancelOrder).toHaveBeenCalledTimes(1);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(rows('live_options_exit_failed').length + rows('live_options_exit_refused').length).toBeGreaterThan(0);
+  });
+
+  it('never cancels on a guess when the mark cannot be read', async () => {
+    setAutotradeConfig(clockCfg());
+    positionWithWorkingClose(0.6);
+    // No chain for AAPL -> the quote fetch throws -> currentBasis is null.
+    mockGetProvider.mockReturnValue(chainsFor({ MSFT: { side: 'call', strike: 100, mark: 1 } }) as never);
+    mockAccountState.mockResolvedValue(holdingAccountState(2) as Awaited<ReturnType<typeof webullAccountState>>);
+    cancelSucceeds();
+
+    await checkLiveOptionsExits();
+
+    expect(mockCancelOrder).not.toHaveBeenCalled();
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(rows('live_options_stale_exit_unjudgeable')).toHaveLength(1);
   });
 });
 

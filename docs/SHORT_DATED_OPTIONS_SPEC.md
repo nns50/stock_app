@@ -213,6 +213,47 @@ The clock outranks everything because it is the only rule whose cost is
 certain. Every other rule is a judgement about price; the 14:00 cut is
 arithmetic.
 
+### A working close does not outrank the clock (2026-09-10)
+
+A position whose closing order is already resting at the broker is normally
+skipped by this whole ladder — otherwise every tick would submit another close
+for the same position. That skip used to hide the position from the **hard time
+exit as well**, which inverted the priority above: the one rule whose cost is
+certain was the one rule a stale order could switch off.
+
+It is not hypothetical. NKE, 2026-09-10: the underlying stop fired at 10:27 and
+placed a $0.20 sell. The mark fell to $0.12 and the order sat unfilled for
+4h20m, closing only because the underlying happened to reverse into it. Had NKE
+kept rising, a 1 DTE contract would have expired worthless behind its own
+protective order. The exit priced 5% through the mark on the assumption that a
+resting close is far likelier to fill than to strand — true for a 30-60 DTE
+contract, false here, because the underlying stop fires *precisely* when the
+mark is falling fastest and theta compounds it within minutes.
+
+So once a clock rule says the position must be flat today — the hard exit above,
+the equity flatten, or `maxHoldDays` — a working close is re-examined:
+
+- **At or below the mark** → left alone. A buyer is within reach, and NKE's own
+  $0.20 close proves the point: it came back and filled for +$6, where
+  cancelling and re-selling at the bid would have booked -$14. Never re-price a
+  fillable order downward.
+- **Above the mark** → cancelled, and a fresh close placed at the current mark.
+- **No usable mark** → left alone. Protection is never cancelled on a guess.
+
+Before any clock rule fires, nothing changes: waiting is free, and the order is
+left to work exactly as before.
+
+The cancel happens only at the moment a rule has actually chosen to exit, never
+speculatively, so a position can never be left with no working close because a
+cancel succeeded and nothing replaced it. A refused cancel places nothing and
+retries next tick — two working sells on one long option is how a covered close
+becomes a naked short. A cancel that races a fill is caught by the existing
+broker-held-quantity check, which refuses at zero.
+
+Journal actions: `live_options_stale_exit_cancelled`,
+`live_options_stale_exit_cancel_failed`, `live_options_exit_left_working`,
+`live_options_stale_exit_unjudgeable`.
+
 ---
 
 ## Roll-out
