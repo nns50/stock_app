@@ -524,17 +524,24 @@ export async function runOptionsPaperExecution(
   // effectively a 'long' bet, per candidateSide below) correctly nets
   // against — rather than piles onto — an existing SHORT equity position in
   // the same/correlated name.
+  // Exposure pool — see liveOptionsExecute.ts's twin for the full account
+  // (2026-09-10): with optionsOwnExposurePool on, the sector / correlated caps
+  // count only this book's own positions. Mirrored here so the two books agree
+  // by construction; the aggregate-RISK budget above stays shared either way.
+  const ownPool = config.optionsOwnExposurePool;
   const runningPositions: { symbol: string; notional: number; side: 'long' | 'short' }[] = [
     ...optSnapshot.openPositions.map((p) => ({
       symbol: p.symbol,
       notional: optionsPositionNotionalUsd(p),
       side: 'long' as const,
     })),
-    ...eqSnapshot.openPositions.map((p) => ({
-      symbol: p.symbol,
-      notional: p.entryPrice * p.quantity,
-      side: (p.side === 'buy' ? 'long' : 'short') as 'long' | 'short',
-    })),
+    ...(ownPool
+      ? []
+      : eqSnapshot.openPositions.map((p) => ({
+          symbol: p.symbol,
+          notional: p.entryPrice * p.quantity,
+          side: (p.side === 'buy' ? 'long' : 'short') as 'long' | 'short',
+        }))),
   ];
   const skipSymbols = new Set(optSnapshot.openPositions.map((p) => p.symbol));
   const sectorOf = buildSectorOf();
@@ -647,7 +654,7 @@ export async function runOptionsPaperExecution(
       riskProfile: config.riskProfile,
       // The options funnel's own action, not equity's — see optionsRiskCheck.ts.
       action: optionsRiskCheckAction(result.ok),
-      detail: { checks: result.checks, contracts },
+      detail: { checks: result.checks, contracts, exposurePool: ownPool ? 'options_only' : 'shared' },
     });
     if (!result.ok) {
       outcomes.push({ symbol, ok: false, reason: 'Risk check blocked' });

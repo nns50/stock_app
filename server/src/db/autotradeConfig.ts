@@ -767,6 +767,26 @@ export interface AutotradeConfig {
    *  against this number. The combined AGGREGATE RISK budget is untouched —
    *  that one is about money and stays shared. */
   optionsMaxConcurrentPositions: number;
+  /** Measure the options book's sector / correlated concentration against its
+   *  OWN open positions only (default false = the equity book is folded in).
+   *
+   *  The same disease the slot split above cures, one layer down (2026-09-10).
+   *  Both exposure caps compare NOTIONAL, and the shared pool counts an equity
+   *  position at full stock notional while an option enters at premium paid.
+   *  Both checks are also bare — the pool is measured BEFORE the candidate is
+   *  added — so once two same-sector equity positions are open (each ~50% of
+   *  equity at the 2.5% stop cap, ~120% of equity in one sector against an 80%
+   *  cap) no option in that sector can pass at ANY size. On 2026-09-09 the one
+   *  affordable live options candidate in two sessions (INTC, 2 contracts, $64
+   *  of premium) was refused against $6,183.90 of AMD + LITE stock. Every other
+   *  refusal that week was the premium ceiling; this was the only one a sizing
+   *  change could not reach.
+   *
+   *  When on, options positions still count against each other in premium
+   *  terms and against the same maxSectorExposurePct / maxCorrelatedExposurePct
+   *  numbers. The combined AGGREGATE RISK budget is untouched — an option's max
+   *  loss must still fit under it next to the equity book's open risk. */
+  optionsOwnExposurePool: boolean;
   /** Reject a synced net-liquidation reading that moves more than this % from
    *  the last accepted one (default 5; 0 disables the guard).
    *
@@ -1306,6 +1326,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     liveMaxOrderUsd: 500,
     liveMaxExposurePct: 100,
     optionsMaxConcurrentPositions: 0,
+    optionsOwnExposurePool: false,
     equitySyncMaxJumpPct: 5,
     liveDayBuyingPowerUsd: 0,
     liveMaxDailyLossUsd: 250,
@@ -1601,6 +1622,8 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     liveMaxOrderUsd: nonNeg(input.liveMaxOrderUsd, d.liveMaxOrderUsd),
     liveMaxExposurePct: nonNeg(input.liveMaxExposurePct, d.liveMaxExposurePct),
     optionsMaxConcurrentPositions: nonNeg(input.optionsMaxConcurrentPositions, d.optionsMaxConcurrentPositions),
+    optionsOwnExposurePool:
+      typeof input.optionsOwnExposurePool === 'boolean' ? input.optionsOwnExposurePool : d.optionsOwnExposurePool,
     equitySyncMaxJumpPct: nonNeg(input.equitySyncMaxJumpPct, d.equitySyncMaxJumpPct),
     liveDayBuyingPowerUsd: nonNeg(input.liveDayBuyingPowerUsd, d.liveDayBuyingPowerUsd),
     liveMaxDailyLossUsd: nonNeg(input.liveMaxDailyLossUsd, d.liveMaxDailyLossUsd),

@@ -1231,6 +1231,18 @@ the aggregate open-risk cap, and the per-trade risk %. A *third* correlated posi
 remains blocked on notional as well as on concurrency. If you ever raise concurrency
 above two, revisit these caps deliberately rather than assuming they still bind.
 
+The same arithmetic shuts the **options book** out of any sector the equity book already
+holds (2026-09-10). Both caps are measured on the pool _before_ the candidate is added, so
+once two same-sector stocks are open — ~120% of equity against the 80% cap — no option in
+that sector can pass at any size: on 2026-09-09 the only live options candidate in two
+sessions that cleared the premium ceiling (INTC, 2 contracts, $64 of premium) was refused
+against $6,183.90 of AMD + LITE stock. `optionsOwnExposurePool` (off by default) makes the
+options book measure the sector and correlated caps against its _own_ open positions, in
+premium terms — the same split `optionsMaxConcurrentPositions` already gives it for slots.
+The shared aggregate open-risk cap is untouched, so the option's max loss still has to fit
+next to the equity book's open risk (INTC would have: $283 of $308). The honest cost: a
+call can open while the stock book is 120% in that sector, adding at most the premium paid.
+
 **"Is the limit priced where trades actually go?" → Peak-R against the target (2026-08-27).**
 Worth measuring rather than assuming, because the answer moves real money and the intuition
 cuts both ways. Journal → Analytics → Excursions reports each closed trade's **MFE** — the

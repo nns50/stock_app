@@ -7,6 +7,7 @@ import { initDb, db } from '../src/db';
 import { setAutotradeConfig } from '../src/db/autotradeConfig';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { openPaperPosition } from '../src/db/autotradePaperPositions';
+import { addSymbols } from '../src/db/universe';
 import {
   hasOpenOptionsPaperPosition,
   listOptionsPaperPositions,
@@ -108,7 +109,7 @@ beforeAll(() => initDb());
 beforeEach(() => {
   db.exec(
     'DELETE FROM autotrade_options_paper_positions; DELETE FROM autotrade_paper_positions; ' +
-      'DELETE FROM autotrade_config; DELETE FROM autotrade_events;',
+      'DELETE FROM autotrade_config; DELETE FROM autotrade_events; DELETE FROM universe;',
   );
   setAutotradeConfig({ accountEquityUsd: 100_000, riskProfile: 'MODERATE' });
   mockGetProvider.mockReset();
@@ -1496,5 +1497,128 @@ describe('optionsMaxConcurrentPositions — the options book gets its own slots'
 
     expect(out[0]).toMatchObject({ ok: false });
     expect(hasOpenOptionsPaperPosition('AAPL')).toBe(false);
+  });
+});
+
+// Paper twin of liveOptionsExecute.test.ts's own-pool cases: the two books
+// must agree by construction on WHICH positions the sector / correlated caps
+// count, or paper stops being the control arm for the live options book.
+describe('optionsOwnExposurePool — the paper options book measures concentration against its own positions', () => {
+  const SECTOR = 'Information Technology';
+  const failedRules = () =>
+    listAutotradeEvents({ actions: ['options_blocked'] }).flatMap((e) =>
+      (JSON.parse(e.detail!) as { checks: { rule: string; passed: boolean }[] }).checks
+        .filter((c) => !c.passed)
+        .map((c) => c.rule),
+    );
+  const exposurePoolOf = (action: string) =>
+    (JSON.parse(listAutotradeEvents({ actions: [action] })[0].detail!) as { exposurePool: string }).exposurePool;
+
+  /** Two same-sector paper equity positions, each 60% of a $100k account —
+   *  120% of equity in one sector against an 80% cap — with a dime of stop
+   *  distance each so their open RISK stays at $60 apiece. */
+  function fillSectorWithStock() {
+    addSymbols([
+      { symbol: 'AAPL', sector: SECTOR },
+      { symbol: 'AMD', sector: SECTOR },
+      { symbol: 'LITE', sector: SECTOR },
+    ]);
+    for (const symbol of ['AMD', 'LITE']) {
+      openPaperPosition({
+        symbol,
+        side: 'buy',
+        quantity: 600,
+        entryPrice: 100,
+        stopPrice: 99.9,
+        targetPrice: 110,
+        riskAmount: 60,
+        riskProfile: 'MODERATE',
+        rationale: 'fills the sector',
+      });
+    }
+  }
+  const poolConfig = {
+    accountEquityUsd: 100_000,
+    riskProfile: 'MODERATE' as const,
+    maxConcurrentPositions: 5,
+    optionsMaxConcurrentPositions: 1,
+    maxSectorExposurePct: 80,
+    maxCorrelatedExposurePct: 80,
+    maxAggregateOpenRiskPct: 10,
+  };
+  const armChain = () =>
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 3 } }) as never);
+
+  it('is refused at ANY size while the pool is shared', async () => {
+    setAutotradeConfig({ ...poolConfig, optionsOwnExposurePool: false });
+    fillSectorWithStock();
+    armChain();
+
+    const out = await runOptionsPaperExecution([{ signal: optionSignal() }]);
+
+    expect(out[0]).toMatchObject({ ok: false });
+    expect(hasOpenOptionsPaperPosition('AAPL')).toBe(false);
+    expect(failedRules()).toContain('max_sector_exposure');
+    expect(exposurePoolOf('options_blocked')).toBe('shared');
+  });
+
+  it('opens once the options book measures the pool against its own positions only', async () => {
+    setAutotradeConfig({ ...poolConfig, optionsOwnExposurePool: true });
+    fillSectorWithStock();
+    armChain();
+
+    const out = await runOptionsPaperExecution([{ signal: optionSignal() }]);
+
+    expect(out[0]).toMatchObject({ symbol: 'AAPL', ok: true });
+    expect(hasOpenOptionsPaperPosition('AAPL')).toBe(true);
+    expect(exposurePoolOf('options_passed')).toBe('options_only');
+  });
+
+  it('leaves the aggregate RISK budget shared — an equity book that has spent it still refuses', async () => {
+    setAutotradeConfig({ ...poolConfig, optionsOwnExposurePool: true, maxAggregateOpenRiskPct: 0.1 }); // $100 of room
+    fillSectorWithStock(); // $120 already at risk
+    armChain();
+
+    const out = await runOptionsPaperExecution([{ signal: optionSignal() }]);
+
+    expect(out[0]).toMatchObject({ ok: false });
+    expect(hasOpenOptionsPaperPosition('AAPL')).toBe(false);
+    expect(failedRules()).toContain('max_aggregate_open_risk');
+    expect(failedRules()).not.toContain('max_sector_exposure');
+  });
+
+  it('still counts its OWN options positions against the sector cap — a budget, not an exemption', async () => {
+    // $500 of sector room; an open MSFT call in the same sector holds $600 of
+    // premium (2 × $3 × 100). Two own slots so the slot cap stays out of it.
+    setAutotradeConfig({
+      ...poolConfig,
+      optionsOwnExposurePool: true,
+      maxSectorExposurePct: 0.5,
+      optionsMaxConcurrentPositions: 2,
+    });
+    addSymbols([
+      { symbol: 'AAPL', sector: SECTOR },
+      { symbol: 'MSFT', sector: SECTOR },
+    ]);
+    openOptionsPaperPosition({
+      symbol: 'MSFT',
+      side: 'call',
+      contractSymbol: 'MSFT-open',
+      strike: 400,
+      expiration: '2026-09-18',
+      quantity: 2,
+      entryPrice: 3,
+      riskAmount: 600,
+      riskProfile: 'MODERATE',
+      rationale: 'holds $600 of premium in the sector',
+    });
+    armChain();
+
+    const out = await runOptionsPaperExecution([{ signal: optionSignal() }]);
+
+    expect(out[0]).toMatchObject({ ok: false });
+    expect(hasOpenOptionsPaperPosition('AAPL')).toBe(false);
+    expect(failedRules()).toContain('max_sector_exposure');
+    expect(exposurePoolOf('options_blocked')).toBe('options_only');
   });
 });

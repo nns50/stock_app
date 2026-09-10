@@ -880,17 +880,31 @@ export async function runLiveOptionsExecution(
   // their REAL side so an options candidate (always effectively 'long', per
   // candidateSide below) correctly nets against an existing SHORT equity
   // position instead of piling onto it.
+  // Exposure pool (2026-09-10). The sector / correlated caps compare NOTIONAL,
+  // and this list folds the equity book in at full stock notional while an
+  // option enters at premium paid. Both checks are bare — the pool is measured
+  // BEFORE the candidate is added — so once two same-sector equity positions
+  // are open (each ~50% of equity at the 2.5% stop cap, ~120% of equity in
+  // one sector against an 80% cap) NO option in that sector can pass at any
+  // size: INTC, 2026-09-09 12:04, $64 of premium refused against $6,183.90 of
+  // AMD + LITE stock. Same disease the slot split above cures, same cure: with
+  // optionsOwnExposurePool on, this book measures concentration against its
+  // OWN open positions only. runningRisk above stays shared either way — an
+  // option's max loss still has to fit under the aggregate-risk cap.
+  const ownPool = cfg.optionsOwnExposurePool;
   const runningPositions: { symbol: string; notional: number; side: 'long' | 'short' }[] = [
     ...optSnapshot.openPositions.map((p) => ({
       symbol: p.symbol,
       notional: optionsPositionNotionalUsd(p),
       side: 'long' as const,
     })),
-    ...eqSnapshot.openPositions.map((p) => ({
-      symbol: p.symbol,
-      notional: p.entryPrice * p.quantity,
-      side: p.side, // getLivePortfolioSnapshot() positions are already 'long'|'short'
-    })),
+    ...(ownPool
+      ? []
+      : eqSnapshot.openPositions.map((p) => ({
+          symbol: p.symbol,
+          notional: p.entryPrice * p.quantity,
+          side: p.side, // getLivePortfolioSnapshot() positions are already 'long'|'short'
+        }))),
   ];
   // Skip a symbol with an open position OR a still-working / not-yet-
   // materialized ENTRY order — see attemptLiveOptionsEntry's idempotency guard
@@ -1090,6 +1104,9 @@ export async function runLiveOptionsExecution(
         {
           failedRules: result.checks.filter((c) => !c.passed).map((c) => c.rule),
           checks: result.checks,
+          // Which pool the sector / correlated rows above were measured against,
+          // so a refusal can be read without knowing the switch's state that day.
+          exposurePool: ownPool ? 'options_only' : 'shared',
           quantity:
             'suggestedContracts' in result.sizing ? result.sizing.suggestedContracts : result.sizing.suggestedQuantity,
           premium: signal.kind === 'debit_spread' ? signal.netDebit : signal.premium,

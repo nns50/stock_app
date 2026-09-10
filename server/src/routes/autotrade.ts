@@ -295,6 +295,7 @@ const configBody = z.object({
   liveMaxOrderUsd: z.number().nonnegative().optional(),
   liveMaxExposurePct: z.number().nonnegative().optional(),
   optionsMaxConcurrentPositions: z.number().nonnegative().optional(),
+  optionsOwnExposurePool: z.boolean().optional(),
   equitySyncMaxJumpPct: z.number().nonnegative().optional(),
   liveDayBuyingPowerUsd: z.number().nonnegative().optional(),
   liveMaxDailyLossUsd: z.number().nonnegative().optional(),
@@ -596,6 +597,7 @@ autotradeRouter.put(
     if (body.liveMaxExposurePct !== undefined) patch.liveMaxExposurePct = body.liveMaxExposurePct;
     if (body.optionsMaxConcurrentPositions !== undefined)
       patch.optionsMaxConcurrentPositions = body.optionsMaxConcurrentPositions;
+    if (body.optionsOwnExposurePool !== undefined) patch.optionsOwnExposurePool = body.optionsOwnExposurePool;
     if (body.equitySyncMaxJumpPct !== undefined) patch.equitySyncMaxJumpPct = body.equitySyncMaxJumpPct;
     if (body.liveDayBuyingPowerUsd !== undefined) patch.liveDayBuyingPowerUsd = body.liveDayBuyingPowerUsd;
     if (body.liveMaxDailyLossUsd !== undefined) patch.liveMaxDailyLossUsd = body.liveMaxDailyLossUsd;

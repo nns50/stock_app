@@ -209,6 +209,7 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     liveAllowNakedShort: false,
     liveMaxExposurePct: 100,
     optionsMaxConcurrentPositions: 0,
+    optionsOwnExposurePool: false,
     equitySyncMaxJumpPct: 5,
     liveDayBuyingPowerUsd: 0,
     liveProbationTrades: 20,

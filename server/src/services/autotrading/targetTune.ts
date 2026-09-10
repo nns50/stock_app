@@ -629,6 +629,9 @@ export const NEVER_TUNED_KEYS = [
   // A slot reservation for the evidence track, not a risk parameter — the
   // combined aggregate-RISK budget the tune does calibrate is untouched by it.
   'optionsMaxConcurrentPositions',
+  // Its exposure-pool twin: WHICH positions the sector / correlated caps count,
+  // not how much concentration is tolerable. The % caps themselves stay tunable.
+  'optionsOwnExposurePool',
   // Structural facts about the CHART, not about a desired return. How far a
   // name travels in a session, how much volume marks a real breakout, and how
   // much history counts as structure are all properties of the market; a tune
