@@ -1778,7 +1778,16 @@ equally-weighted cards in the order they happened to be built:
   **Options trailing start (%)** and **Options trailing distance (%)** (once gain
   reaches the trailing-start %, the floor trails the trailing-distance percentage
   points behind the best gain % seen since entry, ratcheting only favorably —
-  independent of the breakeven trigger), and **Options partial exit trigger (%)**
+  Since 2026-09-10, once the clock says an options position must be flat today
+  (the short-dated hard exit, the end-of-day flatten, or max hold days), a
+  closing order still sitting at the broker is re-checked rather than trusted:
+  if its price is above where the contract can now be sold it is cancelled and
+  replaced at the current price, and if it is still sellable it is left alone so
+  a recovering contract is never sold off cheaply. Before the clock runs out
+  nothing changes, and a close is never cancelled without one going straight
+  back in its place.
+
+  Also on the options side: **Options partial exit trigger (%)**
   with **Options partial exit size (%)** (once gain reaches the trigger, close
   that percentage of the contracts once — the rest keeps running toward its
   original take-profit or continues trailing). All seven default to
