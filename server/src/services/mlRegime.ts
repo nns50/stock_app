@@ -149,6 +149,10 @@ export const ML_REGIME_CHANGED_ACTION = 'ml_regime_changed';
 export const ML_REGIME_DRIFT_ACTION = 'ml_regime_drift';
 export const ML_REGIME_FETCH_FAILED_ACTION = 'ml_regime_fetch_failed';
 export const ML_REGIME_OVERRIDE_ACTION = 'ml_regime_override';
+/** Rule 3 of the enabling rules (2026-09-10): a recorded comparison of the
+ *  Python `regime:predict` with the persisted reading for one day
+ *  (services/mlRegimeReadiness.ts). */
+export const ML_REGIME_PARITY_ACTION = 'ml_regime_parity';
 
 // --- pure ------------------------------------------------------------------
 
@@ -304,7 +308,9 @@ function journaledToday(action: string, today: string, key?: string): boolean {
   });
 }
 
-function journalOncePerDay(action: string, today: string, detail: Record<string, unknown>, key?: string): void {
+/** One journal row per (action, ET day, optional key) — `detail.date` is the
+ *  day it is about, which for a back-filled parity check is not today. */
+export function journalOncePerDay(action: string, today: string, detail: Record<string, unknown>, key?: string): void {
   if (journaledToday(action, today, key)) return;
   logAutotradeEvent({
     stage: 'config',

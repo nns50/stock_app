@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { asyncHandler, HttpError, param, parseQuery } from './_helpers';
+import { asyncHandler, HttpError, param, parseBody, parseQuery } from './_helpers';
 import { getProvider, getProviderStatus } from '../providers';
 import { CachingProvider } from '../providers/CachingProvider';
 import { Timeframe } from '../providers/types';
@@ -10,6 +10,8 @@ import { smaSeries } from '../indicators/indicators';
 import { computeIndicators, defaultScreenerConfig } from '../indicators/screener';
 import { computeMarketRegime } from '../services/marketRegime';
 import { getMarketRegime } from '../services/mlRegime';
+import { getMlRegimeReadiness, recordMlRegimeParityCheck } from '../services/mlRegimeReadiness';
+import { ML_REGIMES } from '../services/regimeModel';
 
 export const marketRouter = Router();
 
@@ -50,6 +52,38 @@ marketRouter.get(
   asyncHandler(async (req, res) => {
     const q = parseQuery(regimeQuery, req);
     res.json(await getMarketRegime({ force: q.force }));
+  }),
+);
+
+// The enabling rules, counted by the app (2026-09-10; services/mlRegimeReadiness.ts,
+// docs/AUTOTRADING_SPEC.md §"Pre-committed enabling rules"): rules 2–4 over the
+// last 20 sessions' persisted readings. Rows only — never a fetch. The same
+// object rides on GET /api/autotrade/dashboard.
+marketRouter.get('/market/regime-ml/readiness', (_req, res) => {
+  res.json(getMlRegimeReadiness());
+});
+
+// Rule 3, recorded: the Python `regime:predict` reading for one ET day,
+// compared with the persisted reading for that day and stored beside it.
+// 404 when no reading exists for the day — there is nothing to compare.
+const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+const parityBody = z.object({
+  etDate: isoDate,
+  asOf: isoDate.nullable(),
+  regime: z.enum(ML_REGIMES),
+  probabilities: z.object({
+    high_vol_bearish: z.number().finite(),
+    low_vol_bullish: z.number().finite(),
+    sideways: z.number().finite(),
+  }),
+});
+marketRouter.post(
+  '/market/regime-ml/parity',
+  asyncHandler(async (req, res) => {
+    const body = parseBody(parityBody, req);
+    const result = recordMlRegimeParityCheck(body);
+    if (!result) throw new HttpError(404, `no reading persisted for ${body.etDate}`);
+    res.json(result);
   }),
 );
 

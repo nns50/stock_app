@@ -448,6 +448,8 @@ CREATE TABLE IF NOT EXISTS ml_regime_readings (
   as_of TEXT,
   reading TEXT NOT NULL,
   model_version TEXT,
+  parity_agrees INTEGER,   -- rule 3 of the enabling rules (2026-09-10): did regime:predict agree with this row? null = not checked
+  parity_detail TEXT,      -- JSON: what was submitted, what the server held when compared, the max |diff|
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -1205,6 +1207,13 @@ function migrate(): void {
   if (!hasApp('market_atr_pct')) {
     db.exec('ALTER TABLE autotrade_paper_positions ADD COLUMN market_atr_pct REAL');
   }
+  // The parity verdict on a market-regime reading (2026-09-10; db/mlRegimeReadings.ts):
+  // the Python regime:predict compared with the row it checked, stored beside
+  // it. Nullable, and never written by the loop — only the parity route sets it.
+  const mlReadingCols = db.prepare('PRAGMA table_info(ml_regime_readings)').all() as { name: string }[];
+  const hasReadingCol = (c: string) => mlReadingCols.some((col) => col.name === c);
+  if (!hasReadingCol('parity_agrees')) db.exec('ALTER TABLE ml_regime_readings ADD COLUMN parity_agrees INTEGER');
+  if (!hasReadingCol('parity_detail')) db.exec('ALTER TABLE ml_regime_readings ADD COLUMN parity_detail TEXT');
   // Banked partial-exit P&L (2026-09-05) — see the DDL comment. The backfill
   // matters as much as the column: 17 of 70 closed rows had already scaled out
   // when this was found, and without repairing them the expectancy multipliers

@@ -1309,7 +1309,12 @@ equally-weighted cards in the order they happened to be built:
   closed stock trades carry a tightened target, the goal card adds a line pointing at the
   **Regime tighten** ledger (Journal › Analytics), where the tighten's counterfactual is
   measured by a rule written in advance. Leave
-  the overlay off until the enabling rules in the model card are met; the plain-English
+  the overlay off until the enabling rules in the model card are met — the app counts them
+  for you (2026-09-10): an **Enabling rules** line under the overlay switch, and again under
+  the goal card on the monitoring view, reads _N of 20 sessions with a reading · switches in
+  any 5 sessions (limit 2) · inert streak · parity agreed · model and retrain-by date_, then
+  **Ready** or the first blocker. "Ready" covers the countable rules; the grid's cell is
+  recorded by hand in the decision log, and the line says so. The plain-English
   walkthrough with worked numbers is [AUTOTRADE_RISK_SETTINGS.md](AUTOTRADE_RISK_SETTINGS.md)
   §"Regime size cut — three triggers, one cut". Next, **same-day re-entry
   size cut (%)** (2026-09-08, off by default) trims an entry into a name the loop

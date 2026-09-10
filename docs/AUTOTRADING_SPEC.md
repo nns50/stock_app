@@ -7720,3 +7720,56 @@ returned, so that first entry can be read rather than reconstructed.
 
 No bespoke settings control: `AllSettingsSection` renders every config field, and
 the sibling flag `liveScaleOutEnabled` has no hand-written toggle either.
+
+---
+
+## 2026-09-10 — the enabling rules, counted by the app
+
+**What shipped.** Rules 2–4 of the observer section's pre-committed enabling rules (and their
+restatement under the size cut) are now computed by the server from what it already persists,
+served as one object by `GET /api/market/regime-ml/readiness` and carried on the dashboard as
+`mlRegimeReadiness`, and printed on the Auto page beside the overlay switch on both views —
+the one place the operator would decide to flip it. Rule 3 gained a record: a daily check runs
+the Python `regime:predict` with the server's own `asOf`, `previous` and `threshold` for each
+counted session and POSTs the result to `/api/market/regime-ml/parity`; the server compares
+(same data date, same label, probabilities within 1e-6), stores the verdict on the reading's
+row beside the vector it compared, and journals `ml_regime_parity` once per day and verdict.
+
+**The definitions, chosen once** (`server/src/services/mlRegimeReadiness.ts`, with the
+model card's §5a "Readiness" saying the same):
+
+- A session **counts** when its persisted reading is actionable — known and not stale, the
+  sizer's own `actionableRegime` — came from the model rather than the dev override, and was
+  read by the **current** model version. A retrain restarts the count; that is what rule 4's
+  "re-run rule 1" already implies.
+- **"Per week" is any 5 consecutive sessions.** A calendar week would pass two switches on a
+  Friday and two more on the Monday; the field is named `maxIn5Sessions` so nobody reads it
+  as a week. Switches come from the journal's `ml_regime_changed` rows, not the row's
+  `switched` flag — the day's last classification overwrites the flag, the journal keeps the
+  intraday flip. A weekend flip lands on the next session.
+- **An inert streak, not a stale streak.** Rule 4's "5 stale sessions in a row" is read as five
+  consecutive sessions the overlay had nothing to act on: a stale reading, an `unknown` one,
+  or no row at all — the loop being down is inert too, and reverting to OFF is the
+  conservative side. Today is skipped only while it has no row yet.
+- **A parity verdict describes the reading it compared.** The loop overwrites a day's reading
+  on every refresh (hourly until both series carry the prior close, and on `?force=true`), so
+  agreement is re-derived on every read from the stored server vector against the row's
+  current one; a reading refreshed after its check is unchecked again, and the readiness
+  object lists exactly which sessions still need a check, with the inputs `regime:predict`
+  must be given.
+- **Drift and an overdue retrain block readiness.** Stricter than the rules' wording, on
+  purpose: a model that no longer describes the tape is not one to switch a size cut on to.
+
+**What this does NOT do.**
+
+- It does not know whether the grid ran. Rule 1 is the decision-log row under "backtest parity
+  for the overlay", filled by hand; `ready` means rules 2–4 hold and the object carries a
+  literal saying so. The daily check reads the row itself.
+- It flips nothing. A disagreement, a drift day or an inert streak is a finding on the page and
+  in the journal; the switch stays where the operator left it.
+- It adds no config field, so none of the three config guards changed. It never fetches: the
+  route and the dashboard read rows only.
+
+**Read on 2026-09-10.** The deployed box's first `ml_regime_read` was journaled on 2026-09-09
+(`low_vol_bullish`, as of 2026-09-08, model `2026.09.1`), so the count started at 1 of 20; the
+overlay sits at its defaults with live trading on.

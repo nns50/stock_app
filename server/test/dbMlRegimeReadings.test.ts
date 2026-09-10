@@ -5,6 +5,8 @@ import {
   getMlRegimeReading,
   getPreviousKnownMlRegime,
   listMlRegimeReadings,
+  MlRegimeParityDetail,
+  recordMlRegimeParity,
   saveMlRegimeReading,
 } from '../src/db/mlRegimeReadings';
 
@@ -96,5 +98,53 @@ describe('ml_regime_readings', () => {
     expect(listMlRegimeReadings({ since: '2026-09-02' }).map((r) => r.etDate)).toEqual(['2026-09-03']);
     expect(listMlRegimeReadings().map((r) => r.etDate)).toEqual(['2026-09-01', '2026-09-03']);
     expect(getMlRegimeReading('2026-09-02')).toBeNull();
+    expect(listMlRegimeReadings({ until: '2026-09-02' }).map((r) => r.etDate)).toEqual(['2026-09-01']);
+    expect(listMlRegimeReadings({ since: '2026-09-01', until: '2026-09-01' }).map((r) => r.etDate)).toEqual([
+      '2026-09-01',
+    ]);
+  });
+
+  it("stores rule 3's verdict beside the reading, and a refresh of the reading leaves it in place", () => {
+    const P = { high_vol_bearish: 0.1, low_vol_bullish: 0.7, sideways: 0.2 };
+    const detail: MlRegimeParityDetail = {
+      checkedAt: 5,
+      submitted: { regime: 'sideways', asOf: '2026-09-09', probabilities: P },
+      server: { regime: 'sideways', asOf: '2026-09-09', probabilities: P, previous: null, threshold: 0.6 },
+      maxAbsDiff: 0,
+      reasons: [],
+    };
+    // Nothing to compare against yet.
+    expect(recordMlRegimeParity('2026-09-10', { agrees: true, detail })).toBe(false);
+    saveMlRegimeReading(
+      {
+        etDate: '2026-09-10',
+        regime: 'sideways',
+        asOf: '2026-09-09',
+        reading: reading('sideways'),
+        modelVersion: 'v1',
+      },
+      100,
+    );
+    expect(getMlRegimeReading('2026-09-10')).toMatchObject({ parityAgrees: null, parityDetail: null });
+    expect(recordMlRegimeParity('2026-09-10', { agrees: false, detail })).toBe(true);
+    expect(getMlRegimeReading('2026-09-10')).toMatchObject({ parityAgrees: false, parityDetail: detail });
+    // The loop's mid-morning refresh overwrites the reading, not the verdict —
+    // whether the verdict still describes the new reading is the readiness
+    // computation's question (services/mlRegimeReadiness.ts).
+    saveMlRegimeReading(
+      {
+        etDate: '2026-09-10',
+        regime: 'low_vol_bullish',
+        asOf: '2026-09-09',
+        reading: reading('low_vol_bullish'),
+        modelVersion: 'v1',
+      },
+      200,
+    );
+    const row = getMlRegimeReading<{ regime: string }>('2026-09-10');
+    expect(row).toMatchObject({ regime: 'low_vol_bullish', parityAgrees: false, parityDetail: detail, updatedAt: 200 });
+    // A verdict whose JSON cannot be read is dropped, not thrown on.
+    db.prepare('UPDATE ml_regime_readings SET parity_detail = ? WHERE et_date = ?').run('{not json', '2026-09-10');
+    expect(getMlRegimeReading('2026-09-10')).toMatchObject({ parityAgrees: false, parityDetail: null });
   });
 });

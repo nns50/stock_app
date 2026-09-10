@@ -58,6 +58,7 @@ import type {
   TuneBand,
   TuneBasis,
   TuneEvidence,
+  MlRegimeReadiness,
   WalkForwardResponse,
   WalkForwardWindowResult,
 } from '../api/types';
@@ -1719,6 +1720,30 @@ function BookRow({ label, hint, cells }: { label: string; hint?: string; cells: 
   );
 }
 
+/** The enabling rules, counted (2026-09-10): rules 2–4 from the app's own
+ *  readings, in one line, wherever the operator would decide to flip the
+ *  overlay. Rule 1 (the grid) is the decision log's, and the line says so. */
+function RegimeReadinessLine({ r }: { r: MlRegimeReadiness }) {
+  const checkedOf = r.sessionsWithReading;
+  return (
+    <p className="text-[11px] text-slate-500" data-testid="ml-regime-readiness">
+      <span className="text-slate-400">Enabling rules:</span> {r.sessionsWithReading} of {r.sessionsRequired} sessions
+      with a reading · {r.switches.maxIn5Sessions} {r.switches.maxIn5Sessions === 1 ? 'switch' : 'switches'} in any 5
+      sessions (limit {r.switches.limitPerWeek}) · inert streak {r.inertStreak} · parity {r.parity.agreed} of{' '}
+      {checkedOf} agreed{r.parity.disagreed > 0 ? `, ${r.parity.disagreed} disagreeing` : ''} · model{' '}
+      {r.modelVersion ?? 'none'}
+      {r.retrainBy ? `, retrain by ${r.retrainBy}` : ''} · grid: see the decision log.{' '}
+      {r.ready ? (
+        <span className="text-emerald-400">
+          Ready — rules 2–4 hold; flip only with the grid's cell from the decision log.
+        </span>
+      ) : (
+        <span className="text-amber-400">Not ready — {r.blockers[0]}.</span>
+      )}
+    </p>
+  );
+}
+
 function MonitoringDashboard({
   dash,
   portfolioGreeks,
@@ -1863,6 +1888,7 @@ function MonitoringDashboard({
           Journal › Analytics › Regime tighten — the pre-committed reading needs {rt.minForReading}.
         </p>
       )}
+      <RegimeReadinessLine r={dash.mlRegimeReadiness} />
       {dash.symbolCooldowns.length > 0 && (
         <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">
           <h4 className="text-xs uppercase tracking-wide text-slate-400 mb-1">Symbol cooldowns</h4>
@@ -4729,6 +4755,11 @@ export default function AutoTradePage() {
                       </span>
                     </span>
                   </label>
+                  {dashboard.data && (
+                    <div className="sm:col-span-2">
+                      <RegimeReadinessLine r={dashboard.data.mlRegimeReadiness} />
+                    </div>
+                  )}
                   <Field
                     label="ML regime size cut (%)"
                     hint="% cut to risk-per-trade while the effective regime is High Volatility/Bearish (the model's reading, or a shock day). Default 35 — below the ATR trigger's cut on purpose: the model's High-Vol state is a broad condition and cuts must be monotone in severity. 100 skips every new entry in that regime. Needs ML regime overlay on."
