@@ -7816,3 +7816,41 @@ model card's §5a "Readiness" saying the same):
 **Read on 2026-09-10.** The deployed box's first `ml_regime_read` was journaled on 2026-09-09
 (`low_vol_bullish`, as of 2026-09-08, model `2026.09.1`), so the count started at 1 of 20; the
 overlay sits at its defaults with live trading on.
+
+---
+
+## 2026-09-10 — a stop the sync had to price itself was booked as a human sale
+
+`syncClosedWebullPositions()` closes a position the broker no longer holds, pricing the
+exit from a live quote because it never saw the fill. Every one of those was booked
+`exitReason: 'manual'`, on the reasoning that "everything reaching this point closed
+outside the loop's own order flow". That is true of a human sale, and false of the one
+case the sync's own deferral is built around: a resting BRACKET leg filled, the entry
+order's reconcile did not catch up inside the grace window
+(`MISS_CONFIRM_THRESHOLD` + `BRACKET_RECONCILE_GRACE_SYNCS`), and the sync closed it at
+an estimate.
+
+**SWKS, 2026-09-10.** 11 shares closed at a quoted 83.845 against a ratcheted stop of
+83.85 — half a cent above — and journaled as `manual`. The money was right; the
+attribution was not, and every exit-reason count the analytics draw (the excursion
+replay's `reasons` mix, the "which mechanism makes the money" breakdown) silently
+inherited the error. Note this is the same position whose deferral note already promised
+the reconcile would book "whether it was the stop or the target": the sync knew it was a
+bracket leg and threw the fact away.
+
+`services/trading/bracketExitReason.ts` (pure) now answers which leg, from the levels the
+bracket was resting at:
+
+- at or through the stop → `stop`; at or through the target → `target`
+- between the two, or within tolerance of both → `null`, and the caller keeps `manual`
+- tolerance is 0.1% of the level for quote drift, capped at 10% of the stop-to-target
+  span so one level's window can never reach the other on a tight bracket
+- short positions mirror both directions
+
+Two deliberate limits. The "a bracket leg filled" FACT is supplied by the caller from
+`bracketPendingPositionIds`, never inferred — a human selling near the stop must not be
+relabelled. And an expired option (priced at 0, no bracket explains it) is excluded. The
+exit's note records that the reason was inferred rather than observed, and
+`position_reconciled_from_broker` now carries `exitReasons` so the journal shows what the
+close was actually booked as.
+

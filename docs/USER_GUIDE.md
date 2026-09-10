@@ -799,7 +799,13 @@ trades.
   breakdown above — they previously carried no time at all and were silently absent
   from it. Live bracket exits record an **exit reason** (`stop` / `target` /
   `time_exit`) on the exit itself, so you can see *which exit mechanism* is making or
-  losing the money instead of inferring it from prices. All of it is capture-only —
+  losing the money instead of inferring it from prices. Since 2026-09-10 that holds even
+  when the broker sync had to close the position itself: if a resting bracket leg filled
+  and the app never saw the fill, the exit is still labelled `stop` or `target` when its
+  estimated price lands at or through exactly one of those levels, and the exit's note
+  says the reason was inferred rather than observed. A price sitting between the two
+  levels, or a position with no bracket behind it, stays `manual` — the label is only
+  applied where the bracket itself explains it. All of it is capture-only —
   nothing about entries, sizing, or exits changes — and it flows through the CSV/JSON
   export (new `entryTime`, `entryScore`, `marketRegime`, `mlRegime`, `regimeTargetFactor`,
   `marketAtrPct`, and `lastExitReason` columns) so a month of trades can be sliced by
