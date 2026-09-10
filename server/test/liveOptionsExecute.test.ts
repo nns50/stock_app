@@ -33,6 +33,8 @@ import { initDb, db } from '../src/db';
 import { UNKNOWN_PLACEMENT_RETIRE_GRACE_MS } from '../src/services/trading/reconcile';
 import { setAutotradeConfig, defaultAutotradeConfig, AutotradeConfig } from '../src/db/autotradeConfig';
 import { setTradingConfig } from '../src/db/trading';
+import { createPosition } from '../src/db/positions';
+import { addSymbols } from '../src/db/universe';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { listIntents, createIntent } from '../src/db/orders';
 import { recordLiveOrder } from '../src/db/autotradeLiveOrders';
@@ -220,7 +222,7 @@ beforeEach(() => {
     'DELETE FROM autotrade_config; DELETE FROM trading_config; DELETE FROM autotrade_events; ' +
       'DELETE FROM autotrade_live_orders; DELETE FROM autotrade_live_options_orders; ' +
       'DELETE FROM autotrade_live_options_positions; DELETE FROM order_events; DELETE FROM order_intents; ' +
-      'DELETE FROM position_exits; DELETE FROM positions; DELETE FROM webull_miss_streak;',
+      'DELETE FROM position_exits; DELETE FROM positions; DELETE FROM webull_miss_streak; DELETE FROM universe;',
   );
   setTradingConfig({ enabled: true, killSwitch: false });
   config.trading.placeEnabled = true;
@@ -943,6 +945,122 @@ describe('runLiveOptionsExecution', () => {
       // loop must not add a second row for the same refusal.
       expect(blockedEvents('live_options_entry_refused')).toHaveLength(0);
     });
+  });
+});
+
+// The one live options candidate in two sessions that cleared the premium
+// ceiling (INTC, 2026-09-09 12:04, 2 contracts, $64 of premium) was refused on
+// max_sector_exposure / max_correlated_exposure: "$6,183.90 already in
+// Information Technology vs cap $4,112.54" — and every dollar of that pool was
+// AMD + LITE STOCK. The pool is bare (measured before the candidate is added),
+// so once two same-sector equity positions are open no option in that sector
+// can pass at any size. Same starvation the slot split fixed, one layer down.
+describe('optionsOwnExposurePool — the options book measures concentration against its own positions', () => {
+  const SECTOR = 'Information Technology';
+  const blockedRows = () => listAutotradeEvents({}).filter((e) => e.action === 'live_options_risk_blocked');
+  const blockedDetail = () => JSON.parse(blockedRows()[0].detail!) as { failedRules: string[]; exposurePool: string };
+
+  /** Two same-sector live equity positions, each 60% of a $100k account —
+   *  120% of equity in one sector against an 80% cap, the way a normal morning
+   *  leaves the book once the bare pool check has admitted the second one.
+   *  Stops sit a dime away so their open RISK stays trivial ($60 each): the
+   *  point is that the sector pool, not the shared risk budget, is what bites. */
+  function fillSectorWithStock() {
+    addSymbols([
+      { symbol: 'AAPL', sector: SECTOR },
+      { symbol: 'AMD', sector: SECTOR },
+      { symbol: 'LITE', sector: SECTOR },
+    ]);
+    for (const symbol of ['AMD', 'LITE']) {
+      createPosition({
+        assetType: 'stock',
+        symbol,
+        side: 'long',
+        quantity: 600,
+        entryPrice: 100,
+        entryDate: '2026-01-05',
+        stopPrice: 99.9,
+        targetPrice: 110,
+        tags: ['autotrade'],
+      });
+    }
+  }
+  const poolConfig = (overrides: Partial<AutotradeConfig> = {}) =>
+    liveConfig({
+      maxSectorExposurePct: 80,
+      maxCorrelatedExposurePct: 80,
+      maxAggregateOpenRiskPct: 10,
+      // Own slots, as in production — slots are not what is under test here.
+      optionsMaxConcurrentPositions: 1,
+      ...overrides,
+    });
+  const armBroker = (orderId: string) => {
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId });
+  };
+
+  it('is refused at ANY size while the pool is shared — the 2026-09-09 INTC refusal', async () => {
+    setAutotradeConfig(poolConfig({ optionsOwnExposurePool: false }));
+    fillSectorWithStock();
+    armBroker('WB-SHARED');
+
+    const outcomes = await runLiveOptionsExecution([{ signal: optionSignal() }]);
+
+    expect(outcomes[0]).toMatchObject({ ok: false, reason: expect.stringMatching(/risk check/i) });
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(blockedRows()).toHaveLength(1);
+    expect(blockedDetail().failedRules).toContain('max_sector_exposure');
+    expect(blockedDetail().exposurePool).toBe('shared');
+  });
+
+  it('opens once the options book measures the pool against its own positions only', async () => {
+    setAutotradeConfig(poolConfig({ optionsOwnExposurePool: true }));
+    fillSectorWithStock();
+    armBroker('WB-OWN');
+
+    const outcomes = await runLiveOptionsExecution([{ signal: optionSignal() }]);
+
+    expect(outcomes[0]).toMatchObject({ symbol: 'AAPL', ok: true });
+    expect(mockPlaceOrder).toHaveBeenCalledTimes(1);
+    expect(blockedRows()).toHaveLength(0);
+  });
+
+  it('leaves the aggregate RISK budget shared — an equity book that has spent it still refuses', async () => {
+    // Own pool for CONCENTRATION, not for money. The same two stock positions
+    // carry $120 of open risk; with $100 of aggregate room that alone refuses.
+    setAutotradeConfig(poolConfig({ optionsOwnExposurePool: true, maxAggregateOpenRiskPct: 0.1 }));
+    fillSectorWithStock();
+    armBroker('WB-RISK');
+
+    const outcomes = await runLiveOptionsExecution([{ signal: optionSignal() }]);
+
+    expect(outcomes[0]).toMatchObject({ ok: false });
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(blockedDetail().failedRules).toContain('max_aggregate_open_risk');
+    expect(blockedDetail().failedRules).not.toContain('max_sector_exposure');
+    expect(blockedDetail().exposurePool).toBe('options_only');
+  });
+
+  it('still counts its OWN options positions against the sector cap — a budget, not an exemption', async () => {
+    // $500 of sector room; an open MSFT call in the same sector holds $600 of
+    // premium (2 × $3 × 100). Two own slots so the slot cap stays out of it.
+    setAutotradeConfig(
+      poolConfig({ optionsOwnExposurePool: true, maxSectorExposurePct: 0.5, optionsMaxConcurrentPositions: 2 }),
+    );
+    addSymbols([
+      { symbol: 'AAPL', sector: SECTOR },
+      { symbol: 'MSFT', sector: SECTOR },
+    ]);
+    openLivePosition({ symbol: 'MSFT', contractSymbol: 'MSFT-open', quantity: 2, entryPrice: 3 });
+    armBroker('WB-OWN-FULL');
+
+    const outcomes = await runLiveOptionsExecution([{ signal: optionSignal() }]);
+
+    expect(outcomes[0]).toMatchObject({ ok: false });
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(blockedDetail().failedRules).toContain('max_sector_exposure');
+    expect(blockedDetail().exposurePool).toBe('options_only');
   });
 });
 

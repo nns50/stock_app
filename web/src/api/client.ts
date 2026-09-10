@@ -558,6 +558,7 @@ export const client = {
     liveMaxOrderUsd?: number;
     liveMaxExposurePct?: number;
     optionsMaxConcurrentPositions?: number;
+    optionsOwnExposurePool?: boolean;
     equitySyncMaxJumpPct?: number;
     liveDayBuyingPowerUsd?: number;
     liveMaxDailyLossUsd?: number;

@@ -1765,6 +1765,7 @@ export interface AutotradeConfig {
   liveAllowNakedShort: boolean;
   liveMaxExposurePct: number;
   optionsMaxConcurrentPositions: number;
+  optionsOwnExposurePool: boolean;
   equitySyncMaxJumpPct: number;
   liveDayBuyingPowerUsd: number;
   liveProbationTrades: number;

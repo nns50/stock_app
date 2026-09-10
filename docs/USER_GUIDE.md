@@ -1269,7 +1269,11 @@ equally-weighted cards in the order they happened to be built:
   to the correlation cap right above it — % of equity cap on capital already
   concentrated in the candidate's own universe sector, regardless of price correlation;
   two names in the same sector can carry low correlation today and still share the same
-  macro risk), **max trades per day** (a hard cap on
+  macro risk. Both of these caps measure the pool _before_ the candidate is added and count
+  stock at full notional, so two same-sector stocks close that sector to options at any
+  size; `optionsOwnExposurePool` — an API-only setting, off by default — makes the options
+  book measure them against its own open options positions instead, leaving the shared
+  aggregate-risk cap unchanged), **max trades per day** (a hard cap on
   new entries, paper and live, stocks and options, all combined), and **regime ATR
   threshold** with **regime size cut** (a softer, graduated companion to **max market
   ATR** below: once the broad-market proxy's own ATR% crosses this LOWER threshold,

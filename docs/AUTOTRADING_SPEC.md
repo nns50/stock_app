@@ -1448,6 +1448,16 @@ on its own timeline regardless of this options work.
     "notional" for a long option is its premium paid (= its own risk amount) — a
     deliberate simplification, not a delta-adjusted/leveraged exposure figure, flagged in
     code as such since nothing in this codebase computes one today.
+    **`optionsOwnExposurePool` (2026-09-10, default false):** that pool folds the EQUITY book
+    in at full stock notional, and both checks are bare (the pool is measured before the
+    candidate is added), so two same-sector equity positions — ~50% of equity each at the
+    2.5% stop cap — close the sector to options at any size (the 2026-09-09 INTC refusal:
+    $64 of premium against $6,183.90 of AMD + LITE stock). When on, both options paths
+    (`liveOptionsExecute.ts`, `optionsExecute.ts`) build the sector / correlated pool from
+    the options book's own open positions only, in premium terms; the shared aggregate-risk
+    budget is untouched, mirroring `optionsMaxConcurrentPositions`'s slot split. Risk-check
+    journal rows carry `exposurePool: 'shared' | 'options_only'` so a refusal reads without
+    knowing the switch's state that day.
     **First-cut scope, mirroring phase 9's own scope reduction**: only single-leg long
     calls/puts were sized here initially; `computeSpreadSizing()` stayed unused under
     `services/autotrading/` until a debit-spread SIGNAL shape existed to size — see the
