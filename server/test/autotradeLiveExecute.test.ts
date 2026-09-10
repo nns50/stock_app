@@ -848,6 +848,45 @@ describe('runLiveExecution — funding capacity and unplaceable shorts', () => {
     expect(mockAccountState).not.toHaveBeenCalled(); // never even loaded the account
   });
 
+  it('journals the declined short once per symbol per day, with the numbers a later decision needs', async () => {
+    // Task #61. Until 2026-09-10 the skip above left NO journal row, so the day
+    // the operator asked "is it worth turning on shorting" (785 of 1,000
+    // signals were SELL, 15 of 17 of those names closed below their open) the
+    // journal could not say how many live-eligible shorts the live book had
+    // declined, or which. Asserted at the EVENT, and asserted once-per-day: a
+    // row per tick per symbol is how excluded_re became 31% of the table (#43).
+    setAutotradeConfig({ ...cfgFields, liveAllowNakedShort: false });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }));
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    const short = signal({ side: 'sell', entry: 100, stop: 105, target: 90 });
+
+    await runLiveExecution([{ signal: short }]);
+    await runLiveExecution([{ signal: short }]); // the next tick, same ET day
+
+    const rows = listAutotradeEvents({ stage: 'execution', actions: ['live_short_skipped'] });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].symbol).toBe('AAPL');
+    expect(JSON.parse(rows[0].detail!)).toMatchObject({
+      score: short.score,
+      entry: 100,
+      stop: 105,
+      target: 90,
+      reason: 'liveAllowNakedShort is off',
+    });
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('journals nothing for a short that is actually allowed', async () => {
+    setAutotradeConfig({ ...cfgFields, liveAllowNakedShort: true });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }));
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-SHORT' });
+
+    await runLiveExecution([{ signal: signal({ side: 'sell', entry: 100, stop: 105, target: 90 }) }]);
+
+    expect(listAutotradeEvents({ stage: 'execution', actions: ['live_short_skipped'] })).toEqual([]);
+  });
+
   it('lets the same short through to the broker once naked shorts are on', async () => {
     // The skip must be a consequence of the flag, not a new hard block —
     // otherwise turning shorts on would silently do nothing.
