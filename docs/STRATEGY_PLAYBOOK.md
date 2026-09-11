@@ -569,6 +569,10 @@ collision against the trade and models no slippage, so a `better` here is a pess
 reading of the shape, not a promise of its dollars — and the live scale-out's own
 mechanics (reduce the bracket first, then sell) are not in it.
 
+The first reading (2026-09-11, 60 paired trades) put all three shapes inside the noise,
+so the settings stayed; the rows are in the spec's 2026-09-11 section, with the next
+reading due at 80 paired trades.
+
 ### The live conviction floor
 
 The screener's score is not decoration — it predicts outcome. Measured 2026-09-06 over the
