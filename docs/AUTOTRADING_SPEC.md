@@ -7906,4 +7906,25 @@ minutes. It changes no config and no live path: the replay is a reader.
 
 | date | candidate | current mean R | candidate mean R | paired diff (95% CI) | trades | verdict | action |
 | ---- | --------- | -------------- | ---------------- | -------------------- | ------ | ------- | ------ |
-| —    | —         | —              | —                | —                    | —      | not run yet | the first run is recorded here before any setting moves |
+| 2026-09-11 | bank 50% at 0.5R (`cScaleOutR=0.5&cScaleOutPct=50`) | 0.08 | 0.07 | −0.01 (−0.04 to +0.02), p 0.55 | 60 | inside_noise | kept 0.25R / 67%: 16 of the 60 trades reach 0.5R, against 39 that reach 0.25R |
+| 2026-09-11 | scratch at 60 min (`cStagnationMinutes=60`) | 0.08 | 0.07 | −0.01 (−0.03 to +0.01), p 0.53 | 60 | inside_noise | kept 90 min: 26 stagnation exits against 16, at the same R |
+| 2026-09-11 | neither (`cScaleOutR=0&cStagnationMinutes=0`) | 0.08 | 0.06 | −0.02 (−0.07 to +0.04), p 0.47 | 60 | inside_noise | kept both |
+| 2026-09-11 | isolation, no scale-out (`cScaleOutR=0`) | 0.08 | 0.06 | −0.02 (−0.07 to +0.04), p 0.48 | 60 | inside_noise | the scale-out's own share of the current shape |
+| 2026-09-11 | isolation, no timer (`cStagnationMinutes=0`) | 0.08 | 0.08 | 0.00 (0.00 to +0.01), p 1.00 | 60 | inside_noise | the timer costs nothing in R; what it buys, the slot some three hours earlier, a per-trade replay cannot price |
+
+**The first reading, 2026-09-11.** The deployed book: 131 closed stock trades, of which
+25 undated, 32 not same-session and 14 unreplayable, leaving 60 paired same-session
+trades entered 2026-07-15 to 2026-09-10; the current shape is breakeven at 0.25R, a
+0.5R trail from 0.5R, target 2R, bank 67% at 0.25R, scratch at 90 minutes below 0.5R.
+Every shape lands inside the noise, so by the rule above nothing moves:
+`partialExitRMultiple` stays 0.25, `partialExitPct` 67, `stagnationExitMinutes` 90, and
+the question is asked again once the paired count reaches 80.
+
+Two things the run says beyond its verdicts. The book's peaks are shallow: of the 60
+trades, 39 reach 0.25R, 16 reach 0.5R, 5 reach 1R and 1 reaches 2R, which is why banking
+later banks less often and nets nothing, and why the timer's 16 scratches replay at the
+same R the clock would have given them. And the current shape replays at 0.08R against
+a realized 0.01R over the same 60 trades, a gap larger than any shape's effect. It is
+not a pure execution gap: 40 of the 60 were entered before the live scale-out shipped on
+2026-09-08, under whatever multiples the tuner held at the time, so the realized figure
+mixes past policies with fills. However it splits, the lever is not in the exit shape.
