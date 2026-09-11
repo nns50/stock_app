@@ -57,6 +57,8 @@ function positionFixture(o: Partial<Position> = {}): Position {
     regimeTargetFactor: null,
     marketAtrPct: null,
     entryVwap: null,
+    stopSqueezeRatio: null,
+    plannedStopDistancePct: null,
     initialStopPrice: null,
     bestPriceSinceEntry: null,
     createdAt: AGREEING,

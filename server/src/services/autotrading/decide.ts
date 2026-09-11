@@ -130,6 +130,31 @@ export interface TradeSignal {
    *  precisely so paper stays the always-on control track. Carrying the number
    *  and letting the live path decide restores that. */
   atr?: number | null;
+  /** Stop-cap forensics (2026-09-11, task #62), capture-only — nothing reads
+   *  either to gate or size a trade.
+   *
+   *  `stopSqueezeRatio` is (stopAtrMultiple × ATR) divided by the stop distance
+   *  actually placed. 1.0 means the ATR stop fit under maxStopDistancePct;
+   *  above 1 means the cap bit, and by how much. It is computed HERE, beside
+   *  the clamp, so the ratio and the clamp can never disagree — the rationale
+   *  string already says "capped at 2.5%" and that sentence is not a number
+   *  anything can group by.
+   *
+   *  Why it matters: 87% of live entries sit at that cap (53 of 61 carrying an
+   *  initialStopPrice), so "the stop was 2.5%" describes almost the whole book
+   *  and distinguishes nothing inside it. IRD on 2026-09-09 wanted a 12.4% ATR
+   *  stop, got 2.5%, and was stopped two minutes later inside its own entry
+   *  bar's range — ratio 5.0. Until this is stamped there is no way to ask
+   *  whether entries at a high ratio do systematically worse.
+   *
+   *  `plannedStopDistancePct` is that placed distance as a % of THIS signal's
+   *  entry. The bracket carries the signal's stop rather than a fill-relative
+   *  one, so a favourable fill silently compresses realized 1R (IRD filled 6.26
+   *  against a 6.31 signal and 1R shrank from 2.54% to 1.76%), and once the
+   *  fill materializes the signal's entry price is gone. Null when there is no
+   *  usable ATR to have wanted a wider stop in the first place. */
+  stopSqueezeRatio?: number | null;
+  plannedStopDistancePct?: number | null;
 }
 
 function fmtPct(v: number | null): string {
@@ -167,7 +192,8 @@ export function generateSignal(
   // (Webull's own "Price increment should be 0.01" rejection, blocking every
   // single live entry attempt, not just an occasional one).
   const entry = round2(candidate.price);
-  const stopDistance = clampStopDistance(entry, cfg.stopAtrMultiple * atr, cfg.maxStopDistancePct);
+  const desiredStopDistance = cfg.stopAtrMultiple * atr;
+  const stopDistance = clampStopDistance(entry, desiredStopDistance, cfg.maxStopDistancePct);
   const long = candidate.direction === 'long';
   const stop = round2(long ? entry - stopDistance : entry + stopDistance);
   if (stop <= 0) return null;
@@ -181,6 +207,15 @@ export function generateSignal(
   // documented above). No sound plan exists for it — fail the signal like the
   // impossible-stop case rather than emit an unplaceable one.
   if (target <= 0) return null;
+
+  // Measured against the distance actually PLACED (entry → the rounded stop),
+  // not the pre-rounding stopDistance: the rounded pair is what the bracket
+  // carries and what realized R is computed from, so anything else would
+  // describe a trade that was never placed.
+  const placedStopDistance = Math.abs(entry - stop);
+  const stopSqueezeRatio =
+    placedStopDistance > 0 ? Math.round((desiredStopDistance / placedStopDistance) * 100) / 100 : null;
+  const plannedStopDistancePct = entry > 0 ? Math.round((placedStopDistance / entry) * 10000) / 100 : null;
 
   const { gapPct, relVolume, rsi } = candidate.indicators;
   const rationale =
@@ -211,6 +246,8 @@ export function generateSignal(
     avgVolume: candidate.indicators.avgVolume,
     relVolPace: candidate.relVolPace ?? null,
     atr,
+    stopSqueezeRatio,
+    plannedStopDistancePct,
   };
 }
 

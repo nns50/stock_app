@@ -913,6 +913,14 @@ export async function attemptLiveEntry(
     mlRegime,
     regimeTargetFactor,
     entryVwap,
+    // Stop-cap forensics (2026-09-11, task #62) — carried from the signal to
+    // the order row and on to the position at materialization, the same path
+    // entryVwap takes. Capture-only: nothing below reads either to change a
+    // trade. Stamped here rather than re-derived later because the SIGNAL's
+    // entry price is what plannedStopDistancePct is a percentage of, and that
+    // price is gone once the fill lands.
+    stopSqueezeRatio: signal.stopSqueezeRatio ?? null,
+    plannedStopDistancePct: signal.plannedStopDistancePct ?? null,
     // The combo group id this client minted for the bracket. Stored on BOTH
     // paths below — including the ambiguous one, where the order may well have
     // reached the broker and a later modify would still need to name its group.
@@ -978,6 +986,11 @@ export async function attemptLiveEntry(
       target: targetToBracket,
       orderId: broker.orderId,
       entryVwap,
+      // Journaled too, not only stored: the squeeze ratio is the number the
+      // #62 rule groups by, and a journal row is readable the moment an entry
+      // places rather than after its fill reconciles.
+      stopSqueezeRatio: signal.stopSqueezeRatio ?? null,
+      plannedStopDistancePct: signal.plannedStopDistancePct ?? null,
       // Present only on a per-lot entry, so the journal distinguishes "a
       // deliberately smaller first lot" from "a smaller position than the risk
       // check sized", which otherwise look identical here.
@@ -2172,6 +2185,8 @@ function materializeEntryFill(
         mlRegime: adopted.mlRegime ?? meta?.mlRegime ?? null,
         regimeTargetFactor: adopted.regimeTargetFactor ?? meta?.regimeTargetFactor ?? null,
         entryVwap: adopted.entryVwap ?? meta?.entryVwap ?? null,
+        stopSqueezeRatio: adopted.stopSqueezeRatio ?? meta?.stopSqueezeRatio ?? null,
+        plannedStopDistancePct: adopted.plannedStopDistancePct ?? meta?.plannedStopDistancePct ?? null,
         ...(entryStamp ?? {}),
       });
     } else if (entryStamp) {
@@ -2223,6 +2238,8 @@ function materializeEntryFill(
     mlRegime: orderMeta?.mlRegime ?? null,
     regimeTargetFactor: orderMeta?.regimeTargetFactor ?? null,
     entryVwap: orderMeta?.entryVwap ?? null,
+    stopSqueezeRatio: orderMeta?.stopSqueezeRatio ?? null,
+    plannedStopDistancePct: orderMeta?.plannedStopDistancePct ?? null,
     sourceIntentId: intent.id,
     accountId,
   });

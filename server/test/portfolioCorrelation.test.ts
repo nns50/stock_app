@@ -43,6 +43,8 @@ function makePosition(over: Partial<Position> & Pick<Position, 'symbol'>): Posit
     regimeTargetFactor: null,
     marketAtrPct: null,
     entryVwap: null,
+    stopSqueezeRatio: null,
+    plannedStopDistancePct: null,
     initialStopPrice: null,
     bestPriceSinceEntry: null,
     createdAt: 0,
