@@ -7854,3 +7854,56 @@ exit's note records that the reason was inferred rather than observed, and
 `position_reconciled_from_broker` now carries `exitReasons` so the journal shows what the
 close was actually booked as.
 
+
+---
+
+## 2026-09-11 — the replay learns the scale-out and the stagnation timer
+
+**What prompted it.** The profitability review of 2026-09-10 read the deployed book:
+on intraday bars the average favourable excursion is 0.52R and the realized average
+0.01R; of 59 same-session trades the 2R target was reached once, 25 ended on the
+clock and 18 at breakeven. The first lever it named was to bank the book's half-R
+peaks and free stagnant slots sooner. The tool for scoring that — the exit-rule path
+replay of 2026-09-09 — could not see either lever: it walked the stop, breakeven, trail
+and target and nothing else, while the live book has banked `partialExitPct` at
+`partialExitRMultiple` since 2026-09-08 (67% at 0.25R in production) and scratches a
+trade held `stagnationExitMinutes` below `stagnationExitMinR`. Its "current rules" arm
+was not the current policy.
+
+**What shipped.** `ExitRules` gained four optional fields — `scaleOutR`,
+`scaleOutFraction`, `stagnationMinutes`, `stagnationMinR` — replayed in the same
+adverse-first order as everything else in `services/exitReplay.ts`: a bar holding both
+the stop and the scale-out level fills the stop; the scale-out fills before the target
+(its level sits below it) and the target then takes only the remainder; the timer is
+read at a bar's close, the bar's tick. A result's `exitR` is the position-weighted blend
+of the banked share and the remainder's exit, `reason` is how the remainder ended (now
+including `stagnation`), and `scaledOut` / `bankedR` say what the scale-out contributed.
+Absent, the fields replay byte-for-byte as before, so the exit-tune validation and the
+short-shadow record — which isolate geometry on purpose — are unchanged.
+
+`GET /api/journal/exit-replay` now defaults the two rules from the live config (the
+scale-out only while `liveScaleOutEnabled` is on), and takes a candidate shape as
+`c`-prefixed overrides of the same rules (`cScaleOutR`, `cScaleOutPct`,
+`cStagnationMinutes`, `cStagnationMinR`, and the four multiples). The response's
+`comparison` replays both arms over the same trades — paired, or not at all — with each
+arm's mean R, its exit reasons and its scale-out count, the paired difference, its
+sign-flip 95% interval, and a verdict. The verdict rule (`replayVerdict`) is one function
+the exit-tune validation now calls too, so the two readers of a paired replay cannot
+disagree about what "better" means.
+
+**The pre-committed reading, written before the first run.** A candidate shape is
+adopted only on `better` (the paired interval above zero on at least 20 paired
+same-session trades); `worse` rules it out; `inside_noise` keeps the current settings
+and asks again after another 20 trades. The config fields it would move are
+`partialExitRMultiple`, `partialExitPct` and `stagnationExitMinutes`, by the operator,
+recorded here in a dated row.
+
+**What this does NOT do.** It models no slippage and no fill mechanics — a live scale-out
+reduces the bracket legs before it sells, and can be abandoned for a tick — and it
+ignores the scarcity gate on the stagnation exit (`stagnationExitRequiresScarcity`, off
+in production). It replays same-session trades only, so bar-time minutes are session
+minutes. It changes no config and no live path: the replay is a reader.
+
+| date | candidate | current mean R | candidate mean R | paired diff (95% CI) | trades | verdict | action |
+| ---- | --------- | -------------- | ---------------- | -------------------- | ------ | ------- | ------ |
+| —    | —         | —              | —                | —                    | —      | not run yet | the first run is recorded here before any setting moves |

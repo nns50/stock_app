@@ -33,9 +33,27 @@
 // stop look worse rather than better, which is the whole point — a replay whose
 // assumptions all flatter the change under test is the peak-minus-distance
 // model again, wearing more code.
+//
+// THE SCALE-OUT AND THE STAGNATION TIMER (2026-09-11). The four rules above are
+// not the live book's whole exit policy. Since 2026-09-08 the live scale-out
+// (scaleOut.ts) has banked partialExitPct of a position at partialExitRMultiple
+// — 67% at 0.25R in production — and the stagnation exit (stagnationExit.ts)
+// scratches a trade held stagnationExitMinutes below stagnationExitMinR; the
+// spec's own count has the clock closing 12 of 22 winners. A replay blind to
+// both is not replaying the current policy, and cannot score the one change
+// the profitability review put first: bank the book's half-R peaks. Both are
+// optional rules here so every earlier caller replays byte-for-byte; the route
+// defaults them from the live config. The scale-out fills on the favourable
+// side AFTER the adverse check (a bar holding both the stop and the level
+// fills the stop, as everywhere in this file) and BEFORE the target (the
+// level sits below it, so the target takes only the remainder); the timer is
+// read at a bar's close, which is the bar's tick. Not modelled: the
+// scarcity gate on the stagnation exit, and the cancel/replace mechanics of a
+// live scale-out — this scores the shape, not the plumbing.
 // ---------------------------------------------------------------------------
 
 import { Candle } from '../providers/types';
+import { computeSignificanceStats, SignificanceStats } from './autotrading/significance';
 
 /** Candidate exit geometry, all in R (multiples of the trade's INITIAL risk —
  *  |entry − initialStop| × qty × multiplier). R, not price and not ATR: the
@@ -50,13 +68,30 @@ export interface ExitRules {
   trailStopR: number;
   /** Take profit here. 0 disables. */
   targetR: number;
+  /** The live scale-out (scaleOut.ts): book `scaleOutFraction` of the position
+   *  the first time price reaches this R, and keep the remainder running under
+   *  every other rule. 0 or absent = no scale-out, and the four-field rules
+   *  every earlier caller passes replay exactly as before. */
+  scaleOutR?: number;
+  /** 0–1: the share booked at scaleOutR (the config's partialExitPct / 100). */
+  scaleOutFraction?: number;
+  /** The stagnation exit (stagnationExit.ts): once the trade has been held this
+   *  many minutes and a bar closes below `stagnationMinR`, the remainder is
+   *  scratched at that close. 0 or absent = no timer. Minutes are bar-time
+   *  minutes since the first bar — session minutes, for the same-session trades
+   *  this replays. The scarcity gate is not modelled. */
+  stagnationMinutes?: number;
+  stagnationMinR?: number;
 }
 
-export type ReplayExitReason = 'stop' | 'breakeven' | 'trail' | 'target' | 'time_exit';
+export type ReplayExitReason = 'stop' | 'breakeven' | 'trail' | 'target' | 'time_exit' | 'stagnation';
 
 export interface ReplayResult {
-  /** R booked under these rules. */
+  /** R booked under these rules — the position-weighted blend of the scale-out
+   *  (when it fired) and the remainder's exit; the remainder's R alone when
+   *  nothing scaled out. */
   exitR: number;
+  /** How the REMAINDER ended — the whole position when nothing scaled out. */
   reason: ReplayExitReason;
   /** Bars elapsed before the exit — 0 means it closed in its first bar. */
   barsHeld: number;
@@ -64,6 +99,10 @@ export interface ReplayResult {
    *  early, and is LESS when a rule cut the trade short — the difference is
    *  what the rule cost. */
   bestR: number;
+  /** True when the scale-out fired before the remainder's exit. */
+  scaledOut: boolean;
+  /** The scale-out's share of exitR: fraction × scaleOutR; 0 when it did not fire. */
+  bankedR: number;
 }
 
 export interface ReplayInput {
@@ -117,6 +156,24 @@ export function replayExit(input: ReplayInput, bars: Candle[], rules: ExitRules)
   let bestR = 0;
   let trailing = false;
   const targetPrice = rules.targetR > 0 ? priceAtR(input, rules.targetR) : null;
+  const scaleOutR = rules.scaleOutR ?? 0;
+  const fraction = scaleOutR > 0 ? Math.min(1, Math.max(0, rules.scaleOutFraction ?? 0)) : 0;
+  const scaleOutPrice = scaleOutR > 0 && fraction > 0 ? priceAtR(input, scaleOutR) : null;
+  const stagnationMinutes = rules.stagnationMinutes ?? 0;
+  const stagnationMinR = rules.stagnationMinR ?? 0;
+  const firstBarTime = (bars[0] as Candle).time;
+  let scaledOut = false;
+  let bankedR = 0;
+  // The blend is applied only once the scale-out fired, so a rule set without
+  // one returns the remainder's R untouched — the earlier callers' numbers.
+  const finish = (remainderR: number, reason: ReplayExitReason, barsHeld: number, best: number): ReplayResult => ({
+    exitR: scaledOut ? round2(bankedR + (1 - fraction) * remainderR) : remainderR,
+    reason,
+    barsHeld,
+    bestR: best,
+    scaledOut,
+    bankedR: scaledOut ? round2(bankedR) : 0,
+  });
 
   for (const [i, bar] of bars.entries()) {
     // ---- adverse side first, always. See the header: every intrabar
@@ -126,16 +183,31 @@ export function replayExit(input: ReplayInput, bars: Candle[], rules: ExitRules)
     const stopPrice = priceAtR(input, stopR);
     if (stopHit(adverseOf(bar), stopPrice)) {
       const reason: ReplayExitReason = !trailing && stopR <= -1 ? 'stop' : trailing ? 'trail' : 'breakeven';
-      return { exitR: stopR, reason, barsHeld: i, bestR };
+      return finish(stopR, reason, i, bestR);
     }
 
-    // ---- then the favourable side.
-    if (targetPrice !== null && targetHit(favourableOf(bar), targetPrice)) {
-      return { exitR: rules.targetR, reason: 'target', barsHeld: i, bestR: Math.max(bestR, rules.targetR) };
+    // ---- then the favourable side: the scale-out level sits below the
+    // target, so when both are inside one bar the scale-out fills first and
+    // the target takes only the remainder.
+    const favourable = favourableOf(bar);
+    if (scaleOutPrice !== null && !scaledOut && targetHit(favourable, scaleOutPrice)) {
+      scaledOut = true;
+      bankedR = fraction * scaleOutR;
+    }
+    if (targetPrice !== null && targetHit(favourable, targetPrice)) {
+      return finish(rules.targetR, 'target', i, Math.max(bestR, rules.targetR));
     }
 
-    const barBestR = rAtPrice(input, favourableOf(bar));
+    const barBestR = rAtPrice(input, favourable);
     if (barBestR > bestR) bestR = barBestR;
+
+    // ---- the stagnation timer, read at the close: the live rule is evaluated
+    // at a tick's price, and the close is the bar's tick. Held long enough and
+    // still below the bar's R, the remainder is scratched here.
+    if (stagnationMinutes > 0 && (bar.time - firstBarTime) / 60_000 >= stagnationMinutes) {
+      const progress = rAtPrice(input, bar.close);
+      if (progress < stagnationMinR) return finish(round2(progress), 'stagnation', i, bestR);
+    }
 
     // ---- ratchet the stop for the NEXT bar. Never loosens: a stop that could
     // move back down would give back protection already earned, which no live
@@ -157,7 +229,7 @@ export function replayExit(input: ReplayInput, bars: Candle[], rules: ExitRules)
   // flatten. Booked at the last close, which is the honest price for "we were
   // still in it when the session ended".
   const last = bars[bars.length - 1] as Candle;
-  return { exitR: round2(rAtPrice(input, last.close)), reason: 'time_exit', barsHeld: bars.length - 1, bestR };
+  return finish(round2(rAtPrice(input, last.close)), 'time_exit', bars.length - 1, bestR);
 }
 
 function round2(n: number): number {
@@ -172,6 +244,8 @@ export interface ReplayComparison {
    *  hides. A geometry that lifts the mean by converting time exits into stops
    *  is a different bet from one that converts them into targets. */
   reasons: Record<ReplayExitReason, number>;
+  /** Trades whose scale-out fired — how often the level was even reached. */
+  scaleOuts: number;
 }
 
 export function aggregateReplay(results: ReplayResult[]): ReplayComparison {
@@ -181,6 +255,7 @@ export function aggregateReplay(results: ReplayResult[]): ReplayComparison {
     trail: 0,
     target: 0,
     time_exit: 0,
+    stagnation: 0,
   };
   for (const r of results) reasons[r.reason] += 1;
   const rs = results.map((r) => r.exitR).sort((a, b) => a - b);
@@ -195,5 +270,101 @@ export function aggregateReplay(results: ReplayResult[]): ReplayComparison {
         )
       : null,
     reasons,
+    scaleOuts: results.filter((r) => r.scaledOut).length,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Two rule sets over the SAME trades (2026-09-11). Paired or not at all: a
+// trade one arm can replay and the other cannot would put the two shapes
+// against different populations, the mistake the route's `actual` field exists
+// to avoid. The verdict rule is shared with the exit-tune validation so the two
+// readers of a paired replay cannot disagree about what "better" means.
+// ---------------------------------------------------------------------------
+
+export type ReplayVerdict = 'better' | 'worse' | 'inside_noise' | 'no_change' | 'insufficient';
+
+/** The one verdict rule: unchanged rules are `no_change`; an unreliable sample
+ *  (significance.ts's own 20-trade floor) is `insufficient`; then the paired
+ *  difference's 95% interval decides — above zero `better`, below `worse`,
+ *  straddling it `inside_noise`. */
+export function replayVerdict(significance: SignificanceStats, unchanged: boolean): ReplayVerdict {
+  if (unchanged) return 'no_change';
+  if (!significance.reliable) return 'insufficient';
+  if (significance.ciLow !== null && significance.ciLow > 0) return 'better';
+  if (significance.ciHigh !== null && significance.ciHigh < 0) return 'worse';
+  return 'inside_noise';
+}
+
+export interface ReplayTrade {
+  input: ReplayInput;
+  bars: Candle[];
+}
+
+export interface ExitRulesComparison {
+  /** Paired trades — replayed under BOTH rule sets. */
+  trades: number;
+  unpaired: number;
+  current: { rules: ExitRules; replay: ReplayComparison };
+  candidate: { rules: ExitRules; replay: ReplayComparison };
+  /** candidate mean R − current mean R over the same trades. */
+  meanDiffR: number | null;
+  /** Sign-flip permutation test over the paired per-trade differences. */
+  significance: SignificanceStats;
+  verdict: ReplayVerdict;
+}
+
+function normalizedRules(r: ExitRules): Required<ExitRules> {
+  return {
+    breakevenTriggerR: r.breakevenTriggerR,
+    trailStartR: r.trailStartR,
+    trailStopR: r.trailStopR,
+    targetR: r.targetR,
+    scaleOutR: r.scaleOutR ?? 0,
+    scaleOutFraction: r.scaleOutR ? (r.scaleOutFraction ?? 0) : 0,
+    stagnationMinutes: r.stagnationMinutes ?? 0,
+    stagnationMinR: r.stagnationMinutes ? (r.stagnationMinR ?? 0) : 0,
+  };
+}
+
+export function rulesEqual(a: ExitRules, b: ExitRules): boolean {
+  const x = normalizedRules(a);
+  const y = normalizedRules(b);
+  return (Object.keys(x) as (keyof typeof x)[]).every((k) => x[k] === y[k]);
+}
+
+export function compareExitRules(
+  trades: ReplayTrade[],
+  current: ExitRules,
+  candidate: ExitRules,
+  opts: { rng?: () => number; resamples?: number } = {},
+): ExitRulesComparison {
+  const currentResults: ReplayResult[] = [];
+  const candidateResults: ReplayResult[] = [];
+  const diffs: number[] = [];
+  let unpaired = 0;
+  for (const t of trades) {
+    const a = replayExit(t.input, t.bars, current);
+    const b = replayExit(t.input, t.bars, candidate);
+    if (!a || !b) {
+      unpaired++;
+      continue;
+    }
+    currentResults.push(a);
+    candidateResults.push(b);
+    diffs.push(b.exitR - a.exitR);
+  }
+  const significance = computeSignificanceStats(
+    diffs.map((d) => ({ pnl: d })),
+    opts,
+  );
+  return {
+    trades: diffs.length,
+    unpaired,
+    current: { rules: current, replay: aggregateReplay(currentResults) },
+    candidate: { rules: candidate, replay: aggregateReplay(candidateResults) },
+    meanDiffR: diffs.length ? round2(diffs.reduce((a, b) => a + b, 0) / diffs.length) : null,
+    significance,
+    verdict: replayVerdict(significance, rulesEqual(current, candidate)),
   };
 }

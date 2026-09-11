@@ -14,7 +14,14 @@ import {
   INTRADAY_TIMEFRAME,
   TradeExcursion,
 } from '../services/excursion';
-import { aggregateReplay, replayExit, type ExitRules, type ReplayResult } from '../services/exitReplay';
+import {
+  aggregateReplay,
+  compareExitRules,
+  replayExit,
+  type ExitRules,
+  type ReplayResult,
+  type ReplayTrade,
+} from '../services/exitReplay';
 import { validateExitTuneRules, type ValidationTrade } from '../services/autotrading/exitTuneValidation';
 import { buildShortShadowRecord, type SkippedShort } from '../services/autotrading/shortShadowRecord';
 import { listAutotradeEvents } from '../db/autotradeEvents';
@@ -264,12 +271,48 @@ journalRouter.get(
       // threshold silently disables the rule it belongs to rather than erroring.
       return Number.isFinite(n) && n >= 0 ? n : dflt;
     };
+    // 0–100, for the scale-out share; anything else keeps the default.
+    const pct = (v: unknown, dflt: number): number => Math.min(100, num(v, dflt));
+    // The CURRENT policy is more than the four multiples (2026-09-11): the live
+    // scale-out (when its flag is on) and the stagnation timer are part of it,
+    // so a bare call replays them too — from the live config, like the rest.
     const rules: ExitRules = {
       breakevenTriggerR: num(req.query.breakevenR, cfg.breakevenTriggerRMultiple),
       trailStartR: num(req.query.trailStartR, cfg.trailStartRMultiple),
       trailStopR: num(req.query.trailStopR, cfg.trailStopRMultiple),
       targetR: num(req.query.targetR, cfg.targetRMultiple),
+      scaleOutR: num(req.query.scaleOutR, cfg.liveScaleOutEnabled ? cfg.partialExitRMultiple : 0),
+      scaleOutFraction: pct(req.query.scaleOutPct, cfg.partialExitPct) / 100,
+      stagnationMinutes: num(req.query.stagnationMinutes, cfg.stagnationExitMinutes),
+      stagnationMinR: num(req.query.stagnationMinR, cfg.stagnationExitMinR),
     };
+    // A candidate shape rides on `c`-prefixed overrides of the SAME rules —
+    // every field it does not name is the current one, so the comparison
+    // isolates the change being asked about.
+    const CANDIDATE_KEYS: Record<string, keyof ExitRules> = {
+      cBreakevenR: 'breakevenTriggerR',
+      cTrailStartR: 'trailStartR',
+      cTrailStopR: 'trailStopR',
+      cTargetR: 'targetR',
+      cScaleOutR: 'scaleOutR',
+      cStagnationMinutes: 'stagnationMinutes',
+      cStagnationMinR: 'stagnationMinR',
+    };
+    const wantsCandidate =
+      Object.keys(CANDIDATE_KEYS).some((k) => req.query[k] !== undefined) || req.query.cScaleOutPct !== undefined;
+    const candidate: ExitRules | null = wantsCandidate
+      ? {
+          ...rules,
+          ...Object.fromEntries(
+            Object.entries(CANDIDATE_KEYS)
+              .filter(([q]) => req.query[q] !== undefined)
+              .map(([q, field]) => [field, num(req.query[q], rules[field] ?? 0)]),
+          ),
+          ...(req.query.cScaleOutPct !== undefined
+            ? { scaleOutFraction: pct(req.query.cScaleOutPct, (rules.scaleOutFraction ?? 0) * 100) / 100 }
+            : {}),
+        }
+      : null;
 
     const load = await loadSameSessionBars();
     const rows: {
@@ -283,17 +326,20 @@ journalRouter.get(
     }[] = [];
     const results: ReplayResult[] = [];
     const actualRs: number[] = [];
+    const paired: ReplayTrade[] = [];
     // A trade with no stop or no candles is unreplayable for the same reason
     // one whose bars produce no path is: there is nothing to walk.
     const { unusable, ...coverage } = load.coverage;
     let unreplayable = unusable;
 
     for (const { position: p, stop, bars } of load.trades) {
-      const out = replayExit({ side: p.side, entryPrice: p.entryPrice, initialStopPrice: stop }, bars, rules);
+      const input = { side: p.side, entryPrice: p.entryPrice, initialStopPrice: stop };
+      const out = replayExit(input, bars, rules);
       if (!out) {
         unreplayable++;
         continue;
       }
+      paired.push({ input, bars });
       const risk = Math.abs(p.entryPrice - stop) * p.quantity * p.multiplier;
       const actualR = risk > 0 ? Math.round((realizedPnlOf(p) / risk) * 100) / 100 : null;
       results.push(out);
@@ -320,6 +366,10 @@ journalRouter.get(
       // rule change comes to look like an improvement it never made.
       actual: { trades: actualRs.length, meanR: mean(actualRs) },
       coverage: { ...coverage, unreplayable },
+      // The candidate against the current rules over the SAME trades, with the
+      // paired sign-flip test and the shared verdict rule. Null when no `c*`
+      // override was asked for.
+      comparison: candidate ? compareExitRules(paired, rules, candidate) : null,
       rows,
     });
   }),

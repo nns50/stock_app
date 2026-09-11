@@ -537,6 +537,38 @@ The general lesson outlives the shorts question: when a control arm has constrai
 thing it is standing in for does not share, it is not a control arm. Replay the decision
 that was actually made.
 
+### Scoring an exit shape before it goes live
+
+The same replay scores the two exit levers the profitability review of 2026-09-10 put
+first — banking part of a winner early, and how long a stagnant trade holds a slot —
+because since 2026-09-11 it walks the **live scale-out** (`partialExitRMultiple` /
+`partialExitPct`, when `liveScaleOutEnabled` is on) and the **stagnation timer**
+(`stagnationExitMinutes` / `stagnationExitMinR`) alongside the stop, breakeven, trail
+and target. A bare `GET /api/journal/exit-replay` is therefore the current policy, not
+just its four multiples. To score a change, name only what changes with `c`-prefixed
+overrides and read the paired comparison it returns:
+
+```
+GET /api/journal/exit-replay?cScaleOutR=0.5&cScaleOutPct=50      # bank half at 0.5R
+GET /api/journal/exit-replay?cStagnationMinutes=60                # scratch at 60 min
+GET /api/journal/exit-replay?cScaleOutR=0&cStagnationMinutes=0    # neither
+```
+
+`comparison` replays the current rules and the candidate over the **same** same-session
+trades (paired, or not at all), reports each arm's mean R and how its trades ended —
+including how many scale-outs fired, which says how often the level was even reached —
+and gives the paired difference its sign-flip 95% interval and a verdict: `better` when
+the interval sits above zero, `worse` below, `inside_noise` across it, `insufficient`
+under 20 paired trades, `no_change` when the rules are the same. The verdict rule is the
+exit-tune validation's own, shared in code.
+
+**The pre-committed reading** (also in `docs/AUTOTRADING_SPEC.md`): a shape is adopted
+only on `better`; `worse` rules it out; `inside_noise` keeps the current settings and
+asks again after another 20 same-session trades. The replay resolves every intrabar
+collision against the trade and models no slippage, so a `better` here is a pessimistic
+reading of the shape, not a promise of its dollars — and the live scale-out's own
+mechanics (reduce the bracket first, then sell) are not in it.
+
 ### The live conviction floor
 
 The screener's score is not decoration — it predicts outcome. Measured 2026-09-06 over the
