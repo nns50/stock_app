@@ -1265,6 +1265,18 @@ export async function runLiveExecution(
             entry: candidateSignal.entry,
             stop: candidateSignal.stop,
             target: candidateSignal.target,
+            // This skip runs BEFORE the score floor, both cooldowns and the
+            // risk check, so a row exists for every scoring short candidate —
+            // not for the ones the live book would actually have taken. On
+            // 2026-09-10 that was 39 distinct symbols against THREE at or above
+            // the floor, a 13x overstatement of live-eligible short flow, and
+            // task #21's whole enabling decision reads this number. Stamping
+            // the verdict here rather than leaving it to be re-derived means a
+            // reader who does not know the gate order still counts the right
+            // thing, and the floor travels with the row so a later change to
+            // liveMinSignalScore cannot silently rewrite history.
+            liveEligible: candidateSignal.score >= cfg.liveMinSignalScore,
+            liveMinSignalScore: cfg.liveMinSignalScore,
             reason: 'liveAllowNakedShort is off',
           },
           riskProfile: cfg.riskProfile,

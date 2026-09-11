@@ -797,7 +797,13 @@ trades.
   or stale, never guessed). Live-placed positions also get a real
   **entry time** (ET), so from now on the bot's trades appear in the entry-session
   breakdown above — they previously carried no time at all and were silently absent
-  from it. Live bracket exits record an **exit reason** (`stop` / `target` /
+  from it. A companion read, `GET /api/journal/short-shadow-record` (2026-09-10), answers
+  the direction question the journal could not: it replays every live-eligible short the
+  live book declined on real 5-minute bars, under the book's own exit geometry, and reports
+  the sample size, average R and win rate independently of the paper book's slots. The
+  declined-short journal rows now also carry `liveEligible` and the score floor they were
+  judged against, so counting them no longer requires knowing which gates run first.
+  Live bracket exits record an **exit reason** (`stop` / `target` /
   `time_exit`) on the exit itself, so you can see *which exit mechanism* is making or
   losing the money instead of inferring it from prices. Since 2026-09-10 that holds even
   when the broker sync had to close the position itself: if a resting bracket leg filled

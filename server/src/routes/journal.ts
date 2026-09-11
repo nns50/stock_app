@@ -16,6 +16,8 @@ import {
 } from '../services/excursion';
 import { aggregateReplay, replayExit, type ExitRules, type ReplayResult } from '../services/exitReplay';
 import { validateExitTuneRules, type ValidationTrade } from '../services/autotrading/exitTuneValidation';
+import { buildShortShadowRecord, type SkippedShort } from '../services/autotrading/shortShadowRecord';
+import { listAutotradeEvents } from '../db/autotradeEvents';
 import type { Candle } from '../providers/types';
 import {
   buildRegimeTightenLedger,
@@ -748,5 +750,49 @@ journalRouter.get(
       }
     }
     res.json(aggregateStopOverruns(rows));
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// The SHORT SHADOW RECORD (2026-09-10) — what the live book would have made on
+// the shorts it declined, replayed on real bars.
+//
+// Task #21's enabling rule reads the PAPER book's closed shorts, and paper is
+// the wrong instrument for the question: three slots, a score floor of 60
+// against live's 72, filled first-come. On 2026-09-10 every one of 1000 sampled
+// paper risk checks was refused on max_concurrent_positions and two of five
+// paper entries scored below the live floor, so the sample the decision reads
+// is a slot lottery skewed to early-session signals rather than a sample of
+// live-eligible shorts.
+//
+// This replays the DECLINED signals instead. Every input is already journaled
+// on live_short_skipped, so nothing new is captured — only bars are fetched.
+// Read services/autotrading/shortShadowRecord.ts for the three things this
+// number is NOT before quoting it; in particular it reuses exitReplay, which
+// resolves every intrabar ambiguity against the trade, so it UNDERSTATES.
+// ---------------------------------------------------------------------------
+journalRouter.get(
+  '/short-shadow-record',
+  asyncHandler(async (req, res) => {
+    const { since } = parseQuery(z.object({ since: z.coerce.number().optional() }), req);
+    const cfg = getAutotradeConfig();
+    // Defaults to the day short-dated evidence started accruing, matching the
+    // window task #21's own gate is measured over.
+    const from = since ?? Date.parse('2026-08-27T04:00:00Z');
+    const rows: SkippedShort[] = listAutotradeEvents({ actions: ['live_short_skipped'], since: from, limit: 1000 })
+      .map((e) => {
+        if (!e.symbol || !e.detail) return null;
+        try {
+          const d = JSON.parse(e.detail) as { score?: number; entry?: number; stop?: number };
+          if (typeof d.score !== 'number' || typeof d.entry !== 'number' || typeof d.stop !== 'number') return null;
+          return { symbol: e.symbol, at: e.createdAt, score: d.score, entry: d.entry, stop: d.stop };
+        } catch {
+          return null;
+        }
+      })
+      .filter((r): r is SkippedShort => r !== null);
+
+    const record = await buildShortShadowRecord(getProvider(), rows, cfg);
+    res.json({ since: from, journaledRows: rows.length, ...record });
   }),
 );
