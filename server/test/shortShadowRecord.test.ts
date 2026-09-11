@@ -73,6 +73,29 @@ describe('liveExitRules', () => {
       breakevenTriggerR: 0.25,
     });
   });
+
+  // 2026-09-11: exitReplay learned the scale-out and the stagnation timer in
+  // #563, the day after this shipped. The live book runs BOTH, so a record that
+  // passed only the four original fields was replaying a geometry the book does
+  // not use — and understating, because the scale-out banks gains this record
+  // was letting run all the way back to breakeven.
+  it('passes the SCALE-OUT and the STAGNATION timer through, because the live book runs both', () => {
+    expect(
+      liveExitRules(
+        cfg({
+          liveScaleOutEnabled: true,
+          partialExitRMultiple: 0.25,
+          partialExitPct: 67,
+          stagnationExitMinutes: 90,
+          stagnationExitMinR: 0.5,
+        }),
+      ),
+    ).toMatchObject({ scaleOutR: 0.25, scaleOutFraction: 0.67, stagnationMinutes: 90, stagnationMinR: 0.5 });
+  });
+
+  it('disables the scale-out when the book has it switched off, rather than replaying one it never runs', () => {
+    expect(liveExitRules(cfg({ liveScaleOutEnabled: false, partialExitRMultiple: 0.25 })).scaleOutR).toBe(0);
+  });
 });
 
 describe('buildShortShadowRecord', () => {
@@ -85,6 +108,23 @@ describe('buildShortShadowRecord', () => {
     expect(out.trades[0].exitR).toBeCloseTo(2, 5);
     expect(out.avgR).toBeCloseTo(2, 5);
     expect(out.winRatePct).toBe(100);
+  });
+
+  it('banks the scale-out on a winner that gives everything back — the understatement this fixes', async () => {
+    // Short at 100, stop 102, so 1R = $2. Falls to 99.5 (0.25R, the scale-out
+    // trigger) and then runs all the way back to the 102 stop. Without the
+    // scale-out that is a clean -1R. With 67% banked at 0.25R it is materially
+    // better, because two thirds of the position left at a profit.
+    const src = sourceOf({ KLAC: [bar(0, 100, 99.4), bar(5, 102.5, 101)] });
+    const withScaleOut = await buildShortShadowRecord(
+      src,
+      [shortAt100()],
+      cfg({ liveScaleOutEnabled: true, partialExitRMultiple: 0.25, partialExitPct: 67 }),
+    );
+    const without = await buildShortShadowRecord(src, [shortAt100()], cfg({ liveScaleOutEnabled: false }));
+
+    expect(without.trades[0].exitR).toBeCloseTo(-1, 5);
+    expect(withScaleOut.trades[0].exitR).toBeGreaterThan(without.trades[0].exitR);
   });
 
   it('replays a losing short to its stop', async () => {
