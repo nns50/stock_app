@@ -71,6 +71,16 @@ export interface PositionInput {
   marketAtrPct?: number | null;
   /** Session VWAP at placement (2026-08-22 observer) — see the DDL comment. */
   entryVwap?: number | null;
+  /** Stop-cap forensics (2026-09-11, task #62), capture-only. `stopSqueezeRatio`
+   *  is (stopAtrMultiple × ATR) / the stop distance actually placed: 1.0 = the
+   *  ATR stop fit, above 1 = maxStopDistancePct bit, IRD read 5.0 on 2026-09-09.
+   *  `plannedStopDistancePct` is that distance as a % of the SIGNAL's entry,
+   *  kept because the bracket carries the signal's stop rather than a
+   *  fill-relative one, so a favourable fill compresses realized 1R and the
+   *  signal's entry is gone once the fill materializes. Null: manual/imported
+   *  rows, rows predating the columns, or a signal with no usable ATR. */
+  stopSqueezeRatio?: number | null;
+  plannedStopDistancePct?: number | null;
 }
 
 /** Why an exit happened. Stamped by autotrade's live exit materialization —
@@ -133,6 +143,8 @@ export interface Position {
   regimeTargetFactor: number | null;
   marketAtrPct: number | null;
   entryVwap: number | null;
+  stopSqueezeRatio: number | null;
+  plannedStopDistancePct: number | null;
   /** Stop price as it stood at OPEN — the frozen denominator every R-multiple
    *  on this position is measured against. Never mutated after insert, so a
    *  ratcheted stop cannot shrink the denominator and inflate later readings.
@@ -178,6 +190,8 @@ interface PositionRow {
   regime_target_factor: number | null;
   market_atr_pct: number | null;
   entry_vwap: number | null;
+  stop_squeeze_ratio: number | null;
+  planned_stop_distance_pct: number | null;
   initial_stop_price: number | null;
   best_price_since_entry: number | null;
   created_at: number;
@@ -276,6 +290,8 @@ function mapPosition(row: PositionRow, exits?: PositionExit[]): Position {
     regimeTargetFactor: row.regime_target_factor ?? null,
     marketAtrPct: row.market_atr_pct ?? null,
     entryVwap: row.entry_vwap ?? null,
+    stopSqueezeRatio: row.stop_squeeze_ratio ?? null,
+    plannedStopDistancePct: row.planned_stop_distance_pct ?? null,
     initialStopPrice: row.initial_stop_price ?? null,
     bestPriceSinceEntry: row.best_price_since_entry ?? null,
     createdAt: row.created_at,
@@ -374,8 +390,9 @@ export function createPosition(input: PositionInput): Position {
          option_type, strike, expiration, multiplier, status, tags, grade, notes, checklist,
          stop_price, target_price, source_intent_id, account_id,
          entry_score, entry_components, market_regime, ml_regime, regime_target_factor, market_atr_pct, entry_vwap,
+         stop_squeeze_ratio, planned_stop_distance_pct,
          initial_stop_price, best_price_since_entry, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     )
     .run(
       input.assetType,
@@ -405,6 +422,8 @@ export function createPosition(input: PositionInput): Position {
       input.regimeTargetFactor ?? null,
       input.marketAtrPct ?? null,
       input.entryVwap ?? null,
+      input.stopSqueezeRatio ?? null,
+      input.plannedStopDistancePct ?? null,
       // Seeded here rather than asked of every caller: the snapshot is only
       // ever "stop_price as it was at open", which is exactly what was just
       // inserted, and entryPrice is the correct starting high-water mark
@@ -445,6 +464,8 @@ export interface PositionPatch {
   regimeTargetFactor?: number | null;
   marketAtrPct?: number | null;
   entryVwap?: number | null;
+  stopSqueezeRatio?: number | null;
+  plannedStopDistancePct?: number | null;
 }
 
 /**
@@ -528,6 +549,8 @@ export function updatePosition(id: number, patch: PositionPatch): Position | und
   if (patch.regimeTargetFactor !== undefined) set('regime_target_factor', patch.regimeTargetFactor);
   if (patch.marketAtrPct !== undefined) set('market_atr_pct', patch.marketAtrPct);
   if (patch.entryVwap !== undefined) set('entry_vwap', patch.entryVwap);
+  if (patch.stopSqueezeRatio !== undefined) set('stop_squeeze_ratio', patch.stopSqueezeRatio);
+  if (patch.plannedStopDistancePct !== undefined) set('planned_stop_distance_pct', patch.plannedStopDistancePct);
   if (fields.length === 0) return existing;
   set('updated_at', Date.now());
   params.push(id);
@@ -672,6 +695,8 @@ export interface ImportablePosition {
   mlRegime?: string | null;
   regimeTargetFactor?: number | null;
   marketAtrPct?: number | null;
+  stopSqueezeRatio?: number | null;
+  plannedStopDistancePct?: number | null;
   entryVwap?: number | null;
   createdAt?: number;
   updatedAt?: number;
@@ -694,8 +719,9 @@ export function importPositions(positions: ImportablePosition[], mode: 'merge' |
        (asset_type, symbol, side, quantity, entry_price, entry_date, entry_time, fees,
         option_type, strike, expiration, multiplier, status, tags, grade, notes, checklist,
         stop_price, target_price, source_intent_id, account_id,
-        entry_score, market_regime, ml_regime, regime_target_factor, market_atr_pct, entry_vwap, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        entry_score, market_regime, ml_regime, regime_target_factor, market_atr_pct, entry_vwap,
+        stop_squeeze_ratio, planned_stop_distance_pct, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   );
   const insertExit = db.prepare(
     `INSERT INTO position_exits (position_id, quantity, exit_price, exit_date, fees, notes, source_intent_id, exit_reason, created_at)
@@ -735,6 +761,8 @@ export function importPositions(positions: ImportablePosition[], mode: 'merge' |
         p.regimeTargetFactor ?? null,
         p.marketAtrPct ?? null,
         p.entryVwap ?? null,
+        p.stopSqueezeRatio ?? null,
+        p.plannedStopDistancePct ?? null,
         p.createdAt ?? now,
         p.updatedAt ?? now,
       );

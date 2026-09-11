@@ -1273,6 +1273,23 @@ book that isn't correlated it changes nothing. Because it's genuinely a selectio
 it runs in the **backtest** engines too — so you can measure whether de-crowding actually
 improved your historical risk-adjusted return before enabling it live.
 
+**"Was the stop the strategy's, or the cap's?" → the squeeze ratio (2026-09-11).** Worth
+recording before it is worth acting on. A stop capped at `maxStopDistancePct` is not the
+stop the volatility asked for, and on this book 87% of live entries sit at that cap — so
+the stop distance alone describes nearly every trade and distinguishes none of them. The
+squeeze ratio is the ATR stop the strategy wanted over the one actually placed: 1.0 when
+it fit, higher when the cap bit and by how much. IRD on 2026-09-09 read 5.0, wanted 12.4%,
+got 2.5%, and stopped out two minutes later inside its own entry bar's range.
+
+Alongside it, the planned stop distance is stored as a % of the *signal's* entry, because
+the bracket carries the signal's stop rather than a fill-relative one. IRD filled at 6.26
+against a 6.31 signal, and the real risk per share shrank from 2.54% to 1.76% with nothing
+recording it. Both numbers are capture-only, and deliberately so: the honest next step is
+to ask whether entries at a high ratio do systematically worse over 30 of them, not to
+add a guard because one bad trade had a memorable number. The candidate response, once
+measured, is a skip or a size-down above some ratio — and re-anchoring the initial stop to
+the fill, which only ever widens a compressed stop back to plan.
+
 **"Why won't a second position open in the morning?" → Notional caps versus risk-based
 sizing (2026-08-27).** Worth understanding, because the two are measured in different
 units and the mismatch is easy to misread as caution. Risk-based sizing makes a position

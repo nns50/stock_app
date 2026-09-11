@@ -283,6 +283,21 @@ CREATE TABLE IF NOT EXISTS ${name} (
   -- any filter acts on it (services/autotrading/vwap.ts). Null: manual/
   -- imported rows, rows predating the column, or a failed/unmeasurable fetch.
   entry_vwap REAL,
+  -- Stop-cap forensics (2026-09-11, task #62). 87% of live entries sit at the
+  -- maxStopDistancePct cap, so "the stop was 2.5%" says nothing about HOW HARD
+  -- the cap bit. stop_squeeze_ratio is (stopAtrMultiple x ATR) / the distance
+  -- actually placed: 1.0 = the ATR stop fit, 5.0 = IRD on 2026-09-09, whose
+  -- 12.4% ATR stop was squeezed into 2.5% and then stopped out 2 minutes later
+  -- inside the entry bar's own range. planned_stop_distance_pct is that placed
+  -- distance as a % of the SIGNAL's entry, kept because a favourable fill
+  -- silently compresses realized 1R (the bracket carries the signal's stop, not
+  -- a fill-relative one) and after materialization the signal's entry is gone.
+  -- Both capture-only: nothing reads them to change a trade. They exist so the
+  -- pre-committed rule on #62 -- 30 entries at ratio >= 3, compared against the
+  -- rest -- can be evaluated at all. Null: manual/imported rows, rows predating
+  -- the columns, or a signal with no usable ATR.
+  stop_squeeze_ratio REAL,
+  planned_stop_distance_pct REAL,
   -- Live stop ratchet (2026-08-26) — the two figures a breakeven/trailing stop
   -- needs, mirroring autotrade_paper_positions' own pair. initial_stop_price is
   -- the R denominator, frozen at open: measuring R off the CURRENT stop would
@@ -306,6 +321,7 @@ const POSITIONS_COLS =
   'id, asset_type, symbol, side, quantity, entry_price, entry_date, entry_time, fees, option_type, ' +
   'strike, expiration, multiplier, status, tags, grade, notes, checklist, stop_price, target_price, ' +
   'source_intent_id, account_id, entry_score, market_regime, ml_regime, regime_target_factor, market_atr_pct, entry_vwap, ' +
+  'stop_squeeze_ratio, planned_stop_distance_pct, ' +
   'initial_stop_price, best_price_since_entry, created_at, updated_at';
 
 const SCHEMA = `
@@ -746,6 +762,8 @@ CREATE TABLE IF NOT EXISTS autotrade_live_orders (
   regime_target_factor REAL,  -- the target tighten factor applied at entry (2026-09-08): 1 = untightened, 0.7 = 30% tighter; null = predates the column
   market_atr_pct REAL,
   entry_vwap    REAL,                 -- session VWAP at placement (2026-08-22 observer) — see positions.entry_vwap
+  stop_squeeze_ratio REAL,            -- (stopAtrMultiple x ATR) / the stop distance actually placed (2026-09-11, #62) — see positions
+  planned_stop_distance_pct REAL,     -- that distance as a % of the SIGNAL's entry, so fill-vs-plan survives materialization
   created_at    INTEGER NOT NULL
 );
 
@@ -1459,6 +1477,20 @@ function migrate(): void {
     db.exec('ALTER TABLE autotrade_live_orders ADD COLUMN entry_vwap REAL');
   }
 
+  // 2026-09-11 (task #62): stop-cap forensics, same shape as the VWAP stamp
+  // above — placed on the order row, carried to the position at
+  // materialization. Capture-only; see the positions DDL for why "the stop was
+  // 2.5%" is not an answer on its own.
+  for (const [table, column] of [
+    ['positions', 'stop_squeeze_ratio'],
+    ['positions', 'planned_stop_distance_pct'],
+    ['autotrade_live_orders', 'stop_squeeze_ratio'],
+    ['autotrade_live_orders', 'planned_stop_distance_pct'],
+  ] as const) {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+    if (!cols.some((c) => c.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} REAL`);
+  }
+
   // 2026-08-26: the live stop ratchet's two columns (see the positions DDL
   // comment). Nullable — a row without them is simply never ratcheted, which
   // is the correct behaviour for a manual or imported position. Backfilling
@@ -1789,7 +1821,8 @@ export function rebuildAutotradeLiveOrdersTable(database: Database.Database): vo
   );
   const cols = (
     'intent_id, symbol, role, stop_price, target_price, risk_amount, risk_profile, position_id, ' +
-    'account_id, addon_of_position_id, grade, entry_score, market_regime, ml_regime, regime_target_factor, market_atr_pct, entry_vwap, created_at'
+    'account_id, addon_of_position_id, grade, entry_score, market_regime, ml_regime, regime_target_factor, market_atr_pct, entry_vwap, ' +
+    'stop_squeeze_ratio, planned_stop_distance_pct, created_at'
   )
     .split(', ')
     .filter((c) => present.has(c))
@@ -1816,6 +1849,8 @@ export function rebuildAutotradeLiveOrdersTable(database: Database.Database): vo
       regime_target_factor REAL,
       market_atr_pct REAL,
       entry_vwap    REAL,
+      stop_squeeze_ratio REAL,
+      planned_stop_distance_pct REAL,
       created_at    INTEGER NOT NULL
     );
     INSERT INTO autotrade_live_orders (${cols})

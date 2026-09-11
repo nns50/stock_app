@@ -53,6 +53,79 @@ function candidate(overrides: Partial<ScreenCandidate> = {}): ScreenCandidate {
   };
 }
 
+// Stop-cap forensics (2026-09-11, task #62). 87% of live entries sit at the
+// maxStopDistancePct cap, so "the stop was 2.5%" describes nearly the whole
+// book and separates nothing inside it. These two numbers are what a later
+// study groups by; they change no trade today.
+describe('generateSignal — stop-cap forensics', () => {
+  it('reads 1.0 when the ATR stop fits, because nothing was squeezed', () => {
+    // ATR 4 at 1.5x = $6 on a $100 name = 6%, under a 10% cap.
+    const s = generateSignal(candidate({ price: 100 }), {
+      stopAtrMultiple: 1.5,
+      targetRMultiple: 2,
+      maxStopDistancePct: 10,
+    })!;
+    expect(s.stopSqueezeRatio).toBe(1);
+    expect(s.plannedStopDistancePct).toBe(6);
+  });
+
+  it('reads how HARD the cap bit, not merely that it did', () => {
+    // The same $6 ATR stop squeezed into 2.5% = $2.50 -> ratio 2.4.
+    const s = generateSignal(candidate({ price: 100 }), {
+      stopAtrMultiple: 1.5,
+      targetRMultiple: 2,
+      maxStopDistancePct: 2.5,
+    })!;
+    expect(s.stopSqueezeRatio).toBe(2.4);
+    expect(s.plannedStopDistancePct).toBe(2.5);
+    // The rationale already SAYS it was capped; the point is that a sentence
+    // cannot be grouped by and this number can.
+    expect(s.rationale).toContain('capped at 2.5%');
+  });
+
+  it('reproduces the IRD case that opened the task', () => {
+    // 2026-09-09: entry 6.31, ATR 8.3% of a 4.34 prev close, 1.5x wanted
+    // ~12.4%, the cap allowed 2.54%. Ratio came out ~5.
+    const s = generateSignal(candidate({ price: 6.31, indicators: ind({ atr: 0.36 }) }), {
+      stopAtrMultiple: 1.5,
+      targetRMultiple: 2,
+      maxStopDistancePct: 2.5,
+    })!;
+    expect(s.stopSqueezeRatio).toBeGreaterThanOrEqual(3);
+    expect(s.plannedStopDistancePct).toBeLessThanOrEqual(2.6);
+  });
+
+  it('measures against the distance actually PLACED, after cent rounding', () => {
+    // The bracket carries the ROUNDED stop and realized R is computed from it,
+    // so a ratio measured against the pre-rounding distance describes a trade
+    // that was never placed. On a low-priced name a single cent is a large
+    // share of the stop, which is where the two bases visibly disagree:
+    // 1.5 × 0.0111 = $0.01665 wanted, rounding puts the stop at 1.98 so $0.02
+    // was actually placed — a WIDER stop than asked for, ratio 0.83, not 1.0.
+    const s = generateSignal(candidate({ price: 2, indicators: ind({ atr: 0.0111 }) }), {
+      stopAtrMultiple: 1.5,
+      targetRMultiple: 2,
+    })!;
+    expect(s.stop).toBe(1.98);
+    expect(Math.abs(s.entry - s.stop)).toBeCloseTo(0.02, 10);
+    // Pre-rounding the ratio would be exactly 1 and the distance 0.83% — both
+    // wrong about the order that exists.
+    expect(s.stopSqueezeRatio).toBe(0.83);
+    expect(s.plannedStopDistancePct).toBe(1);
+  });
+
+  it('mirrors for a short, where the stop sits ABOVE the entry', () => {
+    const s = generateSignal(candidate({ price: 100, direction: 'short' }), {
+      stopAtrMultiple: 1.5,
+      targetRMultiple: 2,
+      maxStopDistancePct: 2.5,
+    })!;
+    expect(s.stop).toBeGreaterThan(s.entry);
+    expect(s.stopSqueezeRatio).toBe(2.4);
+    expect(s.plannedStopDistancePct).toBe(2.5);
+  });
+});
+
 describe('generateSignal', () => {
   it('computes an ATR-based stop and R-multiple target for a long', () => {
     const signal = generateSignal(candidate({ direction: 'long' }), { stopAtrMultiple: 1.5, targetRMultiple: 2 });
