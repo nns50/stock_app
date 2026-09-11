@@ -521,6 +521,17 @@ bars. `GET /api/journal/short-shadow-record` replays each live-eligible declined
 real 5-minute bars under the book's own exit geometry and reports the sample size, average
 R and win rate — the three numbers the enabling rule reads — free of paper's slots.
 
+"The book's own exit geometry" means every rule the book actually runs, read straight
+from config: the breakeven trigger, the trail, the target, the **scale-out** (67% banked
+at 0.25R) and the **90-minute stagnation scratch**. The last two were added on
+2026-09-11, a day after the shadow record first shipped without them — and the omission
+mattered in one direction, because a scale-out banks gains the earlier version let run
+all the way back to breakeven. A winner peaking at 0.44R and fading books 0.00R without
+it and roughly +0.17R with it, which is most of the distance between a direction that
+reads flat and one that reads slightly positive. What is still not modelled: the
+scale-out's scarcity gate and its cancel/replace mechanics. Those are execution
+questions, and this measures geometry.
+
 Three things it is not, and each matters when quoting it:
 
 - **Not a P&L.** It ignores slots, aggregate-risk room and cooldowns, so it measures
