@@ -252,7 +252,43 @@ broker-held-quantity check, which refuses at zero.
 
 Journal actions: `live_options_stale_exit_cancelled`,
 `live_options_stale_exit_cancel_failed`, `live_options_exit_left_working`,
-`live_options_stale_exit_unjudgeable`.
+`live_options_stale_exit_unjudgeable`, `live_options_stale_exit_kept`.
+
+#### Price the replacement BEFORE cancelling (2026-09-11)
+
+The rule above shipped on 2026-09-10 cancelling first and placing second, and it
+guarded only the case where the **cancel** fails. It never guarded the case where
+the cancel **succeeds** and the placement then fails — which is what HOOD did the
+very next session. Its stale $0.20 sell was cancelled at 14:00, the replacement
+could not be priced because the mark had fallen to $0.03 (below the $0.05 tick
+once the sell buffer applies), and the position spent the rest of the day with no
+resting order at all. That is the exact invariant the rule's own note claimed to
+hold.
+
+Nothing was lost on that instance: the cancelled order rested above a market
+decaying to zero and could never have filled, and the contract expired the same
+day. On a contract that is not worthless, cancel-then-failed-place strips real
+protection.
+
+So the order is now **price, then cancel, then place**. `sellExitLimit()` is the
+one function both the probe and the placement use, so they cannot disagree about
+whether a contract can be sold at all, and a quote failure answers "no" for the
+same reason — losing the quote is not the moment to pull the only working order.
+A close that cannot be re-priced is left in place and journaled once per position
+per day as `live_options_stale_exit_kept`: an unfillable order still beats no
+order.
+
+The same throttle now covers `live_options_exit_failed` for an unplaceable mark.
+That is not a transient — a near-worthless contract stays unplaceable until it
+expires, and the sweep re-evaluates every tick, so HOOD wrote 94 identical rows in
+one afternoon. Retrying is still right; saying it 94 times is not.
+
+**A reading note that outlives the bug.** Those repeats also inflated the ladder's
+own history: 117 raw `short_dated_options_exit` rows since 2026-08-27 were only
+**22 distinct closed trades**, and 95 of them were one position re-journaling. Read
+raw, `hard_time` looked like 53% of exits and rule L3 would have fired on an
+artefact; deduplicated on position, `hard_time` has never once been the rule that
+closed a trade. **Always dedupe on book + positionId before applying an L-rule.**
 
 ---
 
