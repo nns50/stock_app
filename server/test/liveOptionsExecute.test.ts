@@ -1248,6 +1248,56 @@ describe('checkLiveOptionsExits — replacing a STALE working close', () => {
     });
   });
 
+  // REGRESSION, 2026-09-11. #560 cancelled first and placed second, guarding only
+  // the case where the CANCEL fails — never the case where the cancel SUCCEEDS
+  // and the placement then fails. HOOD: the stale $0.20 sell was cancelled at
+  // 14:00, the replacement could not be priced because the mark had fallen to
+  // $0.03 (below the $0.05 tick once the sell buffer applies), and the position
+  // spent the rest of the session with NO resting order — the exact invariant
+  // #560's own comment claimed to hold.
+  it('KEEPS a stale close it cannot re-price, rather than cancelling into nothing', async () => {
+    setAutotradeConfig(clockCfg());
+    positionWithWorkingClose(0.6);
+    armBroker(0.03); // worthless: 0.03 x 0.95 rounds off the bottom of the nickel grid
+    cancelSucceeds();
+
+    const outcomes = await checkLiveOptionsExits();
+
+    expect(mockCancelOrder).not.toHaveBeenCalled();
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(outcomes[0]).toMatchObject({ requested: false, reason: expect.stringMatching(/stale close kept/i) });
+    const kept = rows('live_options_stale_exit_kept');
+    expect(kept).toHaveLength(1);
+    expect(JSON.parse(kept[0].detail!)).toMatchObject({ restingLimit: 0.6, clockRule: 'max_hold_days' });
+  });
+
+  it('keeps it when the QUOTE fails too — losing the quote is not the moment to pull the order', async () => {
+    setAutotradeConfig(clockCfg());
+    positionWithWorkingClose(0.6);
+    // A chain for a different symbol, so the fetch for AAPL throws.
+    mockGetProvider.mockReturnValue(chainsFor({ MSFT: { side: 'call', strike: 100, mark: 1 } }) as never);
+    mockAccountState.mockResolvedValue(holdingAccountState(2) as Awaited<ReturnType<typeof webullAccountState>>);
+    cancelSucceeds();
+
+    await checkLiveOptionsExits();
+
+    expect(mockCancelOrder).not.toHaveBeenCalled();
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('says so ONCE per position per day — 94 identical rows is what the spam looked like', async () => {
+    setAutotradeConfig(clockCfg());
+    positionWithWorkingClose(0.6);
+    armBroker(0.03);
+    cancelSucceeds();
+
+    await checkLiveOptionsExits();
+    await checkLiveOptionsExits();
+    await checkLiveOptionsExits();
+
+    expect(rows('live_options_stale_exit_kept')).toHaveLength(1);
+  });
+
   it('places NOTHING when the cancel is refused — two working sells is a naked short', async () => {
     setAutotradeConfig(clockCfg());
     positionWithWorkingClose(0.6);

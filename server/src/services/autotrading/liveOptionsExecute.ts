@@ -1200,6 +1200,88 @@ export interface LiveOptionsExitCheckOutcome {
  *  expiration, the outcome this exit exists to prevent. Reuses the same
  *  'live_options_exit_failed' action the broker-rejection path already
  *  journals, which FAILURE_ACTIONS already covers. */
+/**
+ * The sell limit for closing `basis` (a single-leg mark, or a spread's net
+ * value), and null when no placeable limit exists.
+ *
+ * ONE function, because two places now need this number: placeLiveOptionsExit
+ * below, and the placeability probe the stale-close replacement runs BEFORE it
+ * cancels anything. Two copies of "mark × buffer, rounded down, then checked"
+ * would be two chances to disagree about whether a contract can be sold at all
+ * — and the whole point of the probe is that its answer binds the placement's.
+ *
+ * Rounded DOWN because this is a sell: snapping to the grid may only make the
+ * close more likely to fill. Null when the result lands at or below zero, which
+ * is what a near-worthless contract does once the buffer and the $0.05 tick are
+ * applied — HOOD marked 0.01 on 2026-09-11 and no sell limit exists for that.
+ */
+function sellExitLimit(basis: number): number | null {
+  const limit = roundOptionPrice(basis * (1 - OPTIONS_MARKETABLE_LIMIT_BUFFER_PCT / 100), 'down');
+  return validPremium(limit) ? limit : null;
+}
+
+/**
+ * The failure for a contract that CANNOT be sold at any price — its mark is
+ * below the option tick once the sell buffer is applied.
+ *
+ * Throttled to once per position per ET day, unlike every other exit failure.
+ * This one is not a transient: a near-worthless contract stays unplaceable
+ * until it expires, and the exit sweep re-evaluates every tick. HOOD wrote 94
+ * identical rows in one afternoon on 2026-09-11 saying the same thing about the
+ * same position. Retrying is still correct — a mark can recover — but SAYING it
+ * 94 times is feed noise, and the row that matters is the first one.
+ */
+/**
+ * Can a replacement close actually be PRICED right now? Asked before the stale
+ * close is cancelled, never after.
+ *
+ * #560 cancelled first and placed second, and guarded only the case where the
+ * CANCEL fails. It never guarded the case where the cancel SUCCEEDS and the
+ * placement then fails — which is exactly what HOOD did on 2026-09-11: the
+ * stale $0.20 sell was cancelled at 14:00, the replacement could not be priced
+ * because the mark had fallen to $0.03 (below the $0.05 tick once the sell
+ * buffer applies), and the position spent the rest of the session with NO
+ * resting order at all. That is the precise invariant #560's own comment
+ * claimed to hold and did not.
+ *
+ * Nothing was lost on that instance — the cancelled order rested above a market
+ * decaying to zero and could never have filled — but on a contract that is not
+ * worthless, cancel-then-failed-place strips real protection.
+ *
+ * So: price it first, with the SAME sellExitLimit the placement will use, and
+ * cancel only if a limit exists. A quote failure answers "no" for the same
+ * reason — it is not the moment to pull the only working order.
+ */
+async function replacementIsPlaceable(pos: LiveOptionsPosition): Promise<{ ok: boolean; reason: string }> {
+  try {
+    if (pos.kind === 'debit_spread') {
+      const [longQ, shortQ] = await Promise.all([
+        fetchContractQuote(pos.symbol, pos.expiration, pos.strike, pos.side),
+        fetchContractQuote(pos.symbol, pos.expiration, pos.shortStrike!, pos.side),
+      ]);
+      const net = longQ.price - shortQ.price;
+      return sellExitLimit(net) === null
+        ? { ok: false, reason: `no placeable limit for a net value of ${net}` }
+        : { ok: true, reason: 'a replacement can be priced' };
+    }
+    const q = await fetchContractQuote(pos.symbol, pos.expiration, pos.strike, pos.side);
+    return sellExitLimit(q.price) === null
+      ? { ok: false, reason: `no placeable limit for a mark of ${q.price}` }
+      : { ok: true, reason: 'a replacement can be priced' };
+  } catch (err) {
+    return { ok: false, reason: `quote fetch failed: ${(err as Error).message}` };
+  }
+}
+
+function unplaceableExitFailure(pos: LiveOptionsPosition, reason: string): LiveOptionsExitCheckOutcome {
+  if (claimOncePerDay('live_options_exit_unplaceable', String(pos.id))) {
+    return optionsExitFailure(pos, reason, {
+      throttled: 'journaled once per position per ET day — an unplaceable mark does not change within a session',
+    });
+  }
+  return { symbol: pos.symbol, requested: false, reason };
+}
+
 function optionsExitFailure(
   pos: LiveOptionsPosition,
   reason: string,
@@ -1227,7 +1309,6 @@ async function placeLiveOptionsExit(
   const symbol = pos.symbol;
   // Selling to close -- price BELOW the mark to guarantee a fill (the mirror
   // image of an entry's "pay slightly more to guarantee a buy").
-  const buffer = 1 - OPTIONS_MARKETABLE_LIMIT_BUFFER_PCT / 100;
   const liveCfg = buildLiveOptionsTradingConfig(cfg);
 
   // Naked-short guard: the exit quantity MUST NOT exceed what's actually held at
@@ -1313,7 +1394,7 @@ async function placeLiveOptionsExit(
     // the close more likely to fill (optionTick.ts). Ahead of the validPremium
     // guard on purpose — a net value that rounds off the bottom of the grid is
     // unplaceable, and the guard is what says so instead of the broker.
-    const limitPrice = roundOptionPrice(netValue * buffer, 'down');
+    const limitPrice = sellExitLimit(netValue);
     // Same guard as the single-leg branch below: a crossed/stale spread quote
     // (short mark >= long mark), or a net value tiny enough that the sell-side
     // buffer rounds it to 0, makes limitPrice <= 0. The limit_price>0 guardrail
@@ -1321,8 +1402,8 @@ async function placeLiveOptionsExit(
     // drifts to expiration -- the exact outcome the time-exit exists to prevent.
     // Skip this cycle with a precise, journaled reason instead of spinning on an
     // unplaceable order (mirrors attemptLiveOptionsEntry's premium guard).
-    if (!validPremium(limitPrice)) {
-      return optionsExitFailure(
+    if (limitPrice === null) {
+      return unplaceableExitFailure(
         pos,
         `No usable exit quote (net ${netValue}: long ${longMark}, short ${shortMark}) — ` +
           `below the $${optionTickUsd(netValue)} option tick`,
@@ -1358,7 +1439,7 @@ async function placeLiveOptionsExit(
       return optionsExitFailure(pos, `Quote fetch failed: ${(err as Error).message}`);
     }
     // DOWN, because this is a sell limit — see the spread branch above.
-    const limitPrice = roundOptionPrice(mark * buffer, 'down');
+    const limitPrice = sellExitLimit(mark);
     // Mirror the entry-side premium guard (attemptLiveOptionsEntry). A
     // near-worthless or unquoted contract marks at 0 -- or a value tiny enough
     // that the sell-side marketable buffer rounds it to 0 -- so limitPrice
@@ -1366,8 +1447,8 @@ async function placeLiveOptionsExit(
     // every cycle. The position then never auto-closes and drifts to
     // expiration, the exact outcome the time-exit exists to prevent. Skip with
     // a precise, journaled reason instead of spinning on an unplaceable order.
-    if (!validPremium(limitPrice)) {
-      return optionsExitFailure(
+    if (limitPrice === null) {
+      return unplaceableExitFailure(
         pos,
         `No usable exit quote (mark ${mark}) — below the $${optionTickUsd(mark)} option tick`,
       );
@@ -1724,6 +1805,32 @@ export async function checkLiveOptionsExits(): Promise<LiveOptionsExitCheckOutco
      */
     const placeExit = async (acct: string, exitReason: LiveOptionsExitReason): Promise<LiveOptionsExitCheckOutcome> => {
       if (replaceExit) {
+        // Price BEFORE pulling the only working order. See replacementIsPlaceable:
+        // #560 had this the wrong way round and stranded HOOD bare for a session.
+        const placeable = await replacementIsPlaceable(pos);
+        if (!placeable.ok) {
+          if (claimOncePerDay('live_options_stale_exit_kept', String(pos.id))) {
+            logAutotradeEvent({
+              symbol: pos.symbol,
+              stage: 'execution',
+              action: 'live_options_stale_exit_kept',
+              detail: {
+                positionId: pos.id,
+                intentId: replaceExit.intentId,
+                clockRule: clock.rule,
+                restingLimit,
+                mark: currentBasis,
+                reason: `stale close LEFT IN PLACE — ${placeable.reason}. A close that cannot be re-priced is not worth cancelling: an unfillable order still beats no order.`,
+              },
+              riskProfile: pos.riskProfile,
+            });
+          }
+          return {
+            symbol: pos.symbol,
+            requested: false,
+            reason: `stale close kept — ${placeable.reason}`,
+          };
+        }
         const cancelled = await cancelIntent(replaceExit.intentId, acct);
         const state = cancelled.reconciled?.intent?.state ?? cancelled.intent?.state ?? null;
         const ok = cancelled.requested && state !== 'filled';
