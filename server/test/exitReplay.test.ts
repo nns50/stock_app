@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { replayExit, aggregateReplay, type ExitRules, type ReplayInput } from '../src/services/exitReplay';
+import {
+  replayExit,
+  aggregateReplay,
+  compareExitRules,
+  type ExitRules,
+  type ReplayInput,
+} from '../src/services/exitReplay';
 import type { Candle } from '../src/providers/types';
 
 // A long from 100 with its initial stop at 95 — so 1R = 5.00 in price terms,
@@ -144,14 +150,15 @@ describe('aggregateReplay', () => {
     // different bet from one that turns them into targets, and a mean cannot
     // tell them apart.
     const agg = aggregateReplay([
-      { exitR: 2, reason: 'target', barsHeld: 3, bestR: 2 },
-      { exitR: -1, reason: 'stop', barsHeld: 1, bestR: 0.1 },
-      { exitR: 0.3, reason: 'time_exit', barsHeld: 9, bestR: 0.5 },
+      { exitR: 2, reason: 'target', barsHeld: 3, bestR: 2, scaledOut: false, bankedR: 0 },
+      { exitR: -1, reason: 'stop', barsHeld: 1, bestR: 0.1, scaledOut: false, bankedR: 0 },
+      { exitR: 0.3, reason: 'time_exit', barsHeld: 9, bestR: 0.5, scaledOut: false, bankedR: 0 },
     ]);
     expect(agg.trades).toBe(3);
     expect(agg.meanR).toBeCloseTo(0.43, 2);
     expect(agg.medianR).toBe(0.3);
-    expect(agg.reasons).toEqual({ stop: 1, breakeven: 0, trail: 0, target: 1, time_exit: 1 });
+    expect(agg.reasons).toEqual({ stop: 1, breakeven: 0, trail: 0, target: 1, time_exit: 1, stagnation: 0 });
+    expect(agg.scaleOuts).toBe(0);
   });
 
   it('reports null averages for an empty set, never 0', () => {
@@ -159,5 +166,113 @@ describe('aggregateReplay', () => {
     expect(agg.trades).toBe(0);
     expect(agg.meanR).toBeNull();
     expect(agg.medianR).toBeNull();
+  });
+});
+
+describe('the scale-out and the stagnation timer (2026-09-11)', () => {
+  // The path every case below walks: a 0.6R peak (103) in the first bar, then
+  // a dip to 99.5 that stops the trail 0.1R behind that peak.
+  const trailPath = () => [bar(99, 103), bar(99.5, 102)];
+
+  it('replays the four-field rules exactly as before when neither is set', () => {
+    const a = replayExit(LONG, trailPath(), rules())!;
+    const b = replayExit(
+      LONG,
+      trailPath(),
+      rules({ scaleOutR: 0, scaleOutFraction: 0.5, stagnationMinutes: 0, stagnationMinR: 0.5 }),
+    )!;
+    expect(b).toEqual(a);
+    expect(a).toMatchObject({ reason: 'trail', scaledOut: false, bankedR: 0 });
+    expect(a.exitR).toBeCloseTo(0.1, 6);
+  });
+
+  it('banks the scale-out share at its level and lets the remainder run — a blended R', () => {
+    const r = replayExit(LONG, trailPath(), rules({ scaleOutR: 0.5, scaleOutFraction: 0.5 }))!;
+    expect(r).toMatchObject({ reason: 'trail', scaledOut: true, bankedR: 0.25 });
+    // Half at 0.5R plus half of the remainder's 0.1R trail exit.
+    expect(r.exitR).toBeCloseTo(0.3, 6);
+    expect(r.bestR).toBeCloseTo(0.6, 6);
+  });
+
+  it('resolves a bar holding both the stop and the scale-out level AGAINST the trade', () => {
+    const r = replayExit(LONG, [bar(94, 103)], rules({ scaleOutR: 0.5, scaleOutFraction: 0.5 }))!;
+    expect(r).toMatchObject({ exitR: -1, reason: 'stop', scaledOut: false, bankedR: 0 });
+  });
+
+  it('fills the scale-out before a target in the same bar, so the target takes only the remainder', () => {
+    const r = replayExit(LONG, [bar(99, 111)], rules({ scaleOutR: 0.5, scaleOutFraction: 0.5 }))!;
+    expect(r).toMatchObject({ reason: 'target', scaledOut: true, bankedR: 0.25 });
+    expect(r.exitR).toBeCloseTo(1.25, 6);
+  });
+
+  it('a full scale-out books the level and nothing else', () => {
+    const r = replayExit(LONG, [bar(99, 103), bar(94, 100)], rules({ scaleOutR: 0.5, scaleOutFraction: 1 }))!;
+    expect(r.exitR).toBe(0.5);
+    expect(r.bankedR).toBe(0.5);
+  });
+
+  it('mirrors the scale-out for a short', () => {
+    // 0.5R favourable for the short from 100 with its stop at 105 is 97.5.
+    const r = replayExit(SHORT, [bar(97, 101), bar(98, 100.5)], rules({ scaleOutR: 0.5, scaleOutFraction: 0.5 }))!;
+    expect(r).toMatchObject({ scaledOut: true, bankedR: 0.25, reason: 'trail' });
+  });
+
+  it('scratches a stagnant remainder at the close once the timer has run, and leaves a working one alone', () => {
+    // Eight bars hovering at +0.2R (close 101): the 30-minute timer fires at
+    // the seventh bar's close, 30 minutes after the first.
+    const flat = () => bar(100.5, 101.2, 101);
+    const bars = [flat(), flat(), flat(), flat(), flat(), flat(), flat(), flat()];
+    const r = replayExit(LONG, bars, rules({ stagnationMinutes: 30, stagnationMinR: 0.5 }))!;
+    expect(r).toMatchObject({ reason: 'stagnation', barsHeld: 6, exitR: 0.2, scaledOut: false });
+    // Working — at or above the bar — and the timer stands aside.
+    expect(replayExit(LONG, bars, rules({ stagnationMinutes: 30, stagnationMinR: 0.15 }))!.reason).toBe('time_exit');
+    // 0 minutes: no timer at all.
+    expect(replayExit(LONG, bars, rules({ stagnationMinutes: 0, stagnationMinR: 0.5 }))!.reason).toBe('time_exit');
+  });
+
+  it('counts scale-outs and stagnation exits in the aggregate', () => {
+    const agg = aggregateReplay([
+      { exitR: 0.3, reason: 'trail', barsHeld: 2, bestR: 0.6, scaledOut: true, bankedR: 0.25 },
+      { exitR: 0.2, reason: 'stagnation', barsHeld: 6, bestR: 0.24, scaledOut: false, bankedR: 0 },
+    ]);
+    expect(agg.scaleOuts).toBe(1);
+    expect(agg.reasons.stagnation).toBe(1);
+  });
+});
+
+describe('compareExitRules — two shapes over the SAME trades', () => {
+  const trailPath = () => [bar(99, 103), bar(99.5, 102)];
+  const trades = (n: number) => Array.from({ length: n }, () => ({ input: LONG, bars: trailPath() }));
+
+  it('reads rules that only differ by an inert field as no_change', () => {
+    const c = compareExitRules(trades(25), rules(), rules({ scaleOutR: 0, scaleOutFraction: 0.5 }));
+    expect(c.verdict).toBe('no_change');
+    expect(c.trades).toBe(25);
+    expect(c.unpaired).toBe(0);
+  });
+
+  it('pairs the arms and calls a uniform gain better and a uniform loss worse', () => {
+    const half = rules({ scaleOutR: 0.5, scaleOutFraction: 0.5 });
+    const better = compareExitRules(trades(25), rules(), half, { resamples: 300 });
+    expect(better.meanDiffR).toBeCloseTo(0.2, 2);
+    expect(better.current.replay.scaleOuts).toBe(0);
+    expect(better.candidate.replay.scaleOuts).toBe(25);
+    expect(better.significance.reliable).toBe(true);
+    expect(better.verdict).toBe('better');
+    const worse = compareExitRules(trades(25), half, rules(), { resamples: 300 });
+    expect(worse.meanDiffR).toBeCloseTo(-0.2, 2);
+    expect(worse.verdict).toBe('worse');
+  });
+
+  it('is insufficient under 20 paired trades, and a trade either arm cannot replay is unpaired, never a zero', () => {
+    const c = compareExitRules(
+      [...trades(5), { input: LONG, bars: [] }],
+      rules(),
+      rules({ scaleOutR: 0.5, scaleOutFraction: 0.5 }),
+      { resamples: 100 },
+    );
+    expect(c.trades).toBe(5);
+    expect(c.unpaired).toBe(1);
+    expect(c.verdict).toBe('insufficient');
   });
 });

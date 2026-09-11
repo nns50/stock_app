@@ -3483,8 +3483,18 @@ describe('journal analysis routes tell you what they could not cover (integratio
     addExit(overnight.id, { quantity: 10, exitPrice: 101, exitDate: '2026-06-12' });
 
     const rep = (await getJson('/api/journal/exit-replay')) as {
-      rules: { breakevenTriggerR: number; trailStartR: number; trailStopR: number; targetR: number };
+      rules: {
+        breakevenTriggerR: number;
+        trailStartR: number;
+        trailStopR: number;
+        targetR: number;
+        scaleOutR: number;
+        scaleOutFraction: number;
+        stagnationMinutes: number;
+        stagnationMinR: number;
+      };
       replay: { trades: number };
+      comparison: unknown;
       actual: { trades: number };
       coverage: {
         closedStockTrades: number;
@@ -3499,6 +3509,13 @@ describe('journal analysis routes tell you what they could not cover (integratio
     const cfg = getAutotradeConfig();
     expect(rep.rules.trailStopR).toBe(cfg.trailStopRMultiple);
     expect(rep.rules.targetR).toBe(cfg.targetRMultiple);
+    // The current policy includes the scale-out (only when its flag is on)
+    // and the stagnation timer (2026-09-11) — from the live config as well.
+    expect(rep.rules.scaleOutR).toBe(cfg.liveScaleOutEnabled ? cfg.partialExitRMultiple : 0);
+    expect(rep.rules.scaleOutFraction).toBeCloseTo(cfg.partialExitPct / 100, 6);
+    expect(rep.rules.stagnationMinutes).toBe(cfg.stagnationExitMinutes);
+    expect(rep.rules.stagnationMinR).toBe(cfg.stagnationExitMinR);
+    expect(rep.comparison).toBeNull();
     // The overnight trade is EXCLUDED and counted, never silently dropped.
     expect(rep.coverage.closedStockTrades).toBe(2);
     expect(rep.coverage.notSameSession).toBe(1);
@@ -3522,6 +3539,108 @@ describe('journal analysis routes tell you what they could not cover (integratio
     };
     expect(junk.rules.trailStopR).toBe(cfg.trailStopRMultiple);
     expect(junk.rules.targetR).toBe(cfg.targetRMultiple);
+  });
+
+  it('exit-replay scores a candidate shape against the current rules over the SAME trades, at the ROUTE', async () => {
+    db.exec('DELETE FROM position_exits; DELETE FROM positions;');
+    // Every trade: a bar reaching +0.6R (103), then a dip to 99.8 and a flat
+    // close. The 0.6R peak arms the trail (start 0.5R, 0.5R behind), so the
+    // current rules book 0.1R on the dip; banking half at 0.5R first lifts every
+    // trade to 0.3R — a paired +0.2R that no permutation of the signs can wash
+    // out.
+    const candles = vi
+      .spyOn(getProvider(), 'getCandles')
+      .mockImplementation(async (_symbol: string, _timeframe, q?: { start?: string }) => {
+        const day = q?.start ?? '2026-06-10';
+        return [
+          { time: Date.parse(`${day}T15:00:00Z`), open: 100, high: 103, low: 100, close: 102.5, volume: 1000 },
+          { time: Date.parse(`${day}T15:05:00Z`), open: 102.5, high: 102.6, low: 99.8, close: 100.2, volume: 1000 },
+        ];
+      });
+    const before = getAutotradeConfig();
+    setAutotradeConfig({
+      liveScaleOutEnabled: false,
+      stagnationExitMinutes: 0,
+      breakevenTriggerRMultiple: 0.25,
+      trailStartRMultiple: 0.5,
+      trailStopRMultiple: 0.5,
+    });
+    try {
+      for (let i = 0; i < 24; i++) {
+        const day = `2026-05-${String(1 + i).padStart(2, '0')}`;
+        const p = createPosition({
+          assetType: 'stock',
+          symbol: `CMP${i}`,
+          side: 'long',
+          quantity: 10,
+          entryPrice: 100,
+          entryDate: day,
+          stopPrice: 95,
+        });
+        addExit(p.id, { quantity: 10, exitPrice: 100.2, exitDate: day });
+      }
+      const rep = (await getJson('/api/journal/exit-replay?cScaleOutR=0.5&cScaleOutPct=50')) as {
+        rules: { scaleOutR: number };
+        replay: { trades: number; meanR: number; reasons: Record<string, number>; scaleOuts: number };
+        comparison: {
+          trades: number;
+          unpaired: number;
+          current: { rules: { scaleOutR: number }; replay: { meanR: number; scaleOuts: number } };
+          candidate: {
+            rules: { scaleOutR: number; scaleOutFraction: number };
+            replay: { meanR: number; scaleOuts: number };
+          };
+          meanDiffR: number;
+          significance: { reliable: boolean; ciLow: number | null };
+          verdict: string;
+        };
+      };
+      expect(rep.rules.scaleOutR).toBe(0); // the flag is off, so the current arm has no scale-out
+      expect(rep.replay).toMatchObject({ trades: 24, meanR: 0.1, scaleOuts: 0 });
+      expect(rep.replay.reasons.trail).toBe(24);
+      const c = rep.comparison;
+      expect(c.trades).toBe(24);
+      expect(c.unpaired).toBe(0);
+      expect(c.candidate.rules).toMatchObject({ scaleOutR: 0.5, scaleOutFraction: 0.5 });
+      expect(c.current.replay).toMatchObject({ meanR: 0.1, scaleOuts: 0 });
+      expect(c.candidate.replay).toMatchObject({ meanR: 0.3, scaleOuts: 24 });
+      expect(c.meanDiffR).toBeCloseTo(0.2, 6);
+      expect(c.significance.reliable).toBe(true);
+      expect(c.verdict).toBe('better');
+      // The candidate changes only what it names: the timer it did not name is the current one.
+      const timer = (await getJson(
+        '/api/journal/exit-replay?cStagnationMinutes=5&cStagnationMinR=0.9&cBreakevenR=0&cTrailStartR=0',
+      )) as {
+        comparison: {
+          candidate: {
+            rules: { stagnationMinutes: number; scaleOutR: number };
+            replay: { reasons: Record<string, number> };
+          };
+          verdict: string;
+        };
+      };
+      expect(timer.comparison.candidate.rules).toMatchObject({
+        stagnationMinutes: 5,
+        scaleOutR: 0,
+        breakevenTriggerR: 0,
+        trailStartR: 0,
+      });
+      // With no breakeven or trail to stop it first, the second bar (5 minutes
+      // in) closes at +0.04R, below the 0.9R bar: scratched there, on every
+      // trade — and 0.04R is worse than the trail's 0.1R, uniformly.
+      expect(timer.comparison.candidate.replay.reasons.stagnation).toBe(24);
+      expect(timer.comparison.verdict).toBe('worse');
+    } finally {
+      candles.mockRestore();
+      setAutotradeConfig({
+        liveScaleOutEnabled: before.liveScaleOutEnabled,
+        stagnationExitMinutes: before.stagnationExitMinutes,
+        breakevenTriggerRMultiple: before.breakevenTriggerRMultiple,
+        trailStartRMultiple: before.trailStartRMultiple,
+        trailStopRMultiple: before.trailStopRMultiple,
+      });
+      db.exec('DELETE FROM position_exits; DELETE FROM positions;');
+    }
   });
 
   it('exit-tune-validation fits the tuner’s own rule and prices it at the ROUTE', async () => {

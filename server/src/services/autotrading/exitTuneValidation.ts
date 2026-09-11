@@ -49,7 +49,15 @@
 
 import { Candle } from '../../providers/types';
 import { TradeExcursion, aggregateExcursions } from '../excursion';
-import { ExitRules, ReplayComparison, ReplayResult, aggregateReplay, replayExit } from '../exitReplay';
+import {
+  ExitRules,
+  ReplayComparison,
+  ReplayResult,
+  ReplayVerdict,
+  aggregateReplay,
+  replayExit,
+  replayVerdict,
+} from '../exitReplay';
 import { ExcursionTuneBounds, computeExcursionTune } from './excursionTune';
 import { DEFAULT_OOS_FRACTION, SignificanceStats, computeSignificanceStats } from './significance';
 
@@ -131,7 +139,10 @@ export interface ValidationComparison {
  *  excludes zero, the same pair of conditions checkOosEdgeConfirmation uses:
  *  a bootstrap CI over three trades is three numbers wearing a confidence
  *  interval, and it excludes zero almost every time. */
-export type ValidationVerdict = 'better' | 'worse' | 'inside_noise' | 'no_change' | 'insufficient';
+/** The replay's own verdict rule (exitReplay.ts's replayVerdict) — one
+ *  derivation for every paired replay, so this validation and the route's
+ *  candidate comparison cannot disagree about what "better" means. */
+export type ValidationVerdict = ReplayVerdict;
 
 /** A geometry the rule produced, and what it earned. */
 export interface FittedArm {
@@ -293,12 +304,7 @@ function compare(
   );
   const meanDiffR = diffs.length ? round2(diffs.reduce((a, b) => a + b, 0) / diffs.length) : null;
 
-  let verdict: ValidationVerdict;
-  if (geometriesEqual) verdict = 'no_change';
-  else if (!significance.reliable) verdict = 'insufficient';
-  else if (significance.ciLow !== null && significance.ciLow > 0) verdict = 'better';
-  else if (significance.ciHigh !== null && significance.ciHigh < 0) verdict = 'worse';
-  else verdict = 'inside_noise';
+  const verdict = replayVerdict(significance, geometriesEqual);
 
   return {
     comparison: {
