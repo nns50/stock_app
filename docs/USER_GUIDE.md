@@ -2594,6 +2594,14 @@ gap, and the advice says so in those words rather than ranking a small thing fir
 execution defects are open it leads with them: fix what is broken before tuning what is
 merely small.
 
+**"Open" means it happened in the latest session.** Execution findings are counted over a
+ten-session window, so a defect fixed on Monday is still in the window on Friday. Each one
+carries when it last occurred (`lastSeenEtDate`) and how many *sessions* ago — a class that
+has stopped recurring drops below the measurable findings and its action becomes "check
+whether the fix landed after that date" instead of "go and root-cause this". It is not
+dropped: the app cannot see deploys, so it will not claim anything is fixed, and a finding
+whose recency cannot be established is treated as current.
+
 One thing it deliberately does not do is invent features. Ranking what the record implies
 is a calculation; noticing that some part of the workflow should exist at all is a
 judgement, and the routine asks for that separately.

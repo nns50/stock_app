@@ -8484,6 +8484,48 @@ it — so when execution defects are open and the measurable findings total unde
 points, the headline leads with **"fix what is broken before tuning what is merely
 small"** instead of ranking the small thing first.
 
+### The first production read, and what it caught (2026-09-12)
+
+`GET /api/journal/tune-advice` on the deployed box, minutes after the deploy:
+
+```
+gap: target 3%, implied 0%, gap 3 points, avgR 0.0001, trades/session 5
+     storedTargetR 1.2, goal reached on 4 of 16 active sessions (25%), 1R on 5
+     activeSessionsSinceChange 1 of 10
+```
+
+The 25% goal rate is exactly the plan's estimate ("roughly one active session
+in four"), and `activeSessionsSinceChange: 1` against `activeSessions: 16`
+proves the distinction the sweep above added is real — a reader taking the
+lookback figure would think the trial was sixteen sessions old on its second
+day.
+
+**And the top four recommendations were all already fixed.** 261
+`live_options_exit_failed`, 147 `live_scale_out_blocked`, 62
+`live_stop_adjust_blocked`, 11 `live_bracket_rearmed` — ranked `actionable`,
+above everything measurable. Dating them against the journal: every exit
+failure is from 2026-09-11, the HOOD day, with **none since the fill fix
+deployed**; the scale-outs are 09-02/03/04/08, before the cancel-replace path;
+the stop ratchets are the 09-02 DELL day. The execution window is ten sessions,
+so a fix that lands on day one leaves nine more evenings of the same false
+report — which is precisely how a reader learns to skip the section the
+headline was designed to make trustworthy.
+
+A count without a date is not actionable information. So an execution
+occurrence now carries `lastSeenEtDate` and `sessionsSinceLastSeen`, counted in
+SESSIONS rather than days (2026-09-07 is Labor Day: three calendar days from
+09-11 to 09-14 is one session), and:
+
+- a class not seen in the latest session ranks **below** the measurable
+  findings rather than above them — still present, because dormant is not the
+  same as fixed and the scan has no evidence a deploy happened;
+- its action becomes "check whether the fix landed after `<date>`" rather than
+  "root-cause these occurrences";
+- the headline counts only classes seen in the latest session as outranking
+  everything, and mentions the dormant ones in a single trailing clause;
+- an occurrence whose recency cannot be established is treated as CURRENT.
+  Silence is not evidence of a fix.
+
 ### The sweep that followed (2026-09-12)
 
 Two of these in a row was enough to go looking deliberately rather than by

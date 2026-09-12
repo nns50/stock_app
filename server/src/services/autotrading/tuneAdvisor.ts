@@ -73,6 +73,17 @@ export interface TuneRecommendation {
   confidence: 'strong' | 'moderate' | 'thin';
   status: TuneStatus;
   statusReason: string;
+  /**
+   * For an execution defect: when the class last occurred and how many
+   * sessions ago (0 = the latest session). Null on everything else, which is a
+   * distribution rather than an occurrence.
+   *
+   * A field rather than a phrase inside `statusReason`, because the ranking
+   * reads it — and a ranking that String.startsWith()es its way through prose
+   * is one rewording away from silently reordering the list.
+   */
+  lastSeenEtDate: string | null;
+  sessionsSinceLastSeen: number | null;
   action: TuneAction;
 }
 
@@ -208,6 +219,9 @@ function flowRecommendations(input: TuneAdvisorInput, gap: GoalGap): TuneRecomme
         ? `adds exposure mid-trial — held until the ${REVIEW_SESSIONS}-session review ` +
           `(${input.review.activeSessionsSinceChange} so far)`
         : 'the operator applies anything that adds exposure',
+      // Not an occurrence — a distribution has no "last seen".
+      lastSeenEtDate: null,
+      sessionsSinceLastSeen: null,
       action: governed
         ? {
             kind: 'config',
@@ -265,6 +279,9 @@ function edgeRecommendations(input: TuneAdvisorInput, gap: GoalGap): TuneRecomme
         leak.verdict === 'unconfirmed'
           ? 'the paper control has too few trades in this bucket to agree or disagree'
           : 'reduces exposure — the gated-switch engine can apply this once its rule graduates',
+      // Not an occurrence — a distribution has no "last seen".
+      lastSeenEtDate: null,
+      sessionsSinceLastSeen: null,
       action:
         lever && lever.kind === 'config' && lever.field
           ? {
@@ -291,27 +308,42 @@ function executionRecommendations(input: TuneAdvisorInput): TuneRecommendation[]
   if (!scan) return [];
   return scan.findings
     .filter((f) => f.kind === 'execution')
-    .map((f) => ({
-      id: `execution:${f.id}`,
-      factor: 'execution' as const,
-      title: f.label,
-      evidence: f.detail,
-      // Deliberately null. An exit that failed cost whatever that trade would
-      // have made, which is not knowable from a count — and a fabricated
-      // number would rank a defect against a distribution as though the two
-      // were measured the same way.
-      expectedDayPctDelta: null,
-      sampleSize: f.count,
-      confidence: confidenceFor(f.count),
-      status: 'actionable' as const,
-      statusReason: 'an execution defect is a fix, not a setting — it is never held by the review rule',
-      action: {
-        kind: 'code' as const,
-        field: null,
-        detail: `Root-cause the ${f.count} occurrence(s) and fix the path. A decided trade that does not execute is edge the book already paid for.`,
-        direction: 'neutral' as const,
-      },
-    }));
+    .map((f) => {
+      // Recency decides whether this is work or history. The scan cannot know
+      // a deploy happened, so it never claims a class is fixed — but a class
+      // whose last occurrence predates the latest session is not something to
+      // go and do TONIGHT, and ranking it as though it were is what teaches a
+      // reader to skip the section. See the 2026-09-12 production read.
+      const ago = f.sessionsSinceLastSeen ?? null;
+      const current = ago === null || ago === 0;
+      return {
+        id: `execution:${f.id}`,
+        factor: 'execution' as const,
+        title: f.label,
+        evidence: f.detail,
+        // Deliberately null. An exit that failed cost whatever that trade would
+        // have made, which is not knowable from a count — and a fabricated
+        // number would rank a defect against a distribution as though the two
+        // were measured the same way.
+        expectedDayPctDelta: null,
+        sampleSize: f.count,
+        confidence: confidenceFor(f.count),
+        status: 'actionable' as const,
+        lastSeenEtDate: f.lastSeenEtDate ?? null,
+        sessionsSinceLastSeen: ago,
+        statusReason: current
+          ? 'an execution defect is a fix, not a setting — it is never held by the review rule'
+          : `last occurred ${f.lastSeenEtDate}, ${ago} session(s) ago — confirm it is fixed rather than dormant before spending on it`,
+        action: {
+          kind: 'code' as const,
+          field: null,
+          detail: current
+            ? `Root-cause the ${f.count} occurrence(s) and fix the path. A decided trade that does not execute is edge the book already paid for.`
+            : `Check whether the fix for this landed after ${f.lastSeenEtDate}. If it did, this is history the ten-session window is still carrying; if it did not, the class has simply not recurred yet and the ${f.count} occurrence(s) still need root-causing.`,
+          direction: 'neutral' as const,
+        },
+      };
+    });
 }
 
 function goalRecommendations(input: TuneAdvisorInput, gap: GoalGap): TuneRecommendation[] {
@@ -345,6 +377,9 @@ function goalRecommendations(input: TuneAdvisorInput, gap: GoalGap): TuneRecomme
         ? `changes the trial's own sizing — held until the ${REVIEW_SESSIONS}-session review ` +
           `(${input.review.activeSessionsSinceChange} so far)`
         : 'the operator decides the goal and the risk that sets its height',
+      // Not an occurrence — a distribution has no "last seen".
+      lastSeenEtDate: null,
+      sessionsSinceLastSeen: null,
       action: {
         kind: 'config',
         field: 'riskPerTradePct',
@@ -381,6 +416,9 @@ function redDayRecommendations(input: TuneAdvisorInput, gap: GoalGap): TuneRecom
       confidence: confidenceFor(driver.trades),
       status: 'actionable',
       statusReason: 'reducing the size of a red day never widens exposure',
+      // Not an occurrence — a distribution has no "last seen".
+      lastSeenEtDate: null,
+      sessionsSinceLastSeen: null,
       action: {
         kind: 'research',
         field: null,
@@ -393,14 +431,24 @@ function redDayRecommendations(input: TuneAdvisorInput, gap: GoalGap): TuneRecom
   ];
 }
 
-/** Rank: the biggest estimated effect first, with the unestimable (execution
- *  defects) interleaved by confidence rather than pushed to the bottom — a
- *  broken exit path outranks a 0.02%/day distribution finding whatever the
- *  arithmetic says about the latter. */
+/**
+ * Rank: the biggest estimated effect first, with the unestimable (execution
+ * defects) interleaved by confidence rather than pushed to the bottom — a
+ * broken exit path outranks a 0.02%/day distribution finding whatever the
+ * arithmetic says about the latter.
+ *
+ * With one qualification learned from the first production read: a defect that
+ * has NOT occurred in the latest session ranks below one that has, and below
+ * the measurable findings. 261 exit failures from the session before a fix
+ * shipped are not tonight's work, and leaving them at the top for the nine
+ * remaining sessions of the window is how a reader learns to skip the list.
+ * Still above nothing — a dormant class may simply not have recurred yet.
+ */
 function rank(a: TuneRecommendation, b: TuneRecommendation): number {
   const weight = (r: TuneRecommendation): number => {
-    if (r.factor === 'execution') return 1000 + r.sampleSize;
-    return r.expectedDayPctDelta ?? 0;
+    if (r.factor !== 'execution') return r.expectedDayPctDelta ?? 0;
+    const stale = r.sessionsSinceLastSeen !== null && r.sessionsSinceLastSeen > 0;
+    return stale ? -1000 + r.sampleSize / 1e6 : 1000 + r.sampleSize;
   };
   return weight(b) - weight(a);
 }
@@ -453,7 +501,17 @@ export function headlineFor(gap: GoalGap, recommendations: TuneRecommendation[],
     .map((r) => r.expectedDayPctDelta)
     .filter((d): d is number => d !== null)
     .reduce((a, b) => a + b, 0);
-  const execution = recommendations.filter((r) => r.factor === 'execution').length;
+  // Only a defect seen in the LATEST session counts as "open": on 2026-09-12
+  // four fixed classes were still inside the ten-session window, and a
+  // headline saying four defects outranked everything would have sent the
+  // reader after work that was already done.
+  const open = recommendations.filter(
+    (r) => r.factor === 'execution' && (r.sessionsSinceLastSeen === null || r.sessionsSinceLastSeen === 0),
+  ).length;
+  const dormant = recommendations.filter(
+    (r) => r.factor === 'execution' && r.sessionsSinceLastSeen !== null && r.sessionsSinceLastSeen > 0,
+  ).length;
+  const execution = open;
   const closes = gap.gapPct !== null && gap.gapPct > 0 ? round2((estimable / gap.gapPct) * 100) : null;
 
   if (execution > 0 && round2(estimable) <= 0.05) {
@@ -463,17 +521,25 @@ export function headlineFor(gap: GoalGap, recommendations: TuneRecommendation[],
       'this record closes that. Fix what is broken before tuning what is merely small.'
     );
   }
+  // A dormant defect is worth one clause, never the headline: it is a thing to
+  // confirm fixed, not a thing to go and do.
+  const dormantClause =
+    dormant === 0
+      ? ''
+      : ` (${dormant} execution class(es) in the window but not in the latest session — confirm fixed.)`;
   if (closes === null || closes < 25) {
     return (
       `Everything measurable here adds about ${round2(estimable)} points to a ${gap.impliedDailyGainPct}% day, ` +
       `against a gap of ${gap.gapPct} points to the ${gap.targetDailyGainPct}% goal` +
       (closes === null ? '.' : ` — roughly ${closes}% of it.`) +
-      ' The rest is distribution, not a setting.'
+      ' The rest is distribution, not a setting.' +
+      dormantClause
     );
   }
   return (
     `Everything measurable here adds about ${round2(estimable)} points, roughly ${closes}% of the ` +
-    `${gap.gapPct}-point gap to the ${gap.targetDailyGainPct}% goal.`
+    `${gap.gapPct}-point gap to the ${gap.targetDailyGainPct}% goal.` +
+    dormantClause
   );
 }
 

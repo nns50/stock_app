@@ -342,7 +342,19 @@ export function collectExecutionFindings(now: number): ExecutionOccurrence[] {
   let date = etToday(now);
   for (let i = 0; i < EXECUTION_LOOKBACK_SESSIONS; i++) date = previousTradingSession(date);
   const since = etDateTimeToMs(date, '00:00') ?? now - EXECUTION_LOOKBACK_SESSIONS * 24 * 60 * 60 * 1000;
+  // The sessions of the window, newest first, so "how many sessions ago" is an
+  // index rather than a date subtraction (which would count weekends and
+  // holidays as sessions and overstate how stale a class is).
+  const windowSessions: string[] = [];
+  {
+    let d = etToday(now);
+    for (let i = 0; i < EXECUTION_LOOKBACK_SESSIONS + 1; i++) {
+      windowSessions.push(d);
+      d = previousTradingSession(d);
+    }
+  }
   const counts = new Map<string, number>();
+  const lastSeen = new Map<string, string>();
   for (const e of listAutotradeEvents({
     actions: EXECUTION_ACTIONS.map((a) => a.action),
     since,
@@ -358,6 +370,9 @@ export function collectExecutionFindings(now: number): ExecutionOccurrence[] {
       if (variant !== null && spec.labelFor?.[variant] !== undefined) key = `${e.action}|${variant}`;
     }
     counts.set(key, (counts.get(key) ?? 0) + 1);
+    const etDate = etToday(e.createdAt);
+    const seen = lastSeen.get(key);
+    if (seen === undefined || etDate > seen) lastSeen.set(key, etDate);
   }
   const out: ExecutionOccurrence[] = [];
   for (const a of EXECUTION_ACTIONS) {
@@ -368,10 +383,17 @@ export function collectExecutionFindings(now: number): ExecutionOccurrence[] {
     for (const { key, label } of [...variants, { key: a.action, label: a.label }]) {
       const n = counts.get(key) ?? 0;
       if (n === 0) continue;
+      const seen = lastSeen.get(key) ?? null;
+      const idx = seen === null ? -1 : windowSessions.indexOf(seen);
       out.push({
         action: key,
         count: n,
         detail: `${label} — ${n} in the last ${EXECUTION_LOOKBACK_SESSIONS} sessions`,
+        lastSeenEtDate: seen,
+        // Not found in the window's session list means the row landed on a day
+        // the calendar does not call a session (a holiday backfill, a clock
+        // skew). Null rather than a number we would be guessing at.
+        sessionsSinceLastSeen: idx >= 0 ? idx : null,
       });
     }
   }

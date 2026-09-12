@@ -160,6 +160,11 @@ export interface DimensionReport {
 export interface ScanFinding {
   id: string;
   kind: 'execution' | 'configuration';
+  /** For an execution finding: when the class was last seen, and how many
+   *  sessions ago. Null on a configuration finding, which is a state rather
+   *  than an occurrence. */
+  lastSeenEtDate?: string | null;
+  sessionsSinceLastSeen?: number | null;
   label: string;
   count: number;
   detail: string;
@@ -171,6 +176,23 @@ export interface ExecutionOccurrence {
   action: string;
   count: number;
   detail?: string;
+  /**
+   * The most recent session this class occurred on, and how many sessions ago
+   * that was (0 = the latest session in the window).
+   *
+   * A COUNT WITHOUT A DATE IS NOT ACTIONABLE, which the first production read
+   * proved on 2026-09-12: the top four findings were 261 options exit
+   * failures, 147 refused scale-outs, 62 blocked stop ratchets and 11 bracket
+   * re-arms -- every one of them from BEFORE the fix that closed it, and every
+   * one ranked as something to go and do. The window is ten sessions, so a fix
+   * that landed yesterday leaves nine more evenings of the same false report,
+   * which is precisely how a reader learns to skip the section.
+   *
+   * The scan cannot know a deploy happened, so it does not claim the class is
+   * fixed. It says when the class was last seen and lets the reader judge.
+   */
+  lastSeenEtDate?: string | null;
+  sessionsSinceLastSeen?: number | null;
 }
 
 export interface DayLevelReport {
@@ -650,6 +672,18 @@ export function mulberry32(seed: number): () => number {
 
 export const SCAN_RNG_SEED = 20260912;
 
+/**
+ * The recency clause appended to an execution finding's detail. Deliberately
+ * descriptive, never a verdict: "not seen since" is a fact, "fixed" would be a
+ * guess the scan has no evidence for.
+ */
+export function recencySuffix(sessionsAgo: number | null, lastSeen: string | null): string {
+  if (sessionsAgo === null || lastSeen === null) return '';
+  if (sessionsAgo === 0) return ` — including the latest session (${lastSeen})`;
+  const s = sessionsAgo === 1 ? 'session' : 'sessions';
+  return ` — none since ${lastSeen}, ${sessionsAgo} ${s} ago`;
+}
+
 export function runEdgeLeakScan(input: EdgeLeakScanInput): EdgeLeakScanResult {
   const rng = input.rng ?? mulberry32(SCAN_RNG_SEED);
   const live = input.live.trades;
@@ -667,7 +701,11 @@ export function runEdgeLeakScan(input: EdgeLeakScanInput): EdgeLeakScanResult {
       kind: 'execution',
       label: e.action,
       count: e.count,
-      detail: e.detail ?? `${e.count} occurrence${e.count === 1 ? '' : 's'} in the execution window`,
+      lastSeenEtDate: e.lastSeenEtDate ?? null,
+      sessionsSinceLastSeen: e.sessionsSinceLastSeen ?? null,
+      detail:
+        (e.detail ?? `${e.count} occurrence${e.count === 1 ? '' : 's'} in the execution window`) +
+        recencySuffix(e.sessionsSinceLastSeen ?? null, e.lastSeenEtDate ?? null),
       lever: {
         kind: 'code',
         field: null,
