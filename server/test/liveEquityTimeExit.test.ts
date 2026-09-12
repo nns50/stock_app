@@ -1618,6 +1618,71 @@ describe('checkLiveEquityStopAdjusts', () => {
     expect(mockReplaceOrder.mock.calls.some((c) => c[1] === 'TGT-1')).toBe(false);
   });
 
+  it('ratchets a stop resting as STOP_LOSS_LIMIT, the spelling the old fallback missed', async () => {
+    // Three places in this codebase derive "which leg is the stop", and until
+    // 2026-09-12 they agreed on only two of its three spellings. exitLegKind
+    // (the scale-out's resize) and classifyExitLeg (bracket protection) both
+    // accept STOP_LOSS_LIMIT; this function tested order_type === 'STOP_LOSS'
+    // exactly. STOP_LOSS_LIMIT is an order type the app itself places —
+    // buildWebullOrder builds it, and webullReplaceBody guards against a replace
+    // converting one into a plain STOP_LOSS — so a bracket whose stop rested
+    // that way was a stop to the other two readers and invisible here: refused
+    // every tick, all day, never reaching breakeven and never trailing.
+    const { position } = await armed(200);
+    mockOpenOrders.mockResolvedValue({
+      ok: true,
+      orders: [
+        openOrder({ clientOrderId: 'STOP-1', comboType: undefined, orderType: 'STOP_LOSS_LIMIT' }),
+        openOrder({ clientOrderId: 'TGT-1', comboType: undefined, orderType: 'LIMIT' }),
+      ],
+    });
+    mockReplaceOrder.mockResolvedValue({ ok: true });
+
+    const out = await checkLiveEquityStopAdjusts();
+
+    expect(out[0]).toMatchObject({ positionId: position.id, adjusted: true });
+    expect(mockReplaceOrder.mock.calls[0][1]).toBe('STOP-1');
+    expect(mockReplaceOrder.mock.calls.some((c) => c[1] === 'TGT-1')).toBe(false);
+  });
+
+  it('believes NEITHER marker when the two disagree on the same leg', async () => {
+    // The shared derivation is stricter than the test it replaced: a leg that
+    // cannot be described consistently is one this function must not move, and
+    // moving the wrong leg drags the TARGET onto the price.
+    await armed(200);
+    mockOpenOrders.mockResolvedValue({
+      ok: true,
+      orders: [
+        openOrder({ clientOrderId: 'ODD', comboType: 'STOP_PROFIT', orderType: 'STOP_LOSS' }),
+        openOrder({ clientOrderId: 'TGT-1', comboType: undefined, orderType: 'LIMIT' }),
+      ],
+    });
+    mockReplaceOrder.mockResolvedValue({ ok: true });
+
+    await checkLiveEquityStopAdjusts();
+    expect(mockReplaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('names the leg SHAPES when it refuses, so the journal explains itself', async () => {
+    // 62 rows in one session (DELL, 2026-09-02) all read "among 2 exit
+    // order(s)" and nothing else, so telling "the bracket has no stop" from
+    // "neither marker parsed" took a reading of the source rather than of the
+    // journal.
+    await armed(200);
+    mockOpenOrders.mockResolvedValue({
+      ok: true,
+      orders: [
+        openOrder({ clientOrderId: 'A', comboType: undefined, orderType: 'LIMIT' }),
+        openOrder({ clientOrderId: 'B', comboType: 'NORMAL', orderType: undefined }),
+      ],
+    });
+
+    await checkLiveEquityStopAdjusts();
+
+    const blocked = listAutotradeEvents({ limit: 50 }).find((e) => e.action === 'live_stop_adjust_blocked');
+    expect(String(JSON.parse(blocked?.detail ?? '{}').reason)).toContain('[?/LIMIT, NORMAL/?]');
+  });
+
   it('does not let the fallback create an ambiguity combo_type had resolved', async () => {
     // Two resting stops on one symbol: combo_type already says which is the
     // bracket's. The fallback must not run at all here, or a second lot's stop

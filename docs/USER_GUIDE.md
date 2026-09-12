@@ -1806,10 +1806,16 @@ equally-weighted cards in the order they happened to be built:
   record is updated **only after the broker confirms** — a refused or
   uncertain replace leaves the old stop standing and is journaled as
   `live_stop_adjust_failed`. If the resting stop leg cannot be positively
-  identified — no order labelled `STOP_LOSS`, or two of them — the ratchet
-  refuses rather than guessing (`live_stop_adjust_blocked`) and retries next
-  cycle. A successful move journals `live_stop_ratcheted` with which rule
-  fired, the old and new stop, and the R it fired at.
+  identified — no order the broker labels as a stop, or two of them — the ratchet
+  refuses rather than guessing (`live_stop_adjust_blocked`, whose reason names
+  each resting leg's labels so the refusal explains itself) and retries next
+  cycle. It reads both of the broker's labels for a stop leg and both spellings
+  of the order type (`STOP_LOSS` and `STOP_LOSS_LIMIT`), sharing that judgement
+  with the scale-out rather than keeping its own copy — a stop resting as a
+  stop-*limit* used to be a stop everywhere else in the app and invisible here,
+  which meant it never reached breakeven and never started trailing. A successful
+  move journals `live_stop_ratcheted` with which rule fired, the old and new
+  stop, and the R it fired at.
 - **Scale into winners** (2026-07-23, **paper + backtest** equity only — live is
   untouched) — three more fields let a _winning_ position **pyramid**: **scale-in
   trigger (R-multiple)** (once unrealized gain reaches this many R, add more shares),

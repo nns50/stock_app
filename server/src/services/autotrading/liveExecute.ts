@@ -23,6 +23,7 @@ import {
   webullReplaceOrders,
   webullPlaceStandaloneBracket,
   isExitLeg,
+  exitLegKind,
   buildBracketResizePatches,
   WebullOpenOrder,
 } from '../../providers/webull/orders';
@@ -4520,31 +4521,62 @@ function restingStopLeg(
 ): { ok: true; leg: WebullOpenOrder } | { ok: false; reason: string } {
   const exits = restingExitOrders(orders, symbol, exitSide);
   if (exits.length === 0) return { ok: false, reason: 'no readable resting exit leg' };
+  // combo_type FIRST, and it stays a filter of its own rather than folding into
+  // exitLegKind below: it is the more discriminating field, and it is the only
+  // one that can pick this bracket's stop out of a symbol that also carries a
+  // standalone one (a re-armed protective stop, a hand-placed order). Reading
+  // both markers equally there would see two stops and refuse a case that works
+  // today.
   const stops = exits.filter((o) => (o.comboType ?? '').toUpperCase() === 'STOP_LOSS');
   if (stops.length === 1) return { ok: true, leg: stops[0] };
   if (stops.length === 0) {
-    // combo_type identified nothing. Before concluding "we cannot tell", try the
-    // leg's OWN order_type — a second, independent marker confirmed present on
-    // the live account (2026-09-05: the stop leg carries combo_type STOP_LOSS on
-    // its envelope AND order_type STOP_LOSS on the leg itself).
+    // combo_type identified nothing. Before concluding "we cannot tell", ask the
+    // SHARED derivation — the same `exitLegKind` the scale-out's resize uses.
     //
-    // This is a recovery path, not a relaxation. It runs only when combo_type
-    // matched zero legs, so it can never turn a currently-successful match into
-    // an ambiguous one. And it cannot cause the accident this function exists to
-    // prevent: the hazard named above is moving the TARGET, and the target is a
-    // LIMIT order — it can never carry order_type STOP_LOSS.
+    // This used to be an inline `order_type === 'STOP_LOSS'` test (2026-09-05),
+    // and that spelling is NARROWER than the shared one, which also accepts
+    // **STOP_LOSS_LIMIT**. That is an order type this app itself places:
+    // `buildWebullOrder` builds it, and `webullReplaceBody` carries a dedicated
+    // guard against a replace "converting a STOP_LOSS_LIMIT into a plain
+    // STOP_LOSS". So a bracket whose stop rested as a stop-LIMIT was a stop to
+    // the scale-out and to checkLiveBracketProtection, and invisible HERE — the
+    // ratchet would refuse it every tick, all day, and the stop would never
+    // reach breakeven or start trailing. Three readers of one fact, agreeing on
+    // two of its three spellings.
     //
-    // Worth having because combo_type is exactly the field that broke before: it
-    // was read one nesting level below where it lives (PR #467), which disabled
-    // the ratchet completely and silently until someone went looking. A single
-    // point of identification on a safety-critical match is what made that
-    // possible.
-    const byOrderType = exits.filter((o) => (o.orderType ?? '').toUpperCase() === 'STOP_LOSS');
-    if (byOrderType.length === 1) return { ok: true, leg: byOrderType[0] };
+    // Not proven live: the 62 `live_stop_adjust_blocked` rows on the book (DELL,
+    // 2026-09-02, one position, the whole session) predate the fallback
+    // entirely, and nothing has been blocked since. Fixed because the next
+    // spelling the broker uses should not need a fourth edit in a fourth place.
+    //
+    // Still a recovery path, not a relaxation — it runs only when combo_type
+    // matched zero legs, so it cannot turn a working match into an ambiguous
+    // one. And it cannot cause the accident this function exists to prevent:
+    // the hazard is moving the TARGET, the target is a LIMIT, and exitLegKind
+    // reads LIMIT as 'tp'. It is additionally STRICTER than the old test where
+    // the two markers disagree — it believes neither, rather than moving a leg
+    // it cannot describe consistently.
+    //
+    // checkLiveBracketProtection's `classifyExitLeg` deliberately does NOT share
+    // this, and that is not an oversight to tidy up later. There the question is
+    // "is SOMETHING protecting this position", and being wrong means stacking a
+    // second stop on a live one, so its safe default is to read leniently and
+    // stay quiet. Here being wrong means moving the wrong order, so the safe
+    // default is to refuse. Same question, opposite direction of error.
+    const byLegKind = exits.filter((o) => exitLegKind(o) === 'sl');
+    if (byLegKind.length === 1) return { ok: true, leg: byLegKind[0] };
     // Either the bracket genuinely has no stop leg (checkLiveBracketProtection's
-    // problem, not ours) or neither marker parsed. Both mean the same thing
-    // here: we cannot say which resting order is the stop, so we touch none.
-    return { ok: false, reason: `no resting leg identifiable as STOP_LOSS among ${exits.length} exit order(s)` };
+    // problem, not ours) or no marker parsed. Both mean the same thing here: we
+    // cannot say which resting order is the stop, so we touch none. The SHAPES
+    // go in the reason — 62 identical rows in one session said only "among 2
+    // exit order(s)", so working out which of those two cases it was needed a
+    // reading of the source rather than of the journal.
+    return {
+      ok: false,
+      reason:
+        `no resting leg identifiable as STOP_LOSS among ${exits.length} exit order(s) ` +
+        `[${exits.map((o) => `${o.comboType ?? '?'}/${o.orderType ?? '?'}`).join(', ')}]`,
+    };
   }
   return {
     ok: false,

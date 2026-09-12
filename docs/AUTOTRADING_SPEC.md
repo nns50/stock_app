@@ -8999,3 +8999,59 @@ One consequence worth stating for the trial: Decision 2 moved `stagnationExitMin
 before the bell to ~65 — half an hour of session the live book may now enter in. That was
 a side effect of an exit change, not a decision about entries, and this bucket is where it
 becomes visible.
+
+## 2026-09-12 — three readers of one fact, agreeing on two of its three spellings
+
+"Which resting leg is the stop?" is asked in three places, and until today they did not
+give the same answer:
+
+| asked by | via | accepts `STOP_LOSS` | accepts `STOP_LOSS_LIMIT` |
+| --- | --- | --- | --- |
+| the scale-out resize | `exitLegKind` | yes | **yes** |
+| bracket protection | `classifyExitLeg` | yes | **yes** |
+| the **stop ratchet** | inline `order_type === 'STOP_LOSS'` | yes | **no** |
+
+`STOP_LOSS_LIMIT` is not a hypothetical spelling. The app places it: `buildWebullOrder`
+builds it, `guardrails.ts` lists it among the three types Webull accepts, and
+`webullReplaceBody` carries a dedicated guard against a replace *"converting a
+STOP_LOSS_LIMIT into a plain STOP_LOSS — changing the order while claiming to move it."*
+
+So a bracket whose stop rested as a stop-limit was a stop to two of the three readers and
+invisible to the third. The ratchet would refuse it every tick for the life of the
+position: no breakeven at 0.25R, no 0.5/0.5 trail, on a live position, silently except for
+one journal row a tick. Breakeven and the trail are two of the six mechanisms Decision 9
+names for keeping red days small.
+
+**Latent, and said plainly.** The book's only `live_stop_adjust_blocked` rows are 62 of
+them, all on 2026-09-02, all on DELL position 573, all reading *"no resting leg
+identifiable as STOP_LOSS among 2 exit order(s)"* — a full session in which a position
+that ran to +2.07R never moved its stop. Those predate the `order_type` fallback (shipped
+2026-09-05, PR #505) and are explained by the `combo_type` nesting bug alone. Nothing has
+been blocked since. This is fixed because the next spelling the broker uses should not
+need a fourth edit in a fourth place, not because it is currently costing money.
+
+**The fix keeps the layering that was already right.** `combo_type` stays the primary
+filter rather than folding into the shared derivation: it is the more discriminating field
+and the only one that can pick *this bracket's* stop out of a symbol that also carries a
+standalone one (a re-armed protective stop, a hand-placed order). Reading both markers
+equally there would see two stops and refuse a case that works today — which is exactly
+what the test named *"does not let the fallback create an ambiguity combo_type had
+resolved"* was written to protect. Only the **fallback** now calls `exitLegKind`, so it is
+a superset of the old test in what it accepts and stricter in one respect: where the two
+markers disagree on a leg it believes neither, rather than moving a leg it cannot describe
+consistently.
+
+**`classifyExitLeg` deliberately does not join them.** It is the same question with the
+opposite direction of error. Bracket protection asks "is *something* protecting this
+position", and being wrong there means stacking a second stop on a live one — so its safe
+default is to read leniently and stay quiet. The ratchet asks "*which* order do I move",
+and being wrong means dragging the target onto the price and selling the position at a
+loss — so its safe default is to refuse. Merging them would have to pick one of those
+defaults for both. The comment at each site now says so, so the next reader does not tidy
+it into a bug.
+
+**The refusal now names the leg shapes.** Sixty-two identical rows in one session said
+only "among 2 exit order(s)", so telling *"this bracket genuinely has no stop"* from
+*"neither marker parsed"* needed a reading of the source rather than of the journal. The
+reason string now carries `comboType/orderType` per resting leg — e.g.
+`[?/LIMIT, NORMAL/?]`.
