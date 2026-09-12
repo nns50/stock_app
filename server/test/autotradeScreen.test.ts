@@ -266,6 +266,56 @@ describe('runAutotradeScreen', () => {
     });
   });
 
+  describe('rate-limit retry (the flow the screen was silently dropping)', () => {
+    // screen_data_incomplete exists because symbols were vanishing from every
+    // scan unrecorded. On the deployed book it reads 67 of 562 unscored with
+    // the message "Too many requests", on 192 ticks in one session. That is not
+    // a reporting problem — an unscored symbol cannot become a candidate, so
+    // it is the FLOW term of the plan's identity, dropped before any gate has
+    // an opinion and with no per-symbol row to attribute it to.
+    it('retries a rate-limited symbol once and keeps it out of errors when it succeeds', async () => {
+      let calls = 0;
+      const provider = getProvider();
+      const original = provider.getCandles.bind(provider);
+      const spy = vi.spyOn(provider, 'getCandles').mockImplementation(((sym: string, ...rest: unknown[]) => {
+        if (sym === 'SCRRL1' && calls++ === 0) return Promise.reject(new Error('Too many requests'));
+        return (original as (...a: unknown[]) => unknown)(sym, ...rest);
+      }) as never);
+
+      const result = await runAutotradeScreen({ symbols: ['SCRRL1'], config: { filters: RELAXED_FILTERS } });
+
+      expect(calls).toBeGreaterThan(0);
+      // The whole point: it is NOT reported as unscored, because the retry got it.
+      expect(result.errors.find((e) => e.symbol === 'SCRRL1')).toBeUndefined();
+      spy.mockRestore();
+    });
+
+    it('does NOT retry an error that is not rate limiting', async () => {
+      // A symbol whose data is genuinely broken must not cost a second round
+      // trip on every tick of every session.
+      let calls = 0;
+      const spy = vi.spyOn(getProvider(), 'getCandles').mockImplementation((() => {
+        calls++;
+        return Promise.reject(new Error('no such symbol'));
+      }) as never);
+
+      const result = await runAutotradeScreen({ symbols: ['SCRRL2'], config: { filters: RELAXED_FILTERS } });
+
+      expect(calls).toBe(1);
+      expect(result.errors.find((e) => e.symbol === 'SCRRL2')?.message).toMatch(/no such symbol/);
+      spy.mockRestore();
+    });
+
+    it('reports a symbol that is STILL rate-limited after the retry', async () => {
+      // One pass, never a loop. A provider that stays refused is reported, not
+      // hammered.
+      const spy = vi.spyOn(getProvider(), 'getCandles').mockRejectedValue(new Error('Too many requests') as never);
+      const result = await runAutotradeScreen({ symbols: ['SCRRL3'], config: { filters: RELAXED_FILTERS } });
+      expect(result.errors.find((e) => e.symbol === 'SCRRL3')?.message).toMatch(/Too many requests/);
+      spy.mockRestore();
+    });
+  });
+
   describe('candle-indicator caching (skips SMA/RSI/ATR recompute when the latest candle is unchanged)', () => {
     function candlesFromCloses(closes: number[], lastTime: number) {
       let prev = closes[0];

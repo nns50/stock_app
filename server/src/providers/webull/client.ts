@@ -71,8 +71,16 @@ type Surface = 'market' | 'trade';
 // that a status lookup costs two requests and used to be issued per order —
 // see webullOrderStatusBatch(), which fetches each list once for the whole set.
 //
-// Market data is left alone: separate limits, its own caching layer, and no
-// observed problem.
+// Market data is left alone HERE, and the sentence that used to follow — "no
+// observed problem" — was wrong by 2026-09-09. The screener's own
+// `screen_data_incomplete` rows read 67 of 562 symbols unscored with the
+// message "Too many requests", on 192 ticks in one session, rising across three
+// sessions. Market data is rate-limited too; it is simply not THIS client's
+// surface (the screen goes through the market provider, not the trade one), so
+// the pacing table above is not where it can be fixed. It is handled at the
+// screen, which retries the refused symbols once at a lower concurrency — see
+// screen.ts's rate-limit retry. Left here because a comment claiming a problem
+// does not exist is what stops the next reader looking for it.
 //
 // Note: the docs also state a global "less than 90 requests per minute" per
 // user, which contradicts the 600/minute figures on individual endpoints. We

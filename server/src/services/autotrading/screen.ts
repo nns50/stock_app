@@ -273,6 +273,26 @@ function selectFromSnapshot(
   };
 }
 
+/** Per-symbol fan-out for the screen. Gentle on the provider's rate limit;
+ *  named so the retry below can be deliberately gentler still. */
+const SCREEN_CONCURRENCY = 6;
+
+/** The retry's own, lower, concurrency and the pause before it. A retry at the
+ *  same rate as the burst that was refused is just the burst again. */
+const RATE_LIMIT_RETRY_CONCURRENCY = 3;
+const RATE_LIMIT_RETRY_PAUSE_MS = 1_500;
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** Does this provider error read as rate limiting? Matched on the message
+ *  because that is all the provider layer surfaces here — deliberately broad
+ *  across the shapes seen ("Too many requests", a bare 429, "rate limit"), and
+ *  deliberately NOT a catch-all: a symbol whose data is genuinely broken must
+ *  not be re-fetched on every tick of every session. */
+export function isRateLimited(message: string): boolean {
+  return /too many requests|rate.?limit|\b429\b/i.test(message);
+}
+
 /**
  * Whether `earningsDate` (YYYY-MM-DD) falls within `blackoutDays` calendar
  * days from now, inclusive of today — a pure calendar-date comparison, not a
@@ -467,7 +487,9 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
           .catch(() => null)
       : null;
 
-  await mapPool(symbols, 6, async (symbol) => {
+  // Hoisted so the rate-limit retry below can run the SAME body again over the
+  // symbols the provider refused, without a second copy of it.
+  const scoreSymbol = async (symbol: string): Promise<void> => {
     // Real-estate exclusion runs FIRST, before any scoring — a listed or
     // classified RE symbol never reaches Decision/Risk Check, per the spec.
     if (isExcluded(symbol)) {
@@ -589,7 +611,44 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
     } catch (err) {
       errors.push({ symbol, message: (err as Error).message });
     }
-  });
+  };
+
+  await mapPool(symbols, SCREEN_CONCURRENCY, scoreSymbol);
+
+  // ---------------------------------------------------------------------
+  // ONE RETRY FOR THE SYMBOLS THE PROVIDER RATE-LIMITED (2026-09-12).
+  //
+  // `screen_data_incomplete` exists because ~7% of a 560-symbol universe was
+  // vanishing from every scan with nothing recorded. It is recorded now — and
+  // on the deployed book it reads **67 of 562 unscored**, message "Too many
+  // requests", on 192 ticks on 2026-09-11, 201 on 09-10, 140 on 09-09. Twelve
+  // percent of the universe, every tick, and rising.
+  //
+  // That is not a reporting problem, it is the FLOW term of the plan's own
+  // identity (expected day % = trades/session × risk% × edge R). A symbol that
+  // is never scored cannot be a candidate, so a twelfth of the book's
+  // opportunity is dropped before any gate gets an opinion — and unlike every
+  // gate, this one leaves no per-symbol row to attribute it to.
+  //
+  // The retry is deliberately narrow:
+  //   - only errors that LOOK like rate limiting, so a genuinely bad symbol
+  //     does not cost a second round trip on every tick of every session;
+  //   - ONE pass, never a loop;
+  //   - at a LOWER concurrency, and after a pause, or it just re-triggers the
+  //     limit it is recovering from;
+  //   - the failed entries are removed from `errors` first, so a symbol that
+  //     succeeds on the retry is not also reported as unscored.
+  //
+  // Safe to re-run the same body: everything before the `try` returns early and
+  // never reaches the catch, and the only pushes inside it happen on the
+  // success path immediately before it ends — so a symbol that threw has
+  // recorded nothing and cannot be double-counted.
+  const retryable = errors.filter((e) => isRateLimited(e.message)).map((e) => e.symbol);
+  if (retryable.length > 0) {
+    for (let i = errors.length - 1; i >= 0; i--) if (isRateLimited(errors[i].message)) errors.splice(i, 1);
+    await sleep(RATE_LIMIT_RETRY_PAUSE_MS);
+    await mapPool(retryable, RATE_LIMIT_RETRY_CONCURRENCY, scoreSymbol);
+  }
 
   // ---------------------------------------------------------------------
   // Relative-volume PACE gate. Runs here rather than inside the per-symbol
