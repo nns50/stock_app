@@ -469,6 +469,29 @@ CREATE TABLE IF NOT EXISTS ml_regime_readings (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
+-- One row per gated-switch rule: its shadow record (2026-09-12).
+--
+-- The engine that writes config from written criteria (services/autotrading/
+-- gatedSwitches.ts) starts every SAFE rule in shadow, and a rule graduates to
+-- acting by its own criterion: evaluated on enough sessions, fired at least
+-- once, and never contradicted itself. That record has to be DURABLE — a
+-- restart that handed each rule a fresh clean slate would either reset a
+-- graduation that was earned or, worse, let a rule skip the shadow entirely by
+-- accumulating counts it never lived through.
+--
+-- An exposure-direction rule has a row here too (it is still evaluated and
+-- reported), but graduated_at stays NULL forever by construction: only the
+-- operator applies a change that adds exposure.
+CREATE TABLE IF NOT EXISTS gated_switch_state (
+  rule_id                 TEXT PRIMARY KEY,
+  evaluations             INTEGER NOT NULL,
+  proposals               INTEGER NOT NULL,
+  contradictions          INTEGER NOT NULL,
+  last_met                INTEGER NOT NULL,
+  last_evaluated_et_date  TEXT,
+  graduated_at            INTEGER
+);
+
 -- One row per trading session: what the day actually did (2026-09-12).
 --
 -- Until now the day's percentage lived in exactly two places, and neither kept

@@ -508,6 +508,18 @@ export interface AutotradeConfig {
    *  so this only moves an inevitable refusal earlier, where it still leaves
    *  the slot free for a name that can fill. */
   optionsAffordabilityFilterEnabled: boolean;
+  /** The master switch on the criteria-gated switch engine
+   *  (services/autotrading/gatedSwitches.ts, 2026-09-12): the loop evaluates
+   *  every written criterion once per session after the close and APPLIES the
+   *  ones that reduce exposure, once each rule has shadowed its way past its
+   *  own graduation bar.
+   *
+   *  False does NOT stop the evaluation, only the writing — a shadow record
+   *  that froze while the engine was off would hand a rule a graduation it
+   *  never lived through the moment it came back on. Default true: every rule
+   *  ships shadowed anyway, so the flag is the operator's brake on an engine
+   *  that has already earned its way to acting, not the shadow itself. */
+  gatedSwitchesEnabled: boolean;
   /** Assumed ATM short-dated premium as a % of the underlying's price, used to
    *  estimate a contract's cost before the chain is fetched. LOWER is more
    *  permissive (a low ratio implies a high price cap), and the 1.0 default
@@ -1292,6 +1304,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     optionsStagnationMinMovePct: 0.3,
     optionsDisasterStopPct: 70,
     optionsAffordabilityFilterEnabled: false,
+    gatedSwitchesEnabled: true,
     optionsAtmPremiumRatioPct: 1,
     targetRMultiple: 2,
     sessionBufferMinutes: 15,
@@ -1580,6 +1593,8 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
       typeof input.optionsAffordabilityFilterEnabled === 'boolean'
         ? input.optionsAffordabilityFilterEnabled
         : d.optionsAffordabilityFilterEnabled,
+    gatedSwitchesEnabled:
+      typeof input.gatedSwitchesEnabled === 'boolean' ? input.gatedSwitchesEnabled : d.gatedSwitchesEnabled,
     optionsAtmPremiumRatioPct: nonNeg(input.optionsAtmPremiumRatioPct, d.optionsAtmPremiumRatioPct),
     targetRMultiple: posDecimal(input.targetRMultiple, d.targetRMultiple),
     sessionBufferMinutes: posInt(input.sessionBufferMinutes, d.sessionBufferMinutes),

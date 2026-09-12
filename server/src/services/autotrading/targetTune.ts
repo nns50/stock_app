@@ -859,6 +859,10 @@ export const NEVER_TUNED_KEYS = [
   // budget, not a risk appetite the tune gets to lean on: the ceiling already
   // moves on its own whenever equity or the risk % does.
   'optionsAffordabilityFilterEnabled',
+  // The gated-switch engine's master brake. Whether the app may apply its own
+  // written criteria is a governance decision the operator made once; a tune
+  // solving for a daily gain has no business turning it on or off.
+  'gatedSwitchesEnabled',
   'optionsAtmPremiumRatioPct',
   'stagnationExitMinutes',
   'stagnationExitMinR',

@@ -21,6 +21,8 @@ import { daysToExpiration } from '../../options/blackScholes';
 import { listAutotradeEvents } from '../../db/autotradeEvents';
 import { getLastTick, LastTickRecord } from '../../db/autotradeLastTick';
 import { getLastEdgeLeakScan } from '../../db/edgeLeakScans';
+import { listSwitchStates } from '../../db/gatedSwitchState';
+import { freshSwitchState, GATED_SWITCH_RULES, graduationVerdict, SHADOW_MIN_EVALUATIONS } from './gatedSwitches';
 import { collectBook, CollectedBook, DEFAULT_LOOKBACK_SESSIONS, realizedEdgeOf } from './dailyTargetSweepData';
 import { buildSessionPaths, isActiveSession, simulateSession } from './dailyTargetSweep';
 import {
@@ -256,11 +258,34 @@ export interface AutotradeDashboard {
    *  through handEditedDollarCaps rather than re-implemented. */
   capsCoherence: CapCoherence[];
 
+  /** Each criteria-gated switch rule, its shadow progress and whether it may
+   *  act yet — so "the app will revert this by itself" is something the
+   *  operator can see rather than take on trust (2026-09-12). */
+  gatedSwitches: GatedSwitchStatus[];
+
   /** What the LAST edge-leak scan found. Null until one has run — the scan is
    *  on-demand (route + daily routine) because the per-bucket bootstrap is CPU
    *  the poll path must not pay, so this is a read of a stored fact rather
    *  than a recomputation. */
   edgeLeakSummary: EdgeLeakSummary | null;
+}
+
+export interface GatedSwitchStatus {
+  id: string;
+  label: string;
+  direction: 'safe' | 'exposure';
+  criterion: string;
+  /** May this rule write config yet? An exposure rule is always false. */
+  graduated: boolean;
+  /** Why not, in the rule's own words. Empty once graduated. */
+  blockers: string[];
+  evaluations: number;
+  shadowEvaluationsRequired: number;
+  proposals: number;
+  contradictions: number;
+  lastMet: boolean;
+  lastEvaluatedEtDate: string | null;
+  graduatedAt: number | null;
 }
 
 export interface EdgeLeakSummary {
@@ -494,8 +519,36 @@ export function getAutotradeDashboard(): AutotradeDashboard {
     liveOptionsProbation: getOptionsProbationStatus(config),
 
     capsCoherence: buildCapsCoherence(config),
+    gatedSwitches: buildGatedSwitchStatus(),
     edgeLeakSummary: buildEdgeLeakSummary(),
   };
+}
+
+/** Every rule's shadow progress, read from the persisted record. A rule with
+ *  no row yet reports its fresh state rather than being omitted — "this rule
+ *  exists and has not run" is the thing a reader most needs to know on day
+ *  one. */
+export function buildGatedSwitchStatus(): GatedSwitchStatus[] {
+  const states = listSwitchStates();
+  return GATED_SWITCH_RULES.map((rule) => {
+    const state = states.get(rule.id) ?? freshSwitchState(rule.id);
+    const verdict = graduationVerdict(rule, state);
+    return {
+      id: rule.id,
+      label: rule.label,
+      direction: rule.direction,
+      criterion: rule.criterion,
+      graduated: verdict.graduated,
+      blockers: verdict.graduated ? [] : verdict.blockers,
+      evaluations: state.evaluations,
+      shadowEvaluationsRequired: SHADOW_MIN_EVALUATIONS,
+      proposals: state.proposals,
+      contradictions: state.contradictions,
+      lastMet: state.lastMet,
+      lastEvaluatedEtDate: state.lastEvaluatedEtDate,
+      graduatedAt: state.graduatedAt,
+    };
+  });
 }
 
 /** The last scan's headline. `dimension` comes off the leak row the scan

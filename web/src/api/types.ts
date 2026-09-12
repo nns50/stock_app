@@ -2873,6 +2873,11 @@ export interface AutotradeDashboard {
    *  until it is shown (Decision 10, 2026-09-12). */
   capsCoherence: AutotradeCapCoherence[];
 
+  /** Each criteria-gated switch rule, its shadow progress, and whether it may
+   *  act yet — so "the app will revert this by itself" is visible rather than
+   *  taken on trust. */
+  gatedSwitches: AutotradeGatedSwitch[];
+
   /** What the LAST edge-leak scan found. Null until one has run — the scan is
    *  on-demand (a journal route and the daily routine), so this is a read of a
    *  stored fact, not a recomputation on every poll. */
@@ -2922,6 +2927,23 @@ export interface DailyResultsReport {
   monthly: DailyResultsAggregate[];
   /** Signed run of same-sign sessions ending at the latest one. */
   currentStreak: number;
+}
+
+export interface AutotradeGatedSwitch {
+  id: string;
+  label: string;
+  direction: 'safe' | 'exposure';
+  criterion: string;
+  /** May this rule write config yet? An exposure rule is always false. */
+  graduated: boolean;
+  blockers: string[];
+  evaluations: number;
+  shadowEvaluationsRequired: number;
+  proposals: number;
+  contradictions: number;
+  lastMet: boolean;
+  lastEvaluatedEtDate: string | null;
+  graduatedAt: number | null;
 }
 
 export interface AutotradeEdgeLeakSummary {

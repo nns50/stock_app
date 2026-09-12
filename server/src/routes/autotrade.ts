@@ -248,6 +248,7 @@ const configBody = z.object({
   optionsStagnationMinMovePct: z.number().nonnegative().optional(),
   optionsDisasterStopPct: z.number().nonnegative().optional(),
   optionsAffordabilityFilterEnabled: z.boolean().optional(),
+  gatedSwitchesEnabled: z.boolean().optional(),
   optionsAtmPremiumRatioPct: z.number().nonnegative().optional(),
   targetRMultiple: z.number().positive().optional(),
   sessionBufferMinutes: z.number().int().nonnegative().optional(),
@@ -554,6 +555,7 @@ autotradeRouter.put(
     if (body.optionsDisasterStopPct !== undefined) patch.optionsDisasterStopPct = body.optionsDisasterStopPct;
     if (body.optionsAffordabilityFilterEnabled !== undefined)
       patch.optionsAffordabilityFilterEnabled = body.optionsAffordabilityFilterEnabled;
+    if (body.gatedSwitchesEnabled !== undefined) patch.gatedSwitchesEnabled = body.gatedSwitchesEnabled;
     if (body.optionsAtmPremiumRatioPct !== undefined) patch.optionsAtmPremiumRatioPct = body.optionsAtmPremiumRatioPct;
     if (body.targetRMultiple !== undefined) patch.targetRMultiple = body.targetRMultiple;
     if (body.sessionBufferMinutes !== undefined) patch.sessionBufferMinutes = body.sessionBufferMinutes;
@@ -822,6 +824,17 @@ autotradeRouter.put(
     // (edgeLeakScanData.ts's tunerDisabledAt). The config row cannot answer
     // that: its `updated_at` moves every tick, because the equity sync writes
     // accountEquityUsd every minute.
+    // The sizing's own change, journaled for the same reason as the tuner's
+    // switch below: the pre-committed review counts ACTIVE SESSIONS SINCE the
+    // risk % moved, and nothing else in the database can date that.
+    if (next.riskPerTradePct !== before.riskPerTradePct) {
+      logAutotradeEvent({
+        stage: 'config',
+        action: 'sizing_changed',
+        detail: { field: 'riskPerTradePct', from: before.riskPerTradePct, to: next.riskPerTradePct },
+        riskProfile: next.riskProfile,
+      });
+    }
     if (next.autoTuneEnabled !== before.autoTuneEnabled) {
       logAutotradeEvent({
         stage: 'config',
