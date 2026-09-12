@@ -7928,3 +7928,87 @@ a realized 0.01R over the same 60 trades, a gap larger than any shape's effect. 
 not a pure execution gap: 40 of the 60 were entered before the live scale-out shipped on
 2026-09-08, under whatever multiples the tuner held at the time, so the realized figure
 mixes past policies with fills. However it splits, the lever is not in the exit shape.
+
+---
+
+## 2026-09-12 — the exits are made to fill
+
+**What prompted it.** The operator's decision of 2026-09-12: strive for the 3% daily
+goal now, accepting more risk, with the safety nets loosened rather than removed. Before
+any setting moves, the exits have to work at the size the settings will produce — and a
+day of reading the live journals found three places where they did not. Two of them cost
+money on 2026-09-11 alone.
+
+**HOOD 260911C116, one contract at $0.90, 10:16 ET.** The short-dated ladder decided
+correctly three times and the account still lost the trade:
+
+| time | rule | what the close did |
+| --- | --- | --- |
+| 10:18 | `take_profit` at +64% | DAY limit at 1.40, five percent under a 1.47 mark — never filled |
+| 11:15 | `give_back` at −43% | second limit at 0.45 — never filled |
+| 14:00 | `hard_time` at −97% | refused: `roundOptionPrice(0.03 × 0.95) = 0`, "below the $0.05 option tick", every tick to 17:05 |
+| 16:00 | — | expired worthless; the row stayed open all evening |
+
++$58 two minutes after entry became −$90. Three separate mechanisms, one outcome.
+
+**1. The price was never where the contract could be sold.** The chain this path prices
+from is Yahoo-sourced and ~15 minutes delayed, and it was collapsed to a midpoint before
+the 5% sell buffer — an average of a price nobody is offering and one nobody is bidding,
+as of a quarter of an hour ago. Webull's own `/option/snapshot` returns real-time OPRA
+bid/ask and nothing on the autotrade path read it. Closes are now priced at the OPRA bid
+when it is present and under two minutes old, then the chain's bid, then the buffered
+mark, with the basis in the journal. The intent's reference price follows the basis, or
+the fat-finger guardrail would block a real-time bid judged against a stale midpoint. A
+bid further under the mark than `liveOptionsFatFingerPct` is treated as corrupt and
+ignored. The exit ladder still evaluates on the mark: its rule levels are defined there.
+
+**2. Nothing re-examined a working close unless a clock rule fired.** That gap is
+structural, not a missed case: between the take-profit level and the give-back arm level
+no ladder rule fires, and that band is exactly where a working close lives. A close is
+now chased every tick — left alone at or below the bid (NKE's +$6 recovery on 2026-09-10
+is why that half is unchanged), cancelled and re-placed above it, carrying the original
+decision's exit reason read off the order row rather than re-derived. Four guards: a
+post-cancel broker status read for the fill race, a mid-fill deferral, 20 re-prices per
+position per ET day, and no cancel at all under the kill switch.
+
+**3. A sub-tick mark refused the close outright.** A sell rounds DOWN, so anything under
+half a tick became zero and was rejected. A price that rounds off the grid is now floored
+at one tick; only a mark of exactly zero, no quote, or a crossed spread still refuses,
+and the expiry sweep owns those. The failure journal is throttled to once per position
+per cause per ET day with a push on the first claim — 122 identical rows in one afternoon
+buried the one that mattered, and `liveFailureAlert` counts rows.
+
+**4. An expired 0DTE sat open all evening.** The sweep took expirations strictly before
+today. The window is now "before today, or today once its own session has closed", with
+no walk-back to a prior day's close for a same-day contract (that is a different day's
+price) and a quiet wait when the settlement bar has not published. Rule A1 in
+`docs/OPTIONS_TUNING_PLAN.md` can no longer read as open overnight.
+
+**5. A naked equity position was paged, not fixed.** `checkLiveBracketProtection` has
+been able to prove a position naked since the held-quantity read went in — shares
+confirmed at the broker, zero resting stop — and its whole response was a journal row
+saying to re-arm by hand. GRMN sat that way on 2026-08-25. It now places a standalone
+protective bracket automatically from the position's own stop and target, and pages only
+when that fails, with the reason. Never on an unreadable account (bracketing an unknown
+holding is how a covered position becomes a short) and never after an unanswered
+placement (two stops against one position).
+
+### What this does NOT change
+
+No entry gate, no sizing, no ladder rule level, and no config field. The paper options
+path is untouched. The stop-leg matcher in the ratchet path is deliberately left as it
+is: DELL journaled "no resting leg identifiable as STOP_LOSS among 2 exit order(s)" 62
+times on 2026-09-02 and the stop never moved that day, but it already tries two
+independent markers and the obvious third — assume the leg below the market is the stop —
+is a guess on a safety-critical match where being wrong means moving or cancelling the
+target. A missed ratchet is opportunity cost; the wrong leg is real money.
+
+### The pre-committed check
+
+The first options exit after deploy journals `live_options_exit_placed` with
+`priceBasis: 'bid'`. The first close that outlives its price journals
+`live_options_stale_exit_cancelled` with `trigger: 'chase'` and a null `clockRule`,
+followed by a `live_options_exit_placed` carrying `replacedIntentId` and
+`repriceCount: 1`. If neither appears within five sessions with options trading on, the
+change is not doing what this section claims, and that is worth finding out before any
+further exit work.

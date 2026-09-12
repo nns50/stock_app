@@ -1790,14 +1790,17 @@ equally-weighted cards in the order they happened to be built:
   **Options trailing start (%)** and **Options trailing distance (%)** (once gain
   reaches the trailing-start %, the floor trails the trailing-distance percentage
   points behind the best gain % seen since entry, ratcheting only favorably —
-  Since 2026-09-10, once the clock says an options position must be flat today
-  (the short-dated hard exit, the end-of-day flatten, or max hold days), a
-  closing order still sitting at the broker is re-checked rather than trusted:
-  if its price is above where the contract can now be sold it is cancelled and
-  replaced at the current price, and if it is still sellable it is left alone so
-  a recovering contract is never sold off cheaply. Before the clock runs out
-  nothing changes, and a close is never cancelled without one going straight
-  back in its place.
+  Since 2026-09-12, a closing order still sitting at the broker is re-checked on
+  **every** cycle rather than trusted: if its price is above where the contract
+  can now be sold it is cancelled and replaced at the current price, and if it
+  is still sellable it is left alone so a recovering contract is never sold off
+  cheaply. This used to wait for the clock (the short-dated hard exit, the
+  end-of-day flatten, or max hold days), which meant a close placed by a
+  take-profit could rest unfillable for hours — between the take-profit level
+  and the give-back level no rule fires, and that is exactly where a working
+  close sits. A close is never cancelled without one going straight back in its
+  place, never while the kill switch is on, and at most 20 times a day per
+  position.
 
   Also on the options side: **Options partial exit trigger (%)**
   with **Options partial exit size (%)** (once gain reaches the trigger, close
@@ -2085,18 +2088,26 @@ because the loop is the only caller that is always flat by the bell, so it is
   `max_hold_days`), and books the close as `time_exit` — unless a stop-loss or
   take-profit fires in the same cycle, which keeps its own reason. The
   **stagnation exit** stays equity-only on purpose: a long option that goes
-  nowhere is already paying for its slot through theta. Unlike equity's flatten,
-  this one does **not** re-price a closing order that is already working: an
-  options close is priced 5% through the mark (against equity's 0.5%), so a
-  resting one is far likelier to fill than to be left behind. There's never a resting bracket: a live
-  options exit is always a fresh closing order the loop places when its rule fires. An exit
+  nowhere is already paying for its slot through theta. There's never a resting bracket: a live
+  options exit is always a fresh closing order the loop places when its rule fires, and since
+  2026-09-12 it is priced at the **bid** — where the contract can actually be sold — taken from
+  Webull's real-time quote when available, falling back to the option chain's bid and then to
+  5% through the mark. (The chain itself is delayed about 15 minutes, which is why a midpoint
+  from it made a poor price for a fast-moving contract.) A price that rounds off the bottom of
+  the option tick grid is placed at one tick rather than refused: a contract worth three cents
+  often still has a nickel bid, and an order either fills or is refused once, which beats never
+  trying. A contract with no quote at all is still left to the expiry sweep. An exit
   makes the *opposite* call on a stale price: it still places (declining would just leave
   the position drifting to expiration, which is what the time exit exists to prevent) but
   journals that the close may rest unfilled, which feeds the unresolved-order alert below.
   If a position does reach **expiry** still open — an option held through expiration never
   produces a closing order, and the broker-truth backstop can't price a chain that no
   longer exists — it's swept the same way the [Positions](#positions--pl) page's expired-option
-  sweep works: one that finished clearly **out of the money** is closed at **$0** (that's a
+  sweep works. Since 2026-09-12 that sweep runs on the contract's **own expiration day, once
+  the session has closed**, rather than waiting for the next morning, so a 0DTE can't sit open
+  all evening holding a slot; a same-day contract whose settlement price hasn't published yet
+  simply waits, and one that finished in the money is flagged at once because you may be
+  holding assigned stock that night. The rule: one that finished clearly **out of the money** is closed at **$0** (that's a
   statement of fact, not a guess), while one that finished **in the money**, or too close to
   the strike to call, is **left open and flagged** — it was exercised or assigned into a stock
   position this app doesn't track, so it needs your broker statement. For a debit spread both
