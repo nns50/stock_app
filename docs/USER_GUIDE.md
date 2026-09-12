@@ -2705,6 +2705,17 @@ percentages is wrong twice over: it is not how compounding works, and it counts 
 The month summary reports sessions, the mean day, the strategy P&L, positive days, the
 **mean red day**, goal days, and the best and worst day.
 
+**The calendar and the sizing review read different columns, on purpose** (2026-09-12).
+This page leads with the **account** figure, because "how am I doing" is a question about
+your account and it should include everything that moved it. The pre-committed sizing
+review — the one that decides whether to revert the trial — reads the **strategy** figure
+instead, because that asks what the *loop* did, and the strategy column is realized P&L on
+the loop's own positions and so carries no deposits, no hand trading and no unrealized mark
+on anything still open. Where the two disagree by more than 0.5% of the day's opening
+equity the day is badged **M**; the review still counts that day's strategy figure in its
+mean (the contamination is not in that column) but does not let it count toward the goal
+rate, because a day is marked "goal reached" off the account equity crossing the target.
+
 **Why the mean red day is there.** "Red days as small as possible" is one of the two
 stated objectives, and the worst day cannot measure it: one −3% day among small ones and
 a run of −3% days show the same worst day. The yardstick is **mean red day ≤ −1.5%**.

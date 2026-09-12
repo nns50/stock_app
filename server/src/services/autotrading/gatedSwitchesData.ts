@@ -8,7 +8,6 @@ import { etToday } from '../../util/marketDate';
 import { isTradingSession } from '../trading/marketCalendar';
 import { isAfterSessionClose } from '../trading/marketHours';
 import { buildCapsCoherence } from './dashboard';
-import { dayPctOf } from './dailyResults';
 import { dispatchAutotradeNotification } from './notify';
 import {
   assertWritable,
@@ -92,10 +91,41 @@ export function buildSizingReview(
   currentRiskPerTradePct?: number,
 ): SizingReview {
   const sessions = reviewSessions(rows, changedOn, currentRiskPerTradePct);
-  // A manual-trading day's account % is not the strategy's, and the review is
-  // about the strategy. Excluded from the MEAN, still counted as a session.
+  // THE MEAN IS THE STRATEGY'S FIGURE, NOT THE ACCOUNT'S (2026-09-12).
+  //
+  // This used to read `dayPctOf` — `accountGainPct ?? strategyGainPct`, the
+  // ACCOUNT number first — and then try to subtract the contamination with the
+  // `manualTrading` flag. Both halves of that were wrong, and the one session
+  // on the book with both numbers shows the size of it: 2026-09-11 recorded
+  // **account −31.32%** against **strategy −1.96%**. A sixteen-fold difference,
+  // with Decision 7's "REVERT if the mean day is negative" on the other side of
+  // it and a single boolean in between.
+  //
+  // The account figure carries deposits, withdrawals, hand trading, and the
+  // unrealized mark on anything still open at the close. The strategy figure is
+  // realized P&L on positions the LOOP opened and closed, over the same
+  // baseline — immune to all four BY CONSTRUCTION. dailyResults.ts's own header
+  // already says which is which: "A strategy decision is made on the second
+  // (OPTIONS_TUNING_PLAN's data-quality rule — a position-derived series
+  // carries no flows)." Decision 7 is a strategy decision. It was reading the
+  // other series.
+  //
+  // A THRESHOLD IS NOT A SUBSTITUTE FOR THE RIGHT INPUT. `manualTrading` fires
+  // at 0.5% of equity — on a $3,523 account, $17.60. Hand trading below that is
+  // never flagged and flowed straight into the mean; and the flag fires on
+  // clean days too, because options are deliberately NOT flattened at the close
+  // (endOfDayFlatten.ts) so an open contract's mark can cross 0.5% on its own.
+  // The same number both admitted real contamination and threw away real
+  // sessions — out of a review that is only ten sessions long.
+  //
+  // So the mean reads the strategy figure and NO session is dropped from it: a
+  // manual day's strategy percentage is still exactly what the loop did.
+  // `dayPctOf` is left alone for the calendar, where account-first is right —
+  // that page answers "how am I doing", which is the question the account
+  // figure is for.
+  const pcts = sessions.map((r) => r.strategyGainPct).filter((p): p is number => p !== null);
+  // Kept for the GOAL RATE below, whose flag is account-derived — see there.
   const judged = sessions.filter((r) => !r.manualTrading);
-  const pcts = judged.map(dayPctOf).filter((p): p is number => p !== null);
   let haltsMaxIn5 = 0;
   for (let i = 0; i < sessions.length; i++) {
     const window = sessions.slice(Math.max(0, i - HALT_WINDOW + 1), i + 1);
@@ -104,8 +134,15 @@ export function buildSizingReview(
   return {
     activeSessionsSinceChange: sessions.length,
     meanDayPct: pcts.length ? Math.round((pcts.reduce((a, b) => a + b, 0) / pcts.length) * 100) / 100 : null,
-    goalRatePct: sessions.length
-      ? Math.round((sessions.filter((r) => r.goalReached).length / sessions.length) * 1000) / 10
+    // The goal rate is where the manual exclusion BELONGS, and it was the half
+    // that did not have it. `goalReached` is stamped when the ACCOUNT equity
+    // crosses the target (dailyTarget.ts reads the synced net liquidation), so
+    // a deposit or an afternoon of hand trading can bank a day the loop did not
+    // earn — which is not hypothetical: 2026-08-27 banked a fictional +9.69% on
+    // a spurious equity print. A day whose two figures disagree cannot say
+    // whether the STRATEGY reached the goal, so it is not counted either way.
+    goalRatePct: judged.length
+      ? Math.round((judged.filter((r) => r.goalReached).length / judged.length) * 1000) / 10
       : null,
     haltsMaxIn5,
   };

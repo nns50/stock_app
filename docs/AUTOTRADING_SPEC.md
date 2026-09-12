@@ -9309,3 +9309,57 @@ stops the next reader looking, which is most of why this went three sessions unr
 comment now says market data IS rate-limited, that it is not that client's surface (the
 screen goes through the market provider, not the trade one), and where it is handled
 instead.
+
+## 2026-09-12 — the pre-committed review was reading the wrong series
+
+Decision 7 is the trial's safety catch: at 10 active sessions, **revert if the mean day is
+negative**. It computed that mean from `dayPctOf` — `accountGainPct ?? strategyGainPct`,
+the **account** figure first — and then tried to subtract the contamination afterwards with
+the `manualTrading` flag.
+
+The one session on the book carrying both numbers shows the size of what that rests on:
+
+| 2026-09-11 | |
+| --- | --- |
+| account | **−31.32%** |
+| strategy | **−1.96%** |
+
+A sixteen-fold difference, with a live-money sizing revert on the other side of it and a
+single boolean in between.
+
+**The right series was already in the row.** The account figure carries deposits,
+withdrawals, hand trading, and the unrealized mark on anything still open at the close. The
+strategy figure is realized P&L on positions the loop itself opened and closed, over the
+same baseline — immune to all four by construction. `dailyResults.ts`'s own header says
+which is which: *"A strategy decision is made on the second (OPTIONS_TUNING_PLAN's
+data-quality rule — a position-derived series carries no flows)."* Decision 7 is a strategy
+decision. It was reading the other series.
+
+**A threshold is not a substitute for the right input**, and this one was wrong in both
+directions. `manualTrading` fires at 0.5% of equity — on a $3,523 account, **$17.60**. Hand
+trading below that was never flagged and flowed straight into the mean. And it fires on
+clean days too: options are deliberately *not* flattened at the close
+(`endOfDayFlatten.ts`), so an open contract's mark can cross 0.5% on its own, and at the
+sleeve's current sizing (a $236 cap on $3,523 equity, 6.7%) an 8% move in one contract does
+it. The same number admitted real contamination and threw away real sessions — out of a
+review that is only **ten sessions long**.
+
+**The fix is one line each way.** The mean reads `strategyGainPct` and drops *no* session:
+a manual day's strategy percentage is still exactly what the loop did. And the manual
+exclusion moves to the **goal rate**, which is where it always belonged and where it was
+missing — `goalReached` is stamped when the *account* equity crosses the target, so a
+deposit or an afternoon of hand trading can bank a day the loop did not earn (2026-08-27
+banked a fictional +9.69% on a spurious equity print). A day whose two figures disagree
+cannot say whether the strategy reached the goal, so it is counted neither way.
+
+`dayPctOf` is left alone for the calendar, where account-first is correct: that page answers
+"how am I doing", which is the question the account figure is for. The two readers now
+differ on purpose, and each says why.
+
+**Worth recording about the window as it stands.** Of 26 backfilled sessions, 25 carry
+`accountGainPct: null` *and* `strategyGainPct: null` — they predate the baseline row, so
+there is no opening equity to divide by, and the backfill filled dollars rather than
+percentages. The 26th is the manual day. So today `meanDayPct` is `null` and the mean-day
+revert cannot fire at all; it is not a defect (`reviewSessions` correctly counts zero
+sessions under the trial's sizing, and rows from 2026-09-15 carry both figures), but it is
+worth knowing that the criterion has never yet had an input.

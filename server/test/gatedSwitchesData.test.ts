@@ -89,14 +89,49 @@ describe('the review window', () => {
     expect(reviewSessions(rows, null)).toHaveLength(1);
   });
 
-  it('excludes a manual-trading day from the MEAN but still counts it as a session', () => {
+  it('means the STRATEGY percentage, not the account one — they are not close', () => {
+    // 2026-09-11 on the real book: account −31.32%, strategy −1.96%. A
+    // sixteen-fold difference, with Decision 7's "REVERT if the mean day is
+    // negative" on the other side of it. The account figure carries deposits,
+    // withdrawals, hand trading and the unrealized mark on anything open at the
+    // close; the strategy figure is realized P&L on positions the loop itself
+    // opened and closed. This review is a strategy decision.
     const rows = [
-      result('2026-09-08', { accountGainPct: 1 }),
-      result('2026-09-09', { accountGainPct: -20, manualTrading: true }),
+      result('2026-09-10', { accountGainPct: 4, strategyGainPct: 1 }),
+      result('2026-09-11', { accountGainPct: -31.32, strategyGainPct: -1.96, manualTrading: true }),
     ];
     const review = buildSizingReview(rows, null);
     expect(review.activeSessionsSinceChange).toBe(2);
-    expect(review.meanDayPct).toBe(1); // the −20% hand-trading day is not the strategy's
+    // (1 + −1.96) / 2 — and NOT (4 + −31.32)/2, nor 4 with the manual day cut.
+    expect(review.meanDayPct).toBe(-0.48);
+  });
+
+  it('keeps a manual-trading day IN the mean — its strategy figure is still the loop’s', () => {
+    // The old rule dropped it. That threw away a real session out of a review
+    // only ten sessions long, to remove a contamination the strategy figure
+    // never had. Options are deliberately not flattened at the close, so an
+    // open contract's mark alone can cross the 0.5% divergence threshold and
+    // flag a perfectly clean day.
+    const rows = [
+      result('2026-09-10', { strategyGainPct: 2 }),
+      result('2026-09-11', { strategyGainPct: 1, manualTrading: true }),
+    ];
+    expect(buildSizingReview(rows, null).meanDayPct).toBe(1.5);
+  });
+
+  it('excludes a manual-trading day from the GOAL RATE, where the flag belongs', () => {
+    // goalReached is stamped when the ACCOUNT equity crosses the target, so a
+    // deposit or an afternoon of hand trading can bank a day the loop did not
+    // earn — 2026-08-27 banked a fictional +9.69% on a spurious equity print.
+    // A day whose two figures disagree cannot say whether the STRATEGY reached
+    // the goal, so it is counted neither way.
+    const rows = [
+      result('2026-09-10', { goalReached: false }),
+      result('2026-09-11', { goalReached: true, manualTrading: true }),
+    ];
+    const review = buildSizingReview(rows, null);
+    expect(review.activeSessionsSinceChange).toBe(2); // still a session
+    expect(review.goalRatePct).toBe(0); // …but its banked day is not counted
   });
 
   it('finds the worst run of halts in any five consecutive sessions', () => {
