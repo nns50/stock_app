@@ -8484,6 +8484,44 @@ it — so when execution defects are open and the measurable findings total unde
 points, the headline leads with **"fix what is broken before tuning what is merely
 small"** instead of ranking the small thing first.
 
+### The sweep that followed (2026-09-12)
+
+Two of these in a row was enough to go looking deliberately rather than by
+accident, across everything shipped on 2026-09-12. Three more, all the same
+disease at a different layer:
+
+- **`storedTargetR` had four derivations.** `targetDailyGainPct / riskPerTradePct`
+  — the conversion that decides what "reached the goal" MEANS — was written out
+  by hand in the sweep, the dashboard's goal-rate line, the leak scan's day
+  level and the tune advisor, each with a comment asserting it matched the
+  others. They did match, character for character, which is precisely how a
+  divergence ships: add a clamp or change the rounding in three of four and the
+  fourth quietly answers a different question. `goalInR()` in
+  `dailyTargetSweep.ts` is now the only one, and a test asserts the number it
+  returns is the level the sweep flags as the stored target.
+- **The Automatic switches card taught a three-part rule and showed two parts.**
+  Graduation needs sessions AND a proposal AND no contradiction; the card showed
+  the session count and the contradiction count. A rule sitting at zero
+  proposals — which can never graduate, however many sessions it accumulates —
+  read exactly like one that graduates next session. It now says so, shows the
+  graduation date, and shows when the engine last ran (a date that stops
+  advancing is the only visible sign the after-close hook has stopped, while
+  every count beside it keeps reading plausibly).
+- **One journal action carried two severities.**
+  `live_options_exit_reprice_deferred` covers the chase standing aside for a
+  partial fill (`mid_fill`, benign and correct) and the chase having given up
+  after its 20 re-prices with the order still resting (`daily_cap`, the HOOD
+  failure mode recurring). The leak scan reported both under one label as an
+  execution finding of equal weight, so the benign one would cry wolf every
+  time a partial filled and the real one would hide behind it. The scan splits
+  on the reason now, and an occurrence whose detail will not parse stays
+  counted under the unsplit action rather than being dropped.
+
+Also removed: two API client methods (`journalRecordDailyResult`,
+`journalBackfillDailyResults`) with no caller anywhere. Both routes are
+operator-invoked corrections run by hand, as the User Guide says; a wire method
+with no caller drifts from the route it describes without anything noticing.
+
 **Decision 9's yardstick got a field too, in the same pass and for the same reason.**
 The plan's "least loss on red days" objective is measured as *mean red day ≤ −1.5%*, and
 `ResultsAggregate` carried `worstDayPct` but no mean of the red days — so the routine

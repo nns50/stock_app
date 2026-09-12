@@ -141,6 +141,30 @@ export function emptyRealizedEdge(lookbackSessions: number): RealizedEdge {
 }
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
+
+/**
+ * THE goal on the R axis: how many R a day has to make to hit the stored daily
+ * gain target, given what one trade risks.
+ *
+ *     goal in R = targetDailyGainPct / riskPerTradePct
+ *
+ * One function because four places were doing this arithmetic themselves, with
+ * comments asserting that they agreed rather than code making them agree: the
+ * sweep (which levels are marked as the stored target), the dashboard's
+ * goal-rate line, the edge-leak scan's day level, and the tune advisor. They
+ * DID agree, character for character, which is exactly how a divergence would
+ * have shipped unnoticed -- adding a clamp or changing the rounding in three
+ * of four leaves the fourth quietly answering a different question, and the
+ * question is "did the book reach its goal today".
+ *
+ * Null when either factor is missing or non-positive: no goal is set, or risk
+ * is zero and the goal in R would be infinite.
+ */
+export function goalInR(targetDailyGainPct: number | null, riskPerTradePct: number | null): number | null {
+  if (targetDailyGainPct === null || !(targetDailyGainPct > 0)) return null;
+  if (riskPerTradePct === null || !(riskPerTradePct > 0)) return null;
+  return round2(targetDailyGainPct / riskPerTradePct);
+}
 const round4 = (n: number): number => Math.round(n * 10000) / 10000;
 
 function median(xs: number[]): number | null {
@@ -483,10 +507,10 @@ export function runDailyTargetSweep(input: DailyTargetSweepInput): DailyTargetSw
   const actual = summarize('none', actualOutcomes, null, opts);
 
   const risk = input.riskPerTradePct !== null && input.riskPerTradePct > 0 ? input.riskPerTradePct : null;
-  const storedTargetR =
-    risk !== null && input.storedTargetPct !== null && input.storedTargetPct > 0
-      ? round2(input.storedTargetPct / risk)
-      : null;
+  // `levelPct` below is the INVERSE of this conversion (R -> %), off the same
+  // `risk`, so the grid's percentages and the stored target's R can never
+  // describe different goals.
+  const storedTargetR = goalInR(input.storedTargetPct, risk);
   const grid = [...SWEEP_GRID_R];
   if (storedTargetR !== null && !grid.some((g) => Math.abs(g - storedTargetR) < 1e-9)) grid.push(storedTargetR);
   grid.sort((a, b) => a - b);

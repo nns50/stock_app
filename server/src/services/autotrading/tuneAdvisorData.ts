@@ -3,7 +3,7 @@ import { getLastEdgeLeakScan } from '../../db/edgeLeakScans';
 import { listDailyResults } from '../../db/dailyResults';
 import { listPositions } from '../../db/positions';
 import { listLiveOptionsPositions } from '../../db/autotradeLiveOptionsPositions';
-import { buildSessionPaths, isActiveSession, simulateSession } from './dailyTargetSweep';
+import { buildSessionPaths, goalInR, isActiveSession, simulateSession } from './dailyTargetSweep';
 import { collectBook, DEFAULT_LOOKBACK_SESSIONS, realizedEdgeOf } from './dailyTargetSweepData';
 import { dailyGoalEvidence } from './targetTune';
 import { buildSizingReview, sizingChangedOn } from './gatedSwitchesData';
@@ -33,10 +33,7 @@ export function buildTuneAdviceFromDb(
   // derivation, so the advisor can never quote a rate the goal card disagrees
   // with (CLAUDE.md: two places deriving the same quantity must agree by
   // construction).
-  const storedTargetR =
-    config.targetDailyGainPct !== null && config.targetDailyGainPct > 0 && config.riskPerTradePct > 0
-      ? Math.round((config.targetDailyGainPct / config.riskPerTradePct) * 100) / 100
-      : null;
+  const storedTargetR = goalInR(config.targetDailyGainPct, config.riskPerTradePct);
   const { paths } = buildSessionPaths(book.trades, book.sessionDates);
   const active = paths.filter(isActiveSession);
   const goalReachedSessions =

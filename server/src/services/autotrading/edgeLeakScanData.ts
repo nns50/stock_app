@@ -10,6 +10,7 @@ import { etDateTimeToMs, etToday } from '../../util/marketDate';
 import { previousTradingSession } from '../trading/marketCalendar';
 import { buildSectorOf } from './riskCheck';
 import { collectBook, CollectedBook, DEFAULT_LOOKBACK_SESSIONS } from './dailyTargetSweepData';
+import { goalInR } from './dailyTargetSweep';
 import { deriveDollarCaps, DOLLAR_CAP_KEYS, handEditedDollarCaps } from './targetTune';
 import { buildLiveSlippageRows } from './autoTune';
 import {
@@ -55,10 +56,32 @@ export const EXECUTION_LOOKBACK_SESSIONS = 10;
  *  The list is the answer to "what would have caught the HOOD day": an exit
  *  decided and never filled shows up as `live_options_exit_failed` plus a
  *  position still open after its expiration, and both are here. */
-export const EXECUTION_ACTIONS: { action: string; label: string }[] = [
+export const EXECUTION_ACTIONS: {
+  action: string;
+  label: string;
+  /** A `detail` key whose value splits this action into separate findings,
+   *  for an action that carries more than one severity. */
+  splitOn?: string;
+  labelFor?: Record<string, string>;
+}[] = [
   { action: 'live_options_exit_failed', label: 'An options exit could not be placed' },
   { action: 'live_options_stale_exit_unjudgeable', label: 'An options exit could not be priced' },
-  { action: 'live_options_exit_reprice_deferred', label: 'An options exit re-price was deferred' },
+  {
+    action: 'live_options_exit_reprice_deferred',
+    label: 'An options exit re-price was deferred',
+    // Two different events share this action and they are NOT equally bad:
+    // `mid_fill` is the chase correctly standing aside while a partial fill is
+    // in flight, and `daily_cap` is the chase having given up after its 20
+    // re-prices with the order still resting -- which is the HOOD failure mode
+    // recurring. Reported under one label they read identically, so a benign
+    // partial fill would cry wolf every time and the real one would hide
+    // behind it.
+    splitOn: 'reason',
+    labelFor: {
+      mid_fill: 'An options exit re-price stood aside for a partial fill (benign)',
+      daily_cap: 'An options exit exhausted its re-price budget and is still resting',
+    },
+  },
   { action: 'live_options_expired_worthless', label: 'An options position expired worthless' },
   { action: 'live_time_exit_failed', label: 'A timed stock exit failed' },
   { action: 'live_time_exit_blocked', label: 'A timed stock exit was blocked by a guardrail' },
@@ -325,13 +348,48 @@ export function collectExecutionFindings(now: number): ExecutionOccurrence[] {
     since,
     limit: 1000,
   })) {
-    counts.set(e.action, (counts.get(e.action) ?? 0) + 1);
+    const spec = EXECUTION_ACTIONS.find((a) => a.action === e.action);
+    let key = e.action;
+    if (spec?.splitOn !== undefined) {
+      // An unparseable or absent detail falls back to the unsplit action
+      // rather than being dropped: an occurrence we cannot classify is still
+      // an occurrence, and silently losing it is the worse failure.
+      const variant = detailValue(e.detail, spec.splitOn);
+      if (variant !== null && spec.labelFor?.[variant] !== undefined) key = `${e.action}|${variant}`;
+    }
+    counts.set(key, (counts.get(key) ?? 0) + 1);
   }
-  return EXECUTION_ACTIONS.filter((a) => (counts.get(a.action) ?? 0) > 0).map((a) => ({
-    action: a.action,
-    count: counts.get(a.action) ?? 0,
-    detail: `${a.label} — ${counts.get(a.action)} in the last ${EXECUTION_LOOKBACK_SESSIONS} sessions`,
-  }));
+  const out: ExecutionOccurrence[] = [];
+  for (const a of EXECUTION_ACTIONS) {
+    const variants =
+      a.labelFor === undefined
+        ? []
+        : Object.keys(a.labelFor).map((v) => ({ key: `${a.action}|${v}`, label: a.labelFor![v] }));
+    for (const { key, label } of [...variants, { key: a.action, label: a.label }]) {
+      const n = counts.get(key) ?? 0;
+      if (n === 0) continue;
+      out.push({
+        action: key,
+        count: n,
+        detail: `${label} — ${n} in the last ${EXECUTION_LOOKBACK_SESSIONS} sessions`,
+      });
+    }
+  }
+  return out;
+}
+
+/** One key out of a journal row's JSON `detail`, or null when it is absent or
+ *  the detail does not parse. */
+function detailValue(detail: string | null, key: string): string | null {
+  if (detail === null) return null;
+  try {
+    const parsed: unknown = JSON.parse(detail);
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    const v = (parsed as Record<string, unknown>)[key];
+    return typeof v === 'string' ? v : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -436,9 +494,7 @@ function collectJournalSkips(since: number): JournalSkip[] {
  *  goal-rate is counted at. Null when no goal is armed or risk is 0, because
  *  "how often did we reach nothing" is not a question. */
 export function storedTargetRFor(cfg: AutotradeConfig): number | null {
-  if (cfg.targetDailyGainPct === null || !(cfg.targetDailyGainPct > 0)) return null;
-  if (!(cfg.riskPerTradePct > 0)) return null;
-  return Math.round((cfg.targetDailyGainPct / cfg.riskPerTradePct) * 100) / 100;
+  return goalInR(cfg.targetDailyGainPct, cfg.riskPerTradePct);
 }
 
 export interface EdgeLeakScanOptions {

@@ -214,6 +214,43 @@ describe('the execution findings — any occurrence is one', () => {
     // A successful placement is not a finding.
     expect(byAction.has('live_options_order_placed')).toBe(false);
   });
+
+  it('splits a re-price deferral by its reason — the two are not equally bad', () => {
+    // `mid_fill` is the chase correctly standing aside while a partial fill is
+    // in flight. `daily_cap` is the chase having given up with the order still
+    // resting, which is the HOOD failure mode recurring. Under one label a
+    // benign partial fill cries wolf and the real one hides behind it.
+    const now = etDateTimeToMs('2026-09-10', '17:00') as number;
+    const at = etDateTimeToMs('2026-09-09', '10:00') as number;
+    db.prepare(
+      `INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) VALUES
+       (NULL,'execution','live_options_exit_reprice_deferred','{"reason":"mid_fill"}',NULL,?),
+       (NULL,'execution','live_options_exit_reprice_deferred','{"reason":"mid_fill"}',NULL,?),
+       (NULL,'execution','live_options_exit_reprice_deferred','{"reason":"daily_cap"}',NULL,?)`,
+    ).run(at, at + 1, at + 2);
+
+    const byAction = new Map(collectExecutionFindings(now).map((f) => [f.action, f]));
+    expect(byAction.get('live_options_exit_reprice_deferred|mid_fill')?.count).toBe(2);
+    expect(byAction.get('live_options_exit_reprice_deferred|daily_cap')?.count).toBe(1);
+    expect(byAction.get('live_options_exit_reprice_deferred|daily_cap')?.detail).toMatch(/still resting/);
+    // Nothing is left under the unsplit action, so a reader cannot double-count.
+    expect(byAction.has('live_options_exit_reprice_deferred')).toBe(false);
+  });
+
+  it('keeps an occurrence whose reason is missing rather than dropping it', () => {
+    // An occurrence we cannot classify is still an occurrence; losing it
+    // silently is the worse failure.
+    const now = etDateTimeToMs('2026-09-10', '17:00') as number;
+    const at = etDateTimeToMs('2026-09-09', '10:00') as number;
+    db.prepare(
+      `INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) VALUES
+       (NULL,'execution','live_options_exit_reprice_deferred','{}',NULL,?),
+       (NULL,'execution','live_options_exit_reprice_deferred','not json',NULL,?)`,
+    ).run(at, at + 1);
+
+    const byAction = new Map(collectExecutionFindings(now).map((f) => [f.action, f.count]));
+    expect(byAction.get('live_options_exit_reprice_deferred')).toBe(2);
+  });
 });
 
 describe('storedTargetRFor — the goal on the R axis', () => {

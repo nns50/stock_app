@@ -3644,13 +3644,42 @@ describe('AutoTradePage', () => {
       // a progress count that would never complete.
       expect(card).toHaveTextContent('Enable live shorts');
       expect(card).toHaveTextContent('your call');
+      // The footer states a three-part rule; the card must show all three
+      // parts. A rule at 0 proposals can never graduate on session count
+      // alone, and before this it read exactly like one that was nearly there.
+      expect(card).toHaveTextContent(/never fired yet, so it cannot graduate on session count alone/);
+    });
+
+    it('shows the proposal count once a rule has fired, and when the engine last ran', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({
+          gatedSwitches: gatedSwitchesFixture([
+            { evaluations: 3, proposals: 2, lastEvaluatedEtDate: '2026-09-11' },
+            { lastEvaluatedEtDate: '2026-09-11' },
+          ]),
+        }),
+      );
+      renderDashboard();
+      const card = await screen.findByTestId('gated-switches');
+      expect(card).toHaveTextContent(/fired 2×/);
+      expect(card).not.toHaveTextContent(/never fired yet/);
+      // A date that stops advancing is the only visible sign the after-close
+      // hook has stopped; every count above would keep reading plausibly.
+      expect(card).toHaveTextContent('Last evaluated 2026-09-11.');
     });
 
     it('says when a rule has graduated, and when one has disqualified itself', async () => {
       vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
         dashboardFixture({
           gatedSwitches: gatedSwitchesFixture([
-            { graduated: true, blockers: [], evaluations: 6, proposals: 2, lastMet: true },
+            {
+              graduated: true,
+              blockers: [],
+              evaluations: 6,
+              proposals: 2,
+              lastMet: true,
+              graduatedAt: Date.parse('2026-09-12T20:50:00Z'),
+            },
             { contradictions: 3 },
           ]),
         }),
@@ -3659,6 +3688,7 @@ describe('AutoTradePage', () => {
       const card = await screen.findByTestId('gated-switches');
       expect(card).toHaveTextContent('applies itself');
       expect(card).toHaveTextContent('met now');
+      expect(card).toHaveTextContent('since 2026-09-12');
       expect(card).toHaveTextContent(/contradicted itself 3×, will not graduate/);
     });
 
