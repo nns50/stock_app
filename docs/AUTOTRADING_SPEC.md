@@ -9259,3 +9259,53 @@ there and the reset is neither possible nor needed — the import failed with *"
 `resetEquitySyncGuardState` export is defined on the mock."* Of the six test files that
 reference `liveExecute`, four use the real module and two mock it; only
 `autotradeLiveExecute.test.ts` drives the equity sync for real.
+
+## 2026-09-12 — the screener was dropping an eighth of the universe to rate limiting
+
+`screen_data_incomplete` exists because, before 2026-08-24, symbols the provider refused
+were silently discarded: *"~7% of a 560-symbol universe was vanishing from every scan with
+nothing recorded, so a name that would have qualified could be missed all session and leave
+no trace."* Recording it was the right first step. Reading what it now records is the
+second, and nobody had:
+
+| ET date | ticks with an incomplete scan |
+| --- | --- |
+| 2026-09-09 | 140 |
+| 2026-09-10 | 201 |
+| 2026-09-11 | 192 |
+
+The latest row: **67 unscored of 562 scanned**, `sampleMessage: "Too many requests"`. Twelve
+percent of the universe, on essentially every tick of every recent session, and rising.
+
+**This is the flow term of the plan's own identity**, not a reporting nicety. `expected day
+% = trades/session × risk% × edge R`. A symbol that is never scored cannot become a
+candidate, so an eighth of the book's opportunity is discarded before any gate forms an
+opinion — and unlike every gate, this one leaves no per-symbol row, so it is invisible to
+the attribution, to the leak scan's untaken classes, and to the tune advisor. The trial is
+raising risk to chase a bigger day while the number of shots per day is being quietly
+reduced by a provider limit.
+
+**The fix is one bounded retry.** The per-symbol body is hoisted out of its `mapPool`
+closure (unchanged, purely hoisted) so the same function can run again over just the
+refused symbols. Deliberately narrow:
+
+- only errors that *look* like rate limiting (`isRateLimited`), so a symbol whose data is
+  genuinely broken does not cost a second round trip on every tick of every session;
+- **one** pass, never a loop — a provider that stays refused is reported, not hammered;
+- a lower concurrency (3 vs 6) after a 1.5s pause, because a retry at the same rate as the
+  burst that was refused is just the burst again;
+- the retried entries are removed from `errors` first, so a symbol that succeeds on the
+  second attempt is not also reported as unscored.
+
+Re-running the same body is safe by the function's own structure: every filter before the
+`try` returns early and never reaches the `catch`, and the only pushes inside it happen on
+the success path immediately before it ends. A symbol that threw has recorded nothing, so
+it cannot be double-counted.
+
+**One comment corrected with it.** `providers/webull/client.ts`'s pacing header read
+*"Market data is left alone: separate limits, its own caching layer, and no observed
+problem."* There is an observed problem, 533 journal rows of it. The claim is the kind that
+stops the next reader looking, which is most of why this went three sessions unread. The
+comment now says market data IS rate-limited, that it is not that client's surface (the
+screen goes through the market provider, not the trade one), and where it is handled
+instead.
