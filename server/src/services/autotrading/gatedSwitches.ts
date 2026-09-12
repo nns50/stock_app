@@ -107,6 +107,123 @@ export interface SwitchRule {
   /** Null when the criterion is not met, or when the snapshot cannot answer
    *  it — an absent input is NOT a met criterion. */
   evaluate: (s: GatedSwitchSnapshot) => SwitchFiring | null;
+  /**
+   * True when the patch's VALUES come from data rather than from literal code
+   * — today only `leak_lever`, whose field and number are read off whatever the
+   * last scan happened to put in a `LeakLever`. `assertWritable` already draws
+   * this distinction in its own comment ("a patch assembled from a leak scan's
+   * lever is data, not literal code") and then checks only WHICH KEY may be
+   * written, never which way the value moves. `exposureGuard` below closes that
+   * half. A rule left at the default is trusted with its own literals.
+   */
+  patchFromData?: boolean;
+}
+
+/**
+ * WHICH WAY IS LESS EXPOSURE, per writable key (2026-09-12).
+ *
+ * The engine's entire safety model is "a rule that ADDS exposure is never
+ * applied by the app". Until now that rested on a `direction: 'safe'` LABEL —
+ * and for `leak_lever` the label is attached by a different module, to data,
+ * describing an intent rather than an arithmetic. Nothing at the write checked
+ * that the number actually reduced anything.
+ *
+ * It was not hypothetical. The scan's own score-band lever reads
+ * `value: bucket === '<60' ? 60 : 70` with the detail "RAISE the live-only
+ * score floor above the losing band" — an ABSOLUTE floor where it means a
+ * raise. Production's floor is 72. So a losing 60-69 band would have proposed
+ * `liveMinSignalScore: 70`, a DROP that admits trades the live book currently
+ * refuses, labelled safe, and the engine would have applied it to real money
+ * once the rule graduated. The lever cannot fix this at the producer: its
+ * signature is `(bucket) => LeakLever` and the scan is never given the config,
+ * so the current floor is unknowable there. That makes the write the only place
+ * it can be checked — CLAUDE.md's "assert at the CONSUMER, not the producer",
+ * exactly.
+ *
+ * 'either' means the key is not an exposure knob in itself (a boolean whose
+ * safe direction depends on the rule, or a target level), so a data-sourced
+ * rule may not write it at all — see exposureGuard.
+ */
+export const SAFE_DIRECTION: Record<SwitchWritableKey, 'lower' | 'higher' | 'either'> = {
+  riskPerTradePct: 'lower',
+  liveMaxExposurePct: 'lower',
+  maxAggregateOpenRiskPct: 'lower',
+  // A WIDER daily halt is more exposure, not less: it lets the day keep losing.
+  maxDailyDrawdownPct: 'lower',
+  expectancyMaxMultiplier: 'lower',
+  // Out of a dead trade sooner frees the slot and ends the exposure.
+  stagnationExitMinutes: 'lower',
+  // A LONGER cooldown and a HIGHER floor both refuse more entries.
+  symbolReentryCooldownMinutes: 'higher',
+  liveMinSignalScore: 'higher',
+  liveMaxOrderUsd: 'lower',
+  liveMaxDailyLossUsd: 'lower',
+  liveOptionsMaxOrderUsd: 'lower',
+  liveOptionsMaxDailyLossUsd: 'lower',
+  // Not exposure knobs on their own. The overlay only ever CUTS, so its flag is
+  // safe in both directions by rule rather than by arithmetic; the scale-out
+  // and the target level change shape, not size.
+  mlRegimeEnabled: 'either',
+  liveScaleOutEnabled: 'either',
+  targetRMultiple: 'either',
+};
+
+/** Every key in a data-sourced patch that moves toward MORE exposure, with the
+ *  numbers, in the words a journal row should carry. Empty means the patch is
+ *  safe by arithmetic and not merely by label. */
+export function exposureGuard(patch: SwitchPatch, config: AutotradeConfig): string[] {
+  const refusals: string[] = [];
+  for (const [key, to] of Object.entries(patch) as [SwitchWritableKey, unknown][]) {
+    const want = SAFE_DIRECTION[key];
+    const from = config[key];
+    if (want === 'either') {
+      refusals.push(`${key} is not an exposure knob on its own — a data-sourced rule may not write it`);
+      continue;
+    }
+    if (typeof to !== 'number' || typeof from !== 'number') {
+      refusals.push(`${key} is not numeric (${String(from)} → ${String(to)}) — cannot check its direction`);
+      continue;
+    }
+    if (want === 'lower' && to > from) refusals.push(`${key} ${from} → ${to} RAISES it, which adds exposure`);
+    if (want === 'higher' && to < from) refusals.push(`${key} ${from} → ${to} LOWERS it, which adds exposure`);
+  }
+  return refusals;
+}
+
+/**
+ * Paired bounds the PUT route refuses, checked here too.
+ *
+ * Workstream 7 said an auto-applied patch goes "through the same validated path
+ * the PUT route uses"; it goes through `setAutotradeConfig` directly, which
+ * sanitizes fields one at a time and has no view of a pair. Of the route's four
+ * ordered pairs and its goal triple, exactly ONE has a writable side here:
+ * `expectancyMaxMultiplier`. Inverted against its min the route answers 400
+ * with "every conviction grade would size at the same multiplier"; written
+ * straight to the row it fails nowhere and every grade silently sizes alike.
+ *
+ * Not reachable today — no lever names that field — which is precisely when it
+ * is cheap to close. Kept beside SAFE_DIRECTION so the next key added to
+ * SWITCH_WRITABLE_KEYS is judged on both questions in one place.
+ */
+export function coherenceGuard(patch: SwitchPatch, config: AutotradeConfig): string[] {
+  const refusals: string[] = [];
+  const max = patch.expectancyMaxMultiplier;
+  if (typeof max === 'number' && max < config.expectancyMinMultiplier) {
+    refusals.push(
+      `expectancyMaxMultiplier ${max} would sit below expectancyMinMultiplier ` +
+        `${config.expectancyMinMultiplier} — every conviction grade would size at the same multiplier ` +
+        '(the PUT route answers 400 for this)',
+    );
+  }
+  return refusals;
+}
+
+/** Everything that stops the app applying a patch of its own accord: the
+ *  exposure arithmetic for a data-sourced patch, and the paired bounds for
+ *  ANY patch — a literal is trusted with its direction, never with a config
+ *  the route itself would reject. */
+export function applyRefusals(patch: SwitchPatch, config: AutotradeConfig, fromData: boolean): string[] {
+  return [...(fromData ? exposureGuard(patch, config) : []), ...coherenceGuard(patch, config)];
 }
 
 /** Everything the rules read. Assembled by the DB half so the rules stay
@@ -219,6 +336,9 @@ export interface SwitchDecision {
    *  switched off or the kill switch is engaged. */
   outcome: 'applied' | 'proposed' | 'quiet' | 'held';
   graduation: GraduationVerdict;
+  /** Non-empty when a data-sourced patch was refused for moving a key toward
+   *  MORE exposure. Never empty on an 'applied' outcome, by construction. */
+  exposureRefusals: string[];
   /** The state AFTER this session is folded in — what the caller persists. */
   nextState: SwitchState;
 }
@@ -283,6 +403,7 @@ export function evaluateGatedSwitches(input: EvaluateInput): GatedSwitchResult {
         firing: null,
         outcome: 'quiet',
         graduation: graduationVerdict(rule, state),
+        exposureRefusals: [],
         nextState: state,
       });
       continue;
@@ -291,12 +412,20 @@ export function evaluateGatedSwitches(input: EvaluateInput): GatedSwitchResult {
     const firing = rule.evaluate(snapshot);
     if (firing) assertWritable(firing.patch);
     const met = firing !== null;
+    // A patch whose VALUES came from data is checked by arithmetic, not by its
+    // label, before it can be applied. See SAFE_DIRECTION: the scan's own
+    // score-band lever would otherwise have LOWERED the live score floor while
+    // calling itself safe. Refusals do not make the rule unmet — the proposal
+    // still reaches the operator, carrying exactly why the app would not do it
+    // itself.
+    const exposureRefusals = firing ? applyRefusals(firing.patch, snapshot.config, rule.patchFromData === true) : [];
     const graduation = graduationVerdict(rule, state);
-    const canApply = met && graduation.graduated && enabled && !snapshot.config.killSwitch;
+    const canApply =
+      met && graduation.graduated && enabled && !snapshot.config.killSwitch && exposureRefusals.length === 0;
 
     let outcome: SwitchDecision['outcome'] = 'quiet';
     if (met && canApply) outcome = 'applied';
-    else if (met && graduation.graduated) outcome = 'held';
+    else if (met && graduation.graduated && exposureRefusals.length === 0) outcome = 'held';
     else if (met) outcome = 'proposed';
 
     if (outcome === 'applied' && firing)
@@ -312,6 +441,7 @@ export function evaluateGatedSwitches(input: EvaluateInput): GatedSwitchResult {
       firing,
       outcome,
       graduation,
+      exposureRefusals,
       // Stamp the graduation on the session it actually acts, so the journal
       // and the state agree about when the shadow ended.
       nextState: outcome === 'applied' && folded.graduatedAt === null ? { ...folded, graduatedAt: now } : folded,
@@ -385,6 +515,10 @@ export const GATED_SWITCH_RULES: SwitchRule[] = [
     id: 'leak_lever',
     label: 'Apply the leak scan’s top cutting lever',
     direction: 'safe',
+    // The only rule whose field AND value are read off data. Everything else
+    // here writes literals or an anchor-derived number, so only this one needs
+    // its direction checked by arithmetic at the write.
+    patchFromData: true,
     criterion:
       'the last edge-leak scan reports a LEAK (not a watch, not unconfirmed) whose lever is a config field in the safe direction',
     evaluate: (s) => {
