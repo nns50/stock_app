@@ -214,6 +214,20 @@ export function fieldForUntakenReason(
     return { field: 'symbolReentryCooldownMinutes', direction: 'exposure' };
   }
   if (reason === 'symbol_cooldown_skipped') return { field: 'symbolCooldownDays', direction: 'exposure' };
+  // The High-Vol conviction bar (2026-09-12). Its own gate already says the
+  // paper book keeps taking the signal "so the counterfactual stays
+  // measurable" — this bucket IS that counterfactual.
+  if (reason === 'regime_score_floor_skipped') {
+    return { field: 'mlRegimeHighVolMinSignalScore', direction: 'exposure' };
+  }
+  // 1R wider than the name's daily range. Raising the fraction admits entries
+  // whose stop the session is unlikely to reach either way, so the paper R here
+  // is the whole question.
+  if (reason === 'risk_atr_unreachable_skipped') return { field: 'maxRiskAtrFraction', direction: 'exposure' };
+  // No lever: the broker refuses to parse the symbol, and no setting changes
+  // that. The fix is to take it out of the universe, which is a decision about
+  // the universe rather than about risk.
+  if (reason === 'symbol_unplaceable_skipped') return null;
   // `live_symbol_held_skipped` deliberately has NO field. One position per
   // symbol is a structural rule, not a setting — the levers that would change
   // how often it bites are the slot count and the hold time, and which of
@@ -329,6 +343,9 @@ function humanReason(reason: string): string {
   if (reason === 'no_live_row') return 'nothing the journal explains';
   if (reason === 'live_symbol_held_skipped') return 'already holding the name (or an order working on it)';
   if (reason === 'entry_window_closed') return 'the end-of-day entry cutoff';
+  if (reason === 'regime_score_floor_skipped') return 'the High-Vol conviction bar';
+  if (reason === 'risk_atr_unreachable_skipped') return "a stop wider than the name's daily range";
+  if (reason === 'symbol_unplaceable_skipped') return 'a symbol the broker will not trade';
   if (reason === NEVER_A_LEVER) return 'the live book standing down (banked day, give-back guard or kill switch)';
   return reason.replace(/_/g, ' ');
 }
