@@ -8484,6 +8484,65 @@ it — so when execution defects are open and the measurable findings total unde
 points, the headline leads with **"fix what is broken before tuning what is merely
 small"** instead of ranking the small thing first.
 
+## 2026-09-12 — the scan was reading 1,000 of 1,928 skip rows, and said nothing
+
+The tune advisor's top recommendation, at strong confidence, was **"the live
+book refuses 102 trades on nothing the journal explains; paper made money on
+them"** — 0.247 points of the expected day. It was an artifact of a `LIMIT`.
+
+**How it was found.** The attribution's own numbers do not hang together:
+`liveTrades: 102`, `paperTrades: 128`, `pairedTrades: 7`. If only 7 paper
+entries paired, roughly 95 live trades paired with nothing either — so
+`no_live_row: 102` could not be "102 refusals". Pulling both books off the
+deployed box and comparing entry stamps directly: of 108 closed paper rows, 64
+have no live row at all on that symbol and date, and the 44 that do sit a
+**median 1,726 seconds — about 29 minutes** — from the nearest live entry. Only
+7 fall inside the ±60 s pairing tolerance, which is exactly `pairedTrades`.
+
+Two hypotheses died on the data, and are recorded so nobody re-runs them:
+
+- *The live `entryTime` is the fill, not the placement.* It is not:
+  `liveExecute.ts` stamps `entryDate`/`entryTime` from the ORDER's
+  `createdAt`, deliberately, with a comment saying why.
+- *The live book is systematically LATE, buying after the move.* It is not.
+  Live is **earlier** on 29 of 44 pairs (median −230 s) and its entry price is
+  marginally **better** (median −0.112%). The two books simply take different
+  signals on the same names through the day, in both directions.
+
+**The actual cause.** `collectJournalSkips` asked `listAutotradeEvents` for
+`limit: 1000`. That window held **1,928** skip rows (1,175
+`symbol_reentry_cooldown_skipped`, 617 `live_risk_blocked`, 72
+`live_short_skipped`, 56 `live_score_floor_skipped`, 4 + 4 others). The query
+orders by `id DESC` and clamps to 1,000 internally, so the **oldest 928 were
+invisible**, and every paper entry whose skip row fell outside that set
+classified as `no_live_row` — a bucket whose entire meaning is "the journal
+says nothing".
+
+The cap was not news: `countAutotradeEventDays` has documented it for months
+("caps at 1000 rows, and during market hours the busiest actions write that
+many in ~3 hours"). Three collectors written in the same week walked into it
+anyway. A comment saying what not to do is weaker than a function whose name
+says what it does, so there is now
+`listAutotradeEventsInWindow(filter, hardMax)`, returning
+`{ events, truncated }`, and the scan's three analytic reads use it.
+
+**Truncation is now loud.** `coverage.journalSkipsTruncated` rides on the scan
+result, and the advisor downgrades a `no_live_row` recommendation to
+`needs_data` when it is set — with the reason said plainly — and excludes it
+from "everything measurable adds N points". A named skip reason is still
+trusted under truncation: not fetching some rows makes "the journal said
+nothing" unreliable, and does nothing to a row that WAS read.
+
+Audit of every capped analytic read, against the same window:
+
+| read | rows available | status |
+| --- | --- | --- |
+| journal skips | 1,928 | **was broken** — fixed |
+| execution findings | 594 | latent (261 landed in one day) — fixed |
+| `entry_extension_shadow` | 32 | fine — fixed anyway |
+| short-shadow route | 72 | fine, left alone |
+| regime readings | 4 | fine, left alone |
+
 ### The first production read, and what it caught (2026-09-12)
 
 `GET /api/journal/tune-advice` on the deployed box, minutes after the deploy:

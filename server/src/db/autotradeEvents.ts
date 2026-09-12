@@ -100,8 +100,10 @@ export function logAutotradeEvent(input: LogEventInput): AutotradeEventRecord {
   return map(db.prepare('SELECT * FROM autotrade_events WHERE id = ?').get(Number(info.lastInsertRowid)) as Row);
 }
 
-/** Journal entries, newest first. */
-export function listAutotradeEvents(filter: ListEventsFilter = {}): AutotradeEventRecord[] {
+/** The WHERE clause both readers share, so a filter can never mean one thing
+ *  to the capped read and another to the windowed one. Returns null when the
+ *  filter can match nothing at all. */
+function whereFor(filter: ListEventsFilter): { where: string; params: unknown[] } | null {
   const clauses: string[] = [];
   const params: unknown[] = [];
   if (filter.stage) {
@@ -113,7 +115,7 @@ export function listAutotradeEvents(filter: ListEventsFilter = {}): AutotradeEve
     params.push(filter.symbol.toUpperCase());
   }
   if (filter.actions) {
-    if (filter.actions.length === 0) return [];
+    if (filter.actions.length === 0) return null;
     clauses.push(`action IN (${filter.actions.map(() => '?').join(',')})`);
     params.push(...filter.actions);
   }
@@ -121,12 +123,65 @@ export function listAutotradeEvents(filter: ListEventsFilter = {}): AutotradeEve
     clauses.push('created_at >= ?');
     params.push(filter.since);
   }
-  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
-  const limit = Math.min(Math.max(filter.limit ?? 200, 1), 1000);
+  return { where: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '', params };
+}
+
+/** Journal entries, newest first. Capped at ROW_CAP — see
+ *  `listAutotradeEventsInWindow` for the analytic read that is not. */
+export function listAutotradeEvents(filter: ListEventsFilter = {}): AutotradeEventRecord[] {
+  const built = whereFor(filter);
+  if (built === null) return [];
+  const limit = Math.min(Math.max(filter.limit ?? 200, 1), ROW_CAP);
   const rows = db
-    .prepare(`SELECT * FROM autotrade_events ${where} ORDER BY id DESC LIMIT ?`)
-    .all(...params, limit) as Row[];
+    .prepare(`SELECT * FROM autotrade_events ${built.where} ORDER BY id DESC LIMIT ?`)
+    .all(...built.params, limit) as Row[];
   return rows.map(map);
+}
+
+/**
+ * The cap `listAutotradeEvents` applies no matter what a caller asks for.
+ *
+ * It exists because that function serves poll-path readers, where an unbounded
+ * read is a latency bug waiting for a busy session. But a caller that needs a
+ * WINDOW rather than a page gets silently short-changed by it, with no error
+ * and no signal — and the read still looks plausible, which is the dangerous
+ * part.
+ */
+export const ROW_CAP = 1000;
+
+export interface WindowedEvents {
+  events: AutotradeEventRecord[];
+  /** True when `hardMax` was reached, so the window is NOT complete. A caller
+   *  that draws conclusions from counts must say so rather than report the
+   *  truncated number as the answer. */
+  truncated: boolean;
+}
+
+/**
+ * Every event matching the filter, not just the newest `ROW_CAP` of them.
+ *
+ * WHY THIS EXISTS (2026-09-12). The edge-leak scan's `collectJournalSkips`
+ * asked for `limit: 1000` over a forty-session window that held **1,928** skip
+ * rows. `listAutotradeEvents` silently clamps to 1000 and orders by id DESC,
+ * so it returned the newest 1,000 and dropped the oldest 928 — and every paper
+ * entry whose skip row fell outside that set was then classified
+ * `no_live_row`, "nothing the journal explains". The scan reported 102 of
+ * those, the tune advisor ranked them its top recommendation at strong
+ * confidence, and the number was an artifact of a LIMIT. The cap was already
+ * documented in `countAutotradeEventDays` below; three collectors written the
+ * same week walked into it anyway, which is the argument for a function whose
+ * name says what it does rather than a comment saying what not to do.
+ *
+ * `hardMax` is a backstop against a filter that matches the whole journal, not
+ * a page size: reaching it sets `truncated`, which callers surface.
+ */
+export function listAutotradeEventsInWindow(filter: ListEventsFilter = {}, hardMax = 20_000): WindowedEvents {
+  const built = whereFor(filter);
+  if (built === null) return { events: [], truncated: false };
+  const rows = db
+    .prepare(`SELECT * FROM autotrade_events ${built.where} ORDER BY id DESC LIMIT ?`)
+    .all(...built.params, hardMax) as Row[];
+  return { events: rows.map(map), truncated: rows.length >= hardMax };
 }
 
 /** One (ET calendar date, action) bucket. */

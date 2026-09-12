@@ -203,6 +203,14 @@ function flowRecommendations(input: TuneAdvisorInput, gap: GoalGap): TuneRecomme
     const perSession = u.n / gap.activeSessions;
     const delta = dayPctFromTrades(perSession, riskPct, u.paperMeanR);
     const governed = fieldForUntakenReason(u.reason);
+    // `no_live_row` means "the live journal says nothing about this name at
+    // that minute". That is only evidence of a recording gap if the journal
+    // was read in FULL — when the skip read was cut short, the same bucket
+    // fills up with entries whose skip row simply was not fetched, which is
+    // exactly what happened on 2026-09-12 (1,928 skips in the window, 1,000
+    // read, 102 entries reported as unexplained). An incomplete read cannot
+    // support a recommendation, so it is downgraded rather than ranked.
+    const unreliable = u.reason === 'no_live_row' && (scan.coverage.journalSkipsTruncated ?? false);
     const blocked = input.review.activeSessionsSinceChange < REVIEW_SESSIONS;
     out.push({
       id: `flow:${u.reason}`,
@@ -214,11 +222,13 @@ function flowRecommendations(input: TuneAdvisorInput, gap: GoalGap): TuneRecomme
       expectedDayPctDelta: delta,
       sampleSize: u.n,
       confidence: confidenceFor(u.n),
-      status: blocked ? 'blocked_by_review' : 'actionable',
-      statusReason: blocked
-        ? `adds exposure mid-trial — held until the ${REVIEW_SESSIONS}-session review ` +
-          `(${input.review.activeSessionsSinceChange} so far)`
-        : 'the operator applies anything that adds exposure',
+      status: unreliable ? 'needs_data' : blocked ? 'blocked_by_review' : 'actionable',
+      statusReason: unreliable
+        ? 'the journal skip read was truncated, so "unexplained" here may just be skips that were not fetched — not a finding until the window reads in full'
+        : blocked
+          ? `adds exposure mid-trial — held until the ${REVIEW_SESSIONS}-session review ` +
+            `(${input.review.activeSessionsSinceChange} so far)`
+          : 'the operator applies anything that adds exposure',
       // Not an occurrence — a distribution has no "last seen".
       lastSeenEtDate: null,
       sessionsSinceLastSeen: null,
@@ -498,6 +508,10 @@ export function headlineFor(gap: GoalGap, recommendations: TuneRecommendation[],
     return 'Not enough closed trades to place the book against its goal yet.';
   }
   const estimable = recommendations
+    // A needs_data recommendation is a question, not a quantity: adding its
+    // estimate to "everything measurable adds N points" would inflate the
+    // number with something the advice itself says it cannot stand behind.
+    .filter((r) => r.status !== 'needs_data')
     .map((r) => r.expectedDayPctDelta)
     .filter((d): d is number => d !== null)
     .reduce((a, b) => a + b, 0);

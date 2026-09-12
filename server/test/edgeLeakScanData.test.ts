@@ -12,6 +12,7 @@ import {
   runEdgeLeakScanFromDb,
   storedTargetRFor,
 } from '../src/services/autotrading/edgeLeakScanData';
+import { ROW_CAP } from '../src/db/autotradeEvents';
 import { recencySuffix } from '../src/services/autotrading/edgeLeakScan';
 import { seedClosedAutotradeSessions, weekdaysEndingAt } from './helpers/autotradeSessions';
 import { etDateTimeToMs } from '../src/util/marketDate';
@@ -297,6 +298,45 @@ describe('the execution findings — any occurrence is one', () => {
     expect(recencySuffix(f?.sessionsSinceLastSeen ?? null, f?.lastSeenEtDate ?? null)).toBe(
       ' — including the latest session (2026-09-11)',
     );
+  });
+
+  it('classifies against the WHOLE skip window, not the newest ROW_CAP of it', () => {
+    // The bug, in miniature (2026-09-12). The production window held 1,928
+    // skip rows against a 1,000-row read, so the OLDEST skips were invisible
+    // and every paper entry they explained was reported as "nothing the
+    // journal explains". Here: one real skip for the paper entry, buried under
+    // more than ROW_CAP newer skips for other names. Under the capped read the
+    // real one is pushed out and the entry classifies as no_live_row.
+    const entryAt = etDateTimeToMs('2026-09-10', '10:00') as number;
+    const p = openPaperPosition({
+      symbol: 'ZZZ',
+      side: 'buy',
+      quantity: 1,
+      entryPrice: 100,
+      stopPrice: 95,
+      targetPrice: 110,
+      riskAmount: 50,
+      riskProfile: 'MODERATE',
+      rationale: 'fixture',
+    });
+    db.prepare('UPDATE autotrade_paper_positions SET entry_at = ? WHERE id = ?').run(entryAt, p.id);
+    closePaperPosition(p.id, { exitPrice: 110, exitReason: 'target' });
+
+    const ins = db.prepare(
+      "INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) VALUES (?,'execution',?,'{}',NULL,?)",
+    );
+    ins.run('ZZZ', 'live_score_floor_skipped', entryAt);
+    // …then bury it under more than a capped read can return.
+    for (let i = 0; i < ROW_CAP + 50; i++) {
+      ins.run('QQQ', 'symbol_reentry_cooldown_skipped', entryAt + 1000 + i);
+    }
+
+    const scan = runEdgeLeakScanFromDb({ now: Date.parse('2026-09-11T21:00:00Z') });
+    const byReason = new Map(scan.attribution.untaken.map((u) => [u.reason, u.n]));
+    expect(byReason.get('live_score_floor_skipped') ?? 0).toBeGreaterThan(0);
+    expect(byReason.get('no_live_row') ?? 0).toBe(0);
+    // And the window read in full, so the classification can be trusted.
+    expect(scan.coverage.journalSkipsTruncated).toBe(false);
   });
 
   it('carries the recency all the way into the finding a route returns', () => {

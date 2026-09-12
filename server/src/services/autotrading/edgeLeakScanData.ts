@@ -5,7 +5,7 @@ import { listPaperPositions, paperRealizedPnl, PaperPosition } from '../../db/au
 import { listOptionsPaperPositions, OptionsPaperPosition } from '../../db/autotradeOptionsPaperPositions';
 import { optionsPaperRealizedPnl } from './optionsExecute';
 import { getAutotradeConfig, AutotradeConfig } from '../../db/autotradeConfig';
-import { listAutotradeEvents } from '../../db/autotradeEvents';
+import { listAutotradeEvents, listAutotradeEventsInWindow } from '../../db/autotradeEvents';
 import { etDateTimeToMs, etToday } from '../../util/marketDate';
 import { previousTradingSession } from '../trading/marketCalendar';
 import { buildSectorOf } from './riskCheck';
@@ -168,7 +168,7 @@ export interface ExtensionRow {
 
 function extensionIndex(since: number): Map<string, ExtensionRow> {
   const out = new Map<string, ExtensionRow>();
-  for (const e of listAutotradeEvents({ actions: ['entry_extension_shadow'], since, limit: 1000 })) {
+  for (const e of listAutotradeEventsInWindow({ actions: ['entry_extension_shadow'], since }).events) {
     if (!e.symbol || !e.detail) continue;
     let parsed: { vwapExtPct?: unknown; pctOfRange?: unknown };
     try {
@@ -355,11 +355,10 @@ export function collectExecutionFindings(now: number): ExecutionOccurrence[] {
   }
   const counts = new Map<string, number>();
   const lastSeen = new Map<string, string>();
-  for (const e of listAutotradeEvents({
+  for (const e of listAutotradeEventsInWindow({
     actions: EXECUTION_ACTIONS.map((a) => a.action),
     since,
-    limit: 1000,
-  })) {
+  }).events) {
     const spec = EXECUTION_ACTIONS.find((a) => a.action === e.action);
     let key = e.action;
     if (spec?.splitOn !== undefined) {
@@ -493,8 +492,12 @@ export function collectConfigurationFindings(cfg: AutotradeConfig, now: number):
 }
 
 /** Live-book skips within the window, for the attribution's untaken classes. */
-function collectJournalSkips(since: number): JournalSkip[] {
-  return listAutotradeEvents({ actions: SKIP_ACTIONS, since, limit: 1000 })
+function collectJournalSkips(since: number): { skips: JournalSkip[]; truncated: boolean } {
+  // WINDOWED, not capped. `listAutotradeEvents` clamps to ROW_CAP silently,
+  // and this window held 1,928 skip rows on 2026-09-12 — see
+  // listAutotradeEventsInWindow's comment for what that cost.
+  const { events, truncated } = listAutotradeEventsInWindow({ actions: SKIP_ACTIONS, since });
+  const skips = events
     .filter((e) => e.symbol !== null)
     .map((e) => {
       let failedRule: string | null = null;
@@ -510,6 +513,7 @@ function collectJournalSkips(since: number): JournalSkip[] {
       }
       return { symbol: e.symbol as string, at: e.createdAt, action: e.action, failedRule };
     });
+  return { skips, truncated };
 }
 
 /** The stored daily goal expressed in R at the stored risk % — the level the
@@ -560,6 +564,7 @@ export function runEdgeLeakScanFromDb(opts: EdgeLeakScanOptions = {}): EdgeLeakS
   // Entry slippage over the window, in % of the limit price. Entries only: an
   // exit's slippage is the chase doing its job, and pooling the two would hide
   // the number the attribution is actually about.
+  const skipRead = collectJournalSkips(windowStart);
   const entrySlippagePct = buildLiveSlippageRows()
     .filter((r) => r.kind === 'entry' && r.date >= (liveCollected.sessionDates[0] ?? '0000-00-00'))
     .map((r) => r.pct);
@@ -573,7 +578,8 @@ export function runEdgeLeakScanFromDb(opts: EdgeLeakScanOptions = {}): EdgeLeakS
     execution: collectExecutionFindings(now),
     configuration: collectConfigurationFindings(cfg, now),
     entrySlippagePct,
-    journalSkips: collectJournalSkips(windowStart),
+    journalSkips: skipRead.skips,
+    journalSkipsTruncated: skipRead.truncated,
     asOf: now,
   });
 }
