@@ -8947,3 +8947,55 @@ rows of the table, and the stop-alone one fails on the old line with
 for why auto-re-arming would be worse than the gap)"* — the exact opposite of what it had
 done since that morning. It sits above the entry gates, so a reader working out what may
 run before them was being told it writes nothing.
+
+## 2026-09-12 — the biggest "unexplained" bucket was a gate doing its job
+
+`no_live_row` is the attribution's bucket for *"the live journal says nothing about this
+name at that minute"*. It is the largest untaken class on the book, the evening routine
+watches it, and this document has already recorded one cause for it (the skip read was
+clamped to 1,000 of 1,928 rows). Here is a second, and it is not a recording gap at all.
+
+**One refusal on the live entry path names no symbol.** `evaluateEntryCutoff` runs *before*
+the per-candidate loop — deliberately, so a doomed batch costs no broker round-trip — and
+refuses the whole batch at once. Its row therefore carries a count (`refused: N`) and no
+`symbol`. Two things then drop it on the floor:
+
+- `collectJournalSkips` filters `e.symbol !== null`, so the row never enters the skip set;
+- `classifyUntaken` matches `s.symbol === paperTrade.symbol`, so it could not have matched
+  even if it had.
+
+So every paper entry the live book declined because the end-of-day flatten was about to
+swallow it came out as "nothing the journal explains". The plan's own design for this
+classifier said `entry_window_closed` **(batch, by time)**; the implementation matched on
+symbol like everything else and lost the one class that has no symbol to match on.
+
+**Why it matters to the goal and not just to the report.** An unexplained hole in the
+record and a gate working correctly point in opposite directions. The advisor ranks the
+untaken classes by the paper R they left behind and proposes loosening whatever governs
+them — so a correct refusal, filed as unexplained, argues for opening a gate that exists
+to stop a specific, measured loss (ESTC opened 15:56:04 and flattened 15:57:12; three
+entries on 2026-09-02 that turned +$32.78 into −$3.51).
+
+**Matched by tick, not by a recomputed clock.** Both books decide inside one tick (paper
+first, then live), so a batch refusal within `PAIR_TOLERANCE_MS` of the paper entry *is*
+the refusal that would have taken it. A tick where the live book had no candidates
+journals nothing and stays `no_live_row` — correct, nothing refused that name. A
+symbol-named skip still wins when both cover the tick: it says more.
+
+**And the bucket gets a real lever, because paper is the control by construction.**
+`endOfDayFlatten.ts` keeps the entry cutoff live-only on purpose: paper flattens on the
+same window but keeps *opening* late entries, *"which makes it the control group for the
+question the live book cannot answer about itself: whether the cutoff is buying anything,
+or just closing a quarter of the session."* The paper R of this bucket is precisely that
+answer. So `fieldForUntakenReason('entry_window_closed')` returns `endOfDayFlattenMinutes`
+with a detail that says the cutoff is **derived** (`endOfDayFlattenMinutes + max(15,
+stagnationExitMinutes)`), that lowering the flatten window also holds open positions
+closer to the bell, and that this bucket is a measurement rather than a gap. Without that,
+the advisor's fallback would have printed "No single setting governs entry_window_closed",
+which is false.
+
+One consequence worth stating for the trial: Decision 2 moved `stagnationExitMinutes`
+90 → 60, and the runway is derived from it, so the entry cutoff moved from ~95 minutes
+before the bell to ~65 — half an hour of session the live book may now enter in. That was
+a side effect of an exit change, not a decision about entries, and this bucket is where it
+becomes visible.

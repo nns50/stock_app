@@ -187,7 +187,9 @@ const dayPctFromEdge = (tradesPerSession: number, riskPct: number, dR: number): 
 /** Which config field, if any, governs a refusal class the live book applied.
  *  Null means the gate has no single field — the recommendation becomes a code
  *  or research action instead of pretending there is a knob. */
-export function fieldForUntakenReason(reason: string): { field: string; direction: 'exposure' } | null {
+export function fieldForUntakenReason(
+  reason: string,
+): { field: string; direction: 'exposure'; detail?: string } | null {
   if (reason.startsWith('live_risk_blocked:')) {
     const rule = reason.slice('live_risk_blocked:'.length);
     const byRule: Record<string, string> = {
@@ -215,6 +217,32 @@ export function fieldForUntakenReason(reason: string): { field: string; directio
   // manual one, or a working order). The detail carries that; a `code` action
   // asking for the breakdown is the honest recommendation.
   if (reason === 'live_symbol_held_skipped') return null;
+  // The END-OF-DAY entry cutoff (2026-09-12), and it is worth a lever rather
+  // than a shrug. `endOfDayFlatten.ts` keeps the cutoff live-only ON PURPOSE —
+  // paper flattens on the same window but keeps OPENING late entries, "which
+  // makes it the control group for the question the live book cannot answer
+  // about itself: whether the cutoff is buying anything, or just closing a
+  // quarter of the session". The paper R of this bucket IS that answer, so the
+  // advisor reports it instead of burying it.
+  //
+  // The field is the flatten window, not a cutoff setting: there is no cutoff
+  // field to loosen. `evaluateEntryCutoff` derives it as
+  // `endOfDayFlattenMinutes + max(15, stagnationExitMinutes)` precisely so the
+  // two cannot disagree, so the detail has to say which half moves — and warn
+  // that the flatten window is the one thing that also decides when open
+  // positions are closed.
+  if (reason === 'entry_window_closed') {
+    return {
+      field: 'endOfDayFlattenMinutes',
+      direction: 'exposure',
+      detail:
+        'The cutoff is DERIVED: endOfDayFlattenMinutes + max(15, stagnationExitMinutes) of runway. ' +
+        'Lowering the flatten window admits these entries but also holds open positions closer to the bell; ' +
+        'lowering stagnationExitMinutes shortens only the runway. Paper is the control here by design — it ' +
+        'flattens on the same window but keeps opening late, so this bucket is the measurement of what the ' +
+        'cutoff costs, not a recording gap.',
+    };
+  }
   return null;
 }
 
@@ -266,7 +294,9 @@ function flowRecommendations(input: TuneAdvisorInput, gap: GoalGap): TuneRecomme
             field: governed.field,
             from: (input.config as unknown as Record<string, number | string | boolean>)[governed.field] ?? null,
             to: null,
-            detail: `Loosen ${governed.field} enough to admit this class — the value depends on how much of it you want back.`,
+            detail:
+              governed.detail ??
+              `Loosen ${governed.field} enough to admit this class — the value depends on how much of it you want back.`,
             direction: 'exposure',
           }
         : {
@@ -286,6 +316,7 @@ function humanReason(reason: string): string {
   if (reason.startsWith('live_risk_blocked:')) return `the ${reason.slice('live_risk_blocked:'.length)} rule`;
   if (reason === 'no_live_row') return 'nothing the journal explains';
   if (reason === 'live_symbol_held_skipped') return 'already holding the name (or an order working on it)';
+  if (reason === 'entry_window_closed') return 'the end-of-day entry cutoff';
   return reason.replace(/_/g, ' ');
 }
 

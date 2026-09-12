@@ -485,6 +485,20 @@ describe('recommendations that are code, not settings', () => {
     // An unmapped rule returns null rather than guessing at a field name.
     expect(fieldForUntakenReason('live_risk_blocked:something_new')).toBeNull();
     expect(fieldForUntakenReason('no_live_row')).toBeNull();
+    // The END-OF-DAY cutoff. It became a reachable class on 2026-09-12 (the
+    // batch row carries no symbol, so it used to land in no_live_row). It has a
+    // field, and the detail has to say the cutoff is DERIVED — there is no
+    // cutoff setting to turn, and the flatten window it comes from also decides
+    // when open positions get closed.
+    const cutoff = fieldForUntakenReason('entry_window_closed');
+    expect(cutoff?.field).toBe('endOfDayFlattenMinutes');
+    expect(cutoff?.direction).toBe('exposure');
+    expect(cutoff?.detail).toMatch(/DERIVED/);
+    expect(cutoff?.detail).toMatch(/stagnationExitMinutes/);
+    // Paper is the control for this gate by design, so the bucket is a
+    // measurement rather than a recording gap — the advice must not read like
+    // no_live_row's "unexplained".
+    expect(cutoff?.detail).toMatch(/control/);
   });
 
   it('recommends RESEARCH before changing the exit that dominates red days', () => {

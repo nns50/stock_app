@@ -153,6 +153,15 @@ const SKIP_ACTIONS = [
 // none, which is why `journalActionsReachability.test.ts` exists; it could not
 // see this one until its own two blind spots were fixed on 2026-09-12. When
 // the cutoff ships, its PR adds the action to both sides at once.
+//
+// NOT here either, but for the OPPOSITE reason: `entry_window_closed`. That one
+// is emitted, constantly — it is the END-OF-DAY cutoff (a different gate from
+// the unbuilt 13:00 one above), and it refuses the whole batch before the
+// per-candidate loop, so its row carries a count and NO SYMBOL. This collector
+// drops symbol-less rows two lines below, and the classifier matches on symbol,
+// so putting it in this list would change nothing. It is read on its own, by
+// time, in collectEntryWindowClosures.
+const ENTRY_WINDOW_CLOSED = ['entry_window_closed'];
 
 const isAutotradePosition = (p: Position): boolean => p.tags.includes('autotrade');
 
@@ -512,6 +521,21 @@ export function collectConfigurationFindings(cfg: AutotradeConfig, now: number):
   return out;
 }
 
+/**
+ * Batch-level end-of-day entry refusals within the window, as epoch ms.
+ *
+ * The one refusal on the live entry path that names no symbol, so the only one
+ * the attribution can match by time alone. Without this, every paper entry the
+ * live book declined because the flatten was about to swallow it was reported
+ * as `no_live_row` — the bucket that means "nothing the journal explains", the
+ * largest one on the book, and the one the evening routine watches. A gate
+ * doing exactly its job was reading as an unexplained hole in the record.
+ */
+function collectEntryWindowClosures(since: number): number[] {
+  const { events } = listAutotradeEventsInWindow({ actions: ENTRY_WINDOW_CLOSED, since });
+  return events.map((e) => e.createdAt);
+}
+
 /** Live-book skips within the window, for the attribution's untaken classes. */
 function collectJournalSkips(since: number): { skips: JournalSkip[]; truncated: boolean } {
   // WINDOWED, not capped. `listAutotradeEvents` clamps to ROW_CAP silently,
@@ -696,6 +720,7 @@ export function runEdgeLeakScanFromDb(opts: EdgeLeakScanOptions = {}): EdgeLeakS
     entrySlippagePct,
     journalSkips: skipRead.skips,
     journalSkipsTruncated: skipRead.truncated,
+    entryWindowClosures: collectEntryWindowClosures(windowStart),
     asOf: now,
   });
 }
