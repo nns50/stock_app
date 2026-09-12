@@ -600,6 +600,32 @@ export interface EquitySyncResult {
  *  changed balance is accepted, and never accepts a bad one. */
 let equityGuard: EquityGuardState = freshEquityGuardState();
 
+/**
+ * Test seam for the corroboration state above (2026-09-12).
+ *
+ * In production the comment above is right: a restart costs a few extra ticks
+ * before a genuinely changed balance is accepted, and never accepts a bad one.
+ * Across TEST FILES it is the leak class CLAUDE.md and `setupProcessState.ts`
+ * both describe, and this one had no way to be cleaned up at all — no reset
+ * existed, so a file could not have reset it even knowing it should.
+ *
+ * What leaks: `autotradeLiveExecute.test.ts` drives the 2026-08-27 rejection
+ * twice, leaving `{ pendingUsd: 2444.70, pendingCount: 2 }`. Under the pinned
+ * path order `autotradeLoop.test.ts` runs next and also syncs equity. Any
+ * out-of-band reading it makes within 1% of that level would be the THIRD
+ * corroboration, so the guard would ACCEPT it — and acceptance-after-
+ * corroboration additionally calls `applyExternalCashFlow`, which moves the
+ * day's baseline. A test expecting a refusal would see a write and a rebased
+ * day, on some runs and not others, depending on numbers in another file.
+ *
+ * Benign today only because the later figures (50k / 74k) are nowhere near
+ * 2444.70. That is a coincidence, not a design, which is the whole argument
+ * for the seam rather than for leaving it.
+ */
+export function resetEquitySyncGuardState(): void {
+  equityGuard = freshEquityGuardState();
+}
+
 export async function syncAccountEquityFromBroker(opts?: { log?: boolean }): Promise<EquitySyncResult> {
   const cfg = getAutotradeConfig();
   const accountId = cfg.liveAccountId;

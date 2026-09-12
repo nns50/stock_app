@@ -74,6 +74,7 @@ import {
   listAutotradeLivePositions,
   reconcileLiveOrders,
   runLiveExecution,
+  resetEquitySyncGuardState,
   syncAccountEquityFromBroker,
   adoptOrphanedLivePositions,
   checkLiveScaleIns,
@@ -211,6 +212,15 @@ beforeAll(() => initDb());
 beforeEach(() => {
   // Module-level state: a symbol learned in one test must not leak into the next.
   resetUnplaceableSymbols();
+  // …and the equity guard's corroboration state, which is the same class and
+  // had no seam at all until 2026-09-12. THIS file is the only one that drives
+  // the real syncAccountEquityFromBroker (autotradeLoop.test.ts mocks the whole
+  // module), and it drives the 2026-08-27 rejection twice — so without this,
+  // every later test IN THIS FILE inherits two-thirds of a confirmation at
+  // $2,444.70, and a third reading near that level would be ACCEPTED rather
+  // than refused. Acceptance-after-corroboration also rebases the day's
+  // baseline, so the wrong outcome would not stay local to the assertion.
+  resetEquitySyncGuardState();
   db.exec(
     'DELETE FROM autotrade_config; DELETE FROM trading_config; DELETE FROM autotrade_events; ' +
       'DELETE FROM autotrade_live_orders; DELETE FROM autotrade_live_options_orders; ' +
@@ -424,6 +434,29 @@ describe('syncAccountEquityFromBroker', () => {
     const alsoWithLogOff = await syncAccountEquityFromBroker({ log: false });
     expect(alsoWithLogOff.ok).toBe(true);
     expect(listAutotradeEvents({ actions: ['equity_sync_rejected'] }).length).toBeGreaterThan(1);
+  });
+
+  it('starts the corroboration count over after a reset — the seam is load-bearing', async () => {
+    // The guard promotes an out-of-band level after THREE consecutive readings
+    // near it. That counter is module state with no table behind it, so before
+    // 2026-09-12 it had no way to be cleared and simply carried on across every
+    // test in this file. Two rejections in the case above leave it at 2 of 3:
+    // the very next out-of-band reading near $2,444.70 — in a test written to
+    // assert a refusal — would instead be ACCEPTED, written to config, and
+    // would rebase the day's baseline through applyExternalCashFlow.
+    setAutotradeConfig({ liveAccountId: 'ACC1', accountEquityUsd: 2_234.58, equitySyncMaxJumpPct: 5 });
+    mockAccountState.mockResolvedValue({ ...okAccountState, netLiquidationUsd: 2_444.7 });
+
+    await syncAccountEquityFromBroker({ log: false }); // 1 of 3
+    await syncAccountEquityFromBroker({ log: false }); // 2 of 3
+    resetEquitySyncGuardState();
+    await syncAccountEquityFromBroker({ log: false }); // would be 3 of 3 without the reset
+
+    // Still refused, and the equity untouched — the count restarted at 1.
+    expect(getAutotradeConfig().accountEquityUsd).toBe(2_234.58);
+    const rows = listAutotradeEvents({ actions: ['equity_sync_rejected'] });
+    expect(rows).toHaveLength(3);
+    expect(String(JSON.parse(rows[0].detail!).reason)).toMatch(/1\/3 at this level/);
   });
 
   it('does not journal an event when the synced value equals the current one', async () => {

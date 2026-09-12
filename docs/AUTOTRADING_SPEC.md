@@ -9214,3 +9214,48 @@ config the route would reject.
 exposure" is a different answer from "this rule is still shadowing", and it is the one that
 needs reading. The scan's lever detail now also says the number is a floor to raise **to**,
 never a value to drop to, so a human applying it by hand gets the same warning.
+
+## 2026-09-12 — two pieces of live-path process state with no way to clear them
+
+`CLAUDE.md` and `test/setupProcessState.ts` between them describe this class at length: a
+module-level Map or Set lives for the whole worker process, outlives not just a test but a
+**file**, and `DELETE FROM …` does not touch it. The rule they settle on is that a file
+which warms such a cache resets it in its own `beforeEach` — which requires the module to
+export a seam. Two in the live path did not have one.
+
+**`equityGuard` (`liveExecute.ts`) had no reset at all.** It holds the equity-sync guard's
+corroboration state: an out-of-band net-liquidation reading is refused until three
+consecutive readings agree at the same level, and the counter lives here. In production the
+module's own comment is right — a restart costs a few extra ticks and never accepts a bad
+reading. Across tests it is the leak class, and there was no way for a file to clean it up
+even knowing it should.
+
+What leaks, concretely: the 2026-08-27 regression test drives the spurious $2,444.70 print
+twice, leaving `{ pendingUsd: 2444.70, pendingCount: 2 }`. **Two of three.** Any later test
+making an out-of-band reading within 1% of that level is the third corroboration, so the
+guard *accepts* it — writes it to `accountEquityUsd`, and, because
+acceptance-after-corroboration is the signal an external cash flow needs, calls
+`applyExternalCashFlow` and moves the day's baseline. A test written to assert a refusal
+would see a write and a rebased day. Benign today only because the later figures in that
+file are 50k and 74k, nowhere near 2444.70 — a coincidence, not a design.
+
+The new test proves the seam rather than exercising it: two rejections, a reset, then a
+third reading at the same level. With the reset stubbed to a no-op it fails with
+`expected 2444.7 to be 2234.58` — the third reading accepted, which is the bug.
+
+**`killSwitchHeldPositions` (`liveOptionsExecute.ts`) had a reset that did not cover it.**
+`resetLiveOptionsExitChaseState()` cleared `exitRepricesByPosition` and nothing else, under
+a name specific enough to read complete. The Set is cleared in production only when a halt
+ends, so a file that leaves an id in it hands that id to the next file — and position ids
+restart per test file, so they collide by construction. A collision means the later file's
+held position journals nothing, because the Set says it already did. Renamed to
+`resetLiveOptionsProcessState()` and it now clears both: a reset whose name promises less
+than it does is how the next piece of state gets left out again.
+
+**One correction worth recording.** The first version of this change also reset the guard in
+`autotradeLoop.test.ts`, on the reasoning that it runs next under the pinned path order.
+That file `vi.mock`s the whole of `liveExecute`, so the real module state is never touched
+there and the reset is neither possible nor needed — the import failed with *"No
+`resetEquitySyncGuardState` export is defined on the mock."* Of the six test files that
+reference `liveExecute`, four use the real module and two mock it; only
+`autotradeLiveExecute.test.ts` drives the equity sync for real.

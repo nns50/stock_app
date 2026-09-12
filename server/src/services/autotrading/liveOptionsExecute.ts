@@ -1829,9 +1829,24 @@ function noteReprice(positionId: number, now: number = Date.now()): number {
   return count;
 }
 
-/** Test seam — the counter is module state that outlives a test file's rows. */
-export function resetLiveOptionsExitChaseState(): void {
+/**
+ * Test seam for ALL of this module's process state — both pieces, which is the
+ * point (2026-09-12).
+ *
+ * This used to clear only `exitRepricesByPosition`, under a name that reads
+ * specific but complete enough to stop anyone looking for a second one. There
+ * is a second one: `killSwitchHeldPositions`, cleared in production only when a
+ * halt ends, so a file that leaves an id in it hands that id to the next file.
+ * Position ids restart per test file (each gets a fresh database), so they
+ * collide across files by construction — and a collision means the later file's
+ * held position journals nothing, because this Set says it already did.
+ *
+ * Renamed rather than extended quietly: a reset whose name promises less than
+ * it does is how the next piece of state gets left out again.
+ */
+export function resetLiveOptionsProcessState(): void {
   exitRepricesByPosition.clear();
+  killSwitchHeldPositions.clear();
 }
 
 /**
