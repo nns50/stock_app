@@ -9457,3 +9457,42 @@ questioned again.
 `PAIR_TOLERANCE_MS` still governs `classifyUntaken`, and should: *"was a refusal journalled
 at this minute"* is a different question from *"did both books trade this name today"*, and a
 tight window is right for the first.
+
+## 2026-09-12 — the control changed behaviour inside its own window
+
+Almost every verdict the leak scan issues leans on the paper book. A bucket is a **leak**
+only when *"the paper control's same bucket agrees in sign"*, and the attribution's whole
+premise is that paper is what the live book would have done. All of that assumes the control
+behaved the same way across the window it is read over.
+
+It did not. The paper book gained the end-of-day flatten on **2026-09-05**, and inside one
+40-session window it reads as two different books:
+
+| | before 09-05 | after |
+| --- | --- | --- |
+| trades | 71 | 37 |
+| overnight holds | **37 of 71** | **0 of 37** |
+| mean loser | −0.837R | −0.721R |
+| **mean R, all trades** | **+0.262** | **+0.013** |
+
+A twentyfold difference in the control's own mean R, and more than half its earlier trades
+were overnight holds the flatten now makes impossible. That is **larger than most of the
+bucket effects the control is being used to confirm** — so "the control agrees" can be a
+fact about *when* a bucket's trades happened rather than about the bucket.
+
+This is the same disease as the dated counts two sections up, one level higher: not a count
+without a date, but a **control group** without one. It touches the plan's own evidence —
+Decision 8's round table ("round 1 +0.208R, round 2 −0.01R in the paper control") was
+computed over a window that straddles this change, as was the `meanDiffR` headline.
+
+**What the scan does about it: reports, never acts.** `coverage.paperControl` now carries
+`earlyMeanR`, `lateMeanR` and `driftR`, measured by splitting the paper book at its **median
+entry time** rather than at a hardcoded date — the point is to notice *any* drift in the
+control, and a list of known behaviour changes is exactly the thing that goes stale. Below
+eight trades it returns nulls rather than a number, because seven trades cannot tell drift
+from noise and a confident figure there would be worse than none.
+
+The scan does not have the standing to throw away two thirds of its own control, and
+silently reweighting it would be a second undocumented change on top of the first. A number
+the operator and the routine can both see is the honest move: when `driftR` is large, every
+"the control agrees" verdict in that run is worth less than it reads.

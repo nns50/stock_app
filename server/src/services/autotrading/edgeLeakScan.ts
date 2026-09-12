@@ -328,6 +328,14 @@ export interface EdgeLeakScanResult {
      *  recorded stop" from "no entry time". See DropReasons. */
     liveDropReasons: DropReasons;
     paperDropReasons: DropReasons;
+    /**
+     * Whether the CONTROL is the same book across the window. Every "leak"
+     * verdict requires the paper control to agree in sign, so a control that
+     * changed behaviour mid-window can make a bucket read as a leak (or not)
+     * because of WHEN its trades happened. See paperControlDrift for the
+     * 2026-09-05 case that motivated it.
+     */
+    paperControl: { earlyMeanR: number | null; lateMeanR: number | null; driftR: number | null };
     sessions: number;
     /**
      * True when the journal read that classifies untaken paper entries hit its
@@ -822,6 +830,47 @@ export function recencySuffix(sessionsAgo: number | null, lastSeen: string | nul
   return ` — none since ${lastSeen}, ${sessionsAgo} ${s} ago`;
 }
 
+/**
+ * IS THE CONTROL THE SAME BOOK ALL THE WAY THROUGH? (2026-09-12)
+ *
+ * Almost every verdict this scan issues leans on the paper book: a bucket is a
+ * LEAK only when "the paper control's same bucket agrees in sign", and the
+ * attribution's whole premise is that paper is what the live book would have
+ * done. All of that assumes the control behaved the same way across the window.
+ *
+ * On 2026-09-12 it had not. The paper book gained the end-of-day flatten on
+ * 2026-09-05, and inside one 40-session window it reads as two different books:
+ *
+ *            trades  overnight holds  mean loser  mean R (all)
+ *   before       71     37 of 71        -0.837R      +0.262
+ *   after        37      0 of 37        -0.721R      +0.013
+ *
+ * A twentyfold difference in the control's own mean R, and more than half its
+ * earlier trades were overnight holds that the flatten now makes impossible.
+ * That is larger than most of the bucket effects the control is being used to
+ * confirm — so "the control agrees" could be a fact about WHEN a bucket's
+ * trades happened rather than about the bucket.
+ *
+ * Measured by splitting the paper book at the median entry time rather than at
+ * a hardcoded date: the point is to notice ANY drift in the control, and a list
+ * of known behaviour changes is exactly the thing that goes stale. Reported,
+ * never acted on — the scan does not have the standing to throw away two thirds
+ * of its control, and a number the operator can see is the honest move.
+ */
+export function paperControlDrift(paper: LeakTrade[]): {
+  earlyMeanR: number | null;
+  lateMeanR: number | null;
+  driftR: number | null;
+} {
+  if (paper.length < 8) return { earlyMeanR: null, lateMeanR: null, driftR: null };
+  const sorted = [...paper].sort((a, b) => a.entryAt - b.entryAt);
+  const mid = Math.floor(sorted.length / 2);
+  const mean = (xs: LeakTrade[]): number => xs.reduce((s, t) => s + t.r, 0) / xs.length;
+  const early = round4(mean(sorted.slice(0, mid)));
+  const late = round4(mean(sorted.slice(mid)));
+  return { earlyMeanR: early, lateMeanR: late, driftR: round4(Math.abs(early - late)) };
+}
+
 export function runEdgeLeakScan(input: EdgeLeakScanInput): EdgeLeakScanResult {
   const rng = input.rng ?? mulberry32(SCAN_RNG_SEED);
   const live = input.live.trades;
@@ -879,6 +928,7 @@ export function runEdgeLeakScan(input: EdgeLeakScanInput): EdgeLeakScanResult {
       paperDropped: input.paper.droppedTrades,
       liveDropReasons: input.live.dropReasons ?? { ...NO_DROPS },
       paperDropReasons: input.paper.dropReasons ?? { ...NO_DROPS },
+      paperControl: paperControlDrift(paper),
       sessions: input.live.sessionDates.length,
       journalSkipsTruncated: input.journalSkipsTruncated ?? false,
     },

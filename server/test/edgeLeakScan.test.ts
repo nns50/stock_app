@@ -8,6 +8,7 @@ import {
   LeakTrade,
   LEAK_MIN_TRADES,
   mulberry32,
+  paperControlDrift,
   runEdgeLeakScan,
   verdictFor,
   WATCH_MIN_TRADES,
@@ -411,6 +412,46 @@ describe('attribution — where the live book loses the paper book’s edge', ()
     const a = buildAttribution(live, paper, [], [], [], RNG());
     expect(a.pairedTrades).toBe(1);
     expect(a.untaken.reduce((s, u) => s + u.n, 0)).toBe(1);
+  });
+});
+
+describe('is the CONTROL the same book all the way through', () => {
+  // Every "leak" verdict requires the paper control to agree in sign, so a
+  // control that changed behaviour mid-window can make a bucket read as a leak
+  // (or not) because of WHEN its trades happened. On 2026-09-12 that was not
+  // hypothetical: the paper book gained the end-of-day flatten on 09-05 and
+  // inside one 40-session window read as two books — 37 of 71 earlier trades
+  // were overnight holds against 0 of 37 later ones, and its own mean R went
+  // +0.262 to +0.013.
+  const at = (mins: number): number => Date.parse('2026-09-08T13:30:00Z') + mins * 60_000;
+
+  it('reports the drift between the control’s two halves', () => {
+    const paper = [
+      ...Array.from({ length: 5 }, (_, i) => trade({ book: 'paper', entryAt: at(i), r: 0.5 })),
+      ...Array.from({ length: 5 }, (_, i) => trade({ book: 'paper', entryAt: at(100 + i), r: -0.1 })),
+    ];
+    const d = paperControlDrift(paper);
+    expect(d.earlyMeanR).toBeCloseTo(0.5, 4);
+    expect(d.lateMeanR).toBeCloseTo(-0.1, 4);
+    expect(d.driftR).toBeCloseTo(0.6, 4);
+  });
+
+  it('says nothing rather than guessing on a control too small to split', () => {
+    // Seven trades cannot tell drift from noise, and a confident number there
+    // would be worse than no number.
+    const paper = Array.from({ length: 7 }, (_, i) => trade({ book: 'paper', entryAt: at(i), r: 0.2 }));
+    expect(paperControlDrift(paper)).toEqual({ earlyMeanR: null, lateMeanR: null, driftR: null });
+  });
+
+  it('is ordered by entry time, not by the order the rows arrived', () => {
+    const paper = [
+      trade({ book: 'paper', entryAt: at(200), r: -1 }),
+      ...Array.from({ length: 4 }, (_, i) => trade({ book: 'paper', entryAt: at(i), r: 1 })),
+      ...Array.from({ length: 3 }, (_, i) => trade({ book: 'paper', entryAt: at(210 + i), r: -1 })),
+    ];
+    const d = paperControlDrift(paper);
+    expect(d.earlyMeanR).toBeCloseTo(1, 4); // the four earliest, whatever order they came in
+    expect(d.lateMeanR).toBeCloseTo(-1, 4);
   });
 });
 
