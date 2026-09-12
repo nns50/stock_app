@@ -183,12 +183,30 @@ describe('runGatedSwitches — the shadow, end to end', () => {
     expect(states.get('frozen_cap')).toMatchObject({ evaluations: 1, proposals: 1, lastEvaluatedEtDate: '2026-09-10' });
   });
 
-  it('a second run on the same ET date changes nothing', () => {
+  it('a second run on the same ET date does no work at all', () => {
     frozenCapConfig();
-    runGatedSwitches(AFTER_CLOSE);
-    runGatedSwitches(AFTER_CLOSE + 60_000);
+    expect(runGatedSwitches(AFTER_CLOSE)).not.toBeNull();
+    // Null rather than an empty result: the loop calls this on every tick from
+    // the close to midnight (~480 a night), so the second call must bail out
+    // BEFORE assembling a snapshot rather than build one for the engine to
+    // discard. Five rows of state to find that out.
+    expect(runGatedSwitches(AFTER_CLOSE + 60_000)).toBeNull();
     expect(listSwitchStates().get('frozen_cap')?.evaluations).toBe(1);
     expect(listAutotradeEvents({ stage: 'config', actions: ['config_change_proposed'] })).toHaveLength(1);
+  });
+
+  it('still evaluates a rule with no row yet, even after the others have run today', () => {
+    // A rule added between deploys has no state, so its own date guard cannot
+    // have been satisfied — the cheap skip must not swallow it.
+    frozenCapConfig();
+    runGatedSwitches(AFTER_CLOSE);
+    db.prepare("DELETE FROM gated_switch_state WHERE rule_id = 'overlay_revert'").run();
+
+    const again = runGatedSwitches(AFTER_CLOSE + 60_000);
+    expect(again).not.toBeNull();
+    expect(listSwitchStates().get('overlay_revert')?.evaluations).toBe(1);
+    // …and the rules that already ran today are still untouched.
+    expect(listSwitchStates().get('frozen_cap')?.evaluations).toBe(1);
   });
 
   it('does not run at all while the session is open, or on a weekend', () => {
