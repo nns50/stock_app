@@ -117,11 +117,32 @@ export interface GoalGap {
    */
   activeSessionsSinceChange: number;
   reviewSessionsRequired: number;
+  /**
+   * The day the book ACTUALLY produced, averaged over recorded active
+   * sessions — the strategy percentage from `autotrade_daily_results`, which
+   * carries no deposits and no manual trading.
+   *
+   * It is here to CALIBRATE `impliedDailyGainPct`, which is an estimate from
+   * the identity and uses the CONFIGURED risk %. The book routinely risks less
+   * than the configured maximum — the step-down, the finish-line trim, the
+   * grade and method multipliers, the regime cut, buying-power sizing and
+   * whole-share rounding all cut it, and never raise it. Measured on the live
+   * book on 2026-09-12, realized risk ran a median 0.95% against a configured
+   * 1.25%: a ratio of 0.76, so the identity overstated the expected day by
+   * about a third. Nothing compared the two, so nothing said so.
+   *
+   * Null until enough sessions have been recorded to average.
+   */
+  measuredMeanDayPct: number | null;
+  measuredSessions: number;
 }
 
 export interface TuneAdvisorInput {
   config: AutotradeConfig;
   evidence: DailyGoalEvidence;
+  /** Recorded sessions, for calibrating the identity against what the book
+   *  actually produced. Empty until the recorder has run for a while. */
+  recordedDayPcts?: number[];
   /** The last edge-leak scan; null before one has run. */
   scan: EdgeLeakScanResult | null;
   review: SizingReview;
@@ -471,9 +492,18 @@ function rank(a: TuneRecommendation, b: TuneRecommendation): number {
   return weight(b) - weight(a);
 }
 
+/** Below this many recorded sessions, the measured day is noise and must not
+ *  be used to second-guess the identity. */
+export const MIN_CALIBRATION_SESSIONS = 5;
+
+/** How far the estimate may sit from the measurement before it is worth
+ *  saying so, in percentage points of a day. */
+export const CALIBRATION_TOLERANCE_PCT = 0.1;
+
 export function buildTuneAdvice(input: TuneAdvisorInput): TuneAdvice {
   const ev = input.evidence;
   const scan = input.scan;
+  const measured = input.recordedDayPcts ?? [];
   const gap: GoalGap = {
     targetDailyGainPct: input.config.targetDailyGainPct,
     impliedDailyGainPct: ev.impliedDailyGainPct,
@@ -491,6 +521,8 @@ export function buildTuneAdvice(input: TuneAdvisorInput): TuneAdvice {
     goalReachedSessions: ev.goalReachedSessions,
     activeSessionsSinceChange: input.review.activeSessionsSinceChange,
     reviewSessionsRequired: REVIEW_SESSIONS,
+    measuredMeanDayPct: measured.length ? round2(measured.reduce((a, b) => a + b, 0) / measured.length) : null,
+    measuredSessions: measured.length,
   };
 
   const recommendations = [
@@ -543,6 +575,21 @@ export function headlineFor(gap: GoalGap, recommendations: TuneRecommendation[],
       'this record closes that. Fix what is broken before tuning what is merely small.'
     );
   }
+  // THE ESTIMATE AGAINST THE MEASUREMENT. Everything above is reasoned from
+  // `impliedDailyGainPct`, which is the identity at the CONFIGURED risk %. The
+  // book routinely risks less than that — every sizing modifier cuts and none
+  // raises — so the estimate runs high, and a recommender that quietly reasons
+  // from a number 30% too generous will keep saying the goal is closer than it
+  // is. Said once, plainly, whenever there is enough recorded history to know.
+  const calibration =
+    gap.measuredMeanDayPct !== null &&
+    gap.measuredSessions >= MIN_CALIBRATION_SESSIONS &&
+    gap.impliedDailyGainPct !== null &&
+    Math.abs(gap.impliedDailyGainPct - gap.measuredMeanDayPct) > CALIBRATION_TOLERANCE_PCT
+      ? ` The identity estimates ${gap.impliedDailyGainPct}% a day; the book has actually produced ` +
+        `${gap.measuredMeanDayPct}% over ${gap.measuredSessions} recorded sessions — trust the measurement.`
+      : '';
+
   // A dormant defect is worth one clause, never the headline: it is a thing to
   // confirm fixed, not a thing to go and do.
   const dormantClause =
@@ -555,6 +602,7 @@ export function headlineFor(gap: GoalGap, recommendations: TuneRecommendation[],
       `against a gap of ${gap.gapPct} points to the ${gap.targetDailyGainPct}% goal` +
       (closes === null ? '.' : ` — roughly ${closes}% of it.`) +
       ' The rest is distribution, not a setting.' +
+      calibration +
       dormantClause
     );
   }

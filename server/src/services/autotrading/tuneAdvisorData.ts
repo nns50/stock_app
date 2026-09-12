@@ -48,6 +48,13 @@ export function buildTuneAdviceFromDb(
     }),
     scan: getLastEdgeLeakScan()?.result ?? null,
     review: buildSizingReview(listDailyResults(), sizingChangedOn(now), config.riskPerTradePct),
+    // The STRATEGY percentage, not the account one: the account figure carries
+    // deposits, withdrawals and trading by hand, none of which the identity is
+    // trying to predict. Active sessions only — a day with no trades is not
+    // evidence about what a trading day produces.
+    recordedDayPcts: listDailyResults()
+      .filter((r) => r.liveTrades > 0 && r.strategyGainPct !== null)
+      .map((r) => r.strategyGainPct as number),
     asOf: now,
   });
 }

@@ -113,6 +113,39 @@ describe('the gap is the frame', () => {
     expect(gap.reviewSessionsRequired).toBe(REVIEW_SESSIONS);
   });
 
+  it('says when the identity disagrees with what the book actually produced', () => {
+    // The identity uses the CONFIGURED risk %. Every sizing modifier cuts and
+    // none raises, so it runs high — measured at 0.95% realized against 1.25%
+    // configured on 2026-09-12, a third too generous. Nothing compared the
+    // estimate to the recorded days, so nothing said so.
+    const a = advise({
+      evidence: evidence({ impliedDailyGainPct: 0.5 }),
+      recordedDayPcts: [0.1, 0.2, 0.05, -0.1, 0.15, 0.2],
+    });
+    expect(a.gap.measuredMeanDayPct).toBeCloseTo(0.1, 2);
+    expect(a.gap.measuredSessions).toBe(6);
+    expect(a.headline).toMatch(/identity estimates 0\.5% a day; the book has actually produced 0\.1%/);
+    expect(a.headline).toMatch(/trust the measurement/);
+  });
+
+  it('stays quiet when the estimate and the measurement agree', () => {
+    const a = advise({
+      evidence: evidence({ impliedDailyGainPct: 0.5 }),
+      recordedDayPcts: [0.5, 0.52, 0.48, 0.51, 0.49, 0.5],
+    });
+    expect(a.headline).not.toMatch(/trust the measurement/);
+  });
+
+  it('will not second-guess the identity on a handful of sessions', () => {
+    // Four recorded days is noise, not a calibration.
+    const a = advise({
+      evidence: evidence({ impliedDailyGainPct: 0.5 }),
+      recordedDayPcts: [0.01, 0.02, 0.0, -0.3],
+    });
+    expect(a.gap.measuredSessions).toBe(4);
+    expect(a.headline).not.toMatch(/trust the measurement/);
+  });
+
   it('says so plainly when no scan has run', () => {
     expect(advise({ scan: null }).headline).toMatch(/No edge-leak scan has run yet/);
   });

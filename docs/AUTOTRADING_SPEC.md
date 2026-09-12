@@ -8484,6 +8484,47 @@ it — so when execution defects are open and the measurable findings total unde
 points, the headline leads with **"fix what is broken before tuning what is merely
 small"** instead of ranking the small thing first.
 
+## 2026-09-12 — the identity estimates high, and nothing checked it
+
+`expected day % = trades/session × risk% × avg R` uses the **configured** risk
+%. The book routinely risks less than that, and only less: the step-down after
+two losers, the finish-line trim, the grade and method expectancy multipliers,
+the regime cut, buying-power sizing and whole-share rounding all cut the size,
+and none of them raise it.
+
+Measured on the live book (117 closed autotrade positions, risk taken from the
+INITIAL stop, which is what `initialRiskOf` uses):
+
+| | |
+| --- | --- |
+| realized risk, median | **0.95% of equity** |
+| realized risk, mean | 1.00% |
+| configured risk at the time | 1.25% |
+| ratio | **0.76** |
+
+So the identity overstated the expected day by about a third. That does not
+cost money directly — the review keeps or reverts on recorded daily results,
+not on the estimate — but every statement of the form "the goal is N expected
+days away" and every "this closes X% of the gap" in the tune advice was
+reasoned from a number 30% too generous.
+
+**The app had both figures all along and compared neither.**
+`impliedDailyGainPct` is the estimate; `autotrade_daily_results.strategy_gain_pct`
+is what the book actually produced, with no deposits and no manual trading in
+it. The advice now carries `gap.measuredMeanDayPct` over
+`gap.measuredSessions`, and the headline says — once, plainly — when the two
+disagree by more than 0.1 points, ending with *"trust the measurement"*.
+
+Two guards on it: active sessions only (a day with no trades is not evidence
+about what a trading day produces), and a floor of
+`MIN_CALIBRATION_SESSIONS = 5` recorded sessions, because a handful of days is
+noise and letting noise overrule the identity is the opposite failure.
+
+A measurement error in the honest direction is worth stating: the first pass at
+this used the CURRENT stop rather than the initial one and reported a ratio of
+0.38 — a ratcheted stop makes current risk near zero, which is the mechanism
+working, not a sizing failure. The number above is the corrected one.
+
 ## 2026-09-12 — the review clock was counting a session that was not the trial
 
 Decision 7 is the mechanism that decides whether the 3% trial is kept or
