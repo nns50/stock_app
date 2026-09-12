@@ -9,6 +9,8 @@ import type {
   EntryStrategyConfig,
   ExcursionReport,
   RegimeTightenLedger,
+  DailyResult,
+  DailyResultsReport,
   ExitCheckRow,
   ExitRulesConfig,
   Exposure,
@@ -367,6 +369,20 @@ export const client = {
   journalSlippage: () => api<SlippageReport>('/journal/slippage'),
   journalStopOverrun: () => api<StopOverrunReport>('/journal/stop-overrun'),
   journalRegimeTighten: () => api<RegimeTightenLedger>('/journal/regime-tighten'),
+  journalDailyResults: (from?: string, to?: string) => {
+    const qs = new URLSearchParams();
+    if (from) qs.set('from', from);
+    if (to) qs.set('to', to);
+    const q = qs.toString();
+    return api<DailyResultsReport>(`/journal/daily-results${q ? `?${q}` : ''}`);
+  },
+  journalRecordDailyResult: (date: string) =>
+    api<DailyResult>(`/journal/daily-results/record?date=${encodeURIComponent(date)}`, post({})),
+  journalBackfillDailyResults: (from: string) =>
+    api<{ written: number; dates: string[] }>(
+      `/journal/daily-results/backfill?from=${encodeURIComponent(from)}`,
+      post({}),
+    ),
 
   // --- data export / restore ---
   importPositions: (positions: unknown[], mode: 'merge' | 'replace') =>

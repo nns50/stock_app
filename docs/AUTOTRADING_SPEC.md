@@ -8187,3 +8187,63 @@ the goal and still close below it; `dayR >= levelR` would have quietly undercoun
 scan (one row, `edge_leak_scans`) rather than running one per poll — a per-bucket
 bootstrap over both books is real CPU and the dashboard is polled. The Auto page's line
 is silent on a clean scan: "0 leaks" every day trains the eye to skip it.
+
+## 2026-09-12 — the day's result is kept
+
+The day's percentage lived in exactly two places, and neither one remembered it: the
+singleton `autotrade_daily_baseline` row, overwritten at the next morning's first tick,
+and the dashboard's live `dailyTarget.gainPct`, recomputed per poll. "How did last
+Tuesday go" had no answer anywhere in the app.
+
+`autotrade_daily_results` is one row per trading session, written by the loop on every
+tick after the session close (reusing `isAfterSessionClose` from PR A) and surfaced as a
+month calendar at `/results`, with a six-week strip under the Auto page's goal card.
+
+**Two percentages, never one.** The **account** figure — close equity over opening
+equity — is what the operator feels, and it carries deposits, withdrawals and anything
+traded by hand. The **strategy** figure is the realized P&L of positions the loop itself
+opened and closed that day, over the same opening equity. Reporting only one of them
+would be wrong in one direction or the other on every day they diverge, so the row keeps
+both and FLAGS the days they disagree by more than `MANUAL_TRADING_DIVERGENCE_PCT`
+(0.5% of equity). 2026-09-11 is the canonical case: the account fell ~31% across an
+afternoon of hand trading while the strategy's own book had not lost a cent — and the
+same reading re-anchored every dollar cap, which is the other half of today's work.
+
+Both percentages are over the SAME baseline, so their difference is itself a percentage
+of equity and compares against the threshold directly. Two quantities in one comparison,
+and they are in the same unit by construction rather than by luck (CLAUDE.md).
+
+**What is never invented.** A session that predates the baseline row has no opening
+equity recorded anywhere. The backfill fills the strategy columns — exact, because the
+positions ledger goes back further — and leaves the account columns NULL, and the
+calendar says so on those cells rather than showing a number derived from a guess.
+`manualTrading` is false, not true, for such a day: with nothing to compare, a flag
+would be a claim.
+
+**It re-records rather than writing once.** An exit can still reconcile after the close
+and the equity sync keeps running, so a row frozen at the first post-close tick would
+miss both. The upsert REPLACES, which is also what makes `POST
+/api/journal/daily-results/record?date=` a usable correction. A recording for a PAST
+date takes its account columns from the row already stored rather than from the baseline
+singleton, which by then belongs to a different day.
+
+**Aggregates sum dollars and average percentages.** A sum of daily percentages is wrong
+twice over — it is not how compounding works, and it counts deposits — so the weekly and
+monthly rows sum `strategy_pnl_usd` and take the MEAN of the percentages, over the days
+that have one.
+
+**The calendar's design** (dataviz): a diverging scale, two hues either side of a neutral
+midpoint, equal steps per arm. The hues are the app's own `bull`/`bear` rather than the
+generic blue↔red, because in this domain green and red already mean gain and loss on
+every other surface. Three steps per arm as alpha over the card surface, so one set of
+steps works in both themes. The fills sit in the recessive band on purpose — the relief
+rule allows that exactly when the value is readable another way, and every tile carries
+its number in a text token (the strongest fill still clears 5:1 against the label in
+dark, 8:1 in light). **The sign is never carried by color alone**: every tile prints an
+explicit `+`/`−`, badges are letters (G/B/H/M) rather than colored dots, and the table
+below the calendar is the accessible twin of the heatmap.
+
+**The scale is dynamic**, which is Decision 10 applied to the UI: magnitude is measured
+against the stored daily GOAL, not a hardcoded percentage, so the calendar re-scales
+itself the moment the goal or the risk % changes. A day that reaches the goal is always a
+full-strength tile, whatever the goal happens to be.

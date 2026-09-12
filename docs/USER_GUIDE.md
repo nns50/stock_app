@@ -27,9 +27,10 @@ places trades.
 9. [Journal & analytics](#journal--analytics)
 10. [Alerts](#alerts)
 11. [Auto-Trade](#auto-trade)
-12. [Settings](#settings)
-13. [A recommended daily workflow](#a-recommended-daily-workflow)
-14. [Data, privacy & providers](#data-privacy--providers)
+12. [Results (the daily calendar)](#results-the-daily-calendar)
+13. [Settings](#settings)
+14. [A recommended daily workflow](#a-recommended-daily-workflow)
+15. [Data, privacy & providers](#data-privacy--providers)
 
 ---
 
@@ -59,7 +60,7 @@ Everything lives under one top bar:
 
 | Element | What it does |
 |---|---|
-| **Nav tabs** | Icon + label for each section: Today · Screener · Watch · Options · Positions · Journal · Alerts. The active tab is highlighted; on narrow screens the labels collapse to icons. |
+| **Nav tabs** | Icon + label for each section: Today · Screener · Watch · Options · Trade · Positions · Journal · Alerts · Auto · Results. The active tab is highlighted; on narrow screens the labels collapse to icons. |
 | **Jump to / ⌘K** | Command palette — fuzzy-jump to any page or symbol. Press `⌘K` (mac) / `Ctrl-K`. |
 | **☀/🌙 Theme** | Toggle between dark (default) and light. Your choice is remembered per browser. |
 | **🔔 Alerts bell** | Triggered-alert count; quick toggle for background auto-checking. |
@@ -2553,6 +2554,57 @@ full design, current status, and the roadmap for the options-trading addition st
 come.
 
 ---
+
+## Results (the daily calendar)
+
+**What it is** (2026-09-12): one tile per trading session, laid out as a month calendar,
+so a month of days is legible at a glance. Weekdays only — a weekend is not a session and
+a grid that reserves two empty columns for it spends a quarter of its width saying
+nothing. Previous/next month navigation, a month summary above the grid, a weekly total
+column on the right, a CSV export of the visible month, and a table of every recorded
+session below it. The last six weeks also appear as a compact strip under the goal card
+on **Auto-Trade**, with a link through to the full calendar.
+
+**Two percentages, and the difference matters.** Every day carries both:
+
+- the **account** figure — `(close equity − opening equity) / opening equity`. This is
+  what you feel, and it carries **deposits, withdrawals and anything you trade by hand**.
+- the **strategy** figure — the realized P&L of positions the loop itself opened and
+  closed that day, over the same opening equity. This is what the loop did, and it is the
+  number a strategy decision should be made on (the same data-quality rule the options
+  tuning plan uses: a position-derived series carries no flows).
+
+The toggle switches which one the tiles show; the tooltip always names both. A day where
+they disagree by more than **0.5% of equity** is marked **M** — 2026-09-11 is the
+canonical example: the account read −31% across the afternoon while the loop's own book
+had not lost a cent, because the account was being traded by hand.
+
+**Reading a tile.** The big number is the chosen percentage with an explicit `+`/`−`
+(the sign never depends on color alone); the small number under it is the strategy's
+realized **dollars**. The tile's tint and border carry magnitude against the **stored
+daily goal** — a day that reaches the goal is full strength, half the goal is the middle
+step — so the whole calendar re-scales itself when the goal or the risk % changes. Badges
+are letters, not colored dots: **G** goal reached, **B** the give-back guard halted the
+day, **H** the drawdown halt tripped, **M** account and strategy disagree.
+
+**A dash is not a zero.** Sessions before the daily-baseline record existed have no
+opening equity anywhere, so no account figure exists for them and the cell says so. The
+strategy dollars are still exact for those days — the positions ledger goes back further
+than the baseline does.
+
+**Weekly and monthly totals sum DOLLARS, and average percentages.** A sum of daily
+percentages is wrong twice over: it is not how compounding works, and it counts deposits.
+The month summary reports sessions, the mean day, the strategy P&L, positive days, goal
+days, and the best and worst day.
+
+**Where the rows come from.** The loop writes today's row on every tick after the close
+and rewrites it as late exits reconcile, so the row is current rather than frozen at
+16:01. `POST /api/journal/daily-results/record?date=` re-records one day by hand after a
+correction, and `POST /api/journal/daily-results/backfill?from=` fills the strategy
+columns for every past session (leaving the account columns null, as above).
+
+---
+
 
 ## Settings
 

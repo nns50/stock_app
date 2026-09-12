@@ -678,6 +678,54 @@ describe('positions + journal routes (integration)', () => {
 // network call — sufficient to prove the route reaches closeLivePosition
 // without crashing.
 // ---------------------------------------------------------------------------
+// The daily results calendar through the real routes (2026-09-12).
+// ---------------------------------------------------------------------------
+describe('GET/POST /journal/daily-results (integration)', () => {
+  beforeEach(() => {
+    db.exec('DELETE FROM autotrade_daily_results; DELETE FROM autotrade_daily_baseline;');
+  });
+
+  it('backfills the strategy columns for past sessions and serves them with aggregates', async () => {
+    seedClosedAutotradeSessions({
+      sessions: {
+        '2026-09-08': [{ entryTime: '09:35', exitTime: '10:00', r: 1 }],
+        '2026-09-09': [{ entryTime: '09:35', exitTime: '10:00', r: -0.5 }],
+      },
+    });
+    const filled = (await post('/api/journal/daily-results/backfill?from=2026-09-01', {})).json() as Promise<{
+      written: number;
+    }>;
+    expect((await filled).written).toBe(2);
+
+    const report = (await getJson('/api/journal/daily-results?from=2026-09-01&to=2026-09-30')) as {
+      rows: { etDate: string; strategyPnlUsd: number; accountGainPct: number | null }[];
+      monthly: { key: string; strategyPnlUsd: number }[];
+      currentStreak: number;
+    };
+    expect(report.rows.map((r) => r.etDate)).toEqual(['2026-09-08', '2026-09-09']);
+    expect(report.rows.map((r) => r.strategyPnlUsd)).toEqual([50, -25]);
+    // No opening equity was ever recorded for those days, and none is invented.
+    expect(report.rows.every((r) => r.accountGainPct === null)).toBe(true);
+    expect(report.monthly[0]).toMatchObject({ key: '2026-09', strategyPnlUsd: 25 });
+  });
+
+  it('records one day on demand — the correction path after a bad equity reading', async () => {
+    saveDailyBaseline('2026-09-10', 10_000);
+    setAutotradeConfig({ accountEquityUsd: 10_250 });
+    const row = (await (await post('/api/journal/daily-results/record?date=2026-09-10', {})).json()) as {
+      accountGainPct: number;
+    };
+    expect(row.accountGainPct).toBe(2.5);
+  });
+
+  it('refuses a date that is not a date rather than scanning the world', async () => {
+    expect((await fetch(`${base}/api/journal/daily-results?from=last-tuesday`)).status).toBe(400);
+    expect((await post('/api/journal/daily-results/record?date=nope', {})).status).toBe(400);
+    expect((await post('/api/journal/daily-results/backfill', {})).status).toBe(400);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // The edge-leak scan through the real route (2026-09-12). The scan's own suite
 // covers the bar and the catalog; what matters here is that the route answers,
 // that `book` narrows what it reads, and that it PERSISTS by default — the

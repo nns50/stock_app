@@ -6,6 +6,7 @@ import {
   BookOpen,
   Bot,
   Briefcase,
+  CalendarDays,
   CandlestickChart,
   Command,
   Layers,
@@ -47,6 +48,7 @@ const TABS = [
   { to: '/journal', label: 'Journal', Icon: BookOpen },
   { to: '/alerts', label: 'Alerts', Icon: BellRing },
   { to: '/auto-trade', label: 'Auto', Icon: Bot },
+  { to: '/results', label: 'Results', Icon: CalendarDays },
 ];
 
 function ProviderChip({ onClick }: { onClick: () => void }) {

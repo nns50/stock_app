@@ -425,6 +425,7 @@ beforeEach(() => {
   vi.spyOn(client, 'autotradeLiveOptionsPositions').mockResolvedValue({ positions: [] });
   vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(dashboardFixture());
   vi.spyOn(client, 'autotradePortfolioGreeks').mockResolvedValue({ netDelta: 0, netTheta: 0, netVega: 0 });
+  vi.spyOn(client, 'journalDailyResults').mockResolvedValue({ rows: [], weekly: [], monthly: [], currentStreak: 0 });
 });
 
 describe('AutoTradePage — all settings (read-only)', () => {

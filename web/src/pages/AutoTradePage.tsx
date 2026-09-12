@@ -7,6 +7,8 @@ import { RefreshBar } from '../components/RefreshBar';
 import { CloseModal } from '../components/PositionForms';
 import { AssignmentRiskBadge } from '../components/AssignmentRiskBadge';
 import { DailyGoalSection } from './DailyGoalSection';
+import { DailyResultsCalendar } from '../components/DailyResultsCalendar';
+import { Link } from 'react-router-dom';
 import { ago, cx, fmtDate, fmtNum, fmtPct, fmtSignedUsd, fmtUsd } from '../lib/format';
 import {
   Badge,
@@ -1189,6 +1191,48 @@ const CAP_COHERENCE_LABELS: Record<AutotradeCapCoherence['key'], string> = {
  * derived value hands it back to the re-anchor.
  */
 /**
+ * The last six weeks of daily results, under the goal card (2026-09-12).
+ *
+ * The same calendar the Results page renders, in its compact form: the goal
+ * card says what today is doing, and this says what the last six weeks did —
+ * which is the context that makes today legible. It shows the ACCOUNT
+ * percentage, the figure the operator actually feels; the full page has the
+ * toggle and the table.
+ */
+function DailyResultsStrip({ goalPct }: { goalPct: number | null }) {
+  const report = useAsync(() => client.journalDailyResults(), []);
+  const rows = report.data?.rows ?? [];
+  if (rows.length === 0) return null;
+  // Six weeks back from the newest recorded session, by month — the calendar
+  // component renders one month at a time, and two months is what six weeks
+  // spans at worst.
+  const months = [...new Set(rows.map((r) => r.etDate.slice(0, 7)))].slice(-2);
+  return (
+    <div data-testid="daily-results-strip">
+      <div className="flex items-baseline justify-between mb-1">
+        <h4 className="text-xs uppercase tracking-wide text-slate-400">Daily results</h4>
+        <Link to="/results" className="text-[11px] text-accent hover:underline">
+          Full calendar →
+        </Link>
+      </div>
+      <div className={cx('grid gap-3', months.length > 1 && 'sm:grid-cols-2')}>
+        {months.map((m) => (
+          <div key={m}>
+            <div className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">{m}</div>
+            <DailyResultsCalendar
+              month={m}
+              rows={rows.filter((r) => r.etDate.startsWith(m))}
+              metric="account"
+              goalPct={goalPct}
+            />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
  * What the last edge-leak scan found (2026-09-12).
  *
  * The point of the scan is that leaks in this book have only ever been found
@@ -1986,6 +2030,7 @@ function MonitoringDashboard({
           Journal › Analytics › Regime tighten — the pre-committed reading needs {rt.minForReading}.
         </p>
       )}
+      <DailyResultsStrip goalPct={dash.dailyTarget.configuredTargetPct ?? null} />
       <EdgeLeakLine s={dash.edgeLeakSummary} />
       <RegimeReadinessLine r={dash.mlRegimeReadiness} />
       {dash.symbolCooldowns.length > 0 && (

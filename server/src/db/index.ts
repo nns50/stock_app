@@ -469,6 +469,44 @@ CREATE TABLE IF NOT EXISTS ml_regime_readings (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
+-- One row per trading session: what the day actually did (2026-09-12).
+--
+-- Until now the day's percentage lived in exactly two places, and neither kept
+-- it: the singleton autotrade_daily_baseline row (overwritten every morning)
+-- and the dashboard's live dailyTarget.gainPct (recomputed per poll). Yesterday
+-- was simply gone. This is the history, written once per ET date on the first
+-- loop tick after the session close.
+--
+-- TWO percentages on purpose, and they answer different questions:
+--   account_gain_pct  — what the operator feels. Carries deposits, withdrawals
+--                       and any manual trading, because it is the account.
+--   strategy_gain_pct — what the LOOP did: realized P&L of positions the
+--                       autotrade loop opened and closed, over the same
+--                       baseline. This is the number a strategy decision is
+--                       made on (docs/OPTIONS_TUNING_PLAN.md's data-quality
+--                       rule: a position-derived series carries no flows).
+-- manual_trading flags the days they disagree by more than 0.5% of equity, so
+-- a reader is never left comparing two numbers without being told they differ.
+--
+-- Columns are nullable where the record genuinely cannot answer: the account
+-- figures are NULL for every session before the baseline row existed, and the
+-- backfill leaves them that way rather than inventing an opening equity.
+CREATE TABLE IF NOT EXISTS autotrade_daily_results (
+  et_date             TEXT PRIMARY KEY,     -- YYYY-MM-DD in America/New_York
+  baseline_equity_usd REAL,                 -- the day's first-tick equity; NULL before go-live
+  close_equity_usd    REAL,                 -- synced equity at the close; NULL before go-live
+  account_gain_pct    REAL,
+  strategy_pnl_usd    REAL NOT NULL,
+  strategy_gain_pct   REAL,                 -- NULL when there is no baseline to divide by
+  live_trades         INTEGER NOT NULL,
+  paper_pnl_usd       REAL NOT NULL,
+  goal_reached        INTEGER NOT NULL,
+  give_back_halted    INTEGER NOT NULL,
+  drawdown_halted     INTEGER NOT NULL,
+  manual_trading      INTEGER NOT NULL,
+  recorded_at         INTEGER NOT NULL
+);
+
 -- The last edge-leak scan (services/autotrading/edgeLeakScan.ts, 2026-09-12).
 -- Singleton: the dashboard wants "what did the most recent scan find", and the
 -- scan itself is on-demand (a route, and the daily routine) because the

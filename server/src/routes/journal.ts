@@ -44,6 +44,11 @@ import { getAutotradeConfig } from '../db/autotradeConfig';
 import { runEdgeLeakScanFromDb } from '../services/autotrading/edgeLeakScanData';
 import type { LeakBook } from '../services/autotrading/edgeLeakScan';
 import { saveEdgeLeakScan } from '../db/edgeLeakScans';
+import { listDailyResults } from '../db/dailyResults';
+import { backfillDailyResults, buildDailyResultsReport, recordDailyResult } from '../services/autotrading/dailyResults';
+
+/** YYYY-MM-DD. A date query that is not one should 400, not scan the world. */
+const ET_DATE = /^\d{4}-\d{2}-\d{2}$/;
 import { etDateTimeToMs, etTimeOfDay, etToday } from '../util/marketDate';
 import { mapPool } from '../util/async';
 import { computeAutoTuneRiskEfficacy } from '../services/autotrading/autoTuneEfficacy';
@@ -803,6 +808,48 @@ journalRouter.get(
       }
     }
     res.json(aggregateStopOverruns(rows));
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// THE DAILY RESULTS CALENDAR (2026-09-12, operator's ask).
+//
+// One row per trading session, with TWO percentages: the account figure (what
+// the operator feels — it carries deposits, withdrawals and hand trading) and
+// the strategy figure (what the loop did — realized P&L on its own positions
+// over the same baseline). Days where they disagree by more than 0.5% of equity
+// are flagged rather than quietly averaged.
+// ---------------------------------------------------------------------------
+journalRouter.get(
+  '/daily-results',
+  asyncHandler(async (req, res) => {
+    const { from, to } = parseQuery(
+      z.object({ from: z.string().regex(ET_DATE).optional(), to: z.string().regex(ET_DATE).optional() }),
+      req,
+    );
+    res.json(buildDailyResultsReport(listDailyResults(from, to)));
+  }),
+);
+
+/** Re-record one day from what the database knows now — the correction path
+ *  after a bad equity reading, and the way a day is written at all outside a
+ *  post-close loop tick. */
+journalRouter.post(
+  '/daily-results/record',
+  asyncHandler(async (req, res) => {
+    const { date } = parseQuery(z.object({ date: z.string().regex(ET_DATE) }), req);
+    res.json(recordDailyResult(date));
+  }),
+);
+
+/** Fill the STRATEGY columns for past sessions. The account columns stay null:
+ *  before the baseline row existed nothing recorded what equity opened at, and
+ *  a cell that says "no account figure" beats one showing a guess. */
+journalRouter.post(
+  '/daily-results/backfill',
+  asyncHandler(async (req, res) => {
+    const { from } = parseQuery(z.object({ from: z.string().regex(ET_DATE) }), req);
+    res.json(backfillDailyResults(from));
   }),
 );
 

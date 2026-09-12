@@ -2879,6 +2879,51 @@ export interface AutotradeDashboard {
   edgeLeakSummary: AutotradeEdgeLeakSummary | null;
 }
 
+/** One trading session's result — mirrors the server's DailyResult. TWO
+ *  percentages on purpose: the ACCOUNT figure is what you feel (it carries
+ *  deposits, withdrawals and hand trading) and the STRATEGY figure is what the
+ *  loop did. Nulls are real: a session before the daily baseline row existed
+ *  has no opening equity anywhere, and the calendar says so rather than
+ *  showing a number derived from a guess. */
+export interface DailyResult {
+  etDate: string;
+  baselineEquityUsd: number | null;
+  closeEquityUsd: number | null;
+  accountGainPct: number | null;
+  strategyPnlUsd: number;
+  strategyGainPct: number | null;
+  liveTrades: number;
+  paperPnlUsd: number;
+  goalReached: boolean;
+  giveBackHalted: boolean;
+  drawdownHalted: boolean;
+  /** The two percentages disagree by more than 0.5% of equity. */
+  manualTrading: boolean;
+  recordedAt: number;
+}
+
+export interface DailyResultsAggregate {
+  /** An ISO week (`2026-W37`) or a month (`2026-09`). */
+  key: string;
+  sessions: number;
+  strategyPnlUsd: number;
+  meanAccountGainPct: number | null;
+  meanStrategyGainPct: number | null;
+  positiveDays: number;
+  goalDays: number;
+  haltDays: number;
+  bestDayPct: number | null;
+  worstDayPct: number | null;
+}
+
+export interface DailyResultsReport {
+  rows: DailyResult[];
+  weekly: DailyResultsAggregate[];
+  monthly: DailyResultsAggregate[];
+  /** Signed run of same-sign sessions ending at the latest one. */
+  currentStreak: number;
+}
+
 export interface AutotradeEdgeLeakSummary {
   leaks: number;
   watches: number;
