@@ -16,6 +16,7 @@ import { maxAffordablePremiumPerShare, riskPctUpperBound } from './optionsAfford
 import { getOptionsProbationStatus } from './liveOptionsExecute';
 import { buildLiveSlippageRows } from './autoTune';
 import {
+  BatchRefusal,
   CollectedLeakBook,
   EdgeLeakScanResult,
   ExecutionOccurrence,
@@ -153,6 +154,14 @@ const SKIP_ACTIONS = [
 // none, which is why `journalActionsReachability.test.ts` exists; it could not
 // see this one until its own two blind spots were fixed on 2026-09-12. When
 // the cutoff ships, its PR adds the action to both sides at once.
+//
+// NOT here either, but for the OPPOSITE reason: the two BATCH refusals below.
+// They are emitted constantly, and they refuse the whole tick before any
+// candidate is looked at, so their rows carry a count and NO SYMBOL. This
+// collector drops symbol-less rows two lines below and the classifier matches
+// on symbol, so putting them in this list would change nothing. They are read
+// on their own, by time, in collectBatchRefusals.
+const BATCH_REFUSAL_ACTIONS = ['entry_window_closed', 'live_entries_halted'];
 
 const isAutotradePosition = (p: Position): boolean => p.tags.includes('autotrade');
 
@@ -512,6 +521,21 @@ export function collectConfigurationFindings(cfg: AutotradeConfig, now: number):
   return out;
 }
 
+/**
+ * The batch-level live refusals within the window — the two that name no
+ * symbol, so the only ones the attribution can match by time alone.
+ *
+ * Without these, every paper entry the live book declined because the flatten
+ * was about to swallow it, or because the live book had stood down for the day,
+ * was reported as `no_live_row`: the bucket that means "nothing the journal
+ * explains", the largest one on the book, and the one the evening routine
+ * watches. Gates doing exactly their job were reading as holes in the record.
+ */
+function collectBatchRefusals(since: number): BatchRefusal[] {
+  const { events } = listAutotradeEventsInWindow({ actions: BATCH_REFUSAL_ACTIONS, since });
+  return events.map((e) => ({ at: e.createdAt, action: e.action }));
+}
+
 /** Live-book skips within the window, for the attribution's untaken classes. */
 function collectJournalSkips(since: number): { skips: JournalSkip[]; truncated: boolean } {
   // WINDOWED, not capped. `listAutotradeEvents` clamps to ROW_CAP silently,
@@ -696,6 +720,7 @@ export function runEdgeLeakScanFromDb(opts: EdgeLeakScanOptions = {}): EdgeLeakS
     entrySlippagePct,
     journalSkips: skipRead.skips,
     journalSkipsTruncated: skipRead.truncated,
+    batchRefusals: collectBatchRefusals(windowStart),
     asOf: now,
   });
 }

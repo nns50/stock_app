@@ -476,6 +476,23 @@ describe('recommendations that are code, not settings', () => {
     expect(rec.title).toMatch(/nothing the journal explains/);
   });
 
+  it('never recommends loosening the live book’s own stand-down', () => {
+    // live_entries_halted is the day BANKED at +3%, the give-back guard
+    // protecting a fading green day, or the kill switch. Every one of those is
+    // the plan working. Left in the ranking it would get louder exactly as the
+    // book got better at reaching the target, and its only honest lever would
+    // be "stop banking the day" — which Decision 2 settled.
+    const a = advise({
+      scan: scan({
+        attribution: {
+          ...scan().attribution,
+          untaken: [{ reason: 'live_entries_halted', n: 14, paperMeanR: 0.5, paperTotalR: 7 }],
+        },
+      }),
+    });
+    expect(a.recommendations.filter((r) => r.factor === 'flow')).toEqual([]);
+  });
+
   it('maps the refusal classes that DO have a field', () => {
     expect(fieldForUntakenReason('live_risk_blocked:max_concurrent_positions')).toEqual({
       field: 'maxConcurrentPositions',
@@ -485,6 +502,20 @@ describe('recommendations that are code, not settings', () => {
     // An unmapped rule returns null rather than guessing at a field name.
     expect(fieldForUntakenReason('live_risk_blocked:something_new')).toBeNull();
     expect(fieldForUntakenReason('no_live_row')).toBeNull();
+    // The END-OF-DAY cutoff. It became a reachable class on 2026-09-12 (the
+    // batch row carries no symbol, so it used to land in no_live_row). It has a
+    // field, and the detail has to say the cutoff is DERIVED — there is no
+    // cutoff setting to turn, and the flatten window it comes from also decides
+    // when open positions get closed.
+    const cutoff = fieldForUntakenReason('entry_window_closed');
+    expect(cutoff?.field).toBe('endOfDayFlattenMinutes');
+    expect(cutoff?.direction).toBe('exposure');
+    expect(cutoff?.detail).toMatch(/DERIVED/);
+    expect(cutoff?.detail).toMatch(/stagnationExitMinutes/);
+    // Paper is the control for this gate by design, so the bucket is a
+    // measurement rather than a recording gap — the advice must not read like
+    // no_live_row's "unexplained".
+    expect(cutoff?.detail).toMatch(/control/);
   });
 
   it('recommends RESEARCH before changing the exit that dominates red days', () => {

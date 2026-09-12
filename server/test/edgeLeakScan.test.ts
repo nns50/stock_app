@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  BatchRefusal,
   buildAttribution,
   buildDayLevel,
   CONTROL_MIN_TRADES,
@@ -277,11 +278,14 @@ describe('the day level — the goal rate and what the red days were made of', (
 describe('attribution — where the live book loses the paper book’s edge', () => {
   const date = '2026-09-08';
   const at = (time: string): number => etDateTimeToMs(date, time) as number;
+  /** A batch-level refusal row — the kind that names no symbol. */
+  const ewc = (ms: number): BatchRefusal => ({ at: ms, action: 'entry_window_closed' });
+  const halted = (ms: number): BatchRefusal => ({ at: ms, action: 'live_entries_halted' });
 
   it('pairs the same decision in both books and reports the difference', () => {
     const live = [trade({ symbol: 'NVDA', entryAt: at('09:35'), r: 0.1 })];
     const paper = [trade({ symbol: 'NVDA', book: 'paper', entryAt: at('09:35') + 20_000, r: 0.4 })];
-    const a = buildAttribution(live, paper, [], [0.3, 0.5], RNG());
+    const a = buildAttribution(live, paper, [], [], [0.3, 0.5], RNG());
     expect(a.pairedTrades).toBe(1);
     expect(a.meanDiffR).toBeCloseTo(-0.3, 4);
     expect(a.meanEntrySlippagePct).toBeCloseTo(0.4, 2);
@@ -291,7 +295,7 @@ describe('attribution — where the live book loses the paper book’s edge', ()
   it('does NOT pair two entries 61 seconds apart — that is a different decision', () => {
     const live = [trade({ symbol: 'NVDA', entryAt: at('09:35'), r: 0.1 })];
     const paper = [trade({ symbol: 'NVDA', book: 'paper', entryAt: at('09:35') + 61_000, r: 0.4 })];
-    const a = buildAttribution(live, paper, [], [], RNG());
+    const a = buildAttribution(live, paper, [], [], [], RNG());
     expect(a.pairedTrades).toBe(0);
     expect(a.untaken).toHaveLength(1);
   });
@@ -310,6 +314,7 @@ describe('attribution — where the live book loses the paper book’s edge', ()
         { symbol: 'SMCI', at: at('10:35'), action: 'live_risk_blocked', failedRule: 'max_concurrent_positions' },
       ],
       [],
+      [],
       RNG(),
     );
     const byReason = new Map(a.untaken.map((u) => [u.reason, u]));
@@ -319,13 +324,70 @@ describe('attribution — where the live book loses the paper book’s edge', ()
     expect(byReason.get('no_live_row')?.n).toBe(1);
   });
 
+  it('attributes a batch entry_window_closed refusal BY TIME, not by symbol', () => {
+    // The end-of-day cutoff refuses the whole batch before the per-candidate
+    // loop, so its journal row carries a count and NO symbol — the one live
+    // refusal nothing else here can see. Before this, every paper entry it
+    // declined was reported as `no_live_row`: the largest untaken bucket, the
+    // one the evening routine watches, and the bucket whose whole meaning is
+    // "nothing the journal explains". A gate doing exactly its job was reading
+    // as a hole in the record.
+    const paper = [
+      trade({ symbol: 'GAP', book: 'paper', entryAt: at('15:56'), r: -0.2 }),
+      trade({ symbol: 'ESTC', book: 'paper', entryAt: at('15:56') + 30_000, r: 0.1 }),
+    ];
+    const a = buildAttribution([], paper, [], [ewc(at('15:56') + 2_000)], [], RNG());
+    const byReason = new Map(a.untaken.map((u) => [u.reason, u]));
+    expect(byReason.get('entry_window_closed')?.n).toBe(2);
+    expect(byReason.get('no_live_row')).toBeUndefined();
+  });
+
+  it('attributes the live book standing down on a BANKED day', () => {
+    // The other batch refusal, and the one that matters more as the book gets
+    // better: when the day has banked at +3% the live path journals nothing
+    // per symbol while paper keeps trading, so every paper entry after the
+    // reach read as `no_live_row`. Fourteen of the ninety-seven unexplained
+    // entries on the book were exactly this, all on the three days the target
+    // was reached. Banking the day is the plan's GOAL — it must not accumulate
+    // evidence that the strategy is leaking.
+    const paper = [trade({ symbol: 'NVDA', book: 'paper', entryAt: at('14:10'), r: 0.6 })];
+    const a = buildAttribution([], paper, [], [halted(at('14:10') + 3_000)], [], RNG());
+    expect(a.untaken[0].reason).toBe('live_entries_halted');
+  });
+
+  it('leaves a paper entry OUTSIDE any batch refusal as no_live_row', () => {
+    // The honest half. A tick where the live book had no candidates journals
+    // nothing, and nothing refused that name — so the gap stays a gap rather
+    // than borrowing the nearest batch row for a cause.
+    const paper = [trade({ symbol: 'NVDA', book: 'paper', entryAt: at('09:35'), r: 0.4 })];
+    const a = buildAttribution([], paper, [], [ewc(at('15:56'))], [], RNG());
+    expect(a.untaken).toHaveLength(1);
+    expect(a.untaken[0].reason).toBe('no_live_row');
+  });
+
+  it('prefers the symbol-named refusal over the batch one when both cover the tick', () => {
+    // A named reason is strictly more informative than "the window was shut",
+    // and the two can overlap: the batch row is written once per tick while a
+    // per-symbol skip names this candidate.
+    const paper = [trade({ symbol: 'HOOD', book: 'paper', entryAt: at('15:56'), r: 0.3 })];
+    const a = buildAttribution(
+      [],
+      paper,
+      [{ symbol: 'HOOD', at: at('15:56'), action: 'live_score_floor_skipped', failedRule: null }],
+      [ewc(at('15:56'))],
+      [],
+      RNG(),
+    );
+    expect(a.untaken[0].reason).toBe('live_score_floor_skipped');
+  });
+
   it('never pairs one live trade with two paper trades', () => {
     const live = [trade({ symbol: 'NVDA', entryAt: at('09:35'), r: 0.1 })];
     const paper = [
       trade({ symbol: 'NVDA', book: 'paper', entryAt: at('09:35') + 5_000, r: 0.4 }),
       trade({ symbol: 'NVDA', book: 'paper', entryAt: at('09:35') + 10_000, r: 0.6 }),
     ];
-    const a = buildAttribution(live, paper, [], [], RNG());
+    const a = buildAttribution(live, paper, [], [], [], RNG());
     expect(a.pairedTrades).toBe(1);
     expect(a.untaken.reduce((s, u) => s + u.n, 0)).toBe(1);
   });

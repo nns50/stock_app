@@ -1790,6 +1790,22 @@ If it does not, the scan is wrong, not the record.
   entries are classified by the live journal's own word for the skip. **The rule:** a
   skip class whose left-behind R exceeds 20 trades with a positive interval is the next
   gate to loosen; mean entry slippage above 0.5% is an execution finding.
+
+  Two classes are matched by **time rather than symbol** (2026-09-12), because they are
+  decided for the whole tick before any candidate is looked at and so carry a count and no
+  symbol: the end-of-day entry cutoff (`entry_window_closed`) and the live book standing
+  down while paper trades (`live_entries_halted` — the day banked, the give-back guard
+  fired, the kill switch). The second is a bucket and never a lever: banking the day is the
+  goal, so its only honest "fix" would be to stop doing it, and left in the ranking it
+  would get louder exactly as the book got better. Read it as the count of paper entries a
+  successful day declined. Until that was wired up, every entry it declined was reported as
+  `no_live_row` — "nothing the journal explains" — which reads as a hole in the record
+  rather than a gate working. Its lever is `endOfDayFlattenMinutes`, and the cutoff is
+  **derived** from it (`endOfDayFlattenMinutes + max(15, stagnationExitMinutes)`), so
+  there is no cutoff setting to turn and lowering the flatten window also holds open
+  positions closer to the bell. Read this bucket as a measurement: the paper book keeps
+  opening late entries on purpose, so it is the control for whether the cutoff is buying
+  anything or just closing the last of the session.
 - _The entry-hour record._ The `entryAfter13` dimension carries it. **The rule:** an
   equity no-entry cutoff (`liveNoEntryMinutesBeforeClose`, the twin of the options one)
   is BUILT only when the after-13:00 bucket reads ≥ 20 trades with its interval below

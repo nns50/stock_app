@@ -394,10 +394,14 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     // Does each bracketed live position still have a stop AT THE BROKER? The
     // bracket's exit legs are submitted with the entry and never verified, so
     // an entry Webull accepted while dropping its exits leaves a real position
-    // naked while every screen here shows it protected. Read-only, one
-    // open-orders pull, reports and never acts (see the function's own comment
-    // for why auto-re-arming would be worse than the gap). Caught so a broker
-    // hiccup here can't take down the rest of the tick.
+    // naked while every screen here shows it protected. It PLACES ORDERS as of
+    // 2026-09-12 — a position confirmed naked (shares held, no resting stop) has
+    // a protective bracket re-armed from the position row's own geometry, and
+    // only an unconfirmed or failed re-arm still pages a human. This comment
+    // said "read-only … reports and never acts" for a day after that shipped;
+    // it is load-bearing here because the call sits above the entry gates, so a
+    // reader deciding what may run before them needs to know it writes. Caught
+    // so a broker hiccup here can't take down the rest of the tick.
     try {
       await checkLiveBracketProtection();
     } catch (e) {
@@ -967,6 +971,52 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
         ? 'Kill switch engaged mid-cycle — entries aborted before execution'
         : 'Auto-trading was disabled mid-cycle — entries aborted before execution';
       return summary;
+    }
+
+    // THE LIVE BOOK STANDING DOWN WHILE PAPER TRADES, SAID OUT LOUD (2026-09-12).
+    //
+    // `skippedReason` above only fires when NEITHER book is active. When live
+    // alone stands down — the day banked, the give-back guard fired, the kill
+    // switch, live trading switched off — paper keeps trading and the live path
+    // journals NOTHING. The attribution then pairs each paper entry against the
+    // live book, finds no twin and no journal row, and files it under
+    // `no_live_row`: "nothing the journal explains".
+    //
+    // It is the same shape as `entry_window_closed` one level up — a batch-level
+    // live refusal with no symbol on it — and on the book today it is 14 of the
+    // 97 unexplained entries, all on the three days the target banked.
+    //
+    // It matters MORE as the book gets better. Banking the day is the plan's
+    // goal; the halt is the goal being met. So every extra +3% day adds paper
+    // entries that read as an unexplained hole in the live record, and the
+    // advisor ranks unexplained flow as something to go and loosen. A day the
+    // strategy SUCCEEDED must not accumulate evidence that it is leaking.
+    //
+    // Per tick and only when there were live signals to refuse, mirroring
+    // `entry_window_closed`'s `refused: candidates.length`: the attribution
+    // matches these by time, so a once-a-day row could not classify the tick a
+    // paper entry landed on, and a row on every empty tick would be noise.
+    if (!liveStillActive && paperStillActive && decision.signals.length > 0) {
+      logAutotradeEvent({
+        stage: 'execution',
+        action: 'live_entries_halted',
+        detail: {
+          refused: decision.signals.length,
+          reason: recheck.killSwitch
+            ? 'kill_switch'
+            : !recheck.liveTradingEnabled
+              ? 'live_trading_disabled'
+              : dailyTarget.reached
+                ? 'daily_target_reached'
+                : dailyTarget.giveBackHalted
+                  ? 'give_back_halted'
+                  : 'live_entries_inactive',
+          gainPct: dailyTarget.gainPct ?? null,
+          targetPct: dailyTarget.targetPct ?? null,
+          note: 'live entries stood down this tick while paper traded — these signals had no live twin by design',
+        },
+        riskProfile: recheck.riskProfile,
+      });
     }
 
     if (paperStillActive) {
