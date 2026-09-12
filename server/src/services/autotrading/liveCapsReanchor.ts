@@ -1,6 +1,9 @@
 import { AutotradeConfig, getAutotradeConfig, setAutotradeConfig } from '../../db/autotradeConfig';
-import { logAutotradeEvent } from '../../db/autotradeEvents';
+import { countAutotradeEventsByDay, logAutotradeEvent } from '../../db/autotradeEvents';
 import { DOLLAR_CAP_KEYS, deriveDollarCaps, sizerFloorUsd, DollarCapKey } from './targetTune';
+import { previousTradingSession } from '../trading/marketCalendar';
+import { etToday } from '../../util/marketDate';
+import { claimOncePerDay } from './oncePerDayEvents';
 
 // ---------------------------------------------------------------------------
 // Automatic re-anchoring of the equity-derived DOLLAR caps.
@@ -34,9 +37,62 @@ import { DOLLAR_CAP_KEYS, deriveDollarCaps, sizerFloorUsd, DollarCapKey } from '
 // ---------------------------------------------------------------------------
 
 /** Re-derive once equity has moved this far (either direction) from the
- *  anchor. 15% is far above mark-to-market noise between ticks, and small
- *  enough that the caps never drift meaningfully out of proportion. */
-export const REANCHOR_THRESHOLD_PCT = 15;
+ *  anchor.
+ *
+ *  5% since 2026-09-12, down from 15%. At 15% a stored dollar cap lagged real
+ *  equity by weeks: the account ran from $5.1k to $3.5k and back without a
+ *  single re-anchor, so every dollar cap described an account that no longer
+ *  existed while the plan it belonged to asked for everything to scale with the
+ *  account. 5% is still an order of magnitude above per-tick mark-to-market
+ *  noise on this book (the biggest honest intraday swing in the record is
+ *  ~3% of equity), and the anchor moves on each re-anchor, so this cannot
+ *  churn: the next one needs a fresh 5% move from the NEW equity.
+ *
+ *  The thing 5% would have made worse on its own — a bad broker reading now
+ *  re-anchors three times as easily — is why SUSPECT_DROP_PCT below exists. */
+export const REANCHOR_THRESHOLD_PCT = 5;
+
+/**
+ * How far BELOW the anchor an equity reading has to sit before it is treated
+ * as suspect rather than as news (2026-09-12).
+ *
+ * On 2026-09-11 the account was traded by hand. Equity read $5,129 in the
+ * morning and $3,523 in the afternoon, and the caps re-anchored ~30% down off
+ * the low reading — while the strategy's own book had not lost a cent. The
+ * equity sync guard could not help: it compares each reading to the PREVIOUS
+ * one, and a position closing by hand walks equity down in ordinary-sized
+ * steps that are individually in-band. This rule compares against the ANCHOR
+ * instead, which is the only baseline that notices a whole afternoon of drift.
+ *
+ * DOWNWARD ONLY. A reading far below the anchor re-writes every cap to a
+ * smaller account and is the case the record actually produced; an upward move
+ * re-anchors immediately as it always did (and an upward JUMP still has to
+ * survive the sync guard's three corroborating ticks before it is even
+ * written).
+ *
+ * It is a one-SESSION hold, not a veto: the same low reading on the next
+ * session re-anchors (see SuspectReadHistory). A real decline persists; one
+ * afternoon's hand trading does not. The cost of that one session is bounded —
+ * every %-of-equity rule (the drawdown halt, the aggregate risk cap, the
+ * per-trade risk) is applied to LIVE equity at decision time, so only the
+ * stored dollar backstops run a day stale.
+ *
+ * Its own constant rather than a re-use of `equitySyncMaxJumpPct`: that field
+ * governs a different comparison (this reading against the last one), and
+ * loosening it to accept a deposit must not silently loosen this. Numerically
+ * the same 25 today, deliberately.
+ */
+export const SUSPECT_DROP_PCT = 25;
+
+/** What the pure decision needs to know about earlier suspect readings.
+ *
+ *  `heldOnPreviousSession` is journal-derived (an `equity_read_suspect` row
+ *  dated on the previous trading session) rather than remembered in memory, so
+ *  a restart cannot turn a two-session decline back into a first sighting and
+ *  hold the caps forever. */
+export interface SuspectReadHistory {
+  heldOnPreviousSession: boolean;
+}
 
 // The cap list, their arithmetic, and the hand-edit test all live in
 // targetTune.ts now, beside the formulas that produce them — this file and the
@@ -48,6 +104,15 @@ export type { DollarCapKey, DollarCaps } from './targetTune';
 export type ReanchorDecision =
   | { action: 'skip'; reason: string }
   | {
+      /** The reading is too far below the anchor to be trusted for one more
+       *  session. Nothing is written; the caller journals it once per day. */
+      action: 'hold';
+      reason: string;
+      dropPct: number;
+      anchorEquityUsd: number;
+      readEquityUsd: number;
+    }
+  | {
       action: 'reanchor';
       patch: Partial<AutotradeConfig>;
       /** Caps rewritten, with the movement — for the journal event. */
@@ -58,8 +123,17 @@ export type ReanchorDecision =
       driftPct: number;
     };
 
-/** Pure decision — all I/O stays in reanchorLiveCapsIfDrifted. */
-export function decideLiveCapsReanchor(cfg: AutotradeConfig, equityUsd: number | null | undefined): ReanchorDecision {
+/** Pure decision — all I/O stays in reanchorLiveCapsIfDrifted.
+ *
+ *  `history` is REQUIRED, not an options bag with a default: the 2026-08-27
+ *  dead buying-power bound was a caller that simply left an optional argument
+ *  off, and a defaulted `{ heldOnPreviousSession: false }` here would hold the
+ *  caps forever for any caller that forgot it. */
+export function decideLiveCapsReanchor(
+  cfg: AutotradeConfig,
+  equityUsd: number | null | undefined,
+  history: SuspectReadHistory,
+): ReanchorDecision {
   const anchor = cfg.liveCapsAnchorEquityUsd;
   if (anchor === null || !(anchor > 0)) {
     return { action: 'skip', reason: 'not armed — no anchor equity recorded (apply a tune to arm)' };
@@ -75,6 +149,21 @@ export function decideLiveCapsReanchor(cfg: AutotradeConfig, equityUsd: number |
   // moved another 11%. That is a correctness failure, not a proportionality
   // one, and it gets its own trigger.
   const blocking = cfg.liveMaxOrderUsd < sizerFloorUsd(cfg, equityUsd);
+  // A reading far below the anchor is not news until it survives a session.
+  // `blocking` still wins: a per-order cap under the sizer's floor means the
+  // loop cannot place anything at all, and one session of that is worse than
+  // one session of caps sized to a pessimistic equity (which only ever makes
+  // them SMALLER — the safe direction).
+  const dropPct = ((anchor - equityUsd) / anchor) * 100;
+  if (dropPct > SUSPECT_DROP_PCT && !history.heldOnPreviousSession && !blocking) {
+    return {
+      action: 'hold',
+      reason: `reading ${dropPct.toFixed(1)}% below the anchor — held for this session (over ${SUSPECT_DROP_PCT}%); re-anchors if it persists into the next one`,
+      dropPct: Math.round(dropPct * 10) / 10,
+      anchorEquityUsd: anchor,
+      readEquityUsd: equityUsd,
+    };
+  }
   if (driftPct < REANCHOR_THRESHOLD_PCT && !blocking) {
     return {
       action: 'skip',
@@ -129,9 +218,29 @@ export function decideLiveCapsReanchor(cfg: AutotradeConfig, equityUsd: number |
  * per re-anchor (a rare, deliberate-feeling change worth a record — unlike
  * the per-tick equity sync, which is deliberately silent).
  */
-export function reanchorLiveCapsIfDrifted(): ReanchorDecision {
+export function reanchorLiveCapsIfDrifted(now: number = Date.now()): ReanchorDecision {
   const cfg = getAutotradeConfig();
-  const decision = decideLiveCapsReanchor(cfg, cfg.accountEquityUsd);
+  const decision = decideLiveCapsReanchor(cfg, cfg.accountEquityUsd, suspectReadHistory(now));
+  if (decision.action === 'hold') {
+    // One row a day, not one a tick: the condition is identical on every tick
+    // of the session it holds for. The claim is what makes the NEXT session's
+    // history read true, so the journal write and the rule are the same fact.
+    if (claimOncePerDay('equity_read_suspect', 'live_caps', now)) {
+      logAutotradeEvent({
+        stage: 'config',
+        action: 'equity_read_suspect',
+        detail: {
+          anchorEquityUsd: decision.anchorEquityUsd,
+          readEquityUsd: decision.readEquityUsd,
+          dropPct: decision.dropPct,
+          thresholdPct: SUSPECT_DROP_PCT,
+          reason: decision.reason,
+        },
+        riskProfile: cfg.riskProfile,
+      });
+    }
+    return decision;
+  }
   if (decision.action === 'reanchor') {
     setAutotradeConfig(decision.patch);
     logAutotradeEvent({
@@ -148,4 +257,16 @@ export function reanchorLiveCapsIfDrifted(): ReanchorDecision {
     });
   }
   return decision;
+}
+
+/** Was a suspect reading already held on the PREVIOUS trading session? One
+ *  `equity_read_suspect` row a day is journaled by the hold above, so the
+ *  presence of yesterday's row is exactly "this low reading has persisted". */
+export function suspectReadHistory(now: number = Date.now()): SuspectReadHistory {
+  const previous = previousTradingSession(etToday(now));
+  // A week of history is far more than the one day this asks about, and
+  // bounds the scan; countAutotradeEventsByDay reads action + created_at only.
+  const since = now - 7 * 24 * 60 * 60 * 1000;
+  const days = countAutotradeEventsByDay({ stage: 'config', actions: ['equity_read_suspect'], since });
+  return { heldOnPreviousSession: days.some((d) => d.date === previous && d.count > 0) };
 }

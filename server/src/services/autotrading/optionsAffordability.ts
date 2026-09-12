@@ -1,4 +1,4 @@
-import { ScreenCandidate } from './screen';
+import type { ScreenCandidate } from './screen';
 
 // ---------------------------------------------------------------------------
 // Which underlyings can this book actually AFFORD a short-dated contract on?

@@ -6,6 +6,7 @@ import { ToastProvider } from '../components/ToastContext';
 import { ConfirmProvider } from '../components/ConfirmContext';
 import { client } from '../api/client';
 import type {
+  AutotradeCapCoherence,
   AutotradeConfig,
   AutotradeDashboard,
   MlRegimeReadiness,
@@ -283,6 +284,19 @@ function readinessFixture(overrides: Partial<MlRegimeReadiness> = {}): MlRegimeR
   };
 }
 
+/** Every cap anchor-owned at a $10k anchor — the "nothing frozen" baseline a
+ *  test overrides one row of. Given every field: CLAUDE.md's rule that a
+ *  fixture which omits one drifts from the API shape unnoticed. */
+function capsCoherenceFixture(overrides: Partial<AutotradeCapCoherence>[] = []): AutotradeCapCoherence[] {
+  const base: AutotradeCapCoherence[] = [
+    { key: 'liveMaxOrderUsd', stored: 7_500, derived: 7_500, anchorOwned: true, anchorEquityUsd: 10_000 },
+    { key: 'liveMaxDailyLossUsd', stored: 750, derived: 750, anchorOwned: true, anchorEquityUsd: 10_000 },
+    { key: 'liveOptionsMaxOrderUsd', stored: 536, derived: 536, anchorOwned: true, anchorEquityUsd: 10_000 },
+    { key: 'liveOptionsMaxDailyLossUsd', stored: 750, derived: 750, anchorOwned: true, anchorEquityUsd: 10_000 },
+  ];
+  return base.map((row, i) => ({ ...row, ...(overrides[i] ?? {}) }));
+}
+
 function dashboardFixture(overrides: Partial<AutotradeDashboard> = {}): AutotradeDashboard {
   return {
     enabled: false,
@@ -350,6 +364,7 @@ function dashboardFixture(overrides: Partial<AutotradeDashboard> = {}): Autotrad
     liveOptionsMaxDailyLossUsd: 500,
     liveOptionsMaxOrdersPerDay: 6,
     liveOptionsProbation: { active: false, multiplier: 1, tradesPlaced: 0, tradesRemaining: 20 },
+    capsCoherence: capsCoherenceFixture(),
     ...overrides,
   };
 }
@@ -4729,6 +4744,50 @@ describe('AutoTradePage live-trading settings guards', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save live-trading settings' }));
     await waitFor(() => expect(setConfig).toHaveBeenCalled());
     expect(setConfig.mock.calls[0][0]).toMatchObject({ liveScaleInEnabled: undefined });
+  });
+
+  // -------------------------------------------------------------------------
+  // A hand-edited dollar cap is skipped by every automatic re-anchor, which is
+  // correct and was invisible: the options order cap sat frozen at a typed $300
+  // for a week while the account moved around it (2026-09-12, Decision 10).
+  // -------------------------------------------------------------------------
+  it('shows each cap beside its derived value and tags only the frozen one', async () => {
+    vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+      dashboardFixture({
+        capsCoherence: capsCoherenceFixture([{}, {}, { stored: 300, derived: 536, anchorOwned: false }]),
+      }),
+    );
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const strip = await screen.findByTestId('caps-coherence');
+    expect(within(strip).getByText(/Caps vs derived at the anchor equity of/)).toBeTruthy();
+    // Only the hand-edited cap carries the comparison and the tag.
+    expect(within(strip).getAllByText('frozen')).toHaveLength(1);
+    expect(within(strip).getByText(/vs \$536 derived/)).toBeTruthy();
+    expect(within(strip).getByText('$300')).toBeTruthy();
+    // An anchor-owned cap shows its stored value alone — no noise on the rows
+    // that are doing exactly what they should.
+    expect(within(strip).queryByText(/vs \$750 derived/)).toBeNull();
+  });
+
+  it('says so plainly when no anchor is recorded — the re-anchor is disarmed', async () => {
+    vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+      dashboardFixture({
+        capsCoherence: capsCoherenceFixture([
+          { derived: null, anchorEquityUsd: null },
+          { derived: null, anchorEquityUsd: null },
+          { derived: null, anchorEquityUsd: null },
+          { derived: null, anchorEquityUsd: null },
+        ]),
+      }),
+    );
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const strip = await screen.findByTestId('caps-coherence');
+    expect(within(strip).getByText(/Caps are not anchored/)).toBeTruthy();
+    expect(within(strip).queryAllByText('frozen')).toHaveLength(0);
   });
 
   it('rejects an out-of-range live cap at the keystroke, not with a batch-wide 400', async () => {

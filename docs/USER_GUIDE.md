@@ -1259,11 +1259,19 @@ equally-weighted cards in the order they happened to be built:
   never touched. Applying a tune
   also **arms automatic re-anchoring of the four dollar caps** (max order $ and max
   daily loss $, equity and options): equity syncs from the broker every minute, and once
-  it has drifted **15%+** from the equity the tune derived those caps at, the loop
+  it has drifted **5%+** from the equity the tune derived those caps at, the loop
   re-derives them with the same formulas and journals a `live_caps_reanchored` entry to
   Recent activity — so a shrinking account's daily-loss cap tightens with it instead of
-  quietly becoming a bigger share of what's left. Caps you've since edited by hand are
-  never touched (the event names any it skipped). Full walkthrough,
+  quietly becoming a bigger share of what's left. (It was 15% until 2026-09-12, which
+  let the caps lag equity by weeks.) A reading more than **25% below** the anchor is
+  treated as suspect rather than as news: every cap holds where it is for that session
+  and the loop journals `equity_read_suspect`; the same low reading on the next session
+  re-anchors normally. That is the hand-trading case — on 2026-09-11 equity read $5,129
+  in the morning and $3,523 in the afternoon and every cap was cut ~30% while the
+  strategy's own book had not lost a cent. Caps you've since edited by hand are
+  never touched (the event names any it skipped), and the **Live guardrail caps** panel
+  shows each cap beside its derived value with a **frozen** tag on any that no longer
+  match, so a cap that has dropped out of the automation is visible. Full walkthrough,
   including the exact formula, the band table, and the re-anchoring rules:
   [Tune from target daily gain](TUNE_FROM_TARGET.md).
   Every guardrail the risk engine actually enforces is its own directly-editable field

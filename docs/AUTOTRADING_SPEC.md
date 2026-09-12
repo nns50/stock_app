@@ -8012,3 +8012,90 @@ followed by a `live_options_exit_placed` carrying `replacedIntentId` and
 `repriceCount: 1`. If neither appears within five sessions with options trading on, the
 change is not doing what this section claims, and that is worth finding out before any
 further exit work.
+
+## 2026-09-12 — the dollar caps are made to follow the account
+
+Decision 10 of the 3%-goal plan asks that everything scale with the account. Three
+things did not, and all three are in the stored **dollar** caps — the only settings that
+are literal dollars rather than percentages of live equity.
+
+**1. The options per-order cap was a share-sized number.** `deriveDollarCaps` assigned
+`liveMaxOrderUsd` verbatim to `liveOptionsMaxOrderUsd`: a band fraction of equity, sized
+for a stock position, guarding an options order whose whole notional is premium. On
+2026-09-06 that read **$4,269 against a $92.72 largest legitimate order** — 46× — so it
+was set by hand to $300, and a hand-set cap is (correctly) skipped by every automatic
+re-anchor. It has been frozen ever since, with its revisit trigger written into
+`docs/OPTIONS_TUNING_PLAN.md` because nothing would move it.
+
+It now comes from the options sizer itself. `optionsRiskCheck` sizes a single leg so
+that `contracts × premium × 100 ≤ equity × riskPct ÷ f` (f = `optionsDisasterStopPct`
+as a fraction) — the right-hand side is the largest notional the sizer can produce at
+**any** premium, because a cheaper contract simply buys more of them.
+`maxAffordablePremiumPerShare()` is the per-share inversion of that same rule and is
+pinned against real `computeRiskSizing` output in its own suite, so the cap agrees with
+the sizer **by construction** rather than by a second copy of the arithmetic. Times the
+100-share multiplier and the existing 1.5 headroom, `ceil()`-ed so rounding can never
+put the cap below the sizer's own maximum.
+
+Two deliberate departures, both recorded because they are the kind of thing a later
+reader would otherwise take for a slip:
+
+- The plan's formula multiplied by `optionsMaxConcurrentPositions` (≈$550 at two
+  slots). **Dropped.** `maxOrderUsd` is enforced per ORDER — `order_notional` in
+  `services/trading/guardrails.ts` — so a slot count belongs in an aggregate cap.
+  Multiplying by slots would leave one order able to carry twice what the sizer can
+  produce: a weaker fat-finger backstop, not a safer one.
+- The ceiling uses `riskPctUpperBound` (risk × `expectancyMaxMultiplier` when method
+  weighting is on), not the bare risk %. `effectiveRisk`'s `method` factor is allowed to
+  scale UP, and a cap derived from the unmultiplied figure would refuse an order the
+  sizer had just produced — the 2026-08-27 "a correct order could never fit its own cap"
+  shape.
+
+A zero risk budget derives no options ceiling at all; rather than store a 0 that blocks
+every order, it falls back to the equity backstop. A misconfiguration degrades to "too
+loose", never to "cannot trade".
+
+**2. The re-anchor threshold was 15%, so the caps lagged equity by weeks.** The account
+ran $5.1k → $3.5k → back without a single re-anchor. `REANCHOR_THRESHOLD_PCT` is now
+**5** — still an order of magnitude above per-tick mark-to-market noise on this book,
+and the anchor still moves on every re-anchor, so it cannot churn.
+
+**3. A bad reading re-anchored the caps DOWN.** On 2026-09-11 the account was traded by
+hand: equity read $5,129 in the morning and $3,523 in the afternoon, and every cap was
+cut ~30% while the strategy's own book had not lost a cent. The tick-to-tick equity
+guard cannot see this — closing a position by hand walks equity down in individually
+in-band steps — so the comparison has to be against the **anchor**. A reading more than
+`SUSPECT_DROP_PCT` (25%) below the anchor now holds every cap where it is for that
+session and journals `equity_read_suspect` once, and re-anchors normally as soon as the
+same low reading survives into the next session. A real decline persists; one
+afternoon's hand trading does not.
+
+Three things bound that hold, and each is deliberate:
+
+- **Downward only.** An upward move re-anchors on sight, as it always did, and an upward
+  JUMP still has to survive the sync guard's three corroborating ticks to be written.
+- **A blocking per-order cap wins.** A cap under the sizer's floor means nothing can be
+  placed at all; one session of that is worse than one session of pessimistically small
+  caps.
+- **Its own constant, not `equitySyncMaxJumpPct`.** That field governs a different
+  comparison — this reading against the last one — and loosening it to accept a deposit
+  must not silently loosen this. Numerically the same 25 today, on purpose.
+
+The hold costs at most one session of stale dollar backstops. Every percent-of-equity
+rule — the drawdown halt, the aggregate risk cap, per-trade risk, the premium ceiling —
+is applied to live equity at decision time and is unaffected.
+
+**4. A frozen cap is now visible.** The dashboard carries `capsCoherence`: each stored
+cap, the value the current config derives at the anchor equity, and whether the cap is
+still anchor-owned. The Auto page's **Live guardrail caps** panel shows the pair and
+tags a frozen one. Setting a frozen cap back to its derived value hands it to the
+re-anchor again — already the rule, and now something a reader can act on. The
+"hand-edited" verdict comes from `handEditedDollarCaps`, the same function the
+re-anchor consults, rather than a second reading of the same question.
+
+**Pre-committed check.** After this deploys, `GET /api/autotrade/dashboard` must show
+`liveOptionsMaxOrderUsd` with a `derived` value in the low hundreds (not thousands) and
+`anchorOwned: false` until Step 2's config write sets the stored value to the derived
+one — at which point it must flip to `anchorOwned: true` and stay there through the next
+`live_caps_reanchored`. If the options cap is still reported frozen after that write,
+the derivation and the write disagree and one of them is wrong.

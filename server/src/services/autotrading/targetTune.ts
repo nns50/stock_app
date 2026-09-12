@@ -1,5 +1,6 @@
 import { AutotradeConfig } from '../../db/autotradeConfig';
 import type { RealizedEdge } from './dailyTargetSweep';
+import { maxAffordablePremiumPerShare, riskPctUpperBound } from './optionsAffordability';
 
 // ---------------------------------------------------------------------------
 // "Tune from target" — a ONE-SHOT preset generator that derives a full
@@ -319,10 +320,79 @@ export function sizerFloorFraction(cfg: Pick<AutotradeConfig, 'riskPerTradePct' 
   return cfg.riskPerTradePct / stop;
 }
 
-export function deriveDollarCaps(
-  cfg: Pick<AutotradeConfig, 'maxDailyDrawdownPct' | 'riskProfile' | 'riskPerTradePct' | 'maxStopDistancePct'>,
-  equityUsd: number,
-): DollarCaps {
+/** Everything the two order caps are derived from. Both halves are config
+ *  percentages applied to equity, so every cap here scales with the account
+ *  the moment the anchor moves. */
+export type DollarCapInputs = Pick<
+  AutotradeConfig,
+  | 'maxDailyDrawdownPct'
+  | 'riskProfile'
+  | 'riskPerTradePct'
+  | 'maxStopDistancePct'
+  | 'optionsDisasterStopPct'
+  | 'methodWeightingEnabled'
+  | 'expectancyMaxMultiplier'
+>;
+
+/**
+ * The largest notional a single LIVE OPTIONS order can legitimately carry at
+ * this equity, plus headroom — the options twin of the sizer-floor term above,
+ * and the whole reason liveOptionsMaxOrderUsd stopped tracking the equity cap.
+ *
+ * Why the equity cap was the wrong number. Until 2026-09-12 this field was
+ * assigned `liveMaxOrderUsd` verbatim: a band fraction of equity, sized for
+ * SHARES. On 2026-09-06 that read $4,269 against an options budget that could
+ * not fund a $0.63 contract — 14x too large to be a backstop at all — so it was
+ * hand-set to $300 and has been frozen out of every re-anchor since (a cap that
+ * differs from its anchor-derived value is treated as the operator's, and
+ * rightly). A cap that must be re-typed by hand every time equity moves is not
+ * a cap that scales with the account.
+ *
+ * Why THIS number. optionsRiskCheck sizes a single leg so that
+ * `contracts * premium * 100 <= equity * riskPct / f` (f = the disaster-stop
+ * fraction of premium actually at risk) — that right-hand side IS the largest
+ * notional the options sizer can produce, at any premium, because a cheaper
+ * contract simply buys more of them. maxAffordablePremiumPerShare() is the
+ * per-share inversion of exactly that rule and is asserted against real
+ * computeRiskSizing output in optionsAffordability.test.ts, so multiplying it
+ * by the 100-share multiplier gives the sizer's own ceiling BY CONSTRUCTION
+ * rather than by a second copy of the arithmetic (CLAUDE.md).
+ *
+ * riskPctUpperBound, not riskPerTradePct: effectiveRisk.ts's `method` factor is
+ * allowed to scale risk UP to expectancyMaxMultiplier, and a cap derived from
+ * the unmultiplied figure would refuse an order the sizer had just produced —
+ * "a correct order could never fit its own cap", which is the 2026-08-27 bug
+ * this file already carries a scar from.
+ *
+ * NOT multiplied by optionsMaxConcurrentPositions, though the plan that asked
+ * for this derivation wrote it that way: `maxOrderUsd` is enforced per ORDER
+ * (services/trading/guardrails.ts's `order_notional` rule), so a slot count
+ * belongs in an aggregate cap, not this one. Multiplying by slots would have
+ * left a single order able to carry twice what the sizer can produce, which is
+ * a weaker fat-finger backstop than the record asked for, not a safer one.
+ *
+ * ORDER_CAP_SIZER_HEADROOM and ceil() both point the same way: the cap must
+ * never round BELOW the sizer's own maximum, or the last affordable contract
+ * is blocked by the cap meant to catch fat fingers.
+ *
+ * Zero risk budget yields no options ceiling to speak of; rather than store a
+ * 0 that blocks every order, fall back to the equity backstop (the pre-2026-09-12
+ * behaviour) so a misconfigured risk % degrades to "too loose", never to "cannot
+ * trade".
+ */
+export function optionsOrderCapUsd(cfg: DollarCapInputs, equityUsd: number, equityOrderCapUsd: number): number {
+  const ceilingPerShare = maxAffordablePremiumPerShare({
+    equityUsd,
+    riskPctUpperBound: riskPctUpperBound(cfg),
+    disasterStopPct: cfg.optionsDisasterStopPct,
+  });
+  // * 100: an option contract is 100 shares, the same multiplier
+  // computeRiskSizing applies for assetType 'option'.
+  const cap = Math.ceil(ceilingPerShare * 100 * ORDER_CAP_SIZER_HEADROOM);
+  return cap > 0 ? cap : equityOrderCapUsd;
+}
+
+export function deriveDollarCaps(cfg: DollarCapInputs, equityUsd: number): DollarCaps {
   const dailyLossUsd = Math.round(equityUsd * (cfg.maxDailyDrawdownPct / 100));
   // The larger of the fat-finger intent and what the sizer actually makes.
   // max(), not min(): a cap below the sizer's own output blocks every order,
@@ -348,36 +418,32 @@ export function deriveDollarCaps(
   // actually in hand — at decision time, alongside the per-order and exposure
   // caps — which is exactly where the options comment below argues it belongs.
   // A stored cap should describe intent; funding is a fact about right now.
-  const orderUsd = Math.max(byProfile, bySizer);
-  // The options twin deliberately tracks the equity cap rather than option
-  // buying power, even though option BP is a far smaller pool ($322-471 against
-  // a day BP of $8,644 on 2026-08-27). These are STORED caps, re-derived
-  // independently by the tune and by liveCapsReanchor -- and the re-anchor
-  // works from config alone, with no broker call, so it cannot see option BP.
-  // A cap bound to a number only one derivation path can observe, and which
-  // moved 32% in an hour that day, would read as hand-edited to the other path
-  // and freeze out of re-anchoring forever: exactly the trap the 2026-08-27
-  // decision log describes. Bounding options ORDERS by option BP belongs at
-  // use time, where the live figure is in hand -- not in a stored cap.
+  const orderUsd = Math.round(Math.max(byProfile, bySizer));
+  // The options twin still does not look at option BUYING POWER, even though
+  // that is a far smaller pool ($322-471 against a day BP of $8,644 on
+  // 2026-08-27). These are STORED caps, re-derived independently by the tune
+  // and by liveCapsReanchor -- and the re-anchor works from config alone, with
+  // no broker call, so it cannot see option BP. A cap bound to a number only
+  // one derivation path can observe, and which moved 32% in an hour that day,
+  // would read as hand-edited to the other path and freeze out of re-anchoring
+  // forever: exactly the trap the 2026-08-27 decision log describes. Bounding
+  // options ORDERS by option BP belongs at use time, where the live figure is
+  // in hand -- not in a stored cap.
+  //
+  // What it no longer does (2026-09-12) is track the EQUITY order cap. That
+  // made it a share-sized number guarding an options order and put it 14x above
+  // anything the options sizer could produce; see optionsOrderCapUsd.
   return {
-    liveMaxOrderUsd: Math.round(orderUsd),
+    liveMaxOrderUsd: orderUsd,
     liveMaxDailyLossUsd: dailyLossUsd,
-    liveOptionsMaxOrderUsd: Math.round(orderUsd),
+    liveOptionsMaxOrderUsd: optionsOrderCapUsd(cfg, equityUsd, orderUsd),
     liveOptionsMaxDailyLossUsd: dailyLossUsd,
   };
 }
 
 /** The config a hand-edit check needs: the caps themselves, the percentages
  *  they were derived from, and the equity they were derived AT. */
-export type DollarCapConfig = Pick<
-  AutotradeConfig,
-  | DollarCapKey
-  | 'maxDailyDrawdownPct'
-  | 'riskProfile'
-  | 'riskPerTradePct'
-  | 'maxStopDistancePct'
-  | 'liveCapsAnchorEquityUsd'
->;
+export type DollarCapConfig = DollarCapInputs & Pick<AutotradeConfig, DollarCapKey | 'liveCapsAnchorEquityUsd'>;
 
 /**
  * Dollar caps a human set deliberately — those that no longer equal what the
@@ -814,19 +880,26 @@ export interface TargetTuneResult {
   evidence: TuneEvidence;
 }
 
+/** The live-config fields a tune does NOT set but the caps it derives are
+ *  wrong without: the stop ceiling the sizer works to, whether the book takes
+ *  a partial exit, and the three inputs of the options order cap. Passed as one
+ *  object rather than five positional scalars on purpose — the 2026-08-27 dead
+ *  buying-power bound was a caller that simply omitted an optional argument. */
+export type TuneLiveInputs = Pick<
+  AutotradeConfig,
+  | 'maxStopDistancePct'
+  | 'liveScaleOutEnabled'
+  | 'optionsDisasterStopPct'
+  | 'methodWeightingEnabled'
+  | 'expectancyMaxMultiplier'
+>;
+
 function shapeToPatch(
   shape: BandShape,
   equityUsd: number,
   riskPerTradePct: number,
   targetDailyGainPct: number | null,
-  /** The stop ceiling the sizer works to. deriveDollarCaps needs it to keep
-   *  the order cap above what the sizer can actually produce; the tune itself
-   *  does not set it, so it is threaded in from live config. */
-  maxStopDistancePct: number,
-  /** Whether the live book takes a partial exit — threaded in from live config
-   *  for the same reason maxStopDistancePct is: the tune does not set it, but
-   *  the order cap it derives is wrong without it. */
-  scaleOutEnabled = false,
+  live: TuneLiveInputs,
 ): TunablePatch {
   // Daily-loss halt sized to a bad day at THIS sizing (~75% of the day's trades
   // losing), floored at 2% and capped at 40% so it never trips before the
@@ -845,7 +918,7 @@ function shapeToPatch(
   // (see its doc comment) the copies diverged, which is precisely the failure
   // the old comment here was written to prevent.
   const caps = deriveDollarCaps(
-    { maxDailyDrawdownPct, riskProfile: shape.riskProfile, riskPerTradePct, maxStopDistancePct },
+    { ...live, maxDailyDrawdownPct, riskProfile: shape.riskProfile, riskPerTradePct },
     equityUsd,
   );
   const dailyLossUsd = caps.liveMaxDailyLossUsd;
@@ -879,7 +952,7 @@ function shapeToPatch(
     targetRMultiple: shape.targetRMultiple,
     liveMaxOrderUsd: orderUsd,
     liveMaxDailyLossUsd: dailyLossUsd,
-    liveMaxOrdersPerDay: liveOrderCapForTrades(shape.maxTradesPerDay, scaleOutEnabled),
+    liveMaxOrdersPerDay: liveOrderCapForTrades(shape.maxTradesPerDay, live.liveScaleOutEnabled),
     // Records the equity the dollar caps above were derived from, ARMING the
     // automatic re-anchor (liveCapsReanchor.ts): when synced equity later
     // drifts ≥15% from this, the caps are re-derived so they keep meaning what
@@ -965,14 +1038,7 @@ export function computeTargetTune(input: ComputeTargetTuneInput): TargetTuneResu
   const rawRiskPerTradePct = round2(riskPerTradeForTarget(targetDailyGainPct, tradesPerDay, edgeR));
   const riskPerTradePct = clamp(rawRiskPerTradePct, 0.1, MAX_SUGGESTED_RISK_PER_TRADE_PCT);
 
-  const patch = shapeToPatch(
-    shape,
-    equityUsd,
-    riskPerTradePct,
-    targetDailyGainPct,
-    input.config.maxStopDistancePct,
-    input.config.liveScaleOutEnabled,
-  );
+  const patch = shapeToPatch(shape, equityUsd, riskPerTradePct, targetDailyGainPct, input.config);
 
   const warnings: string[] = [];
 
@@ -1080,8 +1146,8 @@ export function computeTargetTune(input: ComputeTargetTuneInput): TargetTuneResu
  *  Deliberately NOT identical to defaultAutotradeConfig() — see the note on
  *  BANDS above for the three fields that differ and why. "Moderate" here means
  *  the band, not the shipped defaults. */
-export function resetToModerate(equityUsd: number, maxStopDistancePct: number, scaleOutEnabled = false): TunablePatch {
+export function resetToModerate(equityUsd: number, live: TuneLiveInputs): TunablePatch {
   // No declared goal — the moderate baseline is a risk shape, not a promise;
   // writing null here also DISARMS the daily-goal tracker until the next tune.
-  return shapeToPatch(BANDS.moderate, equityUsd, 1, null, maxStopDistancePct, scaleOutEnabled);
+  return shapeToPatch(BANDS.moderate, equityUsd, 1, null, live);
 }

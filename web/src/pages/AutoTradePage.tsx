@@ -24,6 +24,7 @@ import {
 } from '../components/ui';
 import type {
   AutotradeConfig,
+  AutotradeCapCoherence,
   AutotradeDashboard,
   AutotradeDecideResponse,
   AutotradeLivePosition,
@@ -1168,6 +1169,54 @@ function paperTrackRecord(positions: PaperPosition[]): PaperTrackRecord {
   };
 }
 
+/** Human labels for the four equity-derived dollar caps. */
+const CAP_COHERENCE_LABELS: Record<AutotradeCapCoherence['key'], string> = {
+  liveMaxOrderUsd: 'Max order',
+  liveMaxDailyLossUsd: 'Max daily loss',
+  liveOptionsMaxOrderUsd: 'Options max order',
+  liveOptionsMaxDailyLossUsd: 'Options max daily loss',
+};
+
+/**
+ * Each stored dollar cap beside what the current settings derive at the anchor
+ * equity, with a "frozen" tag on any cap that no longer matches.
+ *
+ * A hand-edited cap is deliberately skipped by every automatic re-anchor — but
+ * until 2026-09-12 nothing SHOWED that, so the options order cap sat frozen at
+ * a hand-typed $300 for a week while the account moved around it and everyone
+ * believed the caps were tracking equity. Setting a frozen cap back to its
+ * derived value hands it back to the re-anchor.
+ */
+function CapsCoherenceStrip({ rows }: { rows: AutotradeCapCoherence[] | undefined }) {
+  if (!rows || rows.length === 0) return null;
+  const anchor = rows[0].anchorEquityUsd;
+  return (
+    <div className="mb-3 text-xs" data-testid="caps-coherence">
+      <div className="text-slate-400 mb-1">
+        {anchor == null
+          ? 'Caps are not anchored — apply a tune (or set the anchor equity) to arm automatic re-anchoring.'
+          : `Caps vs derived at the anchor equity of ${fmtUsd(anchor, 0)}`}
+      </div>
+      <div className="grid sm:grid-cols-2 gap-x-4 gap-y-0.5">
+        {rows.map((r) => (
+          <div key={r.key} className="flex items-baseline justify-between gap-2">
+            <span className="text-slate-400">{CAP_COHERENCE_LABELS[r.key]}</span>
+            <span className="tabular-nums">
+              <span className={r.anchorOwned ? 'text-slate-200' : 'text-amber-300'}>{fmtUsd(r.stored, 0)}</span>
+              {r.derived != null && !r.anchorOwned && (
+                <>
+                  <span className="text-slate-500"> vs {fmtUsd(r.derived, 0)} derived</span>
+                  <span className="ml-1 text-amber-300">frozen</span>
+                </>
+              )}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 interface LiveTradingSectionProps {
   config: AutotradeConfig;
   paperPositions: PaperPosition[];
@@ -1285,6 +1334,7 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
             {p.suggestLiveCapsBusy ? 'Suggesting…' : 'Suggest from equity'}
           </button>
         </div>
+        <CapsCoherenceStrip rows={p.dashboard?.capsCoherence} />
         <div className="grid sm:grid-cols-3 gap-3">
           <Field label="Max order ($)">
             <NumberInput

@@ -1452,7 +1452,28 @@ you set deliberately is left alone: both the target tune and the automatic
 re-anchor only move a cap that still matches its derived value. The trade-off
 is the honest one — a hand-set cap no longer tracks equity, so if the account
 changes size materially, revisit it yourself. Clear it back to the suggested
-figure and the app resumes sizing it for you.
+figure and the app resumes sizing it for you. Since 2026-09-12 the Auto page
+shows each cap beside its derived value and tags a frozen one, so "no longer
+tracks equity" is something you can see rather than something you have to
+remember; the caps also re-derive on a 5% drift rather than 15%, so they follow
+the account in days rather than weeks.
+
+**The options per-order cap is derived from the options sizer, not the stock
+one.** It used to be a copy of the equity cap, which is a share-sized number:
+$4,269 guarding an order whose largest legitimate size was $92.72. It now comes
+from the same premium ceiling the options risk check sizes to — `equity ×
+risk% ÷ disaster stop`, times 100 shares and the usual 1.5 headroom — so it
+scales with equity, with the risk %, and with the disaster stop, and it never
+needs re-typing.
+
+**A reading far below the anchor waits a session before it moves anything.** A
+day of manual trading walks account equity down in ordinary-looking steps, and
+on 2026-09-11 that cut every stored cap ~30% while the strategy's own book had
+not lost a cent. A drop of more than 25% from the anchor now holds the caps for
+that session and journals `equity_read_suspect`; the same reading on the next
+session re-anchors normally. A real decline persists, an afternoon's hand
+trading does not, and nothing percentage-based is delayed — the halt, the
+aggregate cap and per-trade risk all read live equity at decision time.
 
 This matters most on a small account, where the derived per-order cap can land
 *below* what correct position sizing produces. A 2% risk budget with a 3% stop

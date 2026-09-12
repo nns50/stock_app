@@ -2859,6 +2859,22 @@ export interface AutotradeDashboard {
   liveOptionsMaxDailyLossUsd: number;
   liveOptionsMaxOrdersPerDay: number;
   liveOptionsProbation: AutotradeProbationStatus;
+
+  /** Each stored dollar cap beside the value the current config derives at
+   *  the anchor equity. A cap that is not `anchorOwned` was set by hand and is
+   *  skipped by every automatic re-anchor — which is correct, but invisible
+   *  until it is shown (Decision 10, 2026-09-12). */
+  capsCoherence: AutotradeCapCoherence[];
+}
+
+export interface AutotradeCapCoherence {
+  key: 'liveMaxOrderUsd' | 'liveMaxDailyLossUsd' | 'liveOptionsMaxOrderUsd' | 'liveOptionsMaxDailyLossUsd';
+  stored: number;
+  /** Null when no anchor equity is recorded — the re-anchor is disarmed and
+   *  there is nothing to compare against. */
+  derived: number | null;
+  anchorOwned: boolean;
+  anchorEquityUsd: number | null;
 }
 
 /** A real, live-money position the autotrade loop itself placed — the SAME

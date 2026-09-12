@@ -1,6 +1,12 @@
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 import { initDb, db } from '../src/db';
-import { setAutotradeConfig, setAutotradeKillSwitch } from '../src/db/autotradeConfig';
+import {
+  defaultAutotradeConfig,
+  getAutotradeConfig,
+  setAutotradeConfig,
+  setAutotradeKillSwitch,
+} from '../src/db/autotradeConfig';
+import { DOLLAR_CAP_KEYS, deriveDollarCaps, handEditedDollarCaps } from '../src/services/autotrading/targetTune';
 import { closePaperPosition, openPaperPosition } from '../src/db/autotradePaperPositions';
 import { addExit, createPosition } from '../src/db/positions';
 import { MIN_LEDGER_TRADES } from '../src/services/autotrading/regimeTightenLedger';
@@ -431,6 +437,54 @@ describe('getAutotradeDashboard', () => {
 // beside it — and it has to be the same identity the tune inverts, applied to
 // the same closed rows the method ledger already reads.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// capsCoherence (2026-09-12, Decision 10). A hand-edited dollar cap is skipped
+// by every automatic re-anchor — correct, and until now invisible: the options
+// order cap sat frozen at a typed $300 while the account moved around it.
+// ---------------------------------------------------------------------------
+describe('capsCoherence — a frozen cap is visible, not merely believed', () => {
+  it('reports all four caps against the value the config derives at the anchor', () => {
+    const cfg = { ...defaultAutotradeConfig(), riskPerTradePct: 1.25, maxStopDistancePct: 2.5 };
+    const derived = deriveDollarCaps(cfg, 10_000);
+    setAutotradeConfig({ ...cfg, ...derived, liveCapsAnchorEquityUsd: 10_000 });
+
+    const rows = getAutotradeDashboard().capsCoherence;
+    expect(rows.map((r) => r.key)).toEqual([...DOLLAR_CAP_KEYS]);
+    for (const r of rows) {
+      expect(r.anchorOwned).toBe(true);
+      expect(r.stored).toBe(r.derived);
+      expect(r.anchorEquityUsd).toBe(10_000);
+    }
+  });
+
+  it('flags exactly the hand-edited cap, and shows what it would have been', () => {
+    const cfg = { ...defaultAutotradeConfig(), riskPerTradePct: 1.25, maxStopDistancePct: 2.5 };
+    const derived = deriveDollarCaps(cfg, 10_000);
+    setAutotradeConfig({ ...cfg, ...derived, liveOptionsMaxOrderUsd: 300, liveCapsAnchorEquityUsd: 10_000 });
+
+    const rows = getAutotradeDashboard().capsCoherence;
+    const frozen = rows.filter((r) => !r.anchorOwned);
+    expect(frozen.map((r) => r.key)).toEqual(['liveOptionsMaxOrderUsd']);
+    expect(frozen[0].stored).toBe(300);
+    expect(frozen[0].derived).toBe(derived.liveOptionsMaxOrderUsd);
+    // …and it agrees with the rule the re-anchor itself applies, rather than
+    // re-deciding "hand-edited" a second way.
+    expect(handEditedDollarCaps(getAutotradeConfig())).toEqual(['liveOptionsMaxOrderUsd']);
+  });
+
+  it('derives nothing with no anchor — the re-anchor is disarmed for the same reason', () => {
+    setAutotradeConfig({ ...defaultAutotradeConfig(), liveCapsAnchorEquityUsd: null });
+    const rows = getAutotradeDashboard().capsCoherence;
+    expect(rows).toHaveLength(4);
+    for (const r of rows) {
+      expect(r.derived).toBeNull();
+      expect(r.anchorEquityUsd).toBeNull();
+      // Nothing to compare against is not evidence of a hand edit.
+      expect(r.anchorOwned).toBe(true);
+    }
+  });
+});
+
 describe('dailyGoalEvidence', () => {
   it('reports the empty record honestly — nulls and reliable:false, never a fabricated zero', () => {
     const e = getAutotradeDashboard().dailyGoalEvidence;

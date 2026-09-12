@@ -5,7 +5,7 @@ import { MethodStats, computeMethodPerformance } from './methodSizing';
 import { SymbolCooldownState, activeSymbolCooldowns } from './symbolCooldown';
 import { listPositions } from '../../db/positions';
 import { DailyTargetStatus, evaluateDailyTarget } from './dailyTarget';
-import { getAutotradeConfig, RiskProfileName } from '../../db/autotradeConfig';
+import { AutotradeConfig, getAutotradeConfig, RiskProfileName } from '../../db/autotradeConfig';
 import { countTightenedClosedPaperPositions, PaperPosition } from '../../db/autotradePaperPositions';
 import { MIN_LEDGER_TRADES, tightenedStockPositions } from './regimeTightenLedger';
 import { OptionsPaperPosition } from '../../db/autotradeOptionsPaperPositions';
@@ -21,7 +21,14 @@ import { daysToExpiration } from '../../options/blackScholes';
 import { listAutotradeEvents } from '../../db/autotradeEvents';
 import { getLastTick, LastTickRecord } from '../../db/autotradeLastTick';
 import { collectBook, DEFAULT_LOOKBACK_SESSIONS, realizedEdgeOf } from './dailyTargetSweepData';
-import { DailyGoalEvidence, dailyGoalEvidence } from './targetTune';
+import {
+  DailyGoalEvidence,
+  dailyGoalEvidence,
+  deriveDollarCaps,
+  DOLLAR_CAP_KEYS,
+  DollarCapKey,
+  handEditedDollarCaps,
+} from './targetTune';
 
 // ---------------------------------------------------------------------------
 // Phase 7 (docs/AUTOTRADING_SPEC.md — MONITORING & KILL SWITCH): a read-only
@@ -237,6 +244,24 @@ export interface AutotradeDashboard {
   liveOptionsMaxDailyLossUsd: number;
   liveOptionsMaxOrdersPerDay: number;
   liveOptionsProbation: ProbationStatus;
+
+  /** Each stored dollar cap beside what the CURRENT config derives at the
+   *  anchor equity, so a cap that has frozen out of re-anchoring is visible
+   *  rather than merely believed (Decision 10, 2026-09-12). A cap is
+   *  `anchorOwned` while it still equals its anchor-derived value — the same
+   *  test liveCapsReanchor uses to decide whether it may move it, read here
+   *  through handEditedDollarCaps rather than re-implemented. */
+  capsCoherence: CapCoherence[];
+}
+
+export interface CapCoherence {
+  key: DollarCapKey;
+  stored: number;
+  /** Null when no anchor equity is recorded — nothing to derive against, and
+   *  the re-anchor is disarmed for the same reason. */
+  derived: number | null;
+  anchorOwned: boolean;
+  anchorEquityUsd: number | null;
 }
 
 interface RiskCheckRuleJson {
@@ -413,5 +438,24 @@ export function getAutotradeDashboard(): AutotradeDashboard {
     liveOptionsMaxDailyLossUsd: config.liveOptionsMaxDailyLossUsd,
     liveOptionsMaxOrdersPerDay: config.liveOptionsMaxOrdersPerDay,
     liveOptionsProbation: getOptionsProbationStatus(config),
+
+    capsCoherence: buildCapsCoherence(config),
   };
+}
+
+/** The stored-versus-derived read for every dollar cap. Derived at the ANCHOR
+ *  equity, not at today's: the anchor is the equity the caps are supposed to
+ *  describe, so a cap that matches it is doing its job even while equity
+ *  drifts inside the re-anchor threshold. */
+export function buildCapsCoherence(config: AutotradeConfig): CapCoherence[] {
+  const anchor = config.liveCapsAnchorEquityUsd;
+  const derived = anchor !== null && anchor > 0 ? deriveDollarCaps(config, anchor) : null;
+  const handEdited = new Set<DollarCapKey>(handEditedDollarCaps(config));
+  return DOLLAR_CAP_KEYS.map((key) => ({
+    key,
+    stored: config[key],
+    derived: derived ? derived[key] : null,
+    anchorOwned: !handEdited.has(key),
+    anchorEquityUsd: anchor,
+  }));
 }
