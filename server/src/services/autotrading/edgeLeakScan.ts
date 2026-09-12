@@ -269,6 +269,8 @@ export interface EdgeLeakScanInput {
   /** Live ENTRY slippage rows over the window, in % of the limit price. */
   entrySlippagePct: number[];
   journalSkips: JournalSkip[];
+  /** Whether `journalSkips` is the complete window or was cut short. */
+  journalSkipsTruncated?: boolean;
   asOf: number;
   /** Injectable for tests; the route seeds it so one book produces one scan. */
   rng?: () => number;
@@ -290,6 +292,16 @@ export interface EdgeLeakScanResult {
     liveDropped: number;
     paperDropped: number;
     sessions: number;
+    /**
+     * True when the journal read that classifies untaken paper entries hit its
+     * ceiling, so some skips in the window were not seen.
+     *
+     * It has to be on the wire. When the skip read is short, every paper entry
+     * whose skip was missed lands in `no_live_row` — a bucket whose whole
+     * meaning is "the journal says nothing" — and that is indistinguishable
+     * from a real recording gap unless the incompleteness travels with it.
+     */
+    journalSkipsTruncated: boolean;
   };
 }
 
@@ -733,6 +745,7 @@ export function runEdgeLeakScan(input: EdgeLeakScanInput): EdgeLeakScanResult {
       liveDropped: input.live.droppedTrades,
       paperDropped: input.paper.droppedTrades,
       sessions: input.live.sessionDates.length,
+      journalSkipsTruncated: input.journalSkipsTruncated ?? false,
     },
   };
 }

@@ -8484,6 +8484,134 @@ it — so when execution defects are open and the measurable findings total unde
 points, the headline leads with **"fix what is broken before tuning what is merely
 small"** instead of ranking the small thing first.
 
+## 2026-09-12 — the review clock was counting a session that was not the trial
+
+Decision 7 is the mechanism that decides whether the 3% trial is kept or
+reverted, over "10 active sessions since the change". On the deployed box it
+was counting **2026-09-11** as trial session 1: a session that ran the OLD
+1.25% sizing, and a day the account moved −31.32% on manual trading.
+
+**Why.** `sizingChangedOn` reads a `sizing_changed` journal row. No such row
+exists — the config route that writes it deployed *after* the config was
+changed, so the very trial that needed the row is the one without it.
+`reviewSessions` then fell through to its fallback: every session the loop
+recorded live, identified by having an account baseline. Its comment asserted
+this "cannot over-count the window with sessions from before the change". It
+can, and did — the daily-results recorder deployed exactly one session before
+the sizing changed, so that one session qualified.
+
+**The fix is not a better guess.** `autotrade_daily_results` gains
+`risk_per_trade_pct`: the sizing that was in force on the session. The review
+window becomes "sessions that ran the sizing being reviewed" — true by
+construction, needing no journal row, and self-healing for any future change.
+Three rules make it safe:
+
+- A **null** risk (recorded before the column, or backfilled) is never a match.
+  Unknown is not "the current sizing", so a backfill can never pad the count.
+- A **correction** for a past date keeps whatever sizing that day ran under.
+  Stamping today's onto it would be exactly the fabrication the column exists
+  to avoid.
+- The **journaled date still wins** when present: it is the more precise fact,
+  and it separates two trials that happen to use the same risk %.
+
+The 2026-09-11 row keeps its null, so the trial's count now starts from zero
+and the first real trial session will be Monday 2026-09-15.
+
+## 2026-09-12 — the last silent refusal on the live entry path
+
+Auditing every early exit in `runLiveExecution` for a journal row left exactly
+one that refused a candidate and wrote nothing:
+
+```ts
+if (skipSymbols.has(symbol)) {
+  outcomes.push({ symbol, ok: false, reason: 'Already has an open live position' });
+  continue;
+}
+```
+
+Two reasons it matters more than it looks:
+
+1. **It fed the residual bucket.** A paper entry the live book passed on for
+   this reason reached the attribution as `no_live_row` — "nothing the journal
+   explains" — pooled with genuine recording gaps.
+2. **`skipSymbols` is not autotrade-only.** It is every open position on the
+   account plus every working order, so a name the OPERATOR holds by hand
+   silently suppresses every live signal on it for as long as they hold it.
+   Nothing anywhere said so.
+
+It is now journaled as `live_symbol_held_skipped`, once per symbol per ET day
+(`journalEntrySkipOncePerDay` — a held name is a steady-state condition that
+would otherwise write a row every tick for the whole hold), with a `holder`
+field of `autotrade` / `manual` / `pending_order`. The three are not the same
+finding and must not pool: an autotrade hold is the book working as designed, a
+manual hold is the operator unknowingly muting a name, and a working order is a
+transient that clears in a tick or two.
+
+The advisor gives this class **no config field** on purpose. One position per
+symbol is a structural rule, not a setting; the levers that change how often it
+bites are the slot count and the hold time, and which applies depends on the
+`holder`. A `code` action asking for that breakdown is the honest
+recommendation, not a number to turn.
+
+## 2026-09-12 — the scan was reading 1,000 of 1,928 skip rows, and said nothing
+
+The tune advisor's top recommendation, at strong confidence, was **"the live
+book refuses 102 trades on nothing the journal explains; paper made money on
+them"** — 0.247 points of the expected day. It was an artifact of a `LIMIT`.
+
+**How it was found.** The attribution's own numbers do not hang together:
+`liveTrades: 102`, `paperTrades: 128`, `pairedTrades: 7`. If only 7 paper
+entries paired, roughly 95 live trades paired with nothing either — so
+`no_live_row: 102` could not be "102 refusals". Pulling both books off the
+deployed box and comparing entry stamps directly: of 108 closed paper rows, 64
+have no live row at all on that symbol and date, and the 44 that do sit a
+**median 1,726 seconds — about 29 minutes** — from the nearest live entry. Only
+7 fall inside the ±60 s pairing tolerance, which is exactly `pairedTrades`.
+
+Two hypotheses died on the data, and are recorded so nobody re-runs them:
+
+- *The live `entryTime` is the fill, not the placement.* It is not:
+  `liveExecute.ts` stamps `entryDate`/`entryTime` from the ORDER's
+  `createdAt`, deliberately, with a comment saying why.
+- *The live book is systematically LATE, buying after the move.* It is not.
+  Live is **earlier** on 29 of 44 pairs (median −230 s) and its entry price is
+  marginally **better** (median −0.112%). The two books simply take different
+  signals on the same names through the day, in both directions.
+
+**The actual cause.** `collectJournalSkips` asked `listAutotradeEvents` for
+`limit: 1000`. That window held **1,928** skip rows (1,175
+`symbol_reentry_cooldown_skipped`, 617 `live_risk_blocked`, 72
+`live_short_skipped`, 56 `live_score_floor_skipped`, 4 + 4 others). The query
+orders by `id DESC` and clamps to 1,000 internally, so the **oldest 928 were
+invisible**, and every paper entry whose skip row fell outside that set
+classified as `no_live_row` — a bucket whose entire meaning is "the journal
+says nothing".
+
+The cap was not news: `countAutotradeEventDays` has documented it for months
+("caps at 1000 rows, and during market hours the busiest actions write that
+many in ~3 hours"). Three collectors written in the same week walked into it
+anyway. A comment saying what not to do is weaker than a function whose name
+says what it does, so there is now
+`listAutotradeEventsInWindow(filter, hardMax)`, returning
+`{ events, truncated }`, and the scan's three analytic reads use it.
+
+**Truncation is now loud.** `coverage.journalSkipsTruncated` rides on the scan
+result, and the advisor downgrades a `no_live_row` recommendation to
+`needs_data` when it is set — with the reason said plainly — and excludes it
+from "everything measurable adds N points". A named skip reason is still
+trusted under truncation: not fetching some rows makes "the journal said
+nothing" unreliable, and does nothing to a row that WAS read.
+
+Audit of every capped analytic read, against the same window:
+
+| read | rows available | status |
+| --- | --- | --- |
+| journal skips | 1,928 | **was broken** — fixed |
+| execution findings | 594 | latent (261 landed in one day) — fixed |
+| `entry_extension_shadow` | 32 | fine — fixed anyway |
+| short-shadow route | 72 | fine, left alone |
+| regime readings | 4 | fine, left alone |
+
 ### The first production read, and what it caught (2026-09-12)
 
 `GET /api/journal/tune-advice` on the deployed box, minutes after the deploy:

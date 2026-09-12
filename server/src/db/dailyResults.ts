@@ -26,6 +26,11 @@ export interface DailyResult {
    *  deposit, a withdrawal, or trading by hand. */
   manualTrading: boolean;
   recordedAt: number;
+  /** The risk % in force on this session. Null on a row recorded before the
+   *  column existed and on every backfilled historical row — which is what
+   *  makes it usable as the review's window test: a null cannot be mistaken
+   *  for "this session ran the current sizing". */
+  riskPerTradePct: number | null;
 }
 
 interface Row {
@@ -42,6 +47,7 @@ interface Row {
   drawdown_halted: number;
   manual_trading: number;
   recorded_at: number;
+  risk_per_trade_pct: number | null;
 }
 
 const map = (r: Row): DailyResult => ({
@@ -58,6 +64,7 @@ const map = (r: Row): DailyResult => ({
   drawdownHalted: r.drawdown_halted === 1,
   manualTrading: r.manual_trading === 1,
   recordedAt: r.recorded_at,
+  riskPerTradePct: r.risk_per_trade_pct,
 });
 
 /**
@@ -72,8 +79,8 @@ export function saveDailyResult(r: DailyResult): void {
     `INSERT INTO autotrade_daily_results
        (et_date, baseline_equity_usd, close_equity_usd, account_gain_pct, strategy_pnl_usd,
         strategy_gain_pct, live_trades, paper_pnl_usd, goal_reached, give_back_halted,
-        drawdown_halted, manual_trading, recorded_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+        drawdown_halted, manual_trading, recorded_at, risk_per_trade_pct)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
      ON CONFLICT(et_date) DO UPDATE SET
        baseline_equity_usd = excluded.baseline_equity_usd,
        close_equity_usd = excluded.close_equity_usd,
@@ -86,7 +93,8 @@ export function saveDailyResult(r: DailyResult): void {
        give_back_halted = excluded.give_back_halted,
        drawdown_halted = excluded.drawdown_halted,
        manual_trading = excluded.manual_trading,
-       recorded_at = excluded.recorded_at`,
+       recorded_at = excluded.recorded_at,
+       risk_per_trade_pct = excluded.risk_per_trade_pct`,
   ).run(
     r.etDate,
     r.baselineEquityUsd,
@@ -101,6 +109,7 @@ export function saveDailyResult(r: DailyResult): void {
     r.drawdownHalted ? 1 : 0,
     r.manualTrading ? 1 : 0,
     r.recordedAt,
+    r.riskPerTradePct,
   );
 }
 

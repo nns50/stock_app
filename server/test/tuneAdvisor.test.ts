@@ -173,6 +173,46 @@ describe('every estimate goes through the identity', () => {
     expect(rec?.action).toMatchObject({ kind: 'config', field: 'symbolReentryCooldownMinutes', to: 390 });
   });
 
+  it('will not rank "unexplained" flow when the journal read was truncated', () => {
+    // no_live_row means "the live journal says nothing". That is only evidence
+    // of a recording gap if the journal was read IN FULL. On 2026-09-12 the
+    // scan read 1,000 of 1,928 skip rows, so the bucket filled with entries
+    // whose skip simply was not fetched — and this recommendation went out as
+    // the top-ranked, strong-confidence item.
+    const untaken = [{ reason: 'no_live_row', n: 102, paperMeanR: 0.0155, paperTotalR: 1.5841 }];
+    const complete = advise({
+      scan: scan({ attribution: { ...scan().attribution, untaken } }),
+    });
+    const truncated = advise({
+      scan: scan({
+        attribution: { ...scan().attribution, untaken },
+        coverage: { ...scan().coverage, journalSkipsTruncated: true },
+      }),
+    });
+    const a = complete.recommendations.find((r) => r.id === 'flow:no_live_row');
+    const b = truncated.recommendations.find((r) => r.id === 'flow:no_live_row');
+    expect(a?.status).not.toBe('needs_data');
+    expect(b?.status).toBe('needs_data');
+    expect(b?.statusReason).toMatch(/truncated/);
+    // And it stops inflating "everything measurable adds N points".
+    expect(truncated.headline).not.toEqual(complete.headline);
+  });
+
+  it('still trusts a NAMED skip reason when the read was truncated', () => {
+    // Truncation makes "the journal said nothing" unreliable. It does not make
+    // a skip the journal DID name unreliable — that row was read.
+    const a = advise({
+      scan: scan({
+        attribution: {
+          ...scan().attribution,
+          untaken: [{ reason: 'live_score_floor_skipped', n: 20, paperMeanR: 0.3, paperTotalR: 6 }],
+        },
+        coverage: { ...scan().coverage, journalSkipsTruncated: true },
+      }),
+    });
+    expect(a.recommendations.find((r) => r.id === 'flow:live_score_floor_skipped')?.status).not.toBe('needs_data');
+  });
+
   it('never invents a number for an execution defect', () => {
     const a = advise({
       scan: scan({

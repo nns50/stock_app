@@ -51,25 +51,47 @@ export function sizingChangedOn(now: number): string | null {
 /**
  * The sessions the pre-committed review is counted over.
  *
- * Preferred: everything on or after the journaled sizing change. Failing that
- * — a change that predates the journal row, which the 2026-09-12 trial itself
- * does — every session the loop RECORDED live, identified by having an account
- * baseline. A backfilled historical row has null account columns by
- * construction (`backfillDailyResults` refuses to invent an opening equity),
- * so this cannot over-count the window with sessions from before the change,
- * and over-counting is the only direction that would let the rule fire early.
+ * THE OLD FALLBACK WAS WRONG, and its comment said so confidently (2026-09-12).
+ * It preferred the journaled sizing change and, failing that, counted "every
+ * session the loop RECORDED live, identified by having an account baseline",
+ * asserting that this "cannot over-count the window with sessions from before
+ * the change". It could, and did: the daily-results recorder deployed on
+ * 2026-09-11 and the sizing changed on 2026-09-12, so exactly one session
+ * — the old sizing, and a -31% manual-trading day — was recorded live and
+ * counted as trial session 1. The `sizing_changed` journal row that would have
+ * ruled it out did not exist, because the route that writes it deployed after
+ * the config was already changed.
+ *
+ * The fix is not a better guess. Each row now records the risk % that was in
+ * force on it, so the window is "sessions that ran the sizing we are
+ * reviewing" — true by construction, needing no journal row, and self-healing
+ * for any future change. A row with a null risk (recorded before the column,
+ * or backfilled) is NOT counted: unknown is not a match.
+ *
+ * The journaled date still wins when present. It is the more precise fact, and
+ * it distinguishes two separate trials that happened to use the same risk %.
  */
-export function reviewSessions(rows: DailyResult[], changedOn: string | null): DailyResult[] {
+export function reviewSessions(
+  rows: DailyResult[],
+  changedOn: string | null,
+  currentRiskPerTradePct?: number,
+): DailyResult[] {
   const inWindow = changedOn
     ? rows.filter((r) => r.etDate >= changedOn)
-    : rows.filter((r) => r.baselineEquityUsd !== null);
+    : currentRiskPerTradePct !== undefined
+      ? rows.filter((r) => r.riskPerTradePct !== null && r.riskPerTradePct === currentRiskPerTradePct)
+      : rows.filter((r) => r.baselineEquityUsd !== null);
   // Active sessions only — a day the book did not trade cannot speak to whether
   // the sizing works, and averaging it in would drag the mean toward zero.
   return inWindow.filter((r) => r.liveTrades > 0);
 }
 
-export function buildSizingReview(rows: DailyResult[], changedOn: string | null): SizingReview {
-  const sessions = reviewSessions(rows, changedOn);
+export function buildSizingReview(
+  rows: DailyResult[],
+  changedOn: string | null,
+  currentRiskPerTradePct?: number,
+): SizingReview {
+  const sessions = reviewSessions(rows, changedOn, currentRiskPerTradePct);
   // A manual-trading day's account % is not the strategy's, and the review is
   // about the strategy. Excluded from the MEAN, still counted as a session.
   const judged = sessions.filter((r) => !r.manualTrading);
@@ -97,7 +119,7 @@ export function buildGatedSwitchSnapshot(now: number): GatedSwitchSnapshot {
     config,
     readiness: getMlRegimeReadiness(now),
     leakScan: getLastEdgeLeakScan()?.result ?? null,
-    review: buildSizingReview(listDailyResults(), changedOn),
+    review: buildSizingReview(listDailyResults(), changedOn, config.riskPerTradePct),
     capsCoherence: buildCapsCoherence(config).map((c) => ({
       key: c.key,
       stored: c.stored,

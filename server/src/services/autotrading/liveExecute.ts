@@ -1204,10 +1204,17 @@ export async function runLiveExecution(
   // P&L accounting below (auto-trade's own performance, deliberately not
   // conflated with a human's separate manual trading) -- only the dedup check
   // needs the wider net.
-  const skipSymbols = new Set([
-    ...listPositions({ status: 'open' }).map((p) => p.symbol),
-    ...listPendingLiveOrders().map((o) => o.symbol),
-  ]);
+  const openNow = listPositions({ status: 'open' });
+  const skipSymbols = new Set([...openNow.map((p) => p.symbol), ...listPendingLiveOrders().map((o) => o.symbol)]);
+  // WHY the refusal below is journaled rather than merely returned (2026-09-12):
+  // it was the one silent refusal left on this path, so a paper entry the live
+  // book passed on for this reason reached the attribution as `no_live_row` —
+  // "nothing the journal explains" — and sat in the same bucket as a genuine
+  // recording gap. It is also the refusal most likely to surprise: the set
+  // above is not autotrade-only, so a name the OPERATOR is holding by hand
+  // silently suppresses every live signal on it for as long as they hold it.
+  const heldByAutotrade = new Set(openNow.filter(isAutotradePosition).map((p) => p.symbol));
+  const heldManually = new Set(openNow.filter((p) => !isAutotradePosition(p)).map((p) => p.symbol));
   const sectorOf = buildSectorOf();
 
   // Finish-line discipline + symbol cooldown (2026-08-22) — LIVE-only, both
@@ -1237,7 +1244,18 @@ export async function runLiveExecution(
   for (const { signal: candidateSignal } of candidates) {
     const symbol = candidateSignal.symbol.toUpperCase();
     if (skipSymbols.has(symbol)) {
-      outcomes.push({ symbol, ok: false, reason: 'Already has an open live position' });
+      // The three cases are NOT the same finding and must not pool: an
+      // autotrade hold is the book working as designed, a manual hold is the
+      // operator unknowingly muting a name, and a working order is a transient
+      // that should clear within a tick or two.
+      const holder = heldByAutotrade.has(symbol) ? 'autotrade' : heldManually.has(symbol) ? 'manual' : 'pending_order';
+      journalEntrySkipOncePerDay(symbol, 'live_symbol_held_skipped', {
+        holder,
+        score: candidateSignal.score,
+        liveEligible: candidateSignal.score >= cfg.liveMinSignalScore,
+        liveMinSignalScore: cfg.liveMinSignalScore,
+      });
+      outcomes.push({ symbol, ok: false, reason: `Already has an open live position (${holder})` });
       continue;
     }
     // A short entry cannot be placed while naked shorts are off — guardrails'
