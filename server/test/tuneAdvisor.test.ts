@@ -222,6 +222,75 @@ describe('ranking', () => {
     expect(a.recommendations[1].expectedDayPctDelta).toBeGreaterThan(1);
   });
 
+  // -------------------------------------------------------------------------
+  // …but only while the defect is still HAPPENING. The first production read
+  // (2026-09-12) returned 261 options exit failures, 147 refused scale-outs,
+  // 62 blocked stop ratchets and 11 bracket re-arms as the top four
+  // actionable items — every one of them from before the fix that closed it,
+  // still inside the ten-session window and ranked as tonight's work. Nine
+  // more evenings of that is how a reader learns to skip the section.
+  // -------------------------------------------------------------------------
+  const executionFinding = (over: Record<string, unknown> = {}) => ({
+    id: 'execution:live_options_exit_failed',
+    kind: 'execution',
+    label: 'An options exit could not be placed',
+    count: 261,
+    detail: '261 in the last 10 sessions',
+    lever: null,
+    ...over,
+  });
+
+  it('drops an execution class below the measurable findings once it stops recurring', () => {
+    const a = advise({
+      scan: scan({
+        findings: [executionFinding({ lastSeenEtDate: '2026-09-11', sessionsSinceLastSeen: 1 })],
+        attribution: {
+          ...scan().attribution,
+          untaken: [{ reason: 'live_score_floor_skipped', n: 20, paperMeanR: 0.3, paperTotalR: 6 }],
+        },
+      }),
+    });
+    expect(a.recommendations[0].factor).toBe('flow');
+    const exec = a.recommendations.find((r) => r.factor === 'execution');
+    // Still present — dormant is not the same as fixed, and the scan has no
+    // evidence a deploy happened.
+    expect(exec).toBeDefined();
+    expect(exec?.sessionsSinceLastSeen).toBe(1);
+    expect(exec?.statusReason).toMatch(/last occurred 2026-09-11, 1 session\(s\) ago/);
+    expect(exec?.action.detail).toMatch(/Check whether the fix for this landed after 2026-09-11/);
+  });
+
+  it('keeps a class seen in the LATEST session at the top', () => {
+    const a = advise({
+      scan: scan({
+        findings: [executionFinding({ lastSeenEtDate: '2026-09-12', sessionsSinceLastSeen: 0 })],
+        attribution: {
+          ...scan().attribution,
+          untaken: [{ reason: 'live_score_floor_skipped', n: 20, paperMeanR: 0.3, paperTotalR: 6 }],
+        },
+      }),
+    });
+    expect(a.recommendations[0].factor).toBe('execution');
+    expect(a.recommendations[0].sessionsSinceLastSeen).toBe(0);
+  });
+
+  it('does not let a dormant class claim the headline, but does mention it', () => {
+    const a = advise({
+      scan: scan({
+        findings: [executionFinding({ lastSeenEtDate: '2026-09-11', sessionsSinceLastSeen: 1 })],
+      }),
+    });
+    expect(a.headline).not.toMatch(/outrank/);
+    expect(a.headline).toMatch(/1 execution class\(es\) in the window but not in the latest session — confirm fixed/);
+  });
+
+  it('treats an unknown recency as current — silence is not evidence of a fix', () => {
+    const a = advise({ scan: scan({ findings: [executionFinding()] }) });
+    expect(a.recommendations[0].factor).toBe('execution');
+    expect(a.recommendations[0].sessionsSinceLastSeen).toBeNull();
+    expect(a.headline).toMatch(/outrank/);
+  });
+
   it('orders the estimable ones by size', () => {
     const a = advise({
       scan: scan({

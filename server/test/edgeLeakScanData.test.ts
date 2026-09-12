@@ -12,6 +12,7 @@ import {
   runEdgeLeakScanFromDb,
   storedTargetRFor,
 } from '../src/services/autotrading/edgeLeakScanData';
+import { recencySuffix } from '../src/services/autotrading/edgeLeakScan';
 import { seedClosedAutotradeSessions, weekdaysEndingAt } from './helpers/autotradeSessions';
 import { etDateTimeToMs } from '../src/util/marketDate';
 
@@ -250,6 +251,67 @@ describe('the execution findings — any occurrence is one', () => {
 
     const byAction = new Map(collectExecutionFindings(now).map((f) => [f.action, f.count]));
     expect(byAction.get('live_options_exit_reprice_deferred')).toBe(2);
+  });
+
+  it('dates each execution class, in SESSIONS rather than days', () => {
+    // 2026-09-07 is Labor Day. Counting calendar days from 09-11 to 09-14
+    // gives 3; counting sessions gives 1, and it is sessions the window is
+    // measured in. A class last seen on the previous session is a very
+    // different thing from one last seen three sessions ago.
+    const now = etDateTimeToMs('2026-09-14', '17:00') as number;
+    const at = etDateTimeToMs('2026-09-11', '10:00') as number;
+    const older = etDateTimeToMs('2026-09-04', '10:00') as number;
+    db.prepare(
+      `INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) VALUES
+       (NULL,'execution','live_options_exit_failed','{}',NULL,?),
+       (NULL,'execution','live_options_exit_failed','{}',NULL,?),
+       (NULL,'execution','live_scale_out_blocked','{}',NULL,?)`,
+    ).run(older, at, older);
+
+    const byAction = new Map(collectExecutionFindings(now).map((f) => [f.action, f]));
+    const exits = byAction.get('live_options_exit_failed');
+    expect(exits?.count).toBe(2);
+    // The LATEST occurrence dates the class, not the first.
+    expect(exits?.lastSeenEtDate).toBe('2026-09-11');
+    expect(exits?.sessionsSinceLastSeen).toBe(1);
+    // The recency CLAUSE is appended one layer up, where an occurrence becomes
+    // a finding — so assert it there rather than here.
+    expect(recencySuffix(exits?.sessionsSinceLastSeen ?? null, exits?.lastSeenEtDate ?? null)).toBe(
+      ' — none since 2026-09-11, 1 session ago',
+    );
+
+    const scaleOuts = byAction.get('live_scale_out_blocked');
+    expect(scaleOuts?.lastSeenEtDate).toBe('2026-09-04');
+    // 09-14 back: 09-11, 09-10, 09-09, 09-08, 09-04 — four sessions, not ten days.
+    expect(scaleOuts?.sessionsSinceLastSeen).toBe(5);
+  });
+
+  it('says so when a class occurred in the latest session', () => {
+    const now = etDateTimeToMs('2026-09-11', '17:00') as number;
+    const at = etDateTimeToMs('2026-09-11', '10:00') as number;
+    db.prepare(
+      "INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) VALUES (NULL,'execution','live_options_exit_failed','{}',NULL,?)",
+    ).run(at);
+    const f = collectExecutionFindings(now).find((x) => x.action === 'live_options_exit_failed');
+    expect(f?.sessionsSinceLastSeen).toBe(0);
+    expect(recencySuffix(f?.sessionsSinceLastSeen ?? null, f?.lastSeenEtDate ?? null)).toBe(
+      ' — including the latest session (2026-09-11)',
+    );
+  });
+
+  it('carries the recency all the way into the finding a route returns', () => {
+    // The consumer, not the producer: the tune advisor ranks on these two
+    // fields, so what matters is that they survive the trip from the journal
+    // row through the scan and onto the wire.
+    const at = etDateTimeToMs('2026-09-10', '10:00') as number;
+    db.prepare(
+      "INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) VALUES (NULL,'execution','live_options_exit_failed','{}',NULL,?)",
+    ).run(at);
+    const scan = runEdgeLeakScanFromDb({ now: Date.parse('2026-09-11T21:00:00Z') });
+    const finding = scan.findings.find((f) => f.id === 'execution:live_options_exit_failed');
+    expect(finding?.lastSeenEtDate).toBe('2026-09-10');
+    expect(finding?.sessionsSinceLastSeen).toBe(1);
+    expect(finding?.detail).toMatch(/none since 2026-09-10, 1 session ago/);
   });
 });
 
