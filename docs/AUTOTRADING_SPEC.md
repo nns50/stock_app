@@ -9112,3 +9112,41 @@ days the live book made **no autotrade entry at all** — 22 of those in July, b
 autotrade was really running, inside a 40-session window that reaches back that far. That
 is a coverage fact about the window, not a leak, and the next thing to measure rather than
 the next thing to fix.
+
+## 2026-09-12 — 15% of the live record is excluded from every measurement, and nothing said why
+
+`dailyGoalEvidence` on the deployed box reads `droppedTrades: 18` against 99 scored
+trades — roughly 15% of the live book excluded from the realized edge, the mean day, the
+goal rate, and every dimension of the leak scan. The number is honest. It is also a count
+with no cause, which is the third time this document has recorded that shape in a week
+(the red-day drivers, the execution findings, and now this).
+
+It matters because the six ways a trade can be dropped are not the same kind of fact:
+
+| cause | what it means |
+| --- | --- |
+| `noEntryOrExit` | closed with no exit row, or no entry date — not a usable trade |
+| `noEntryTime` | a history gap; adoption only began stamping `entry_time` on 2026-08-31 |
+| `noInitialRisk` | **no recorded stop**, or a stop not below the entry |
+| `unparseableExit` | an exit date that could not be placed on the clock |
+| `optionsIncomplete` | an options row missing an exit price, time, or risk amount |
+| `noAttributes` | scored in R, but the leak scan could not join its per-trade attributes |
+
+`noInitialRisk` is a risk fact — those positions had no risk denominator because they had
+no stop — and `noEntryTime` is a fixed history gap that needs nothing. A single 18 cannot
+tell them apart, so the operator reading "18 dropped" has no way to know whether to look.
+
+`DropReasons` now travels with the count, through `CollectedTrades` → `RealizedEdge` →
+`dailyGoalEvidence`, and through `CollectedLeakBook` → the scan's `coverage` as
+`liveDropReasons` / `paperDropReasons`. The total is `dropTotal()` of the split rather
+than a second counter kept beside it, so the breakdown and the number cannot disagree —
+the same rule CLAUDE.md states for any two derivations of one quantity, applied before
+they had a chance to drift.
+
+One ordering is pinned by test because it is not obvious: a row with no exit is dropped
+for *that* reason before its stop is ever looked at, so a position with neither reads as
+`noEntryOrExit`, not `noInitialRisk`. The first version of that test asserted the other
+way round and was wrong.
+
+No web change: the Auto page carries `edgeLeakSummary`, not `coverage`. This is read by
+the evening routine and by the route, which is where the question gets asked.
