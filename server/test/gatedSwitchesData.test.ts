@@ -48,6 +48,10 @@ function result(etDate: string, over: Partial<DailyResult> = {}): DailyResult {
     giveBackHalted: false,
     drawdownHalted: false,
     manualTrading: false,
+    // The sizing this session ran under. Defaults to the TRIAL sizing these
+    // tests configure (2.5), so a row counts toward the review window; a test
+    // about the window itself overrides it.
+    riskPerTradePct: 2.5,
     recordedAt: 1,
     ...over,
   };
@@ -235,6 +239,38 @@ describe('the sizing revert, over real rows', () => {
     expect(proposed!.evidence).toMatch(/mean day -0\.8% over 10 active sessions/);
     // Shadowed, so the live risk % is untouched.
     expect(getAutotradeConfig().riskPerTradePct).toBe(2.5);
+  });
+
+  it('does not count a session that ran a DIFFERENT sizing as part of the trial', () => {
+    // The bug this column exists for (2026-09-12). The daily-results recorder
+    // deployed one session before the sizing changed, and no `sizing_changed`
+    // journal row existed, so the old fallback counted that session — old
+    // sizing, and a -31% manual-trading day — as trial session 1. Ten rows
+    // here, but one of them ran 1.25%, so the window is nine and the rule must
+    // stay silent.
+    setAutotradeConfig({ ...defaultAutotradeConfig(), riskPerTradePct: 2.5 });
+    saveDailyResult(
+      result('2026-09-01', { accountGainPct: -31, strategyGainPct: -2, manualTrading: true, riskPerTradePct: 1.25 }),
+    );
+    for (let i = 2; i <= 10; i++) {
+      const day = String(i).padStart(2, '0');
+      saveDailyResult(result(`2026-09-${day}`, { accountGainPct: -0.8, strategyGainPct: -0.8 }));
+    }
+    runGatedSwitches(AFTER_CLOSE);
+    const proposed = listAutotradeEvents({ stage: 'config', actions: ['config_change_proposed'] })
+      .map((e) => JSON.parse(e.detail!) as { rule: string })
+      .find((d) => d.rule === 'sizing_revert');
+    expect(proposed).toBeFalsy();
+
+    // A row with an UNKNOWN sizing (recorded before the column, or backfilled)
+    // is not a match either — unknown is not the current sizing.
+    saveDailyResult(result('2026-08-31', { accountGainPct: -0.8, strategyGainPct: -0.8, riskPerTradePct: null }));
+    runGatedSwitches(AFTER_CLOSE + 86_400_000);
+    expect(
+      listAutotradeEvents({ stage: 'config', actions: ['config_change_proposed'] })
+        .map((e) => JSON.parse(e.detail!) as { rule: string })
+        .find((d) => d.rule === 'sizing_revert'),
+    ).toBeFalsy();
   });
 
   it('stays silent at nine sessions, however bad they look', () => {

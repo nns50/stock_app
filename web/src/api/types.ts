@@ -2905,6 +2905,10 @@ export interface DailyResult {
   /** The two percentages disagree by more than 0.5% of equity. */
   manualTrading: boolean;
   recordedAt: number;
+  /** The risk % in force on this session; null on a row recorded before the
+   *  column existed or filled by the backfill. The review counts "sessions
+   *  since the sizing changed" off this rather than off a journal row. */
+  riskPerTradePct: number | null;
 }
 
 export interface DailyResultsAggregate {

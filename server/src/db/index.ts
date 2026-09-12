@@ -527,7 +527,18 @@ CREATE TABLE IF NOT EXISTS autotrade_daily_results (
   give_back_halted    INTEGER NOT NULL,
   drawdown_halted     INTEGER NOT NULL,
   manual_trading      INTEGER NOT NULL,
-  recorded_at         INTEGER NOT NULL
+  recorded_at         INTEGER NOT NULL,
+  -- The risk % IN FORCE on this session (2026-09-12). Null on a row recorded
+  -- before this column existed, and on every backfilled historical row.
+  --
+  -- It exists because the pre-committed review has to count "sessions since
+  -- the sizing changed", and the only other way to know that date is a
+  -- sizing_changed journal row -- which did not exist for the 2026-09-12
+  -- trial itself, because the route that writes it deployed AFTER the config
+  -- was changed. The fallback then counted the previous session (old sizing,
+  -- and a manual-trading day) as trial session 1. Recording the sizing ON the
+  -- row makes the count right by construction and needs no journal row at all.
+  risk_per_trade_pct  REAL
 );
 
 -- The last edge-leak scan (services/autotrading/edgeLeakScan.ts, 2026-09-12).
@@ -1159,6 +1170,13 @@ function migrate(): void {
   // total. Whether that is because some components carry edge and others
   // cancel it out is exactly the question this column exists to answer.
   if (!has('entry_components')) db.exec('ALTER TABLE positions ADD COLUMN entry_components TEXT');
+
+  // 2026-09-12: the sizing in force on a recorded session — see the column's
+  // own note in the schema above for why the review cannot rely on the journal.
+  const dailyResultCols = db.prepare('PRAGMA table_info(autotrade_daily_results)').all() as { name: string }[];
+  if (!dailyResultCols.some((c) => c.name === 'risk_per_trade_pct')) {
+    db.exec('ALTER TABLE autotrade_daily_results ADD COLUMN risk_per_trade_pct REAL');
+  }
 
   const paperPosCols = db.prepare('PRAGMA table_info(autotrade_paper_positions)').all() as { name: string }[];
   if (!paperPosCols.some((c) => c.name === 'entry_components')) {

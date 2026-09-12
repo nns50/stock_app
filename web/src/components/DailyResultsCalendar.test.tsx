@@ -24,6 +24,7 @@ function day(etDate: string, over: Partial<DailyResult> = {}): DailyResult {
     giveBackHalted: false,
     drawdownHalted: false,
     manualTrading: false,
+    riskPerTradePct: 2.5,
     recordedAt: 1,
     ...over,
   };

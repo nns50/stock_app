@@ -8484,6 +8484,39 @@ it — so when execution defects are open and the measurable findings total unde
 points, the headline leads with **"fix what is broken before tuning what is merely
 small"** instead of ranking the small thing first.
 
+## 2026-09-12 — the review clock was counting a session that was not the trial
+
+Decision 7 is the mechanism that decides whether the 3% trial is kept or
+reverted, over "10 active sessions since the change". On the deployed box it
+was counting **2026-09-11** as trial session 1: a session that ran the OLD
+1.25% sizing, and a day the account moved −31.32% on manual trading.
+
+**Why.** `sizingChangedOn` reads a `sizing_changed` journal row. No such row
+exists — the config route that writes it deployed *after* the config was
+changed, so the very trial that needed the row is the one without it.
+`reviewSessions` then fell through to its fallback: every session the loop
+recorded live, identified by having an account baseline. Its comment asserted
+this "cannot over-count the window with sessions from before the change". It
+can, and did — the daily-results recorder deployed exactly one session before
+the sizing changed, so that one session qualified.
+
+**The fix is not a better guess.** `autotrade_daily_results` gains
+`risk_per_trade_pct`: the sizing that was in force on the session. The review
+window becomes "sessions that ran the sizing being reviewed" — true by
+construction, needing no journal row, and self-healing for any future change.
+Three rules make it safe:
+
+- A **null** risk (recorded before the column, or backfilled) is never a match.
+  Unknown is not "the current sizing", so a backfill can never pad the count.
+- A **correction** for a past date keeps whatever sizing that day ran under.
+  Stamping today's onto it would be exactly the fabrication the column exists
+  to avoid.
+- The **journaled date still wins** when present: it is the more precise fact,
+  and it separates two trials that happen to use the same risk %.
+
+The 2026-09-11 row keeps its null, so the trial's count now starts from zero
+and the first real trial session will be Monday 2026-09-15.
+
 ## 2026-09-12 — the last silent refusal on the live entry path
 
 Auditing every early exit in `runLiveExecution` for a journal row left exactly

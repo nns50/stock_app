@@ -47,7 +47,7 @@ export function buildTuneAdviceFromDb(
       activeSessionsCounted: active.length,
     }),
     scan: getLastEdgeLeakScan()?.result ?? null,
-    review: buildSizingReview(listDailyResults(), sizingChangedOn(now)),
+    review: buildSizingReview(listDailyResults(), sizingChangedOn(now), config.riskPerTradePct),
     asOf: now,
   });
 }

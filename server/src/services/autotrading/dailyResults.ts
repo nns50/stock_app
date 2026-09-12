@@ -102,6 +102,10 @@ export interface RecordDailyResultInput {
   giveBackHalted: boolean;
   drawdownHalted: boolean;
   recordedAt: number;
+  /** The risk % in force on this session. The review counts "sessions since
+   *  the sizing changed" off this rather than off a journal row, because the
+   *  journal row did not exist for the trial that needed it. */
+  riskPerTradePct: number | null;
 }
 
 /** Pure: the row a set of readings implies. Split out so the two percentages,
@@ -127,6 +131,7 @@ export function buildDailyResult(input: RecordDailyResultInput, strategy: Strate
     strategyPnlUsd: strategy.pnlUsd,
     strategyGainPct,
     liveTrades: strategy.trades,
+    riskPerTradePct: input.riskPerTradePct,
     paperPnlUsd: paperPnl,
     goalReached: input.goalReached,
     giveBackHalted: input.giveBackHalted,
@@ -159,6 +164,11 @@ export function recordDailyResult(etDate: string, now: number = Date.now()): Dai
       etDate,
       baselineEquityUsd: current ? current.equityUsd : (existing?.baselineEquityUsd ?? null),
       closeEquityUsd: current ? (cfg.accountEquityUsd ?? null) : (existing?.closeEquityUsd ?? null),
+      // Only stamp the CURRENT sizing when this is genuinely today's session.
+      // Re-recording a past date (a correction) must keep whatever sizing that
+      // day actually ran under; writing today's onto it would be exactly the
+      // fabrication this column exists to avoid.
+      riskPerTradePct: current ? cfg.riskPerTradePct : (existing?.riskPerTradePct ?? null),
       goalReached: current ? current.reachedAt !== null : (existing?.goalReached ?? false),
       giveBackHalted: current ? current.giveBackHaltedAt !== null : (existing?.giveBackHalted ?? false),
       // The drawdown halt has no baseline stamp of its own; the journal is its
@@ -222,6 +232,10 @@ export function backfillDailyResults(from: string, now: number = Date.now()): { 
           goalReached: false,
           giveBackHalted: false,
           drawdownHalted: false,
+          // Unknowable for a historical session, and null is the point: the
+          // review's window test treats null as "not this trial", so a
+          // backfill can never pad the count.
+          riskPerTradePct: null,
           recordedAt: now,
         },
         strategyDayFor(etDate),
