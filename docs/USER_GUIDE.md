@@ -2219,9 +2219,17 @@ because the loop is the only caller that is always flat by the bell, so it is
   stop that was never accepted. Zero held means the position closed and the alert is skipped;
   any shares still held with no stop under them is the real thing and pages. If that account
   read fails the alert still fires, but says the held count is unconfirmed rather than claiming
-  it. It only ever **reports**: placing a replacement stop automatically would risk a second
-  stop on the same position if the check simply failed to see the first, and two stops on one
-  position sell it twice. Re-arm by hand at the broker. (Options are excluded on purpose:
+  it. Since 2026-09-12 it also **re-arms**: a position it has *confirmed* naked (shares held,
+  no resting stop) gets a protective bracket placed automatically from the stop and target
+  already recorded against it, and only an unconfirmed, failed or unanswered re-arm still
+  pages you. Two rules keep the automatic fix from being worse than the gap, and both exist
+  because two orders against one position sell it twice: an **unanswered** placement is never
+  retried (the orders may well be resting), and only the leg that is actually **missing** is
+  placed — if the take-profit is still working and only the stop is gone, the stop is re-armed
+  alone rather than stacking a second take-profit at the same price on the same shares. In
+  that case the re-armed stop is not linked to the old take-profit, so if the stop fills, that
+  target can stay resting at the broker until the position's close cancels it. (Options are
+  excluded on purpose:
   Webull only allows DAY orders on the option sell side, so an option bracket's exits
   legitimately disappear at each close, and checking them would alarm every day for a known,
   separate limitation. Autotrade's options path never places brackets at all.)

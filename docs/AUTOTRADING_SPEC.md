@@ -8888,3 +8888,62 @@ over the book's own record can rank what the record implies; it cannot notice th
 options sleeve has no attribution of its own, or that a gate would be better expressed
 some other way. That half stays a judgement, made against the data and the codebase, and
 the routine asks for it explicitly rather than pretending the advisor covers it.
+
+## 2026-09-12 — the automatic re-arm could sell the position twice
+
+The bracket-protection check learned to **re-arm** on 2026-09-12 (§"the exits are made
+to fill"): a position confirmed naked at the broker — shares held, no resting stop — gets
+a protective bracket placed from its own row's geometry instead of a journal line telling
+a human to do it by hand. That was the right change. The way it placed the bracket was
+not.
+
+**Two states reach the re-arm, and it treated them as one.** The classifier above it
+distinguishes a resting STOP leg from a resting TARGET leg, and it was added precisely
+because they are not interchangeable: *"a bracket has TWO exit legs and only one of them
+is protection. A position whose STOP was cancelled while its TARGET still rests was
+reported protected — silently, forever."* So the check falls through to the re-arm in two
+different situations:
+
+| resting legs | what is missing | what the first re-arm placed |
+| --- | --- | --- |
+| none | stop **and** target | stop + target — correct |
+| target only | stop | stop + **a second target** |
+
+In the second row the new take-profit is for the same shares, at the same price, as the
+one already working. Price reaches the target, **both fill**, and the account is short a
+position nobody opened — the accidental short that `unreadableOpenOrders`' own comment
+describes and that `cancelReplace.ts`'s five-step ordering exists to prevent, except
+placed deliberately. And it fires on the **winners**: the duplicate leg sits at the price
+the trade is designed to reach, so this is the expected path of a good trade, not an
+unlucky one.
+
+**The fix** is to pass only the leg that is actually missing. `buildStandaloneBracketRequest`
+already emits just the legs it is given and returns `null` when given none, so a stop-only
+re-arm needed no new placement code. `live_bracket_rearmed` now carries `legsPlaced`
+(`'stop'` or `'stop+target'`) and `targetAlreadyResting`, so the journal says which shape
+went on the book.
+
+**What is knowingly left behind.** A stop re-armed alone carries its own
+`client_combo_order_id` and is therefore *not* OCO with the old target leg, so a stop fill
+leaves that target resting. That is the state the position was already in — it is what
+made the alarm fire — it is strictly better than having no stop at all, and the close path
+(`clearRestingBracket`) cancels resting exit legs before placing anything. Cancelling the
+orphan target first and re-bracketing both would be tidier and would open a naked window
+inside an alarm path, which is the trade `cancelReplace.ts`'s header already refused once.
+The journal detail records the shape rather than leaving it to be inferred.
+
+**Why no test caught it.** Every re-arm test mocked `listWebullOpenOrders` with
+`orders: []` — all four of them, including the one named "never stacks a second bracket
+after an UNANSWERED re-arm", which is about the same hazard from the other direction. The
+branch with a resting target was never exercised, so the re-arm's *consumer* — the
+argument list `webullPlaceStandaloneBracket` actually receives — was never asserted on it.
+This is the same finding this document has now recorded several times in one day: a value
+tested where it is computed proves nothing about what reads it. Two tests now pin both
+rows of the table, and the stop-alone one fails on the old line with
+`expected 110 to be undefined`.
+
+**One stale comment, fixed with it.** `loop.ts`'s call site still described the check as
+*"read-only, one open-orders pull, reports and never acts (see the function's own comment
+for why auto-re-arming would be worse than the gap)"* — the exact opposite of what it had
+done since that morning. It sits above the entry gates, so a reader working out what may
+run before them was being told it writes nothing.

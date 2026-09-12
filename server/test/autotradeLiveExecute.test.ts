@@ -2140,6 +2140,59 @@ describe('adoptOrphanedLivePositions', () => {
     expect(JSON.parse(rearmed[0].detail ?? '{}')).toMatchObject({ stopPrice: 95, quantity: 10 });
   });
 
+  it('re-arms the STOP ALONE when the take-profit is still resting', async () => {
+    // The branch the first version of the re-arm walked straight past. Two
+    // states reach the re-arm: nothing resting at all, and the TARGET resting
+    // with only the stop gone — which is the state classifyExitLeg was added to
+    // detect in the first place ("a position whose STOP was cancelled while its
+    // TARGET still rests"). Passing pos.targetPrice in that second case puts a
+    // SECOND take-profit limit on the book for the same 10 shares at the same
+    // $110. Price reaches 110, both fill, and the account is short 10 shares
+    // nobody opened — and it fires on a WINNER, at the price the trade is aimed
+    // at, so it is the likely outcome rather than the unlucky one.
+    await agedProtectionCandidate('AAPL', 10);
+    vi.mocked(listWebullOpenOrders).mockResolvedValueOnce({
+      ok: true,
+      orders: [restingLeg({ comboType: 'STOP_PROFIT', orderType: 'LIMIT', limitPrice: 110 })],
+    });
+    vi.mocked(webullPlaceStandaloneBracket).mockResolvedValueOnce({ ok: true, clientComboOrderId: 'GRP-STOP' });
+
+    await checkLiveBracketProtection();
+
+    expect(webullPlaceStandaloneBracket).toHaveBeenCalledTimes(1);
+    const [, intent, target, stop] = vi.mocked(webullPlaceStandaloneBracket).mock.calls[0];
+    expect(intent).toMatchObject({ symbol: 'AAPL', side: 'sell', openClose: 'close', quantity: 10 });
+    expect(stop).toBe(95);
+    // The whole assertion: NO second take-profit leg.
+    expect(target).toBeUndefined();
+    const rearmed = listAutotradeEvents({ stage: 'execution', actions: ['live_bracket_rearmed'] });
+    expect(rearmed).toHaveLength(1);
+    expect(JSON.parse(rearmed[0].detail ?? '{}')).toMatchObject({
+      legsPlaced: 'stop',
+      targetAlreadyResting: true,
+    });
+    expect(unprotectedEvents()).toHaveLength(0);
+  });
+
+  it('re-arms BOTH legs when nothing at all is resting', async () => {
+    // The other side of the branch above, pinned so the narrowing can't creep
+    // into the genuinely naked case and leave a position with no target.
+    await agedProtectionCandidate('AAPL', 10);
+    vi.mocked(listWebullOpenOrders).mockResolvedValueOnce({ ok: true, orders: [] });
+    vi.mocked(webullPlaceStandaloneBracket).mockResolvedValueOnce({ ok: true, clientComboOrderId: 'GRP-BOTH' });
+
+    await checkLiveBracketProtection();
+
+    const [, , target, stop] = vi.mocked(webullPlaceStandaloneBracket).mock.calls[0];
+    expect(stop).toBe(95);
+    expect(target).toBe(110);
+    const rearmed = listAutotradeEvents({ stage: 'execution', actions: ['live_bracket_rearmed'] });
+    expect(JSON.parse(rearmed[0].detail ?? '{}')).toMatchObject({
+      legsPlaced: 'stop+target',
+      targetAlreadyResting: false,
+    });
+  });
+
   it('pages when the re-arm FAILS, and says why', async () => {
     await agedProtectionCandidate('AAPL', 10);
     vi.mocked(listWebullOpenOrders).mockResolvedValueOnce({ ok: true, orders: [] });

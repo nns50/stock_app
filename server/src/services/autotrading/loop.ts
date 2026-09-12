@@ -394,10 +394,14 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     // Does each bracketed live position still have a stop AT THE BROKER? The
     // bracket's exit legs are submitted with the entry and never verified, so
     // an entry Webull accepted while dropping its exits leaves a real position
-    // naked while every screen here shows it protected. Read-only, one
-    // open-orders pull, reports and never acts (see the function's own comment
-    // for why auto-re-arming would be worse than the gap). Caught so a broker
-    // hiccup here can't take down the rest of the tick.
+    // naked while every screen here shows it protected. It PLACES ORDERS as of
+    // 2026-09-12 — a position confirmed naked (shares held, no resting stop) has
+    // a protective bracket re-armed from the position row's own geometry, and
+    // only an unconfirmed or failed re-arm still pages a human. This comment
+    // said "read-only … reports and never acts" for a day after that shipped;
+    // it is load-bearing here because the call sits above the entry gates, so a
+    // reader deciding what may run before them needs to know it writes. Caught
+    // so a broker hiccup here can't take down the rest of the tick.
     try {
       await checkLiveBracketProtection();
     } catch (e) {

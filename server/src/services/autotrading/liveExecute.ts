@@ -2937,8 +2937,33 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
     // position becomes a short. An AMBIGUOUS placement is never retried for the
     // same reason the scale-out does not retry one — a second bracket on top of
     // a possibly-live one is two stops against one position.
+    //
+    // RE-ARM ONLY THE LEG THAT IS MISSING (2026-09-12, same day as the re-arm).
+    //
+    // Two branches reach here, and the first version of this treated them as
+    // one: no legs resting at all, and the TARGET still resting with only the
+    // stop gone (the very case the classifier above was added to catch — see
+    // its comment, "a position whose STOP was cancelled while its TARGET still
+    // rests"). Re-arming a FULL bracket in the second case stacks a second
+    // take-profit limit on top of the one already working, for the same shares,
+    // at the same price. Price reaches the target, BOTH sell, and the account is
+    // short a position nobody opened — the accidental short that
+    // unreadableOpenOrders' own comment describes and that cancelReplace.ts's
+    // five-step ordering exists to avoid, except placed deliberately and at the
+    // price the trade is designed to reach, so it fires on WINNERS.
+    //
+    // So the target is passed only when nothing is holding that side. What is
+    // left behind either way is the orphan pairing: the re-armed stop carries
+    // its own combo id, so it is not OCO with the old target leg, and a stop
+    // fill leaves that leg resting. That is the state the position is ALREADY
+    // in (it is what made this alarm fire), it is strictly better than having no
+    // stop, and the close path clears resting exit legs before it places
+    // anything (clearRestingBracket above). It is journalled so it is visible
+    // rather than assumed.
     let rearmed = false;
     let rearmNote: string | null = null;
+    const targetStillResting = roles.includes('target');
+    const rearmTargetPrice = targetStillResting ? undefined : (pos.targetPrice ?? undefined);
     if (heldQty !== null && heldQty > 0 && pos.stopPrice !== null && config.trading.placeEnabled) {
       const rearm = await webullPlaceStandaloneBracket(
         accountId,
@@ -2950,7 +2975,7 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
           quantity: Math.min(pos.remainingQuantity, heldQty),
           orderType: 'limit',
         },
-        pos.targetPrice ?? undefined,
+        rearmTargetPrice,
         pos.stopPrice,
       );
       rearmed = rearm.ok;
@@ -2965,8 +2990,16 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
             quantity: Math.min(pos.remainingQuantity, heldQty),
             stopPrice: pos.stopPrice,
             targetPrice: pos.targetPrice,
+            // WHICH legs this placement actually put on the book. 'stop' means a
+            // take-profit was already resting and was deliberately not
+            // duplicated; the re-armed stop is then NOT OCO with it.
+            legsPlaced: targetStillResting ? 'stop' : 'stop+target',
+            targetAlreadyResting: targetStillResting,
             clientComboOrderId: rearm.clientComboOrderId ?? null,
-            reason: 'position was confirmed naked at the broker — protection re-armed automatically',
+            reason: targetStillResting
+              ? "position's stop was gone while its take-profit still rested — the stop was re-armed alone, " +
+                'so a second take-profit is not stacked on the working one'
+              : 'position was confirmed naked at the broker — protection re-armed automatically',
           },
           riskProfile: getLiveEntryOrderForPosition(pos.id)?.riskProfile ?? cfg.riskProfile,
         });
