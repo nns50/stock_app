@@ -677,6 +677,124 @@ describe('positions + journal routes (integration)', () => {
 // at placeOrder()'s own deploy-level master gate rather than making any real
 // network call — sufficient to prove the route reaches closeLivePosition
 // without crashing.
+// ---------------------------------------------------------------------------
+// The daily results calendar through the real routes (2026-09-12).
+// ---------------------------------------------------------------------------
+describe('GET/POST /journal/daily-results (integration)', () => {
+  beforeEach(() => {
+    db.exec('DELETE FROM autotrade_daily_results; DELETE FROM autotrade_daily_baseline;');
+  });
+
+  it('backfills the strategy columns for past sessions and serves them with aggregates', async () => {
+    seedClosedAutotradeSessions({
+      sessions: {
+        '2026-09-08': [{ entryTime: '09:35', exitTime: '10:00', r: 1 }],
+        '2026-09-09': [{ entryTime: '09:35', exitTime: '10:00', r: -0.5 }],
+      },
+    });
+    const filled = (await post('/api/journal/daily-results/backfill?from=2026-09-01', {})).json() as Promise<{
+      written: number;
+    }>;
+    expect((await filled).written).toBe(2);
+
+    const report = (await getJson('/api/journal/daily-results?from=2026-09-01&to=2026-09-30')) as {
+      rows: { etDate: string; strategyPnlUsd: number; accountGainPct: number | null }[];
+      monthly: { key: string; strategyPnlUsd: number }[];
+      currentStreak: number;
+    };
+    expect(report.rows.map((r) => r.etDate)).toEqual(['2026-09-08', '2026-09-09']);
+    expect(report.rows.map((r) => r.strategyPnlUsd)).toEqual([50, -25]);
+    // No opening equity was ever recorded for those days, and none is invented.
+    expect(report.rows.every((r) => r.accountGainPct === null)).toBe(true);
+    expect(report.monthly[0]).toMatchObject({ key: '2026-09', strategyPnlUsd: 25 });
+  });
+
+  it('records one day on demand — the correction path after a bad equity reading', async () => {
+    saveDailyBaseline('2026-09-10', 10_000);
+    setAutotradeConfig({ accountEquityUsd: 10_250 });
+    const row = (await (await post('/api/journal/daily-results/record?date=2026-09-10', {})).json()) as {
+      accountGainPct: number;
+    };
+    expect(row.accountGainPct).toBe(2.5);
+  });
+
+  it('refuses a date that is not a date rather than scanning the world', async () => {
+    expect((await fetch(`${base}/api/journal/daily-results?from=last-tuesday`)).status).toBe(400);
+    expect((await post('/api/journal/daily-results/record?date=nope', {})).status).toBe(400);
+    expect((await post('/api/journal/daily-results/backfill', {})).status).toBe(400);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The edge-leak scan through the real route (2026-09-12). The scan's own suite
+// covers the bar and the catalog; what matters here is that the route answers,
+// that `book` narrows what it reads, and that it PERSISTS by default — the
+// dashboard card reads the stored scan, so a route that computed a scan and
+// stored nothing would leave the card permanently empty while every read of
+// the route looked fine.
+// ---------------------------------------------------------------------------
+describe('GET /journal/edge-leaks (integration)', () => {
+  beforeEach(() => {
+    db.exec('DELETE FROM autotrade_paper_positions; DELETE FROM autotrade_events; DELETE FROM edge_leak_scans;');
+  });
+
+  it('scans both books, persists the result, and the dashboard then reports it', async () => {
+    const sessions = weekdaysEndingAt('2026-09-10', 4);
+    seedClosedAutotradeSessions({
+      sessions: Object.fromEntries(
+        sessions.map((d) => [
+          d,
+          [
+            { entryTime: '09:35', exitTime: '10:00', r: 0.4, symbol: 'AAA' },
+            { entryTime: '11:00', exitTime: '11:30', r: -0.3, symbol: 'AAA' },
+          ],
+        ]),
+      ),
+    });
+
+    const scan = (await getJson('/api/journal/edge-leaks?sessions=40&book=both')) as {
+      books: string[];
+      coverage: { liveTrades: number; paperTrades: number };
+      dimensions: { id: string }[];
+      dayLevel: { activeSessions: number };
+    };
+    expect(scan.books).toEqual(['live', 'paper']);
+    expect(scan.coverage.liveTrades).toBe(8);
+    expect(scan.dimensions.some((d) => d.id === 'round')).toBe(true);
+
+    const dash = (await getJson('/api/autotrade/dashboard')) as { edgeLeakSummary: { etDate: string } | null };
+    expect(dash.edgeLeakSummary).not.toBeNull();
+  });
+
+  it('book=live reads only the live book, and persist=false leaves the stored scan alone', async () => {
+    openPaperPosition({
+      symbol: 'ZZZ',
+      side: 'buy',
+      quantity: 10,
+      entryPrice: 100,
+      stopPrice: 95,
+      targetPrice: 110,
+      riskAmount: 50,
+      riskProfile: 'MODERATE',
+      rationale: 'fixture',
+    });
+    const scan = (await getJson('/api/journal/edge-leaks?book=live&persist=false')) as {
+      books: string[];
+      coverage: { paperTrades: number };
+    };
+    expect(scan.books).toEqual(['live']);
+    expect(scan.coverage.paperTrades).toBe(0);
+
+    const dash = (await getJson('/api/autotrade/dashboard')) as { edgeLeakSummary: unknown };
+    expect(dash.edgeLeakSummary).toBeNull();
+  });
+
+  it('rejects a nonsense window rather than scanning something unbounded', async () => {
+    expect((await fetch(`${base}/api/journal/edge-leaks?sessions=0`)).status).toBe(400);
+    expect((await fetch(`${base}/api/journal/edge-leaks?book=imaginary`)).status).toBe(400);
+  });
+});
+
 describe('GET /positions/integrity', () => {
   it('reports a clean book, naming every check it ran', async () => {
     const out = (await getJson('/api/positions/integrity')) as {

@@ -197,26 +197,65 @@ describe('simulateSession', () => {
   ]);
 
   it('none: the record as it happened', () => {
-    expect(simulateSession(day, 'none', 1)).toEqual({ dayR: 3, halted: false, entries: 4, entriesDropped: 0 });
+    expect(simulateSession(day, 'none', 1)).toEqual({
+      dayR: 3,
+      halted: false,
+      entries: 4,
+      entriesDropped: 0,
+      // `none` models no stopping rule at all, so nothing is ever "reached".
+      reached: false,
+    });
   });
 
   it('bank: halts new entries once cumulative R reaches the level, letting the open trade run to its real exit', () => {
     // Level 1R: reached at a's exit (+1.5). b is already open → its +0.5 still
     // counts; c and d are entered after the halt → dropped. Day = 2.0R.
-    expect(simulateSession(day, 'bank', 1)).toEqual({ dayR: 2, halted: true, entries: 4, entriesDropped: 2 });
+    expect(simulateSession(day, 'bank', 1)).toEqual({
+      dayR: 2,
+      halted: true,
+      entries: 4,
+      entriesDropped: 2,
+      reached: true,
+    });
     // Level 3R is only reached on the last exit — nothing left to drop.
-    expect(simulateSession(day, 'bank', 3)).toEqual({ dayR: 3, halted: true, entries: 4, entriesDropped: 0 });
+    expect(simulateSession(day, 'bank', 3)).toEqual({
+      dayR: 3,
+      halted: true,
+      entries: 4,
+      entriesDropped: 0,
+      reached: true,
+    });
     // Level 10R: never reached.
-    expect(simulateSession(day, 'bank', 10)).toEqual({ dayR: 3, halted: false, entries: 4, entriesDropped: 0 });
+    expect(simulateSession(day, 'bank', 10)).toEqual({
+      dayR: 3,
+      halted: false,
+      entries: 4,
+      entriesDropped: 0,
+      reached: false,
+    });
   });
 
   it('giveBack: arms at 2/3 of the level, fires on a fade to 1/3 of it — only while armed and not banked', () => {
     // Level 3R: arm 2R, floor 1R. cum: 1.5 (below arm), 2.0 (armed), 1.0 after
     // c (≤ floor while armed and not reached) → halted; d dropped. Day = 1.0R.
     expect(guardLevelsForR(3)).toEqual({ armR: 2, floorR: 1 });
-    expect(simulateSession(day, 'giveBack', 3)).toEqual({ dayR: 1, halted: true, entries: 4, entriesDropped: 1 });
+    expect(simulateSession(day, 'giveBack', 3)).toEqual({
+      dayR: 1,
+      halted: true,
+      entries: 4,
+      entriesDropped: 1,
+      // Halted by the FADE, not by reaching 3R — the two are different facts,
+      // which is why `reached` is not derivable from `halted`.
+      reached: false,
+    });
     // Level 6R: arm 4R never touched → the guard never arms, nothing fires.
-    expect(simulateSession(day, 'giveBack', 6)).toEqual({ dayR: 3, halted: false, entries: 4, entriesDropped: 0 });
+    expect(simulateSession(day, 'giveBack', 6)).toEqual({
+      dayR: 3,
+      halted: false,
+      entries: 4,
+      entriesDropped: 0,
+      reached: false,
+    });
     // Level 1R: banked at the first exit, exactly like `bank` — a banked day never also fires the guard.
     expect(simulateSession(day, 'giveBack', 1)).toEqual(simulateSession(day, 'bank', 1));
   });
@@ -225,9 +264,24 @@ describe('simulateSession', () => {
     // Level 1R: reached at 1.5; b's exit keeps it at 2.0 (≥ level, no halt);
     // c is entered (not halted yet), its -1 takes cum to 1.0 — NOT below the
     // 1R line — so still no halt; d enters, +2 → 3.0. Nothing dropped.
-    expect(simulateSession(day, 'bankTrail', 1)).toEqual({ dayR: 3, halted: false, entries: 4, entriesDropped: 0 });
+    expect(simulateSession(day, 'bankTrail', 1)).toEqual({
+      dayR: 3,
+      halted: false,
+      entries: 4,
+      entriesDropped: 0,
+      // Reached 1R early and stayed above it — the day never halted, and a
+      // `dayR >= levelR` test would agree here only by coincidence.
+      reached: true,
+    });
     // Level 1.8R: reached at 2.0 after b; c's -1 fades to 1.0 < 1.8 → halted; d dropped. Day = 1.0R.
-    expect(simulateSession(day, 'bankTrail', 1.8)).toEqual({ dayR: 1, halted: true, entries: 4, entriesDropped: 1 });
+    expect(simulateSession(day, 'bankTrail', 1.8)).toEqual({
+      dayR: 1,
+      halted: true,
+      entries: 4,
+      entriesDropped: 1,
+      // The case `dayR` cannot answer: the day REACHED 2.0R and closed at 1.0R.
+      reached: true,
+    });
     // Its guard half is the give-back rule: level 3R (arm 2, floor 1), never
     // reached, armed at 2.0, faded to 1.0 → halted like giveBack.
     expect(simulateSession(day, 'bankTrail', 3)).toEqual(simulateSession(day, 'giveBack', 3));
@@ -244,7 +298,13 @@ describe('simulateSession', () => {
       ['entry', 'e', '10:30'],
       ['exit', 'e', '11:00', 5],
     ]);
-    expect(simulateSession(d, 'bank', 1)).toEqual({ dayR: 2, halted: true, entries: 2, entriesDropped: 1 });
+    expect(simulateSession(d, 'bank', 1)).toEqual({
+      dayR: 2,
+      halted: true,
+      entries: 2,
+      entriesDropped: 1,
+      reached: true,
+    });
   });
 });
 

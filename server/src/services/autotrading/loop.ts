@@ -43,6 +43,7 @@ import {
 } from './liveOptionsExecute';
 import { maybeAlertLiveOrderFailures, maybeAlertLiveAmbiguity } from './liveFailureAlert';
 import { reanchorLiveCapsIfDrifted } from './liveCapsReanchor';
+import { recordTodayAfterClose } from './dailyResults';
 import { DailyTargetStatus, updateDailyGoalScale, updateDailyTarget } from './dailyTarget';
 import { hasExpiredLiveOptions, sweepExpiredLiveOptions } from './liveOptionsExpiry';
 import { maybeAlertDailyDrawdownHalt } from './dailyHaltAlert';
@@ -534,6 +535,16 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       reanchorLiveCapsIfDrifted();
     } catch (e) {
       journalStageFailure('live-caps re-anchor', e);
+    }
+    // Once the bell has rung, keep today's row in autotrade_daily_results
+    // current (2026-09-12). Right after the equity sync so the close figure is
+    // this tick's, and re-recorded every tick rather than written once: an exit
+    // can still reconcile after the close, and a row frozen at the first
+    // post-close tick would miss it. Cheap and DB-only, a no-op in session.
+    try {
+      recordTodayAfterClose();
+    } catch (e) {
+      journalStageFailure('daily result record', e);
     }
     // The ML market-regime reading (services/mlRegime.ts): once per tick, in
     // or out of session, cached per ET day inside the service (a day's first

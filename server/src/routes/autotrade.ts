@@ -164,7 +164,7 @@ autotradeRouter.get(
       // No broker call here: the STORED caps deliberately no longer depend on
       // buying power (see deriveDollarCaps). Funding is enforced at decision
       // time by the sizer, which is the only place the live figure is in hand.
-      patch: resetToModerate(config.accountEquityUsd, config.maxStopDistancePct, config.liveScaleOutEnabled),
+      patch: resetToModerate(config.accountEquityUsd, config),
     });
   }),
 );

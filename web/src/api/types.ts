@@ -2024,6 +2024,13 @@ export interface DailyTargetSweepResult {
 export interface DailyGoalEvidence extends RealizedEdge {
   impliedDailyGainPct: number | null;
   targetOverImplied: number | null;
+  /** The stored goal on the R axis at the stored risk %, and how often the
+   *  book actually reached it. The goal's height in R is what decides whether
+   *  it is reachable at all, so the rate moves the day the risk % does. */
+  storedTargetR: number | null;
+  goalReachedSessions: number;
+  activeSessionsCounted: number;
+  goalRatePct: number | null;
 }
 
 export interface EquitySyncResult {
@@ -2859,6 +2866,81 @@ export interface AutotradeDashboard {
   liveOptionsMaxDailyLossUsd: number;
   liveOptionsMaxOrdersPerDay: number;
   liveOptionsProbation: AutotradeProbationStatus;
+
+  /** Each stored dollar cap beside the value the current config derives at
+   *  the anchor equity. A cap that is not `anchorOwned` was set by hand and is
+   *  skipped by every automatic re-anchor — which is correct, but invisible
+   *  until it is shown (Decision 10, 2026-09-12). */
+  capsCoherence: AutotradeCapCoherence[];
+
+  /** What the LAST edge-leak scan found. Null until one has run — the scan is
+   *  on-demand (a journal route and the daily routine), so this is a read of a
+   *  stored fact, not a recomputation on every poll. */
+  edgeLeakSummary: AutotradeEdgeLeakSummary | null;
+}
+
+/** One trading session's result — mirrors the server's DailyResult. TWO
+ *  percentages on purpose: the ACCOUNT figure is what you feel (it carries
+ *  deposits, withdrawals and hand trading) and the STRATEGY figure is what the
+ *  loop did. Nulls are real: a session before the daily baseline row existed
+ *  has no opening equity anywhere, and the calendar says so rather than
+ *  showing a number derived from a guess. */
+export interface DailyResult {
+  etDate: string;
+  baselineEquityUsd: number | null;
+  closeEquityUsd: number | null;
+  accountGainPct: number | null;
+  strategyPnlUsd: number;
+  strategyGainPct: number | null;
+  liveTrades: number;
+  paperPnlUsd: number;
+  goalReached: boolean;
+  giveBackHalted: boolean;
+  drawdownHalted: boolean;
+  /** The two percentages disagree by more than 0.5% of equity. */
+  manualTrading: boolean;
+  recordedAt: number;
+}
+
+export interface DailyResultsAggregate {
+  /** An ISO week (`2026-W37`) or a month (`2026-09`). */
+  key: string;
+  sessions: number;
+  strategyPnlUsd: number;
+  meanAccountGainPct: number | null;
+  meanStrategyGainPct: number | null;
+  positiveDays: number;
+  goalDays: number;
+  haltDays: number;
+  bestDayPct: number | null;
+  worstDayPct: number | null;
+}
+
+export interface DailyResultsReport {
+  rows: DailyResult[];
+  weekly: DailyResultsAggregate[];
+  monthly: DailyResultsAggregate[];
+  /** Signed run of same-sign sessions ending at the latest one. */
+  currentStreak: number;
+}
+
+export interface AutotradeEdgeLeakSummary {
+  leaks: number;
+  watches: number;
+  findings: number;
+  asOf: number;
+  etDate: string;
+  topLeak: { dimension: string; bucket: string; meanR: number | null; n: number; severityR: number } | null;
+}
+
+export interface AutotradeCapCoherence {
+  key: 'liveMaxOrderUsd' | 'liveMaxDailyLossUsd' | 'liveOptionsMaxOrderUsd' | 'liveOptionsMaxDailyLossUsd';
+  stored: number;
+  /** Null when no anchor equity is recorded — the re-anchor is disarmed and
+   *  there is nothing to compare against. */
+  derived: number | null;
+  anchorOwned: boolean;
+  anchorEquityUsd: number | null;
 }
 
 /** A real, live-money position the autotrade loop itself placed — the SAME

@@ -6,6 +6,7 @@ import { ToastProvider } from '../components/ToastContext';
 import { ConfirmProvider } from '../components/ConfirmContext';
 import { client } from '../api/client';
 import type {
+  AutotradeCapCoherence,
   AutotradeConfig,
   AutotradeDashboard,
   MlRegimeReadiness,
@@ -283,6 +284,19 @@ function readinessFixture(overrides: Partial<MlRegimeReadiness> = {}): MlRegimeR
   };
 }
 
+/** Every cap anchor-owned at a $10k anchor — the "nothing frozen" baseline a
+ *  test overrides one row of. Given every field: CLAUDE.md's rule that a
+ *  fixture which omits one drifts from the API shape unnoticed. */
+function capsCoherenceFixture(overrides: Partial<AutotradeCapCoherence>[] = []): AutotradeCapCoherence[] {
+  const base: AutotradeCapCoherence[] = [
+    { key: 'liveMaxOrderUsd', stored: 7_500, derived: 7_500, anchorOwned: true, anchorEquityUsd: 10_000 },
+    { key: 'liveMaxDailyLossUsd', stored: 750, derived: 750, anchorOwned: true, anchorEquityUsd: 10_000 },
+    { key: 'liveOptionsMaxOrderUsd', stored: 536, derived: 536, anchorOwned: true, anchorEquityUsd: 10_000 },
+    { key: 'liveOptionsMaxDailyLossUsd', stored: 750, derived: 750, anchorOwned: true, anchorEquityUsd: 10_000 },
+  ];
+  return base.map((row, i) => ({ ...row, ...(overrides[i] ?? {}) }));
+}
+
 function dashboardFixture(overrides: Partial<AutotradeDashboard> = {}): AutotradeDashboard {
   return {
     enabled: false,
@@ -307,6 +321,10 @@ function dashboardFixture(overrides: Partial<AutotradeDashboard> = {}): Autotrad
       reliable: false,
       impliedDailyGainPct: null,
       targetOverImplied: null,
+      storedTargetR: null,
+      goalReachedSessions: 0,
+      activeSessionsCounted: 0,
+      goalRatePct: null,
     },
     methodPerformance: [],
     symbolCooldowns: [],
@@ -350,6 +368,8 @@ function dashboardFixture(overrides: Partial<AutotradeDashboard> = {}): Autotrad
     liveOptionsMaxDailyLossUsd: 500,
     liveOptionsMaxOrdersPerDay: 6,
     liveOptionsProbation: { active: false, multiplier: 1, tradesPlaced: 0, tradesRemaining: 20 },
+    capsCoherence: capsCoherenceFixture(),
+    edgeLeakSummary: null,
     ...overrides,
   };
 }
@@ -405,6 +425,7 @@ beforeEach(() => {
   vi.spyOn(client, 'autotradeLiveOptionsPositions').mockResolvedValue({ positions: [] });
   vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(dashboardFixture());
   vi.spyOn(client, 'autotradePortfolioGreeks').mockResolvedValue({ netDelta: 0, netTheta: 0, netVega: 0 });
+  vi.spyOn(client, 'journalDailyResults').mockResolvedValue({ rows: [], weekly: [], monthly: [], currentStreak: 0 });
 });
 
 describe('AutoTradePage — all settings (read-only)', () => {
@@ -3471,6 +3492,103 @@ describe('AutoTradePage', () => {
       expect(line).toHaveTextContent(/thin record, 7 of 20 trades, 5 of 20 active sessions/);
     });
 
+    // -----------------------------------------------------------------------
+    // The goal RATE (2026-09-12). The expected-day identity says what a normal
+    // day is worth; this says how often the goal was actually reached. A
+    // sizing change moves the rate first, because the goal's height in R is
+    // targetPct / riskPct.
+    // -----------------------------------------------------------------------
+    it('shows the goal in R beside how often it was actually reached', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({
+          dailyGoalEvidence: {
+            ...dashboardFixture().dailyGoalEvidence,
+            avgR: 0.05,
+            rTrades: 43,
+            tradesPerSession: 5,
+            sessions: 40,
+            activeSessions: 16,
+            reliable: true,
+            impliedDailyGainPct: 0.1,
+            targetOverImplied: 30,
+            storedTargetR: 1.2,
+            goalReachedSessions: 4,
+            activeSessionsCounted: 16,
+            goalRatePct: 25,
+          },
+        }),
+      );
+      renderDashboard();
+      const line = await screen.findByTestId('daily-goal-evidence');
+      expect(line).toHaveTextContent(
+        /At the stored risk the goal is 1\.20R; reached on 4 of 16 active sessions \(25%\)/,
+      );
+    });
+
+    it('says nothing about a goal rate when no goal is armed', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({
+          dailyGoalEvidence: {
+            ...dashboardFixture().dailyGoalEvidence,
+            avgR: 0.05,
+            rTrades: 43,
+            impliedDailyGainPct: 0.1,
+            storedTargetR: null,
+            goalReachedSessions: 0,
+            activeSessionsCounted: 0,
+            goalRatePct: null,
+          },
+        }),
+      );
+      renderDashboard();
+      const line = await screen.findByTestId('daily-goal-evidence');
+      expect(line).not.toHaveTextContent(/active sessions \(/);
+    });
+
+    // -----------------------------------------------------------------------
+    // The edge-leak card. Every leak in this book so far was found because a
+    // human happened to look, so the count belongs where the operator already
+    // looks — and stays silent on a clean scan, because "0 leaks" every day
+    // trains the eye to skip the line.
+    // -----------------------------------------------------------------------
+    it('names the worst open leak and what it has cost', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({
+          edgeLeakSummary: {
+            leaks: 1,
+            watches: 2,
+            findings: 3,
+            asOf: Date.parse('2026-09-12T21:00:00Z'),
+            etDate: '2026-09-12',
+            topLeak: { dimension: 'round', bucket: '2', meanR: -0.136, n: 20, severityR: 2.7 },
+          },
+        }),
+      );
+      renderDashboard();
+      const line = await screen.findByTestId('edge-leak-summary');
+      expect(line).toHaveTextContent(/1 open, 2 watching, 3 findings/);
+      expect(line).toHaveTextContent(/worst is round = 2 \(-0\.136R over 20 trades, 2\.7R left on the table\)/);
+      expect(line).toHaveTextContent(/Scanned 2026-09-12/);
+    });
+
+    it('stays quiet when the last scan found nothing, and when none has run', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({
+          edgeLeakSummary: {
+            leaks: 0,
+            watches: 0,
+            findings: 0,
+            asOf: Date.parse('2026-09-12T21:00:00Z'),
+            etDate: '2026-09-12',
+            topLeak: null,
+          },
+        }),
+      );
+      renderDashboard();
+      await screen.findByTestId('daily-goal-evidence');
+      expect(screen.queryByTestId('edge-leak-summary')).toBeNull();
+    });
+
     it('points at the regime-tighten ledger once ten tightened trades have closed', async () => {
       vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
         dashboardFixture({ regimeTighten: { tightenedClosedTrades: 12, paper: 9, live: 3, minForReading: 30 } }),
@@ -4729,6 +4847,50 @@ describe('AutoTradePage live-trading settings guards', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save live-trading settings' }));
     await waitFor(() => expect(setConfig).toHaveBeenCalled());
     expect(setConfig.mock.calls[0][0]).toMatchObject({ liveScaleInEnabled: undefined });
+  });
+
+  // -------------------------------------------------------------------------
+  // A hand-edited dollar cap is skipped by every automatic re-anchor, which is
+  // correct and was invisible: the options order cap sat frozen at a typed $300
+  // for a week while the account moved around it (2026-09-12, Decision 10).
+  // -------------------------------------------------------------------------
+  it('shows each cap beside its derived value and tags only the frozen one', async () => {
+    vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+      dashboardFixture({
+        capsCoherence: capsCoherenceFixture([{}, {}, { stored: 300, derived: 536, anchorOwned: false }]),
+      }),
+    );
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const strip = await screen.findByTestId('caps-coherence');
+    expect(within(strip).getByText(/Caps vs derived at the anchor equity of/)).toBeTruthy();
+    // Only the hand-edited cap carries the comparison and the tag.
+    expect(within(strip).getAllByText('frozen')).toHaveLength(1);
+    expect(within(strip).getByText(/vs \$536 derived/)).toBeTruthy();
+    expect(within(strip).getByText('$300')).toBeTruthy();
+    // An anchor-owned cap shows its stored value alone — no noise on the rows
+    // that are doing exactly what they should.
+    expect(within(strip).queryByText(/vs \$750 derived/)).toBeNull();
+  });
+
+  it('says so plainly when no anchor is recorded — the re-anchor is disarmed', async () => {
+    vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+      dashboardFixture({
+        capsCoherence: capsCoherenceFixture([
+          { derived: null, anchorEquityUsd: null },
+          { derived: null, anchorEquityUsd: null },
+          { derived: null, anchorEquityUsd: null },
+          { derived: null, anchorEquityUsd: null },
+        ]),
+      }),
+    );
+    renderPage();
+    await screen.findByText('VNQ');
+
+    const strip = await screen.findByTestId('caps-coherence');
+    expect(within(strip).getByText(/Caps are not anchored/)).toBeTruthy();
+    expect(within(strip).queryAllByText('frozen')).toHaveLength(0);
   });
 
   it('rejects an out-of-range live cap at the keystroke, not with a batch-wide 400', async () => {

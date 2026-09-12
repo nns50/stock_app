@@ -27,9 +27,10 @@ places trades.
 9. [Journal & analytics](#journal--analytics)
 10. [Alerts](#alerts)
 11. [Auto-Trade](#auto-trade)
-12. [Settings](#settings)
-13. [A recommended daily workflow](#a-recommended-daily-workflow)
-14. [Data, privacy & providers](#data-privacy--providers)
+12. [Results (the daily calendar)](#results-the-daily-calendar)
+13. [Settings](#settings)
+14. [A recommended daily workflow](#a-recommended-daily-workflow)
+15. [Data, privacy & providers](#data-privacy--providers)
 
 ---
 
@@ -59,7 +60,7 @@ Everything lives under one top bar:
 
 | Element | What it does |
 |---|---|
-| **Nav tabs** | Icon + label for each section: Today · Screener · Watch · Options · Positions · Journal · Alerts. The active tab is highlighted; on narrow screens the labels collapse to icons. |
+| **Nav tabs** | Icon + label for each section: Today · Screener · Watch · Options · Trade · Positions · Journal · Alerts · Auto · Results. The active tab is highlighted; on narrow screens the labels collapse to icons. |
 | **Jump to / ⌘K** | Command palette — fuzzy-jump to any page or symbol. Press `⌘K` (mac) / `Ctrl-K`. |
 | **☀/🌙 Theme** | Toggle between dark (default) and light. Your choice is remembered per browser. |
 | **🔔 Alerts bell** | Triggered-alert count; quick toggle for background auto-checking. |
@@ -926,6 +927,30 @@ tabs of one **Analytics** button (top right) — pick a tab, the report loads on
   one way. Both books count; a tightened *options* trade is counted but not measured (its
   excursion is on the underlying, not the premium), and like Excursions it says what it
   left out.
+- **Edge leaks** (2026-09-12) — the app's own hunt for the places the book is losing
+  money, run over **both books at once**. It cuts the record a fixed set of ways — round
+  within a symbol-day (first entry, second, third+), entry half-hour and "after 13:00",
+  score band, VWAP extension, % of the session's range, exit reason, hold time, symbol,
+  sector, weekday, ML regime, asset, position size — and applies the **same bar** to every
+  one: a bucket is a **leak** when it has at least 15 trades, its whole 95% interval sits
+  below zero, and the **paper book agrees in sign**; **unconfirmed** when paper has fewer
+  than 10 trades to say so; a **watch** when it is within 0.05R of the bar with at least
+  10 trades. The paper control is the point of the design — both books see the same
+  signals in the same tick, so a bucket that loses in both is the *decision* (a setting
+  fixes it) while one that loses only live is *execution* (code fixes it). Every leak
+  carries its **lever**: the exact setting and value that closes it, or the code path when
+  no setting expresses it, plus the **R it has left on the table**. Alongside the buckets
+  it reports the **day level** (how often the stored goal was actually reached, the same
+  count at 1R, and what the red days were made of), the **paper-vs-live attribution**
+  (the same decision in both books, and why the live book skipped what paper took), and
+  **findings** — anything that simply went wrong (an exit that failed, a position with no
+  stop, a cap that no longer matches its own formula, a tuner row on a day the tuner is
+  off), where one occurrence is enough. It reads the database and the journal only: no
+  market data, no provider quota. The Auto page shows the count and the worst open leak;
+  the full table is here. It exists because every leak found in this book so far was
+  found because a person happened to look, and all of them were already sitting in
+  journals the app was writing — see the Playbook's "The edge-leak scan" for the catalog,
+  the bar and the pre-committed first reading.
 
 ### Benchmark
 
@@ -1199,7 +1224,14 @@ equally-weighted cards in the order they happened to be built:
   realized record the tune's evidence line reads, with its counts and a "thin record"
   note under 20 trades / 20 sessions), so a 3% goal is never shown without the ≈ 0.6%
   day the loop actually produces next to it; with no goal set the line still shows the
-  expected day, for choosing one. It
+  expected day, for choosing one. Since 2026-09-12 the same line adds the **goal rate**:
+  the goal expressed in **R** at the stored risk % (`target% ÷ risk%`) and how often it
+  was actually reached — "the goal is 1.20R; reached on 4 of 16 active sessions (25%)".
+  That number is the one a sizing change moves first, because raising the risk % lowers
+  the goal's height in R without the book changing at all; it is counted by the same
+  function the daily-target sweep counts levels with, so the card and the sweep can never
+  disagree, and it counts sessions that **reached** the goal rather than sessions that
+  closed above it (a day can bank the goal and still finish below it). It
   never sizes UP to chase a shortfall — behind the target, sizing stays exactly what
   the tune calibrated. **Reset to moderate** (or clearing the field) disarms it.
   Since 2026-08-27 a **deposit or withdrawal no longer counts as gain**: the goal is a
@@ -1259,11 +1291,19 @@ equally-weighted cards in the order they happened to be built:
   never touched. Applying a tune
   also **arms automatic re-anchoring of the four dollar caps** (max order $ and max
   daily loss $, equity and options): equity syncs from the broker every minute, and once
-  it has drifted **15%+** from the equity the tune derived those caps at, the loop
+  it has drifted **5%+** from the equity the tune derived those caps at, the loop
   re-derives them with the same formulas and journals a `live_caps_reanchored` entry to
   Recent activity — so a shrinking account's daily-loss cap tightens with it instead of
-  quietly becoming a bigger share of what's left. Caps you've since edited by hand are
-  never touched (the event names any it skipped). Full walkthrough,
+  quietly becoming a bigger share of what's left. (It was 15% until 2026-09-12, which
+  let the caps lag equity by weeks.) A reading more than **25% below** the anchor is
+  treated as suspect rather than as news: every cap holds where it is for that session
+  and the loop journals `equity_read_suspect`; the same low reading on the next session
+  re-anchors normally. That is the hand-trading case — on 2026-09-11 equity read $5,129
+  in the morning and $3,523 in the afternoon and every cap was cut ~30% while the
+  strategy's own book had not lost a cent. Caps you've since edited by hand are
+  never touched (the event names any it skipped), and the **Live guardrail caps** panel
+  shows each cap beside its derived value with a **frozen** tag on any that no longer
+  match, so a cap that has dropped out of the automation is visible. Full walkthrough,
   including the exact formula, the band table, and the re-anchoring rules:
   [Tune from target daily gain](TUNE_FROM_TARGET.md).
   Every guardrail the risk engine actually enforces is its own directly-editable field
@@ -2514,6 +2554,57 @@ full design, current status, and the roadmap for the options-trading addition st
 come.
 
 ---
+
+## Results (the daily calendar)
+
+**What it is** (2026-09-12): one tile per trading session, laid out as a month calendar,
+so a month of days is legible at a glance. Weekdays only — a weekend is not a session and
+a grid that reserves two empty columns for it spends a quarter of its width saying
+nothing. Previous/next month navigation, a month summary above the grid, a weekly total
+column on the right, a CSV export of the visible month, and a table of every recorded
+session below it. The last six weeks also appear as a compact strip under the goal card
+on **Auto-Trade**, with a link through to the full calendar.
+
+**Two percentages, and the difference matters.** Every day carries both:
+
+- the **account** figure — `(close equity − opening equity) / opening equity`. This is
+  what you feel, and it carries **deposits, withdrawals and anything you trade by hand**.
+- the **strategy** figure — the realized P&L of positions the loop itself opened and
+  closed that day, over the same opening equity. This is what the loop did, and it is the
+  number a strategy decision should be made on (the same data-quality rule the options
+  tuning plan uses: a position-derived series carries no flows).
+
+The toggle switches which one the tiles show; the tooltip always names both. A day where
+they disagree by more than **0.5% of equity** is marked **M** — 2026-09-11 is the
+canonical example: the account read −31% across the afternoon while the loop's own book
+had not lost a cent, because the account was being traded by hand.
+
+**Reading a tile.** The big number is the chosen percentage with an explicit `+`/`−`
+(the sign never depends on color alone); the small number under it is the strategy's
+realized **dollars**. The tile's tint and border carry magnitude against the **stored
+daily goal** — a day that reaches the goal is full strength, half the goal is the middle
+step — so the whole calendar re-scales itself when the goal or the risk % changes. Badges
+are letters, not colored dots: **G** goal reached, **B** the give-back guard halted the
+day, **H** the drawdown halt tripped, **M** account and strategy disagree.
+
+**A dash is not a zero.** Sessions before the daily-baseline record existed have no
+opening equity anywhere, so no account figure exists for them and the cell says so. The
+strategy dollars are still exact for those days — the positions ledger goes back further
+than the baseline does.
+
+**Weekly and monthly totals sum DOLLARS, and average percentages.** A sum of daily
+percentages is wrong twice over: it is not how compounding works, and it counts deposits.
+The month summary reports sessions, the mean day, the strategy P&L, positive days, goal
+days, and the best and worst day.
+
+**Where the rows come from.** The loop writes today's row on every tick after the close
+and rewrites it as late exits reconcile, so the row is current rather than frozen at
+16:01. `POST /api/journal/daily-results/record?date=` re-records one day by hand after a
+correction, and `POST /api/journal/daily-results/backfill?from=` fills the strategy
+columns for every past session (leaving the account columns null, as above).
+
+---
+
 
 ## Settings
 

@@ -7,6 +7,8 @@ import { RefreshBar } from '../components/RefreshBar';
 import { CloseModal } from '../components/PositionForms';
 import { AssignmentRiskBadge } from '../components/AssignmentRiskBadge';
 import { DailyGoalSection } from './DailyGoalSection';
+import { DailyResultsCalendar } from '../components/DailyResultsCalendar';
+import { Link } from 'react-router-dom';
 import { ago, cx, fmtDate, fmtNum, fmtPct, fmtSignedUsd, fmtUsd } from '../lib/format';
 import {
   Badge,
@@ -24,6 +26,8 @@ import {
 } from '../components/ui';
 import type {
   AutotradeConfig,
+  AutotradeCapCoherence,
+  AutotradeEdgeLeakSummary,
   AutotradeDashboard,
   AutotradeDecideResponse,
   AutotradeLivePosition,
@@ -1168,6 +1172,126 @@ function paperTrackRecord(positions: PaperPosition[]): PaperTrackRecord {
   };
 }
 
+/** Human labels for the four equity-derived dollar caps. */
+const CAP_COHERENCE_LABELS: Record<AutotradeCapCoherence['key'], string> = {
+  liveMaxOrderUsd: 'Max order',
+  liveMaxDailyLossUsd: 'Max daily loss',
+  liveOptionsMaxOrderUsd: 'Options max order',
+  liveOptionsMaxDailyLossUsd: 'Options max daily loss',
+};
+
+/**
+ * Each stored dollar cap beside what the current settings derive at the anchor
+ * equity, with a "frozen" tag on any cap that no longer matches.
+ *
+ * A hand-edited cap is deliberately skipped by every automatic re-anchor — but
+ * until 2026-09-12 nothing SHOWED that, so the options order cap sat frozen at
+ * a hand-typed $300 for a week while the account moved around it and everyone
+ * believed the caps were tracking equity. Setting a frozen cap back to its
+ * derived value hands it back to the re-anchor.
+ */
+/**
+ * The last six weeks of daily results, under the goal card (2026-09-12).
+ *
+ * The same calendar the Results page renders, in its compact form: the goal
+ * card says what today is doing, and this says what the last six weeks did —
+ * which is the context that makes today legible. It shows the ACCOUNT
+ * percentage, the figure the operator actually feels; the full page has the
+ * toggle and the table.
+ */
+function DailyResultsStrip({ goalPct }: { goalPct: number | null }) {
+  const report = useAsync(() => client.journalDailyResults(), []);
+  const rows = report.data?.rows ?? [];
+  if (rows.length === 0) return null;
+  // Six weeks back from the newest recorded session, by month — the calendar
+  // component renders one month at a time, and two months is what six weeks
+  // spans at worst.
+  const months = [...new Set(rows.map((r) => r.etDate.slice(0, 7)))].slice(-2);
+  return (
+    <div data-testid="daily-results-strip">
+      <div className="flex items-baseline justify-between mb-1">
+        <h4 className="text-xs uppercase tracking-wide text-slate-400">Daily results</h4>
+        <Link to="/results" className="text-[11px] text-accent hover:underline">
+          Full calendar →
+        </Link>
+      </div>
+      <div className={cx('grid gap-3', months.length > 1 && 'sm:grid-cols-2')}>
+        {months.map((m) => (
+          <div key={m}>
+            <div className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">{m}</div>
+            <DailyResultsCalendar
+              month={m}
+              rows={rows.filter((r) => r.etDate.startsWith(m))}
+              metric="account"
+              goalPct={goalPct}
+            />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * What the last edge-leak scan found (2026-09-12).
+ *
+ * The point of the scan is that leaks in this book have only ever been found
+ * when a human happened to look — so the count belongs where the operator
+ * already looks, not only behind a route. Silent when a scan has run and found
+ * nothing, because "0 leaks" every day trains the eye to skip the line.
+ */
+function EdgeLeakLine({ s }: { s: AutotradeEdgeLeakSummary | null }) {
+  if (!s || (s.leaks === 0 && s.findings === 0 && s.watches === 0)) return null;
+  const top = s.topLeak;
+  return (
+    <p className="text-[11px] text-slate-500" data-testid="edge-leak-summary">
+      <span className="text-slate-400">Edge leaks:</span>{' '}
+      <span className={s.leaks > 0 ? 'text-amber-300' : 'text-slate-300'}>
+        {s.leaks} open, {s.watches} watching, {s.findings} finding{s.findings === 1 ? '' : 's'}
+      </span>
+      {top && (
+        <>
+          {' '}
+          — worst is <span className="text-slate-300">{top.dimension}</span> ={' '}
+          <span className="text-slate-300">{top.bucket}</span> ({fmtNum(top.meanR, 3)}R over {top.n} trades,{' '}
+          {fmtNum(top.severityR, 1)}R left on the table)
+        </>
+      )}
+      . Full table: Journal › Analytics › Edge leaks. Scanned {s.etDate}.
+    </p>
+  );
+}
+
+function CapsCoherenceStrip({ rows }: { rows: AutotradeCapCoherence[] | undefined }) {
+  if (!rows || rows.length === 0) return null;
+  const anchor = rows[0].anchorEquityUsd;
+  return (
+    <div className="mb-3 text-xs" data-testid="caps-coherence">
+      <div className="text-slate-400 mb-1">
+        {anchor == null
+          ? 'Caps are not anchored — apply a tune (or set the anchor equity) to arm automatic re-anchoring.'
+          : `Caps vs derived at the anchor equity of ${fmtUsd(anchor, 0)}`}
+      </div>
+      <div className="grid sm:grid-cols-2 gap-x-4 gap-y-0.5">
+        {rows.map((r) => (
+          <div key={r.key} className="flex items-baseline justify-between gap-2">
+            <span className="text-slate-400">{CAP_COHERENCE_LABELS[r.key]}</span>
+            <span className="tabular-nums">
+              <span className={r.anchorOwned ? 'text-slate-200' : 'text-amber-300'}>{fmtUsd(r.stored, 0)}</span>
+              {r.derived != null && !r.anchorOwned && (
+                <>
+                  <span className="text-slate-500"> vs {fmtUsd(r.derived, 0)} derived</span>
+                  <span className="ml-1 text-amber-300">frozen</span>
+                </>
+              )}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 interface LiveTradingSectionProps {
   config: AutotradeConfig;
   paperPositions: PaperPosition[];
@@ -1285,6 +1409,7 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
             {p.suggestLiveCapsBusy ? 'Suggesting…' : 'Suggest from equity'}
           </button>
         </div>
+        <CapsCoherenceStrip rows={p.dashboard?.capsCoherence} />
         <div className="grid sm:grid-cols-3 gap-3">
           <Field label="Max order ($)">
             <NumberInput
@@ -1814,6 +1939,23 @@ function MonitoringDashboard({
           </>
         )}
         .
+        {/* The goal RATE (2026-09-12). The identity above says what a normal
+            day is worth; this says how often the goal was actually reached,
+            counted the way the sweep counts it. The two answer different
+            questions and the rate is the one a sizing change moves first: the
+            goal's height in R is targetPct / riskPct, so raising the risk %
+            lowers the bar and this number responds the same day. */}
+        {ev.storedTargetR !== null && ev.activeSessionsCounted > 0 && (
+          <>
+            {' '}
+            At the stored risk the goal is{' '}
+            <span className="tabular-nums text-slate-200">{fmtNum(ev.storedTargetR, 2)}R</span>; reached on{' '}
+            <span className="tabular-nums text-slate-200">
+              {ev.goalReachedSessions} of {ev.activeSessionsCounted}
+            </span>{' '}
+            active sessions ({fmtNum(ev.goalRatePct, 0)}%).
+          </>
+        )}
       </>
     );
 
@@ -1888,6 +2030,8 @@ function MonitoringDashboard({
           Journal › Analytics › Regime tighten — the pre-committed reading needs {rt.minForReading}.
         </p>
       )}
+      <DailyResultsStrip goalPct={dash.dailyTarget.configuredTargetPct ?? null} />
+      <EdgeLeakLine s={dash.edgeLeakSummary} />
       <RegimeReadinessLine r={dash.mlRegimeReadiness} />
       {dash.symbolCooldowns.length > 0 && (
         <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">

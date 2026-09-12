@@ -1,6 +1,12 @@
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 import { initDb, db } from '../src/db';
-import { setAutotradeConfig, setAutotradeKillSwitch } from '../src/db/autotradeConfig';
+import {
+  defaultAutotradeConfig,
+  getAutotradeConfig,
+  setAutotradeConfig,
+  setAutotradeKillSwitch,
+} from '../src/db/autotradeConfig';
+import { DOLLAR_CAP_KEYS, deriveDollarCaps, handEditedDollarCaps } from '../src/services/autotrading/targetTune';
 import { closePaperPosition, openPaperPosition } from '../src/db/autotradePaperPositions';
 import { addExit, createPosition } from '../src/db/positions';
 import { MIN_LEDGER_TRADES } from '../src/services/autotrading/regimeTightenLedger';
@@ -14,6 +20,8 @@ import { resetMlRegimeCache } from '../src/services/mlRegime';
 import { getMlRegimeReadiness } from '../src/services/mlRegimeReadiness';
 import { loadRegimeModel } from '../src/services/regimeModel';
 import { etToday } from '../src/util/marketDate';
+import { runEdgeLeakScanFromDb } from '../src/services/autotrading/edgeLeakScanData';
+import { saveEdgeLeakScan } from '../src/db/edgeLeakScans';
 
 // Unit coverage for the Phase 7 dashboard snapshot (docs/AUTOTRADING_SPEC.md —
 // MONITORING & KILL SWITCH). Every "used vs limit" figure here is meant to be
@@ -31,7 +39,7 @@ beforeEach(() => {
       // The live OPTIONS book feeds dailyGoalEvidence (the daily goal gates
       // both live books), and every file that writes it cleans it before its
       // own tests, not after — so in a full run its last rows can outlive it.
-      'DELETE FROM autotrade_live_options_positions; DELETE FROM autotrade_last_tick;',
+      'DELETE FROM autotrade_live_options_positions; DELETE FROM autotrade_last_tick; DELETE FROM edge_leak_scans;',
   );
 });
 
@@ -431,6 +439,54 @@ describe('getAutotradeDashboard', () => {
 // beside it — and it has to be the same identity the tune inverts, applied to
 // the same closed rows the method ledger already reads.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// capsCoherence (2026-09-12, Decision 10). A hand-edited dollar cap is skipped
+// by every automatic re-anchor — correct, and until now invisible: the options
+// order cap sat frozen at a typed $300 while the account moved around it.
+// ---------------------------------------------------------------------------
+describe('capsCoherence — a frozen cap is visible, not merely believed', () => {
+  it('reports all four caps against the value the config derives at the anchor', () => {
+    const cfg = { ...defaultAutotradeConfig(), riskPerTradePct: 1.25, maxStopDistancePct: 2.5 };
+    const derived = deriveDollarCaps(cfg, 10_000);
+    setAutotradeConfig({ ...cfg, ...derived, liveCapsAnchorEquityUsd: 10_000 });
+
+    const rows = getAutotradeDashboard().capsCoherence;
+    expect(rows.map((r) => r.key)).toEqual([...DOLLAR_CAP_KEYS]);
+    for (const r of rows) {
+      expect(r.anchorOwned).toBe(true);
+      expect(r.stored).toBe(r.derived);
+      expect(r.anchorEquityUsd).toBe(10_000);
+    }
+  });
+
+  it('flags exactly the hand-edited cap, and shows what it would have been', () => {
+    const cfg = { ...defaultAutotradeConfig(), riskPerTradePct: 1.25, maxStopDistancePct: 2.5 };
+    const derived = deriveDollarCaps(cfg, 10_000);
+    setAutotradeConfig({ ...cfg, ...derived, liveOptionsMaxOrderUsd: 300, liveCapsAnchorEquityUsd: 10_000 });
+
+    const rows = getAutotradeDashboard().capsCoherence;
+    const frozen = rows.filter((r) => !r.anchorOwned);
+    expect(frozen.map((r) => r.key)).toEqual(['liveOptionsMaxOrderUsd']);
+    expect(frozen[0].stored).toBe(300);
+    expect(frozen[0].derived).toBe(derived.liveOptionsMaxOrderUsd);
+    // …and it agrees with the rule the re-anchor itself applies, rather than
+    // re-deciding "hand-edited" a second way.
+    expect(handEditedDollarCaps(getAutotradeConfig())).toEqual(['liveOptionsMaxOrderUsd']);
+  });
+
+  it('derives nothing with no anchor — the re-anchor is disarmed for the same reason', () => {
+    setAutotradeConfig({ ...defaultAutotradeConfig(), liveCapsAnchorEquityUsd: null });
+    const rows = getAutotradeDashboard().capsCoherence;
+    expect(rows).toHaveLength(4);
+    for (const r of rows) {
+      expect(r.derived).toBeNull();
+      expect(r.anchorEquityUsd).toBeNull();
+      // Nothing to compare against is not evidence of a hand edit.
+      expect(r.anchorOwned).toBe(true);
+    }
+  });
+});
+
 describe('dailyGoalEvidence', () => {
   it('reports the empty record honestly — nulls and reliable:false, never a fabricated zero', () => {
     const e = getAutotradeDashboard().dailyGoalEvidence;
@@ -462,6 +518,93 @@ describe('dailyGoalEvidence', () => {
     expect(e.impliedDailyGainPct).toBeCloseTo(1, 2);
     expect(e.targetOverImplied).toBe(3);
     expect(e.reliable).toBe(false); // 3 of 20 trades, 2 of 20 sessions
+  });
+
+  // -------------------------------------------------------------------------
+  // The goal RATE (2026-09-12). The identity above says what a normal day is
+  // worth; this says how often the goal was actually REACHED. Counted through
+  // the sweep's own simulateSession so the card and the sweep route can never
+  // disagree, and it moves the day the risk % does — which is the mechanism the
+  // sizing change is betting on.
+  // -------------------------------------------------------------------------
+  it('counts the sessions that reached the stored goal, at the stored risk %', () => {
+    seedClosedAutotradeSessions({
+      sessions: {
+        // Reaches 1.2R and gives some back — a REACHED session that closes below.
+        '2026-09-01': [
+          { entryTime: '10:00', exitTime: '10:30', r: 1.5 },
+          { entryTime: '10:05', exitTime: '11:30', r: -0.9 },
+        ],
+        // Never gets near it.
+        '2026-09-02': [{ entryTime: '10:00', exitTime: '10:30', r: 0.2 }],
+        '2026-09-03': [{ entryTime: '10:00', exitTime: '10:30', r: 2 }],
+      },
+    });
+    setAutotradeConfig({ riskPerTradePct: 2.5, targetDailyGainPct: 3 });
+    const e = getAutotradeDashboard().dailyGoalEvidence;
+    expect(e.storedTargetR).toBe(1.2); // 3 / 2.5
+    expect(e.activeSessionsCounted).toBe(3);
+    expect(e.goalReachedSessions).toBe(2);
+    expect(e.goalRatePct).toBeCloseTo(66.7, 1);
+
+    // The SAME record at the old risk % is a 2.4R goal, reached far less often
+    // — nothing about the book changed, only where the line sits.
+    setAutotradeConfig({ riskPerTradePct: 1.25 });
+    const harder = getAutotradeDashboard().dailyGoalEvidence;
+    expect(harder.storedTargetR).toBe(2.4);
+    expect(harder.goalReachedSessions).toBe(0);
+  });
+
+  it('reports no rate at all when no goal is armed — never a fabricated 0%', () => {
+    seedClosedAutotradeSessions({ sessions: { '2026-09-01': [{ entryTime: '10:00', r: 1 }] } });
+    setAutotradeConfig({ targetDailyGainPct: null });
+    const e = getAutotradeDashboard().dailyGoalEvidence;
+    expect(e.storedTargetR).toBeNull();
+    expect(e.goalRatePct).toBeNull();
+    expect(e.goalReachedSessions).toBe(0);
+  });
+});
+
+describe('edgeLeakSummary — the dashboard reads the last scan, it does not run one', () => {
+  it('is null until a scan has been persisted', () => {
+    expect(getAutotradeDashboard().edgeLeakSummary).toBeNull();
+  });
+
+  it('carries the counts and the worst leak from the stored scan', () => {
+    const scan = runEdgeLeakScanFromDb({ now: Date.parse('2026-09-11T21:00:00Z') });
+    saveEdgeLeakScan({
+      ...scan,
+      leaks: [
+        {
+          dimension: 'round',
+          dimensionLabel: 'Round within symbol-day',
+          bucket: '2',
+          n: 20,
+          meanR: -0.136,
+          totalR: -2.72,
+          totalPnlUsd: -185,
+          ciLow: -0.34,
+          ciHigh: -0.02,
+          pValue: 0.03,
+          verdict: 'leak',
+          control: null,
+          controlAgrees: true,
+          lever: {
+            kind: 'config',
+            field: 'symbolReentryCooldownMinutes',
+            value: 390,
+            direction: 'safe',
+            detail: 'one entry per symbol per session',
+          },
+          severityR: 2.72,
+        },
+      ],
+    });
+    const summary = getAutotradeDashboard().edgeLeakSummary;
+    expect(summary).toMatchObject({
+      leaks: 1,
+      topLeak: { dimension: 'round', bucket: '2', n: 20, severityR: 2.72 },
+    });
   });
 });
 

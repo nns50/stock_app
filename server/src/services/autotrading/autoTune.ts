@@ -59,7 +59,7 @@ function round2(n: number): number {
  *  '/slippage' route, batching the order_intents lookup (getIntents) instead
  *  of that route's one-by-one getIntent() calls, since this walks the WHOLE
  *  journal rather than serving a single on-demand request. */
-function buildSlippageRows(): SlippageRow[] {
+export function buildLiveSlippageRows(): SlippageRow[] {
   const positions = listPositions();
   const ids = new Set<number>();
   for (const p of positions) {
@@ -398,7 +398,7 @@ export async function maybeAutoTune(now: number = Date.now()): Promise<AutoTuneR
   }
 
   const symbolsExcluded: string[] = [];
-  const bySymbol = groupSlippageBySymbol(buildSlippageRows());
+  const bySymbol = groupSlippageBySymbol(buildLiveSlippageRows());
   for (const g of bySymbol) {
     if (g.trades < config.autoTuneMinTrades) continue;
     if (g.avgPct < config.autoTuneSlippageExcludePct) continue;

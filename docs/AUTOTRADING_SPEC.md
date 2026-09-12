@@ -8012,3 +8012,238 @@ followed by a `live_options_exit_placed` carrying `replacedIntentId` and
 `repriceCount: 1`. If neither appears within five sessions with options trading on, the
 change is not doing what this section claims, and that is worth finding out before any
 further exit work.
+
+## 2026-09-12 — the dollar caps are made to follow the account
+
+Decision 10 of the 3%-goal plan asks that everything scale with the account. Three
+things did not, and all three are in the stored **dollar** caps — the only settings that
+are literal dollars rather than percentages of live equity.
+
+**1. The options per-order cap was a share-sized number.** `deriveDollarCaps` assigned
+`liveMaxOrderUsd` verbatim to `liveOptionsMaxOrderUsd`: a band fraction of equity, sized
+for a stock position, guarding an options order whose whole notional is premium. On
+2026-09-06 that read **$4,269 against a $92.72 largest legitimate order** — 46× — so it
+was set by hand to $300, and a hand-set cap is (correctly) skipped by every automatic
+re-anchor. It has been frozen ever since, with its revisit trigger written into
+`docs/OPTIONS_TUNING_PLAN.md` because nothing would move it.
+
+It now comes from the options sizer itself. `optionsRiskCheck` sizes a single leg so
+that `contracts × premium × 100 ≤ equity × riskPct ÷ f` (f = `optionsDisasterStopPct`
+as a fraction) — the right-hand side is the largest notional the sizer can produce at
+**any** premium, because a cheaper contract simply buys more of them.
+`maxAffordablePremiumPerShare()` is the per-share inversion of that same rule and is
+pinned against real `computeRiskSizing` output in its own suite, so the cap agrees with
+the sizer **by construction** rather than by a second copy of the arithmetic. Times the
+100-share multiplier and the existing 1.5 headroom, `ceil()`-ed so rounding can never
+put the cap below the sizer's own maximum.
+
+Two deliberate departures, both recorded because they are the kind of thing a later
+reader would otherwise take for a slip:
+
+- The plan's formula multiplied by `optionsMaxConcurrentPositions` (≈$550 at two
+  slots). **Dropped.** `maxOrderUsd` is enforced per ORDER — `order_notional` in
+  `services/trading/guardrails.ts` — so a slot count belongs in an aggregate cap.
+  Multiplying by slots would leave one order able to carry twice what the sizer can
+  produce: a weaker fat-finger backstop, not a safer one.
+- The ceiling uses `riskPctUpperBound` (risk × `expectancyMaxMultiplier` when method
+  weighting is on), not the bare risk %. `effectiveRisk`'s `method` factor is allowed to
+  scale UP, and a cap derived from the unmultiplied figure would refuse an order the
+  sizer had just produced — the 2026-08-27 "a correct order could never fit its own cap"
+  shape.
+
+A zero risk budget derives no options ceiling at all; rather than store a 0 that blocks
+every order, it falls back to the equity backstop. A misconfiguration degrades to "too
+loose", never to "cannot trade".
+
+**2. The re-anchor threshold was 15%, so the caps lagged equity by weeks.** The account
+ran $5.1k → $3.5k → back without a single re-anchor. `REANCHOR_THRESHOLD_PCT` is now
+**5** — still an order of magnitude above per-tick mark-to-market noise on this book,
+and the anchor still moves on every re-anchor, so it cannot churn.
+
+**3. A bad reading re-anchored the caps DOWN.** On 2026-09-11 the account was traded by
+hand: equity read $5,129 in the morning and $3,523 in the afternoon, and every cap was
+cut ~30% while the strategy's own book had not lost a cent. The tick-to-tick equity
+guard cannot see this — closing a position by hand walks equity down in individually
+in-band steps — so the comparison has to be against the **anchor**. A reading more than
+`SUSPECT_DROP_PCT` (25%) below the anchor now holds every cap where it is for that
+session and journals `equity_read_suspect` once, and re-anchors normally as soon as the
+same low reading survives into the next session. A real decline persists; one
+afternoon's hand trading does not.
+
+Three things bound that hold, and each is deliberate:
+
+- **Downward only.** An upward move re-anchors on sight, as it always did, and an upward
+  JUMP still has to survive the sync guard's three corroborating ticks to be written.
+- **A blocking per-order cap wins.** A cap under the sizer's floor means nothing can be
+  placed at all; one session of that is worse than one session of pessimistically small
+  caps.
+- **Its own constant, not `equitySyncMaxJumpPct`.** That field governs a different
+  comparison — this reading against the last one — and loosening it to accept a deposit
+  must not silently loosen this. Numerically the same 25 today, on purpose.
+
+The hold costs at most one session of stale dollar backstops. Every percent-of-equity
+rule — the drawdown halt, the aggregate risk cap, per-trade risk, the premium ceiling —
+is applied to live equity at decision time and is unaffected.
+
+**4. A frozen cap is now visible.** The dashboard carries `capsCoherence`: each stored
+cap, the value the current config derives at the anchor equity, and whether the cap is
+still anchor-owned. The Auto page's **Live guardrail caps** panel shows the pair and
+tags a frozen one. Setting a frozen cap back to its derived value hands it to the
+re-anchor again — already the rule, and now something a reader can act on. The
+"hand-edited" verdict comes from `handEditedDollarCaps`, the same function the
+re-anchor consults, rather than a second reading of the same question.
+
+**Pre-committed check.** After this deploys, `GET /api/autotrade/dashboard` must show
+`liveOptionsMaxOrderUsd` with a `derived` value in the low hundreds (not thousands) and
+`anchorOwned: false` until Step 2's config write sets the stored value to the derived
+one — at which point it must flip to `anchorOwned: true` and stay there through the next
+`live_caps_reanchored`. If the options cap is still reported frozen after that write,
+the derivation and the write disagree and one of them is wrong.
+
+## 2026-09-12 — the app looks for its own leaks
+
+Three leaks were found in this book in one week. Every one of them was found because a
+human happened to look, and every one of them was already sitting in a journal the app
+was writing:
+
+- second entries on a stock that had already run gave back what the first entries made
+  (live round 1 n=64 **+$342**, round 2 n=20 **−$185**; the paper book agrees) — the
+  operator remembered it;
+- the options sleeve decided its exits correctly and never filled them — found by
+  reading one position's tick timeline by hand;
+- the options per-order cap was 14× too large, hand-frozen, and describing an account
+  that had since moved — found while writing a plan.
+
+"Why are these only found when I tell you about them" is a fair question with a
+structural answer: nothing walked the book looking for them. The scan does.
+
+**What it is.** `services/autotrading/edgeLeakScan.ts` (pure) plus
+`edgeLeakScanData.ts` (the DB half) and `GET /api/journal/edge-leaks?sessions=40&book=
+live|paper|both`. It cuts both books by a fixed catalog of dimensions, applies one
+statistical bar to every bucket, and reports what fails it with the lever that closes it.
+Database and journal only — no market data, no provider quota — so the daily routine can
+run it every evening.
+
+**One bar, every dimension.** A bucket is a **leak** at n ≥ 15 when its whole 95%
+bootstrap interval sits below zero AND the paper control (n ≥ 10) agrees in sign;
+**unconfirmed** when the control cannot speak to it; a **watch** at n ≥ 10 within 0.05R
+of the bar. Nothing else is reported. The control arm is the load-bearing part: both
+books consume the same `decision.signals` in the same tick (paper first, `loop.ts`), so a
+bucket that loses in both is a property of the DECISION and a config lever closes it,
+while one that loses only live is a property of EXECUTION and code closes it. Those are
+different findings, and the scan refuses to hand the decision's lever to an execution
+problem.
+
+Deliberately 15 rather than `significance.ts`'s own `MIN_RELIABLE_TRADES` of 20: this is
+a screen that says "go look", not a conclusion, and the control plus the interval carry
+the weight the sample size does not.
+
+**What the catalog cuts by (v1).** Round within symbol-day · entry half-hour · the
+after-13:00 aggregate · score band · VWAP extension · % of session range · exit reason ·
+hold time · symbol (n ≥ 5) · sector · weekday · ML regime · asset · position size.
+Alongside them: the **day level** (goal reached on N of M active sessions counted through
+the sweep's own `simulateSession`, the same count at 1R, red-day decomposition by exit
+reason, mean and worst red day), the **attribution** (each paper entry paired to a live
+entry on the same symbol and ET date within 60 s → mean per-trade R difference and entry
+slippage; unpaired paper entries classified by the live journal's own skip action), and
+**findings** — execution occurrences over the last 10 sessions and configuration
+mismatches, where one occurrence is enough.
+
+**A trade with no value for a cut is EXCLUDED and counted, never pooled into
+"unknown".** An unknown bucket mixes unrelated trades and then reports a mean for them,
+which is how a measurement becomes a fiction. Every dimension reports `covered` and
+`uncovered` so a thin cut is visible as thin.
+
+**Determinism matters more than it looks.** The bootstrap is seeded from a constant, so
+the same book produces the same intervals on every run. A leak that appears and
+disappears between two reads of identical data is worse than no scan at all.
+
+**The rule that keeps the catalog honest**, written into the playbook: when a human finds
+a leak the scan missed, the dimension that would have caught it goes into `DIMENSIONS` in
+the same PR that fixes the leak. Otherwise the next miss is silent for exactly the reason
+this one was.
+
+**Pre-committed first reading.** On the book as it stands the scan must report round 2 as
+a leak (both books negative, lever `symbolReentryCooldownMinutes` → 390), the HOOD
+options day as an execution finding, the options order cap as a configuration finding
+(hand-frozen), and the entry-extension buckets as watches at most. **If it does not, the
+scan is wrong, not the record.** That sentence is the check: it is written before the
+first production read, so the scan cannot be quietly adjusted until it agrees with
+whatever it happens to say.
+
+**The goal-rate line.** `DailyGoalEvidence` gains `storedTargetR`,
+`goalReachedSessions`, `activeSessionsCounted` and `goalRatePct`, and the Auto page shows
+"the goal is 1.20R; reached on 4 of 16 active sessions (25%)" beside the expected-day
+identity. The two answer different questions and the rate is the one a sizing change
+moves first: the goal's height in R is `targetPct ÷ riskPct`, so raising the risk % lowers
+the bar without the book changing at all. It counts sessions that REACHED the goal, not
+sessions that closed above it — `SessionOutcome.reached` was computed by `simulateSession`
+since the sweep was written and returned by nothing, which is the same
+value-computed-and-never-consumed shape CLAUDE.md's own scars are made of. Under `bank`
+the day halts new entries at the level while open trades run on, so a session can reach
+the goal and still close below it; `dayR >= levelR` would have quietly undercounted.
+
+**Where it is read.** The dashboard carries `edgeLeakSummary` from the LAST persisted
+scan (one row, `edge_leak_scans`) rather than running one per poll — a per-bucket
+bootstrap over both books is real CPU and the dashboard is polled. The Auto page's line
+is silent on a clean scan: "0 leaks" every day trains the eye to skip it.
+
+## 2026-09-12 — the day's result is kept
+
+The day's percentage lived in exactly two places, and neither one remembered it: the
+singleton `autotrade_daily_baseline` row, overwritten at the next morning's first tick,
+and the dashboard's live `dailyTarget.gainPct`, recomputed per poll. "How did last
+Tuesday go" had no answer anywhere in the app.
+
+`autotrade_daily_results` is one row per trading session, written by the loop on every
+tick after the session close (reusing `isAfterSessionClose` from PR A) and surfaced as a
+month calendar at `/results`, with a six-week strip under the Auto page's goal card.
+
+**Two percentages, never one.** The **account** figure — close equity over opening
+equity — is what the operator feels, and it carries deposits, withdrawals and anything
+traded by hand. The **strategy** figure is the realized P&L of positions the loop itself
+opened and closed that day, over the same opening equity. Reporting only one of them
+would be wrong in one direction or the other on every day they diverge, so the row keeps
+both and FLAGS the days they disagree by more than `MANUAL_TRADING_DIVERGENCE_PCT`
+(0.5% of equity). 2026-09-11 is the canonical case: the account fell ~31% across an
+afternoon of hand trading while the strategy's own book had not lost a cent — and the
+same reading re-anchored every dollar cap, which is the other half of today's work.
+
+Both percentages are over the SAME baseline, so their difference is itself a percentage
+of equity and compares against the threshold directly. Two quantities in one comparison,
+and they are in the same unit by construction rather than by luck (CLAUDE.md).
+
+**What is never invented.** A session that predates the baseline row has no opening
+equity recorded anywhere. The backfill fills the strategy columns — exact, because the
+positions ledger goes back further — and leaves the account columns NULL, and the
+calendar says so on those cells rather than showing a number derived from a guess.
+`manualTrading` is false, not true, for such a day: with nothing to compare, a flag
+would be a claim.
+
+**It re-records rather than writing once.** An exit can still reconcile after the close
+and the equity sync keeps running, so a row frozen at the first post-close tick would
+miss both. The upsert REPLACES, which is also what makes `POST
+/api/journal/daily-results/record?date=` a usable correction. A recording for a PAST
+date takes its account columns from the row already stored rather than from the baseline
+singleton, which by then belongs to a different day.
+
+**Aggregates sum dollars and average percentages.** A sum of daily percentages is wrong
+twice over — it is not how compounding works, and it counts deposits — so the weekly and
+monthly rows sum `strategy_pnl_usd` and take the MEAN of the percentages, over the days
+that have one.
+
+**The calendar's design** (dataviz): a diverging scale, two hues either side of a neutral
+midpoint, equal steps per arm. The hues are the app's own `bull`/`bear` rather than the
+generic blue↔red, because in this domain green and red already mean gain and loss on
+every other surface. Three steps per arm as alpha over the card surface, so one set of
+steps works in both themes. The fills sit in the recessive band on purpose — the relief
+rule allows that exactly when the value is readable another way, and every tile carries
+its number in a text token (the strongest fill still clears 5:1 against the label in
+dark, 8:1 in light). **The sign is never carried by color alone**: every tile prints an
+explicit `+`/`−`, badges are letters (G/B/H/M) rather than colored dots, and the table
+below the calendar is the accessible twin of the heatmap.
+
+**The scale is dynamic**, which is Decision 10 applied to the UI: magnitude is measured
+against the stored daily GOAL, not a hardcoded percentage, so the calendar re-scales
+itself the moment the goal or the risk % changes. A day that reaches the goal is always a
+full-strength tile, whatever the goal happens to be.

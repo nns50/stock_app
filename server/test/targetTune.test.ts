@@ -20,6 +20,7 @@ import { emptyRealizedEdge, RealizedEdge } from '../src/services/autotrading/dai
 // freeze-out this file guards against is a disagreement BETWEEN these two
 // modules, so a test that only ever exercises one of them cannot see it.
 import { decideLiveCapsReanchor } from '../src/services/autotrading/liveCapsReanchor';
+import { maxAffordablePremiumPerShare, riskPctUpperBound } from '../src/services/autotrading/optionsAffordability';
 import { defaultAutotradeConfig, AutotradeConfig } from '../src/db/autotradeConfig';
 
 /** A reliable, positive record: avg +0.3R over 30 trades, 9 entries a session
@@ -102,9 +103,12 @@ describe('computeTargetTune — sizing solve', () => {
     expect(r.patch.liveMaxDailyLossUsd).toBe(Math.round(1000 * (r.patch.maxDailyDrawdownPct / 100)));
     // entries (6) + one exit each — NOT maxTradesPerDay itself; see liveOrderCapForTrades
     expect(r.patch.liveMaxOrdersPerDay).toBe(12);
-    // options dollar caps mirror the equity ones
-    expect(r.patch.liveOptionsMaxOrderUsd).toBe(r.patch.liveMaxOrderUsd);
+    // The options DAILY-LOSS cap still mirrors the equity one — it is the same
+    // drawdown % of the same account. The options ORDER cap does not: since
+    // 2026-09-12 it comes from the options sizer's own premium ceiling, which
+    // is a far smaller number than a share-sized fat-finger backstop.
     expect(r.patch.liveOptionsMaxDailyLossUsd).toBe(r.patch.liveMaxDailyLossUsd);
+    expect(r.patch.liveOptionsMaxOrderUsd).toBeLessThan(r.patch.liveMaxOrderUsd);
   });
 
   it('scales dollar caps with equity', () => {
@@ -205,7 +209,7 @@ describe('resetToModerate', () => {
     // disabled so untouched configs don't change behavior, but a preset the
     // user asks for takes a stance); the liquidity floors sit a notch above
     // the shipped engine constants.
-    const p = resetToModerate(10000, defaultAutotradeConfig().maxStopDistancePct);
+    const p = resetToModerate(10000, defaultAutotradeConfig());
     expect(p.maxDailyDrawdownPct).toBe(4.5);
     expect(p.optionsStopLossPct).toBe(50);
     expect(p.optionsTakeProfitPct).toBe(80);
@@ -224,7 +228,7 @@ describe('resetToModerate', () => {
   });
 
   it('reproduces the default MODERATE shape at 1% risk, equity-scaled', () => {
-    const p = resetToModerate(10000, defaultAutotradeConfig().maxStopDistancePct);
+    const p = resetToModerate(10000, defaultAutotradeConfig());
     expect(p.riskProfile).toBe('MODERATE');
     expect(p.riskPerTradePct).toBe(1);
     expect(p.maxConcurrentPositions).toBe(2);
@@ -238,7 +242,7 @@ describe('resetToModerate', () => {
   });
 
   it('never emits the safety/identity fields (only the tunable allowlist)', () => {
-    const p = resetToModerate(1000, defaultAutotradeConfig().maxStopDistancePct) as Record<string, unknown>;
+    const p = resetToModerate(1000, defaultAutotradeConfig()) as Record<string, unknown>;
     for (const forbidden of [
       'enabled',
       'killSwitch',
@@ -265,7 +269,7 @@ describe('tunable/never-tuned classification', () => {
   // config field without classifying it fails here (and fails typecheck via
   // targetTune.ts's UnclassifiedAutotradeConfigKey assertion).
   it('classifies every AutotradeConfig field as tuned or deliberately untouched', () => {
-    const tuned = new Set(Object.keys(resetToModerate(1000, defaultAutotradeConfig().maxStopDistancePct)));
+    const tuned = new Set(Object.keys(resetToModerate(1000, defaultAutotradeConfig())));
     const excluded = new Set<string>(NEVER_TUNED_KEYS);
     for (const key of Object.keys(defaultAutotradeConfig())) {
       const classified = tuned.has(key) || excluded.has(key);
@@ -279,7 +283,7 @@ describe('tunable/never-tuned classification', () => {
     // If a key is in TunablePatch but shapeToPatch forgets to write it, the
     // patch silently leaves that field at whatever it was — the classification
     // above can't see it (it reads the emitted patch), so pin the count too.
-    const emitted = Object.keys(resetToModerate(1000, defaultAutotradeConfig().maxStopDistancePct)).length;
+    const emitted = Object.keys(resetToModerate(1000, defaultAutotradeConfig())).length;
     expect(emitted + NEVER_TUNED_KEYS.length).toBe(Object.keys(defaultAutotradeConfig()).length);
   });
 });
@@ -314,6 +318,7 @@ describe('tunable/never-tuned classification', () => {
 // ---------------------------------------------------------------------------
 describe('deriveDollarCaps — funding never binds a stored cap', () => {
   const cfg = {
+    ...defaultAutotradeConfig(),
     maxDailyDrawdownPct: 6.42,
     riskProfile: 'MODERATE' as const,
     riskPerTradePct: 1.25,
@@ -327,7 +332,6 @@ describe('deriveDollarCaps — funding never binds a stored cap', () => {
   it('derives from equity and the percentages alone', () => {
     const caps = deriveDollarCaps(cfg, EQUITY);
     expect(caps.liveMaxOrderUsd).toBe(DERIVED);
-    expect(caps.liveOptionsMaxOrderUsd).toBe(DERIVED);
   });
 
   it('takes exactly two arguments — there is no funding input to pass', () => {
@@ -337,12 +341,56 @@ describe('deriveDollarCaps — funding never binds a stored cap', () => {
     expect(deriveDollarCaps.length).toBe(2);
   });
 
-  it('keeps the options twin equal to the equity cap, on purpose', () => {
-    // Option BP is a much smaller pool ($322-471 that day against a day BP of
-    // $8,644), but these are STORED caps and liveCapsReanchor re-derives them
-    // from config alone, with no broker call. Same reasoning that removed the
-    // equity-side bound; the options side never grew one.
+  // -------------------------------------------------------------------------
+  // The options twin stopped tracking the equity cap on 2026-09-12. It was a
+  // SHARE-sized number guarding an OPTIONS order: $4,269 against a budget that
+  // could not fund a $0.63 contract, 14x too large to be a backstop at all. It
+  // was hand-set to $300 in September and then frozen out of every re-anchor,
+  // which is the thing Decision 10 ("everything scales with the account") most
+  // needed to stop being true.
+  // -------------------------------------------------------------------------
+  it('derives the options twin from the OPTIONS sizer, not the equity cap', () => {
     const caps = deriveDollarCaps(cfg, EQUITY);
+    expect(caps.liveOptionsMaxOrderUsd).not.toBe(caps.liveMaxOrderUsd);
+    expect(caps.liveOptionsMaxOrderUsd).toBeLessThan(caps.liveMaxOrderUsd);
+  });
+
+  it('agrees BY CONSTRUCTION with the premium ceiling the options risk check sizes to', () => {
+    // Not a second copy of the arithmetic: the ceiling comes from the same
+    // function optionsAffordability uses, which is itself pinned against real
+    // computeRiskSizing output in its own suite.
+    for (const equity of [1_000, EQUITY, 25_000]) {
+      const ceiling = maxAffordablePremiumPerShare({
+        equityUsd: equity,
+        riskPctUpperBound: riskPctUpperBound(cfg),
+        disasterStopPct: cfg.optionsDisasterStopPct,
+      });
+      const caps = deriveDollarCaps(cfg, equity);
+      // The largest notional the single-leg sizer can produce at ANY premium —
+      // a cheaper contract simply buys more of them — plus the headroom.
+      expect(caps.liveOptionsMaxOrderUsd).toBeGreaterThanOrEqual(Math.round(ceiling * 100));
+      expect(caps.liveOptionsMaxOrderUsd).toBe(Math.ceil(ceiling * 100 * 1.5));
+    }
+  });
+
+  it('scales linearly with equity — a cap that never needs re-typing by hand', () => {
+    const small = deriveDollarCaps(cfg, 2_500).liveOptionsMaxOrderUsd;
+    const large = deriveDollarCaps(cfg, 10_000).liveOptionsMaxOrderUsd;
+    expect(large / small).toBeCloseTo(4, 1);
+  });
+
+  it('follows the risk % and the disaster stop, the two dials the sizer reads', () => {
+    const atRisk = (riskPerTradePct: number, optionsDisasterStopPct: number): number =>
+      deriveDollarCaps({ ...cfg, riskPerTradePct, optionsDisasterStopPct }, EQUITY).liveOptionsMaxOrderUsd;
+    // Twice the risk budget buys twice the premium.
+    expect(atRisk(2.5, 70) / atRisk(1.25, 70)).toBeCloseTo(2, 1);
+    // A TIGHTER disaster stop risks less of each contract, so the same budget
+    // funds MORE premium — the cap has to rise with it, not fall.
+    expect(atRisk(1.25, 35)).toBeGreaterThan(atRisk(1.25, 70));
+  });
+
+  it('never stores a zero that would block every options order', () => {
+    const caps = deriveDollarCaps({ ...cfg, riskPerTradePct: 0 }, EQUITY);
     expect(caps.liveOptionsMaxOrderUsd).toBe(caps.liveMaxOrderUsd);
   });
 
@@ -384,7 +432,9 @@ describe('a tune run under tight funding does not freeze its caps', () => {
     // caps sat at $900 while the anchor derived ~$3.9k, so both were named in
     // skippedHandEdited and stayed at $900 through every future re-anchor.
     const grown = EQUITY * 1.2;
-    const d = decideLiveCapsReanchor({ ...applied(), accountEquityUsd: grown }, grown);
+    const d = decideLiveCapsReanchor({ ...applied(), accountEquityUsd: grown }, grown, {
+      heldOnPreviousSession: false,
+    });
     expect(d.action).toBe('reanchor');
     if (d.action !== 'reanchor') throw new Error('unreachable');
     expect(d.handEdited).toEqual([]);
@@ -430,10 +480,10 @@ describe('computeTargetTune — the patch carries the caps it derived', () => {
     const r = base({ targetDailyGainPct: 3, equityUsd });
     const expected = deriveDollarCaps(
       {
+        ...defaultAutotradeConfig(),
         maxDailyDrawdownPct: r.patch.maxDailyDrawdownPct,
         riskProfile: r.patch.riskProfile,
         riskPerTradePct: r.patch.riskPerTradePct,
-        maxStopDistancePct: defaultAutotradeConfig().maxStopDistancePct,
       },
       equityUsd,
     );
@@ -467,10 +517,10 @@ describe('computeTargetTune — hand-edited dollar caps', () => {
     const r = base({ targetDailyGainPct: 3, equityUsd: 2137, config: derivedAt(2137) });
     const expected = deriveDollarCaps(
       {
+        ...defaultAutotradeConfig(),
         maxDailyDrawdownPct: r.patch.maxDailyDrawdownPct,
         riskProfile: r.patch.riskProfile,
         riskPerTradePct: r.patch.riskPerTradePct,
-        maxStopDistancePct: defaultAutotradeConfig().maxStopDistancePct,
       },
       2137,
     );

@@ -284,6 +284,14 @@ export interface SessionOutcome {
   halted: boolean;
   entries: number;
   entriesDropped: number;
+  /** Did cumulative R ever touch `levelR` on this session? Not derivable from
+   *  `dayR`: under `bank` the day halts new ENTRIES at the level but trades
+   *  already open run to their real exits, so a session can reach the goal and
+   *  still close below it. Computed here since the sweep was written and
+   *  returned since 2026-09-12, when the goal-rate line needed to count the
+   *  sessions that reached the goal rather than the ones that ended above it.
+   *  Always false under `none`, which models no stopping rule at all. */
+  reached: boolean;
 }
 
 /**
@@ -325,7 +333,7 @@ export function simulateSession(path: SessionPath, policy: SweepPolicy, levelR: 
       else if (armed && !reached && cum <= floorR) halted = true;
     }
   }
-  return { dayR: cum, halted, entries: path.entries, entriesDropped };
+  return { dayR: cum, halted, entries: path.entries, entriesDropped, reached };
 }
 
 /** One policy's outcome over the ACTIVE sessions only — a session with no

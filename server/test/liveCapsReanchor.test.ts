@@ -7,15 +7,21 @@ import {
   AutotradeConfig,
 } from '../src/db/autotradeConfig';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
+import { previousTradingSession } from '../src/services/trading/marketCalendar';
+import { etDateTimeToMs, etToday } from '../src/util/marketDate';
+import { resetOncePerDayEvents } from '../src/services/autotrading/oncePerDayEvents';
 import { db } from '../src/db';
 import { computeTargetTune, sizerFloorUsd } from '../src/services/autotrading/targetTune';
 import { emptyRealizedEdge } from '../src/services/autotrading/dailyTargetSweep';
 import {
   REANCHOR_THRESHOLD_PCT,
+  SUSPECT_DROP_PCT,
+  SuspectReadHistory,
   decideLiveCapsReanchor,
   deriveDollarCaps,
   handEditedDollarCaps,
   reanchorLiveCapsIfDrifted,
+  suspectReadHistory,
 } from '../src/services/autotrading/liveCapsReanchor';
 
 /** A config whose four $ caps are exactly what a tune at `equity` derives —
@@ -25,6 +31,12 @@ function tunedConfig(equity: number, over: Partial<AutotradeConfig> = {}): Autot
   const caps = deriveDollarCaps(base, equity);
   return { ...base, ...caps, liveCapsAnchorEquityUsd: equity, accountEquityUsd: equity, ...over };
 }
+
+/** No earlier suspect reading — the ordinary case for every test that is not
+ *  about the suspect-read hold itself. */
+const FRESH: SuspectReadHistory = { heldOnPreviousSession: false };
+/** The same low reading was already held yesterday, so it is a real decline. */
+const PERSISTED: SuspectReadHistory = { heldOnPreviousSession: true };
 
 describe('deriveDollarCaps', () => {
   // If shapeToPatch and deriveDollarCaps ever disagree, a freshly-applied tune
@@ -49,10 +61,10 @@ describe('deriveDollarCaps', () => {
       });
       const derived = deriveDollarCaps(
         {
+          ...defaultAutotradeConfig(),
           maxDailyDrawdownPct: tune.patch.maxDailyDrawdownPct,
           riskProfile: tune.patch.riskProfile,
           riskPerTradePct: tune.patch.riskPerTradePct,
-          maxStopDistancePct: defaultAutotradeConfig().maxStopDistancePct,
         },
         equity,
       );
@@ -85,7 +97,7 @@ describe('decideLiveCapsReanchor', () => {
   it('is a no-op until a tune has armed the anchor', () => {
     const cfg = { ...defaultAutotradeConfig(), accountEquityUsd: 50_000 };
     expect(cfg.liveCapsAnchorEquityUsd).toBeNull();
-    expect(decideLiveCapsReanchor(cfg, 50_000)).toMatchObject({
+    expect(decideLiveCapsReanchor(cfg, 50_000, FRESH)).toMatchObject({
       action: 'skip',
       reason: expect.stringMatching(/not armed/),
     });
@@ -94,7 +106,7 @@ describe('decideLiveCapsReanchor', () => {
   it('skips without usable equity — never re-derives caps from nothing', () => {
     const cfg = tunedConfig(10_000);
     for (const equity of [null, undefined, 0, -5]) {
-      expect(decideLiveCapsReanchor(cfg, equity)).toMatchObject({
+      expect(decideLiveCapsReanchor(cfg, equity, FRESH)).toMatchObject({
         action: 'skip',
         reason: expect.stringMatching(/equity/),
       });
@@ -103,15 +115,22 @@ describe('decideLiveCapsReanchor', () => {
 
   it('holds while drift is inside the threshold, in both directions', () => {
     const cfg = tunedConfig(10_000);
-    for (const equity of [10_000, 11_499, 8_501]) {
-      expect(decideLiveCapsReanchor(cfg, equity).action).toBe('skip');
+    for (const equity of [10_000, 10_499, 9_501]) {
+      expect(decideLiveCapsReanchor(cfg, equity, FRESH).action).toBe('skip');
     }
+  });
+
+  it('re-anchors at 5% and not at 4% — the caps follow equity in days, not weeks', () => {
+    const cfg = tunedConfig(10_000);
+    expect(decideLiveCapsReanchor(cfg, 10_400, FRESH).action).toBe('skip');
+    expect(decideLiveCapsReanchor(cfg, 10_500, FRESH).action).toBe('reanchor');
+    expect(REANCHOR_THRESHOLD_PCT).toBe(5);
   });
 
   it('re-derives all four caps and moves the anchor once drift reaches the threshold', () => {
     const cfg = tunedConfig(10_000);
     const grown = 10_000 * (1 + REANCHOR_THRESHOLD_PCT / 100); // exactly at threshold
-    const d = decideLiveCapsReanchor(cfg, grown);
+    const d = decideLiveCapsReanchor(cfg, grown, FRESH);
     expect(d.action).toBe('reanchor');
     if (d.action !== 'reanchor') return;
     const expected = deriveDollarCaps(cfg, grown);
@@ -124,9 +143,10 @@ describe('decideLiveCapsReanchor', () => {
   it('tightens on the way DOWN — the direction that matters most', () => {
     // A shrinking account with frozen dollar caps is the dangerous case: the
     // caps grow as a fraction of what's left, loosening exactly when losses
-    // are compounding.
+    // are compounding. 8k is a 20% fall: past the re-anchor threshold and
+    // still inside the suspect-reading band, so it re-anchors on sight.
     const cfg = tunedConfig(10_000);
-    const d = decideLiveCapsReanchor(cfg, 6_000);
+    const d = decideLiveCapsReanchor(cfg, 8_000, FRESH);
     expect(d.action).toBe('reanchor');
     if (d.action !== 'reanchor') return;
     expect(d.patch.liveMaxDailyLossUsd).toBeLessThan(cfg.liveMaxDailyLossUsd);
@@ -136,7 +156,7 @@ describe('decideLiveCapsReanchor', () => {
   it('never touches a hand-edited cap, but still moves the others and the anchor', () => {
     // The user deliberately set a tighter daily-loss cap than the tune's.
     const cfg = tunedConfig(10_000, { liveMaxDailyLossUsd: 500 });
-    const d = decideLiveCapsReanchor(cfg, 13_000);
+    const d = decideLiveCapsReanchor(cfg, 13_000, FRESH);
     expect(d.action).toBe('reanchor');
     if (d.action !== 'reanchor') return;
     expect(d.handEdited).toEqual(['liveMaxDailyLossUsd']);
@@ -152,25 +172,70 @@ describe('decideLiveCapsReanchor', () => {
       liveOptionsMaxOrderUsd: 333,
       liveOptionsMaxDailyLossUsd: 444,
     });
-    const d = decideLiveCapsReanchor(cfg, 20_000);
+    const d = decideLiveCapsReanchor(cfg, 20_000, FRESH);
     expect(d.action).toBe('reanchor');
     if (d.action !== 'reanchor') return;
     expect(Object.keys(d.patch)).toEqual(['liveCapsAnchorEquityUsd']);
     expect(d.handEdited).toHaveLength(4);
     // Anchor moved, so the same equity won't re-trip next tick.
     const after = { ...cfg, ...d.patch } as AutotradeConfig;
-    expect(decideLiveCapsReanchor(after, 20_000).action).toBe('skip');
+    expect(decideLiveCapsReanchor(after, 20_000, FRESH).action).toBe('skip');
+  });
+
+  // -------------------------------------------------------------------------
+  // The suspect-reading hold (2026-09-12). On 2026-09-11 the account was traded
+  // by hand: equity read $5,129 in the morning and $3,523 in the afternoon, and
+  // every dollar cap re-anchored ~30% down off the low reading while the
+  // strategy's own book had not lost a cent. The tick-to-tick equity guard
+  // cannot see it — closing a position by hand walks equity down in in-band
+  // steps — so the comparison has to be against the ANCHOR.
+  // -------------------------------------------------------------------------
+  it('holds the caps for one session on a reading far below the anchor, and writes nothing', () => {
+    const cfg = tunedConfig(5_129);
+    const d = decideLiveCapsReanchor(cfg, 3_523, FRESH);
+    expect(d.action).toBe('hold');
+    if (d.action !== 'hold') return;
+    expect(d.dropPct).toBeCloseTo(31.3, 1);
+    expect(d.anchorEquityUsd).toBe(5_129);
+    expect(d.readEquityUsd).toBe(3_523);
+    // Nothing on a hold is a patch — the caller has nothing it could write.
+    expect(Object.keys(d)).not.toContain('patch');
+  });
+
+  it('re-anchors on the SAME reading once it has persisted into a second session', () => {
+    const cfg = tunedConfig(5_129);
+    const d = decideLiveCapsReanchor(cfg, 3_523, PERSISTED);
+    expect(d.action).toBe('reanchor');
+    if (d.action !== 'reanchor') return;
+    expect(d.patch.liveCapsAnchorEquityUsd).toBe(3_523);
+    expect(d.patch.liveMaxDailyLossUsd).toBeLessThan(cfg.liveMaxDailyLossUsd);
+  });
+
+  it('holds only a DROP — an equally large rise re-anchors on sight', () => {
+    const cfg = tunedConfig(5_129);
+    expect(decideLiveCapsReanchor(cfg, 5_129 * 1.4, FRESH).action).toBe('reanchor');
+    // …and a drop that stays inside the band is ordinary news, not suspect.
+    const inBand = 5_129 * (1 - (SUSPECT_DROP_PCT - 1) / 100);
+    expect(decideLiveCapsReanchor(cfg, inBand, FRESH).action).toBe('reanchor');
+  });
+
+  it('a blocking per-order cap beats the hold — the loop must be able to place SOMETHING', () => {
+    // A cap under the sizer's floor means no order can be placed at all; one
+    // session of that is worse than one session of pessimistic caps.
+    const cfg = tunedConfig(10_000, { riskPerTradePct: 1.25, maxStopDistancePct: 2.5, liveMaxOrderUsd: 10 });
+    expect(sizerFloorUsd(cfg, 5_000)).toBeGreaterThan(cfg.liveMaxOrderUsd);
+    expect(decideLiveCapsReanchor(cfg, 5_000, FRESH).action).toBe('reanchor');
   });
 
   it('converges: immediately after a re-anchor, the same equity is a skip', () => {
     const cfg = tunedConfig(10_000);
-    const d = decideLiveCapsReanchor(cfg, 12_000);
+    const d = decideLiveCapsReanchor(cfg, 12_000, FRESH);
     expect(d.action).toBe('reanchor');
     if (d.action !== 'reanchor') return;
     const after = { ...cfg, ...d.patch } as AutotradeConfig;
-    expect(decideLiveCapsReanchor(after, 12_000).action).toBe('skip');
+    expect(decideLiveCapsReanchor(after, 12_000, FRESH).action).toBe('skip');
     // …and a freshly re-anchored config's caps read as "ours", not hand-edited.
-    const dd = decideLiveCapsReanchor(after, 15_000);
+    const dd = decideLiveCapsReanchor(after, 15_000, FRESH);
     expect(dd.action).toBe('reanchor');
     if (dd.action === 'reanchor') expect(dd.handEdited).toEqual([]);
   });
@@ -178,7 +243,13 @@ describe('decideLiveCapsReanchor', () => {
 
 describe('reanchorLiveCapsIfDrifted (DB + journal)', () => {
   beforeAll(() => initDb());
-  beforeEach(() => db.exec('DELETE FROM autotrade_config; DELETE FROM autotrade_events;'));
+  beforeEach(() => {
+    db.exec('DELETE FROM autotrade_config; DELETE FROM autotrade_events;');
+    // claimOncePerDay is module state: without this, the second test to hold a
+    // suspect reading would find the day's slot already spent and journal
+    // nothing (CLAUDE.md — in-memory module state gets its own reset).
+    resetOncePerDayEvents();
+  });
 
   it('writes the re-derived caps and journals one config event', () => {
     const cfg = tunedConfig(10_000);
@@ -206,6 +277,40 @@ describe('reanchorLiveCapsIfDrifted (DB + journal)', () => {
     expect(detail.currentEquityUsd).toBe(12_000);
     expect(Object.keys(detail.changes)).toHaveLength(4);
     expect(detail.skippedHandEdited).toEqual([]);
+  });
+
+  it('a suspect reading journals equity_read_suspect ONCE and leaves every cap alone', () => {
+    const cfg = tunedConfig(5_129);
+    setAutotradeConfig(cfg);
+    setAutotradeConfig({ accountEquityUsd: 3_523 });
+    const before = getAutotradeConfig();
+
+    expect(reanchorLiveCapsIfDrifted().action).toBe('hold');
+    expect(reanchorLiveCapsIfDrifted().action).toBe('hold');
+
+    expect(getAutotradeConfig()).toEqual(before);
+    const rows = listAutotradeEvents({ stage: 'config' }).filter((e) => e.action === 'equity_read_suspect');
+    expect(rows).toHaveLength(1);
+    const detail = JSON.parse(rows[0].detail!) as { anchorEquityUsd: number; readEquityUsd: number; dropPct: number };
+    expect(detail.anchorEquityUsd).toBe(5_129);
+    expect(detail.readEquityUsd).toBe(3_523);
+    expect(detail.dropPct).toBeCloseTo(31.3, 1);
+    expect(listAutotradeEvents({ stage: 'config' }).filter((e) => e.action === 'live_caps_reanchored')).toHaveLength(0);
+  });
+
+  it("suspectReadHistory reads YESTERDAY's row, not today's — one session, not forever", () => {
+    const cfg = tunedConfig(5_129);
+    setAutotradeConfig(cfg);
+    setAutotradeConfig({ accountEquityUsd: 3_523 });
+    // Today's own hold must not make itself look persisted.
+    expect(reanchorLiveCapsIfDrifted().action).toBe('hold');
+    expect(suspectReadHistory().heldOnPreviousSession).toBe(false);
+
+    // Re-date the row onto the previous trading session: now it has persisted.
+    const previous = previousTradingSession(etToday(Date.now()));
+    const at = etDateTimeToMs(previous, '12:00')!;
+    db.prepare("UPDATE autotrade_events SET created_at = ? WHERE action = 'equity_read_suspect'").run(at);
+    expect(suspectReadHistory().heldOnPreviousSession).toBe(true);
   });
 
   it('unarmed config: writes nothing, journals nothing', () => {
@@ -279,7 +384,7 @@ describe('the per-order cap and the position sizer cannot contradict each other'
     };
     expect(sizerFloorUsd(cfg, 5_161)).toBeGreaterThan(cfg.liveMaxOrderUsd);
 
-    const d = decideLiveCapsReanchor(cfg, 5_161);
+    const d = decideLiveCapsReanchor(cfg, 5_161, FRESH);
 
     expect(d.action).toBe('reanchor');
     if (d.action !== 'reanchor') throw new Error('unreachable');
@@ -314,7 +419,7 @@ describe('the per-order cap and the position sizer cannot contradict each other'
     };
     expect(sizerFloorUsd(cfg, 5_161)).toBeGreaterThan(cfg.liveMaxOrderUsd);
 
-    const d = decideLiveCapsReanchor(cfg, 5_161);
+    const d = decideLiveCapsReanchor(cfg, 5_161, FRESH);
     expect(d.action).toBe('reanchor');
     if (d.action !== 'reanchor') throw new Error('unreachable');
     // The equity cap is fixed, because it genuinely blocks every entry...
@@ -336,6 +441,6 @@ describe('the per-order cap and the position sizer cannot contradict each other'
       liveCapsAnchorEquityUsd: 5_352,
       accountEquityUsd: 5_161,
     };
-    expect(decideLiveCapsReanchor(cfg, 5_161).action).toBe('skip');
+    expect(decideLiveCapsReanchor(cfg, 5_161, FRESH).action).toBe('skip');
   });
 });

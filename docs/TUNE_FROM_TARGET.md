@@ -233,17 +233,44 @@ label, exactly when losses are compounding.
 
 So applying a tune also records the equity it derived those caps from (the _anchor_),
 and the loop **re-derives the four dollar caps automatically** whenever synced equity
-has moved **15% or more** (either direction) from that anchor, using the same formulas
+has moved **5% or more** (either direction) from that anchor, using the same formulas
 in the table above — then moves the anchor to the new equity, so mark-to-market noise
 can never make it churn. Each re-anchor appears in **Recent activity** as a
 `live_caps_reanchored` config event showing the old → new value of every cap it moved.
+
+**5% since 2026-09-12, down from 15%.** At 15% the caps lagged real equity by weeks:
+the account ran from $5.1k down to $3.5k and back without a single re-anchor, so every
+dollar cap described an account that no longer existed. 5% is still far above per-tick
+mark-to-market noise, and the anchor still moves on each re-anchor, so it cannot churn.
+
+**A reading far below the anchor waits a session.** A drop of more than **25%** from the
+anchor holds every cap where it is for that session and journals `equity_read_suspect`
+instead of re-anchoring; the same low reading on the next session re-anchors normally.
+This is the 2026-09-11 case: the account was traded by hand, equity read $5,129 in the
+morning and $3,523 in the afternoon, and the caps were cut ~30% off the low reading
+while the strategy's own book had not lost a cent. A real decline persists into the
+next session; one afternoon's hand trading does not. Only DROPS wait — a rise
+re-anchors on sight. Nothing else is delayed by the hold: every percent-of-equity
+rule (the drawdown halt, the aggregate risk cap, per-trade risk) still applies to live
+equity at decision time.
+
+**The options per-order cap has its own formula** (2026-09-12). It used to be a copy of
+the equity per-order cap, which is a SHARE-sized number: on 2026-09-06 that read $4,269
+against an options budget that could not fund a $0.63 contract, so it was set by hand to
+$300 and then frozen out of every re-anchor. It is now derived from the options sizer
+itself — the largest notional a single-leg options order can carry, `equity ×
+riskPerTradePct ÷ optionsDisasterStopPct`, times the same 1.5 headroom — so it scales
+with the account like everything else and no longer needs re-typing.
 
 Hand-edits stay yours: a cap is only re-derived while it still equals the value the
 anchor implies. One you've changed by hand is skipped (and named in the event), and
 editing the drawdown-halt percent by hand likewise takes the daily-loss caps out of
 the automation's reach from the next re-anchor on. Re-applying a tune re-arms
-everything. Configs from before this feature have no anchor recorded, so nothing
-re-anchors until a tune is applied once.
+everything. The Auto page's **Live guardrail caps** panel shows each cap beside its
+derived value and tags a frozen one, so a cap that has dropped out of the automation is
+visible rather than merely believed; setting it back to the derived value hands it back.
+Configs from before this feature have no anchor recorded, so nothing re-anchors until a
+tune is applied once.
 
 ## 6. What it changes — and what it never touches
 
