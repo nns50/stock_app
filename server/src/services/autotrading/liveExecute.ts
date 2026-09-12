@@ -1161,6 +1161,20 @@ export async function runLiveExecution(
       if (cfg.liveAccountId) {
         try {
           const acct = await webullAccountState(cfg.liveAccountId);
+          // A NON-throwing failure is just as silent as a thrown one, and more
+          // likely: the broker answers, the answer is not ok, and the bound
+          // simply never gets set.
+          if (!acct.ok && claimOncePerDay('live_buying_power_unavailable', 'account')) {
+            logAutotradeEvent({
+              stage: 'risk_check',
+              action: 'live_buying_power_unavailable',
+              detail: {
+                reason: acct.error ?? 'broker account read returned not-ok',
+                effect: 'sizing is unconstrained by buying power and by the exposure headroom for this batch',
+              },
+              riskProfile: cfg.riskProfile,
+            });
+          }
           if (acct.ok && acct.state) {
             availableBuyingPowerUsd = withDayBuyingPower(acct.state, cfg).buyingPowerUsd;
             // Same rearrangement the guardrail does, one step earlier:
@@ -1170,8 +1184,25 @@ export async function runLiveExecution(
             // rather than silently ignoring the cap.
             exposureHeadroomUsd = liveTradingCfg.maxExposureUsd - acct.state.exposureUsd;
           }
-        } catch {
-          /* leave undefined — unconstrained, exactly as before */
+        } catch (err) {
+          // FAIL-OPEN, SAID OUT LOUD (2026-09-12). `undefined` buying power
+          // means "no constraint" to the sizer, so a broker read that throws
+          // silently removes the buying-power bound AND the exposure headroom
+          // for the rest of the batch — the two bounds this block exists to
+          // aim orders at. Failing closed would be worse (one bad read would
+          // stop the book), so the behaviour stands and the weakening is
+          // journaled. Once per ET day: the read is attempted on every batch.
+          if (claimOncePerDay('live_buying_power_unavailable', 'account')) {
+            logAutotradeEvent({
+              stage: 'risk_check',
+              action: 'live_buying_power_unavailable',
+              detail: {
+                reason: (err as Error).message,
+                effect: 'sizing is unconstrained by buying power and by the exposure headroom for this batch',
+              },
+              riskProfile: cfg.riskProfile,
+            });
+          }
         }
       }
     }

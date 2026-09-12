@@ -3,7 +3,14 @@ import { initDb, db } from '../src/db';
 import { createPosition } from '../src/db/positions';
 import { setAutotradeConfig } from '../src/db/autotradeConfig';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
-import { evaluateRiskCheck, RiskCheckContext, runAutotradeRiskCheck } from '../src/services/autotrading/riskCheck';
+import {
+  correlatedNotional,
+  evaluateRiskCheck,
+  RiskCheckContext,
+  runAutotradeRiskCheck,
+} from '../src/services/autotrading/riskCheck';
+import * as providers from '../src/providers';
+import { resetOncePerDayEvents } from '../src/services/autotrading/oncePerDayEvents';
 import { TradeSignal } from '../src/services/autotrading/decide';
 
 function signal(overrides: Partial<TradeSignal> = {}): TradeSignal {
@@ -938,5 +945,64 @@ describe('evaluateRiskCheck — same-day re-entry size cut', () => {
 
     const inactive = evaluateRiskCheck(signal(), baseCtx({ priorSameDayExits: 0, repeatEntrySizeCutPct: 50 }));
     expect(inactive.checks.find((c) => c.rule === 'repeat_entry_sizing')?.detail).toMatch(/^inactive/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The correlated-exposure cap FAILS OPEN, and now says so (2026-09-12).
+//
+// A daily-candle fetch that throws leaves that position's correlation null,
+// and the sum skips a null — so a provider outage makes the cap UNDER-COUNT
+// and admit a position it would otherwise refuse. Failing closed would be
+// worse (one bad fetch stops the book), so the behaviour stands and the
+// weakening is journaled. Before this, `correlations` carried the `r: null`
+// signal and every caller destructured `{ amount }` and threw it away.
+// ---------------------------------------------------------------------------
+describe('correlatedNotional fails open, out loud', () => {
+  beforeEach(() => {
+    db.exec('DELETE FROM autotrade_events');
+    resetOncePerDayEvents();
+    vi.restoreAllMocks();
+  });
+
+  const positions = [
+    { symbol: 'AAA', notional: 5_000, side: 'long' as const },
+    { symbol: 'BBB', notional: 5_000, side: 'long' as const },
+  ];
+
+  it('journals the under-count when candles cannot be fetched, and counts the unresolved', async () => {
+    vi.spyOn(providers, 'getProvider').mockReturnValue({
+      getCandles: () => Promise.reject(new Error('provider down')),
+    } as unknown as ReturnType<typeof providers.getProvider>);
+
+    const r = await correlatedNotional('TEST', 'long', positions, 30, 0.6);
+    // Nothing resolved, so nothing was counted — the cap sees $0 of correlated
+    // capital against two real correlated positions.
+    expect(r.amount).toBe(0);
+    expect(r.unresolved).toBe(2);
+
+    const rows = listAutotradeEvents({ actions: ['correlation_data_unavailable'] });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].symbol).toBe('TEST');
+    expect(JSON.parse(rows[0].detail as string)).toMatchObject({ unresolved: 2, positions: 2 });
+  });
+
+  it('writes one row a day, not one per tick', async () => {
+    vi.spyOn(providers, 'getProvider').mockReturnValue({
+      getCandles: () => Promise.reject(new Error('provider down')),
+    } as unknown as ReturnType<typeof providers.getProvider>);
+    for (let i = 0; i < 4; i++) await correlatedNotional('TEST', 'long', positions, 30, 0.6);
+    expect(listAutotradeEvents({ actions: ['correlation_data_unavailable'] })).toHaveLength(1);
+  });
+
+  it('stays silent when every correlation resolves', async () => {
+    const closes = Array.from({ length: 31 }, (_, i) => 100 + i);
+    vi.spyOn(providers, 'getProvider').mockReturnValue({
+      getCandles: () => Promise.resolve(closes.map((c) => ({ close: c }))),
+    } as unknown as ReturnType<typeof providers.getProvider>);
+
+    const r = await correlatedNotional('TEST', 'long', positions, 30, 0.6);
+    expect(r.unresolved).toBe(0);
+    expect(listAutotradeEvents({ actions: ['correlation_data_unavailable'] })).toEqual([]);
   });
 });
