@@ -1824,6 +1824,15 @@ The asymmetry is the safety model, and it is one-way: **a rule that adds exposur
 never applied by the app** — more risk, more slots, a wider halt, shorts all get reported
 and wait. Nothing the app does on its own can widen your risk.
 
+Since 2026-09-12 that is enforced by **arithmetic, not by a label**. One rule (`leak_lever`)
+takes its field and its number from the leak scan's output rather than from literal code,
+and the scan's own score-band lever would have proposed lowering the live score floor while
+calling itself safe. So before the app applies any data-sourced patch it checks each key
+against a written table of which direction is *less* exposure, and refuses anything moving
+the other way — the proposal still reaches you, with the refusal at the top of its reasons.
+Any patch, literal or not, is also refused if it would produce a config the settings route
+itself would reject.
+
 **Nothing acts until it has shadowed.** A rule evaluates, journals what it would have
 done, and changes nothing until it has been evaluated on five sessions, fired at least
 once, and never contradicted itself (proposed, then "not met" the next session without

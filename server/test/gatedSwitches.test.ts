@@ -5,10 +5,14 @@ import {
   evaluateGatedSwitches,
   freshSwitchState,
   GATED_SWITCH_RULES,
+  SWITCH_WRITABLE_KEYS,
   GatedSwitchSnapshot,
   graduationVerdict,
   nextSwitchState,
+  coherenceGuard,
+  exposureGuard,
   PRE_TRIAL_SIZING,
+  SAFE_DIRECTION,
   SHADOW_MIN_EVALUATIONS,
   SwitchRule,
   SwitchState,
@@ -122,6 +126,144 @@ describe('evaluateGatedSwitches', () => {
       rules: [stubRule(() => true)],
       ...over,
     });
+
+  // -------------------------------------------------------------------------
+  // A DATA-SOURCED PATCH IS CHECKED BY ARITHMETIC, NOT BY ITS LABEL.
+  //
+  // The engine's whole safety model is "a rule that adds exposure is never
+  // applied by the app", and for `leak_lever` that rested on a
+  // `direction: 'safe'` field attached by a different module, to data. The scan
+  // writes `value: bucket === '<60' ? 60 : 70` with the detail "RAISE the score
+  // floor" — an ABSOLUTE floor where it means a raise. Production's floor is
+  // 72, so a losing 60-69 band proposes 70: a DROP that admits trades the live
+  // book refuses, labelled safe, applied to real money once the rule graduated.
+  // The scan cannot catch it (its lever is given no config), so the write is
+  // the only place it can be caught.
+  // -------------------------------------------------------------------------
+  it('refuses to APPLY a data-sourced patch that lowers the live score floor', () => {
+    const config = { ...defaultAutotradeConfig(), liveMinSignalScore: 72 };
+    const graduated: SwitchState = {
+      ...freshSwitchState('stub'),
+      evaluations: SHADOW_MIN_EVALUATIONS,
+      proposals: 1,
+      graduatedAt: 1,
+    };
+    const rule: SwitchRule = {
+      ...stubRule(() => true),
+      patchFromData: true,
+      evaluate: () => ({ patch: { liveMinSignalScore: 70 }, evidence: 'scoreBand=60-69' }),
+    };
+    const r = evaluateGatedSwitches({
+      snapshot: snapshot({ config }),
+      states: new Map([['stub', graduated]]),
+      enabled: true,
+      now: 1_000,
+      rules: [rule],
+    });
+    expect(r.applied).toEqual([]);
+    expect(r.decisions[0].outcome).toBe('proposed');
+    expect(r.decisions[0].exposureRefusals[0]).toMatch(/liveMinSignalScore 72 → 70 LOWERS it/);
+    // The proposal still reaches the operator — refusing to act is not
+    // refusing to report.
+    expect(r.proposed).toHaveLength(1);
+  });
+
+  it('still applies a data-sourced patch that moves the RIGHT way', () => {
+    const config = { ...defaultAutotradeConfig(), liveMinSignalScore: 60 };
+    const graduated: SwitchState = {
+      ...freshSwitchState('stub'),
+      evaluations: SHADOW_MIN_EVALUATIONS,
+      proposals: 1,
+      graduatedAt: 1,
+    };
+    const rule: SwitchRule = {
+      ...stubRule(() => true),
+      patchFromData: true,
+      evaluate: () => ({ patch: { liveMinSignalScore: 70 }, evidence: 'scoreBand=60-69' }),
+    };
+    const r = evaluateGatedSwitches({
+      snapshot: snapshot({ config }),
+      states: new Map([['stub', graduated]]),
+      enabled: true,
+      now: 1_000,
+      rules: [rule],
+    });
+    expect(r.applied).toHaveLength(1);
+    expect(r.decisions[0].exposureRefusals).toEqual([]);
+  });
+
+  it('leaves a LITERAL patch alone — the pre-committed revert moves three keys "up"', () => {
+    // sizing_revert restores the 2026-09-11 settings as a SET: risk down, but
+    // expectancyMaxMultiplier 1.25 → 1.5, stagnationExitMinutes 60 → 90 and
+    // symbolReentryCooldownMinutes 390 → 120 all move toward more exposure on
+    // their own. It is safe because it is a known-good prior configuration, not
+    // because each field points the same way — which is exactly why the guard
+    // is scoped to patches assembled from DATA.
+    const refusals = exposureGuard(PRE_TRIAL_SIZING, {
+      ...defaultAutotradeConfig(),
+      riskPerTradePct: 2.5,
+      expectancyMaxMultiplier: 1.25,
+      stagnationExitMinutes: 60,
+      symbolReentryCooldownMinutes: 390,
+    });
+    expect(refusals.length).toBeGreaterThan(0); // it WOULD be refused as data…
+    const graduated: SwitchState = {
+      ...freshSwitchState('stub'),
+      evaluations: SHADOW_MIN_EVALUATIONS,
+      proposals: 1,
+      graduatedAt: 1,
+    };
+    const rule: SwitchRule = {
+      ...stubRule(() => true),
+      evaluate: () => ({ patch: { ...PRE_TRIAL_SIZING }, evidence: 'revert' }),
+    };
+    const r = evaluateGatedSwitches({
+      snapshot: snapshot({ config: { ...defaultAutotradeConfig(), riskPerTradePct: 2.5 } }),
+      states: new Map([['stub', graduated]]),
+      enabled: true,
+      now: 1_000,
+      rules: [rule],
+    });
+    expect(r.applied).toHaveLength(1); // …and is not, because it is literal code
+  });
+
+  it('refuses a patch the PUT route itself would answer 400 for, literal or not', () => {
+    // Workstream 7 said an auto-applied patch goes "through the same validated
+    // path the PUT route uses". It goes through setAutotradeConfig directly,
+    // which sanitizes one field at a time and cannot see a PAIR. Exactly one of
+    // the route's ordered pairs has a writable side here.
+    const config = { ...defaultAutotradeConfig(), expectancyMinMultiplier: 1 };
+    expect(coherenceGuard({ expectancyMaxMultiplier: 0.8 }, config)[0]).toMatch(/below expectancyMinMultiplier/);
+    expect(coherenceGuard({ expectancyMaxMultiplier: 1.5 }, config)).toEqual([]);
+    // Unlike the exposure guard, this one applies to a LITERAL patch too: a
+    // rule is trusted with its own direction, never with a config the route
+    // would reject.
+    const graduated: SwitchState = {
+      ...freshSwitchState('stub'),
+      evaluations: SHADOW_MIN_EVALUATIONS,
+      proposals: 1,
+      graduatedAt: 1,
+    };
+    const r = evaluateGatedSwitches({
+      snapshot: snapshot({ config }),
+      states: new Map([['stub', graduated]]),
+      enabled: true,
+      now: 1_000,
+      rules: [
+        { ...stubRule(() => true), evaluate: () => ({ patch: { expectancyMaxMultiplier: 0.8 }, evidence: 'x' }) },
+      ],
+    });
+    expect(r.applied).toEqual([]);
+  });
+
+  it('classifies every writable key, so a new one cannot slip in unjudged', () => {
+    // The compile-time twin of targetTune's exhaustiveness guard: a key added
+    // to SWITCH_WRITABLE_KEYS without a direction would let a data-sourced rule
+    // write it with nothing checking which way it moved.
+    for (const key of SWITCH_WRITABLE_KEYS) expect(SAFE_DIRECTION[key]).toBeDefined();
+    // 'either' keys are refused outright rather than waved through.
+    expect(exposureGuard({ targetRMultiple: 1 }, defaultAutotradeConfig())[0]).toMatch(/not an exposure knob/);
+  });
 
   it('proposes but does not apply while the rule is still shadowed', () => {
     const r = run();

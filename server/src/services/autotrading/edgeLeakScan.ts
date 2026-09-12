@@ -420,7 +420,15 @@ export const DIMENSIONS: Dimension[] = [
             field: 'liveMinSignalScore',
             value: bucket === '<60' ? 60 : 70,
             direction: 'safe',
-            detail: 'Raise the live-only score floor above the losing band; paper keeps trading it as the control.',
+            // An ABSOLUTE floor, not a delta, and the scan cannot know the
+            // current one — `lever(bucket)` is given no config. So say what the
+            // number is: a floor to raise TO, never a value to drop to. The
+            // gated-switch engine refuses to auto-apply it when it would lower
+            // the stored floor (gatedSwitches.ts's SAFE_DIRECTION), and a human
+            // reading this row needs the same warning.
+            detail:
+              'Raise the live-only score floor to AT LEAST this, to sit above the losing band; ' +
+              'leave it alone if it is already higher. Paper keeps trading the band as the control.',
           }
         : null,
   },

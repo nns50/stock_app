@@ -197,11 +197,15 @@ export function runGatedSwitches(now: number = Date.now()): GatedSwitchResult | 
         patch,
         evidence,
         // Why it was not applied — the reader should never have to infer it.
-        blockers:
-          result.decisions.find((d) => d.rule.id === ruleId)?.graduation.graduated === true
-            ? ['the engine is switched off or the kill switch is engaged']
-            : ((result.decisions.find((d) => d.rule.id === ruleId)?.graduation as { blockers?: string[] })?.blockers ??
-              []),
+        // An exposure refusal comes FIRST and on its own: "this patch adds
+        // exposure" is a different answer from "this rule is still shadowing",
+        // and it is the one that needs reading.
+        blockers: (() => {
+          const d = result.decisions.find((x) => x.rule.id === ruleId);
+          if (d && d.exposureRefusals.length > 0) return d.exposureRefusals;
+          if (d?.graduation.graduated === true) return ['the engine is switched off or the kill switch is engaged'];
+          return (d?.graduation as { blockers?: string[] } | undefined)?.blockers ?? [];
+        })(),
       },
       riskProfile: snapshot.config.riskProfile,
     });

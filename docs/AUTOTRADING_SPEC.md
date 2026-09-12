@@ -9150,3 +9150,67 @@ way round and was wrong.
 
 No web change: the Auto page carries `edgeLeakSummary`, not `coverage`. This is read by
 the evening routine and by the route, which is where the question gets asked.
+
+## 2026-09-12 — the engine's safety model rested on a label, and the label was wrong
+
+The gated-switch engine's entire safety model is one sentence: **a rule that adds exposure
+is never applied by the app.** Its own header says `direction` is *"checked in three places
+rather than one."* All three check the same thing — the `direction` **field** — and for one
+rule that field is attached by a different module, to data, describing an intent rather
+than an arithmetic.
+
+`leak_lever` reads a field name and a number off whatever the last scan put in a
+`LeakLever`, confirms the key is on `SWITCH_WRITABLE_KEYS`, confirms the value differs from
+the stored one, and applies it. `assertWritable` — whose own comment draws exactly this
+distinction, *"a patch assembled from a leak scan's lever is data, not literal code"* —
+checks **which key** may be written and never **which way the value moves**.
+
+**It was reachable, with the numbers already in the source.** The scan's score-band lever:
+
+```ts
+value: bucket === '<60' ? 60 : 70,
+direction: 'safe',
+detail: 'Raise the live-only score floor above the losing band…'
+```
+
+An **absolute** floor where the detail says *raise*. Production's `liveMinSignalScore` is
+**72**. So a losing 60-69 band proposes `liveMinSignalScore: 70` — a **drop** that admits
+trades the live book currently refuses, labelled safe, applied to real money by the app
+itself once the rule graduated its shadow. A test with the guard removed confirms the
+engine applies it.
+
+The producer cannot fix this: `lever` has the signature `(bucket) => LeakLever` and the
+scan is never handed the config, so the current floor is unknowable there. That makes the
+write the only place it can be checked — **assert at the consumer, not the producer**,
+precisely as CLAUDE.md states it.
+
+**`SAFE_DIRECTION`** now declares, per writable key, which way is less exposure — including
+the two that read backwards (`symbolReentryCooldownMinutes` and `liveMinSignalScore` are
+safer *higher*) and the one that is easy to get wrong (`maxDailyDrawdownPct` **lower**: a
+wider halt lets the day keep losing). Three keys are `'either'` — not exposure knobs on
+their own — and a data-sourced rule may not write those at all.
+
+**Scoped to data, deliberately.** `sizing_revert` restores the 2026-09-11 settings as a
+**set**: risk, exposure, aggregate and halt all come down, but `expectancyMaxMultiplier`
+1.25 → 1.5, `stagnationExitMinutes` 60 → 90 and `symbolReentryCooldownMinutes` 390 → 120
+each move toward more exposure on their own. It is safe because it is a known-good prior
+configuration, not because every field points the same way — which is why the guard keys
+off `patchFromData` rather than running over every patch. A test asserts both halves: the
+revert *would* be refused as data, and is not, because it is literal code.
+
+**The coherence half, which the plan asked for and did not get.** Workstream 7 specified
+that an auto-applied patch goes *"through the same validated path the PUT route uses."* It
+goes through `setAutotradeConfig` directly, which sanitizes fields one at a time and has no
+view of a pair. Of the route's four ordered pairs and its goal triple, exactly one has a
+writable side here: `expectancyMaxMultiplier`. Inverted against its min, the route answers
+400 with *"every conviction grade would size at the same multiplier"*; written straight to
+the row it fails nowhere and every grade silently sizes alike. Not reachable today — no
+lever names that field — which is exactly when it is cheap to close. `coherenceGuard`
+applies to **literal** patches too: a rule is trusted with its own direction, never with a
+config the route would reject.
+
+**Refusing to act is not refusing to report.** A refused patch still journals
+`config_change_proposed`, and the refusal text leads the `blockers` list — "this adds
+exposure" is a different answer from "this rule is still shadowing", and it is the one that
+needs reading. The scan's lever detail now also says the number is a floor to raise **to**,
+never a value to drop to, so a human applying it by hand gets the same warning.
