@@ -82,7 +82,7 @@ import {
   syncLiveOptionsPositionsFromBroker,
   sellableExitLimit,
   sellableSpreadExitLimit,
-  resetLiveOptionsExitChaseState,
+  resetLiveOptionsProcessState,
 } from '../src/services/autotrading/liveOptionsExecute';
 import { closeLiveOptionsAutotradePosition } from '../src/services/trading/closePosition';
 
@@ -275,7 +275,7 @@ beforeEach(() => {
   // fixtures every pre-existing case was written against.
   mockOptionQuotes.mockResolvedValue({ ok: false, quotes: [] });
   // Module state: the chase budget outlives the rows this beforeEach clears.
-  resetLiveOptionsExitChaseState();
+  resetLiveOptionsProcessState();
 });
 afterEach(() => {
   config.trading.placeEnabled = origPlaceEnabled;
