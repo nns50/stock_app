@@ -17,6 +17,17 @@ vi.mock('../src/providers/webull/orders', async (importOriginal) => {
     webullOrderStatusBatch: batchFromSingle(webullOrderStatus),
   };
 });
+// The real-time OPRA snapshot the exit path prefers over the ~15-minute
+// delayed chain. Default OFF (ok:false) so every pre-existing case keeps
+// pricing off the chain fixtures it was written against; the cases that care
+// arm it explicitly.
+vi.mock('../src/providers/webull/optionQuotes', () => ({
+  webullOptionQuotes: vi.fn(async () => ({ ok: false, quotes: [] })),
+}));
+vi.mock('../src/providers/webull/account', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/providers/webull/account')>();
+  return { ...actual, webullConfigured: vi.fn(() => true) };
+});
 vi.mock('../src/providers/webull/positions', async (importOriginal) => {
   // contractKey is kept REAL (a pure, deterministic function this file's new
   // tests want to actually exercise, not mock away) — only the network call
@@ -35,6 +46,7 @@ import {
   WebullOrderStatus,
 } from '../src/providers/webull/orders';
 import { previewWebullPositions } from '../src/providers/webull/positions';
+import { webullOptionQuotes } from '../src/providers/webull/optionQuotes';
 import { initDb, db } from '../src/db';
 import { UNKNOWN_PLACEMENT_RETIRE_GRACE_MS } from '../src/services/trading/reconcile';
 import { setAutotradeConfig, defaultAutotradeConfig, AutotradeConfig } from '../src/db/autotradeConfig';
@@ -42,7 +54,7 @@ import { setTradingConfig } from '../src/db/trading';
 import { createPosition } from '../src/db/positions';
 import { addSymbols } from '../src/db/universe';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
-import { listIntents, createIntent, transitionIntent } from '../src/db/orders';
+import { listIntents, createIntent, transitionIntent, advanceMaterialized } from '../src/db/orders';
 import { recordLiveOrder } from '../src/db/autotradeLiveOrders';
 import {
   getLiveOptionsOrder,
@@ -68,6 +80,9 @@ import {
   clockForcesCloseToday,
   reconcileLiveOptionsOrders,
   syncLiveOptionsPositionsFromBroker,
+  sellableExitLimit,
+  sellableSpreadExitLimit,
+  resetLiveOptionsExitChaseState,
 } from '../src/services/autotrading/liveOptionsExecute';
 import { closeLiveOptionsAutotradePosition } from '../src/services/trading/closePosition';
 
@@ -78,6 +93,7 @@ const mockAccountType = vi.mocked(webullAccountType);
 const mockPlaceOrder = vi.mocked(webullPlaceOrder);
 const mockOrderStatus = vi.mocked(webullOrderStatus);
 const mockCancelOrder = vi.mocked(webullCancelOrder);
+const mockOptionQuotes = vi.mocked(webullOptionQuotes);
 
 function optionSignal(overrides: Partial<SingleLegOptionsSignal> = {}): SingleLegOptionsSignal {
   return {
@@ -128,7 +144,14 @@ function spreadSignal(overrides: Partial<DebitSpreadOptionsSignal> = {}): DebitS
 
 /** `mark` is a live two-sided quote; `last` alone models an illiquid contract
  *  with no bid/ask, where the only number available is an old trade print. */
-type ContractFixture = { side: 'call' | 'put'; strike: number; mark?: number; last?: number };
+type ContractFixture = {
+  side: 'call' | 'put';
+  strike: number;
+  mark?: number;
+  last?: number;
+  bid?: number;
+  ask?: number;
+};
 
 function chainsFor(fixtures: Record<string, ContractFixture | ContractFixture[]>): ReturnType<typeof getProvider> {
   // Deliberately partial — only the members these tests exercise.
@@ -144,6 +167,8 @@ function chainsFor(fixtures: Record<string, ContractFixture | ContractFixture[]>
         strike: f.strike,
         ...(f.mark !== undefined ? { mark: f.mark } : {}),
         ...(f.last !== undefined ? { last: f.last } : {}),
+        ...(f.bid !== undefined ? { bid: f.bid } : {}),
+        ...(f.ask !== undefined ? { ask: f.ask } : {}),
         expiration,
       }));
       return {
@@ -245,6 +270,12 @@ beforeEach(() => {
   mockPlaceOrder.mockReset();
   mockOrderStatus.mockReset();
   mockCancelOrder.mockReset();
+  mockOptionQuotes.mockReset();
+  // Default: no OPRA entitlement in play, so pricing falls back to the chain
+  // fixtures every pre-existing case was written against.
+  mockOptionQuotes.mockResolvedValue({ ok: false, quotes: [] });
+  // Module state: the chase budget outlives the rows this beforeEach clears.
+  resetLiveOptionsExitChaseState();
 });
 afterEach(() => {
   config.trading.placeEnabled = origPlaceEnabled;
@@ -1186,8 +1217,12 @@ describe('checkLiveOptionsExits — replacing a STALE working close', () => {
     return { pos, intent };
   }
 
-  const armBroker = (mark: number) => {
-    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark } }) as never);
+  const armBroker = (mark: number, bid?: number) => {
+    mockGetProvider.mockReturnValue(
+      chainsFor({
+        AAPL: { side: 'call', strike: 100, mark, ...(bid === undefined ? {} : { bid, ask: mark }) },
+      }) as never,
+    );
     mockAccountState.mockResolvedValue(holdingAccountState(2) as Awaited<ReturnType<typeof webullAccountState>>);
     mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-REPLACED' });
   };
@@ -1198,16 +1233,136 @@ describe('checkLiveOptionsExits — replacing a STALE working close', () => {
     mockOrderStatus.mockResolvedValue({ ok: true, found: true, status: 'CANCELLED' } as WebullOrderStatus);
   };
 
-  it('leaves a working close alone while no clock rule forces the position flat', async () => {
-    // The unchanged behaviour, and the reason the replacement is gated on the
-    // clock at all: before then, waiting is free and the order may still fill.
+  it('chases a working close down to the bid with NO clock rule forcing it (HOOD, 2026-09-11)', async () => {
+    // The inverted premise. Replacement used to be gated on a clock rule, so a
+    // close that could no longer fill sat untouched until the hard time exit
+    // hours later: HOOD's take_profit placed 1.40 at 10:18, and nothing
+    // re-examined it until 11:15 — by which time the trade was -43%. Between
+    // the take-profit level and the give-back arm level no rule fires, which
+    // is exactly the band a working close lives in, so the chase cannot depend
+    // on one firing.
     setAutotradeConfig(clockCfg({ maxHoldDays: 0 }));
-    positionWithWorkingClose(0.6);
-    armBroker(0.2);
+    positionWithWorkingClose(1.4);
+    armBroker(1.3, 1.25);
     cancelSucceeds();
 
     await checkLiveOptionsExits();
 
+    expect(mockCancelOrder).toHaveBeenCalledTimes(1);
+    expect(mockPlaceOrder).toHaveBeenCalledTimes(1);
+    expect(mockPlaceOrder.mock.calls[0][1]).toMatchObject({ limitPrice: 1.25 });
+    expect(detailOf('live_options_stale_exit_cancelled')).toMatchObject({
+      trigger: 'chase',
+      clockRule: null,
+      restingLimit: 1.4,
+      sellable: 1.25,
+      postCancelStatus: 'CANCELLED',
+      repriceCount: 1,
+    });
+    // The replacement carries the ORIGINAL decision's reason, read off the
+    // order row — the ladder is not re-run for a position already in exit.
+    expect(detailOf('live_options_exit_placed')).toMatchObject({
+      exitReason: 'stop_loss',
+      trigger: 'chase',
+      repriceCount: 1,
+      priceBasis: 'bid',
+    });
+  });
+
+  it('leaves a close at or below the bid working, clock or no clock', async () => {
+    // The profit half of the rule, unchanged: a sell with a buyer within reach
+    // is never re-priced downward.
+    setAutotradeConfig(clockCfg({ maxHoldDays: 0 }));
+    positionWithWorkingClose(1.2);
+    armBroker(1.3, 1.25);
+    cancelSucceeds();
+
+    await checkLiveOptionsExits();
+
+    expect(mockCancelOrder).not.toHaveBeenCalled();
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(detailOf('live_options_exit_left_working')).toMatchObject({ restingLimit: 1.2, sellable: 1.25 });
+  });
+
+  it('does not re-price a close that is mid-fill', async () => {
+    setAutotradeConfig(clockCfg({ maxHoldDays: 0 }));
+    const { pos } = positionWithWorkingClose(1.4);
+    const intentId = listPendingLiveOptionsOrders()[0].intentId;
+    transitionIntent(intentId, 'partially_filled', { detail: 'one of two' });
+    advanceMaterialized(intentId, 1, 1.4);
+    armBroker(1.3, 1.25);
+    cancelSucceeds();
+
+    await checkLiveOptionsExits();
+
+    expect(mockCancelOrder).not.toHaveBeenCalled();
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(detailOf('live_options_exit_reprice_deferred')).toMatchObject({ reason: 'mid_fill', positionId: pos.id });
+  });
+
+  it('does not re-place when the cancel raced a full fill', async () => {
+    setAutotradeConfig(clockCfg({ maxHoldDays: 0 }));
+    positionWithWorkingClose(1.4);
+    armBroker(1.3, 1.25);
+    mockCancelOrder.mockResolvedValue({ ok: true });
+    mockOrderStatus.mockResolvedValue({ ok: true, found: true, status: 'FILLED', filledQty: 2 } as WebullOrderStatus);
+
+    const outcomes = await checkLiveOptionsExits();
+
+    expect(mockCancelOrder).toHaveBeenCalledTimes(1);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(outcomes[0]).toMatchObject({ requested: false, reason: expect.stringMatching(/filled before the cancel/) });
+    expect(detailOf('live_options_stale_exit_cancelled')).toMatchObject({ postCancelStatus: 'FILLED' });
+  });
+
+  it('re-places only the unfilled remainder after a partial raced the cancel', async () => {
+    setAutotradeConfig(clockCfg({ maxHoldDays: 0 }));
+    positionWithWorkingClose(1.4);
+    armBroker(1.3, 1.25);
+    mockCancelOrder.mockResolvedValue({ ok: true });
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'CANCELLED',
+      filledQty: 1,
+    } as WebullOrderStatus);
+
+    await checkLiveOptionsExits();
+
+    expect(mockPlaceOrder).toHaveBeenCalledTimes(1);
+    expect(mockPlaceOrder.mock.calls[0][1]).toMatchObject({ quantity: 1 });
+  });
+
+  it('caps the chase at 20 re-prices per position per day', async () => {
+    setAutotradeConfig(clockCfg({ maxHoldDays: 0 }));
+    positionWithWorkingClose(1.4);
+    armBroker(1.3, 1.25);
+    cancelSucceeds();
+
+    for (let i = 0; i < 21; i++) {
+      // Each tick re-arms the working order the previous one replaced, so the
+      // position is always looking at a stale close — the worst case for the
+      // budget.
+      db.prepare(
+        "UPDATE order_intents SET state = 'acknowledged', limit_price = 1.4 WHERE id IN (SELECT intent_id FROM autotrade_live_options_orders WHERE role = 'exit')",
+      ).run();
+      await checkLiveOptionsExits();
+    }
+
+    expect(mockCancelOrder).toHaveBeenCalledTimes(20);
+    expect(detailOf('live_options_exit_reprice_deferred')).toMatchObject({ reason: 'daily_cap', count: 20 });
+  });
+
+  it('never cancels a working close while the kill switch is engaged', async () => {
+    setAutotradeConfig(clockCfg({ maxHoldDays: 0, killSwitch: true }));
+    positionWithWorkingClose(1.4);
+    armBroker(1.3, 1.25);
+    cancelSucceeds();
+
+    await checkLiveOptionsExits();
+
+    // A cancel with no replacement would leave the position with no working
+    // order at all — worse than a stale one.
     expect(mockCancelOrder).not.toHaveBeenCalled();
     expect(mockPlaceOrder).not.toHaveBeenCalled();
   });
@@ -1255,10 +1410,33 @@ describe('checkLiveOptionsExits — replacing a STALE working close', () => {
   // $0.03 (below the $0.05 tick once the sell buffer applies), and the position
   // spent the rest of the session with NO resting order — the exact invariant
   // #560's own comment claimed to hold.
+  /** The sweep's own quote succeeds, then the market goes away before the
+   *  probe's — the narrow window the probe exists to cover now that a
+   *  tiny-but-real mark is placeable rather than unplaceable. */
+  const quoteVanishesBeforeTheProbe = (mark: number) => {
+    let calls = 0;
+    mockGetProvider.mockReturnValue({
+      getOptionsChain: vi.fn(async (symbol: string, expiration: string) => {
+        if (++calls > 1) throw new Error('chain gone');
+        return {
+          underlying: symbol,
+          expiration,
+          underlyingPrice: 100,
+          calls: [{ symbol: 'AAPL-opt-0', underlying: symbol, type: 'call', strike: 100, mark, expiration }],
+          puts: [],
+        };
+      }),
+      getCandles: vi.fn(async () => []),
+      getQuote: vi.fn(async (symbol: string) => ({ symbol, last: 100, timestamp: Date.now() })),
+    } as never);
+    mockAccountState.mockResolvedValue(holdingAccountState(2) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-REPLACED' });
+  };
+
   it('KEEPS a stale close it cannot re-price, rather than cancelling into nothing', async () => {
     setAutotradeConfig(clockCfg());
     positionWithWorkingClose(0.6);
-    armBroker(0.03); // worthless: 0.03 x 0.95 rounds off the bottom of the nickel grid
+    quoteVanishesBeforeTheProbe(0.2);
     cancelSucceeds();
 
     const outcomes = await checkLiveOptionsExits();
@@ -1269,6 +1447,28 @@ describe('checkLiveOptionsExits — replacing a STALE working close', () => {
     const kept = rows('live_options_stale_exit_kept');
     expect(kept).toHaveLength(1);
     expect(JSON.parse(kept[0].detail!)).toMatchObject({ restingLimit: 0.6, clockRule: 'max_hold_days' });
+  });
+
+  it('CHASES a near-worthless mark to one tick instead of keeping the stale close (2026-09-12)', async () => {
+    // The companion to the case above, and the reason its fixture changed. A
+    // 0.03 mark used to be unplaceable — 0.03 x 0.95 rounds off the bottom of
+    // the nickel grid — so the rule kept the stale order because the
+    // alternative was no order at all. With the tick clamp the alternative is
+    // a placeable one, and a 0.05 sell that might fill beats a 0.60 sell that
+    // provably cannot. The keep rule is narrowed by this, not weakened: it
+    // still owns every case where no limit exists.
+    setAutotradeConfig(clockCfg());
+    positionWithWorkingClose(0.6);
+    armBroker(0.03);
+    cancelSucceeds();
+
+    await checkLiveOptionsExits();
+
+    expect(mockCancelOrder).toHaveBeenCalledTimes(1);
+    expect(mockPlaceOrder).toHaveBeenCalledTimes(1);
+    expect(mockPlaceOrder.mock.calls[0][1]).toMatchObject({ limitPrice: 0.05 });
+    expect(detailOf('live_options_exit_placed')).toMatchObject({ clampedToTick: true });
+    expect(rows('live_options_stale_exit_kept')).toHaveLength(0);
   });
 
   it('keeps it when the QUOTE fails too — losing the quote is not the moment to pull the order', async () => {
@@ -1288,7 +1488,7 @@ describe('checkLiveOptionsExits — replacing a STALE working close', () => {
   it('says so ONCE per position per day — 94 identical rows is what the spam looked like', async () => {
     setAutotradeConfig(clockCfg());
     positionWithWorkingClose(0.6);
-    armBroker(0.03);
+    quoteVanishesBeforeTheProbe(0.2);
     cancelSucceeds();
 
     await checkLiveOptionsExits();
@@ -1371,7 +1571,74 @@ function openLivePosition(overrides: Partial<Parameters<typeof createLiveOptions
   return pos;
 }
 
+describe('sellableExitLimit — where a close is priced', () => {
+  it('uses the bid when there is one', () => {
+    expect(sellableExitLimit({ bid: 1.4, mark: 1.47, fromLastTrade: false })).toEqual({
+      limitPrice: 1.4,
+      basis: 'bid',
+      clampedToTick: false,
+    });
+  });
+
+  it('falls back to the buffered mark with no bid, on the right tick grid', () => {
+    // Above $3 the cent IS the grid: 5 * 0.95 = 4.75 exactly.
+    expect(sellableExitLimit({ mark: 5, fromLastTrade: false })).toEqual({
+      limitPrice: 4.75,
+      basis: 'mark',
+      clampedToTick: false,
+    });
+    // Under $3 the nickel grid applies and a sell rounds DOWN.
+    expect(sellableExitLimit({ mark: 1.4, fromLastTrade: false })).toMatchObject({ limitPrice: 1.3, basis: 'mark' });
+  });
+
+  it('names a last-trade basis so a stale print is visible in the journal', () => {
+    expect(sellableExitLimit({ mark: 3, fromLastTrade: true })).toMatchObject({ limitPrice: 2.85, basis: 'last' });
+  });
+
+  it('clamps a tiny-but-real price up to one tick rather than refusing', () => {
+    expect(sellableExitLimit({ mark: 0.03, fromLastTrade: false })).toEqual({
+      limitPrice: 0.05,
+      basis: 'mark',
+      clampedToTick: true,
+    });
+    expect(sellableExitLimit({ bid: 0.01, mark: 0.02, fromLastTrade: false })).toEqual({
+      limitPrice: 0.05,
+      basis: 'bid',
+      clampedToTick: true,
+    });
+  });
+
+  it('returns an unplaceable price for an unquoted contract, so the caller refuses', () => {
+    // Not "worth one tick" — worth nothing anyone will say. The expiry sweep
+    // owns this position, not a speculative order.
+    expect(sellableExitLimit({ mark: 0, fromLastTrade: false }).limitPrice).toBe(0);
+    expect(sellableExitLimit({ bid: 0, mark: 0, fromLastTrade: false }).limitPrice).toBe(0);
+  });
+
+  it('ignores a zero bid and prices off the mark', () => {
+    expect(sellableExitLimit({ bid: 0, mark: 1.4, fromLastTrade: false })).toMatchObject({
+      limitPrice: 1.3,
+      basis: 'mark',
+    });
+  });
+});
+
+describe('sellableSpreadExitLimit', () => {
+  it('sells the long leg into its bid and buys the short back at its ask', () => {
+    expect(
+      sellableSpreadExitLimit({ longBid: 2.0, shortAsk: 0.8, longMark: 2.1, shortMark: 0.75, fromLastTrade: false }),
+    ).toMatchObject({ limitPrice: 1.2, basis: 'bid' });
+  });
+
+  it('refuses a crossed quote instead of inventing a one-tick credit', () => {
+    expect(sellableSpreadExitLimit({ longMark: 1.0, shortMark: 1.2, fromLastTrade: false }).limitPrice).toBe(0);
+  });
+});
+
 describe('checkLiveOptionsExits', () => {
+  const rows = (action: string) => listAutotradeEvents({}).filter((e) => e.action === action);
+  const detailOf = (action: string) => JSON.parse(rows(action)[0].detail!) as Record<string, unknown>;
+
   it('places no order when TRADING_ENABLED is off, even for an already-triggered position', async () => {
     // Regression: unlike equity (whose exits are 100% broker-bracket-driven —
     // reconcileLiveOrders() only ever observes a fill, never places one), this
@@ -1667,11 +1934,11 @@ describe('checkLiveOptionsExits', () => {
 
   it('does not place a single-leg close when the contract marks at 0 (worthless/unquoted), leaving it open with a reason', async () => {
     // Regression (hardening audit): the exit path built its limit from a raw
-    // mark with no validity guard, unlike the entry path. A near-worthless or
-    // unquoted contract marks at 0 -> limitPrice 0 -> the limit_price>0
-    // guardrail rejects the close EVERY cycle, so the position never
-    // auto-closes and drifts to expiration -- the very thing the time-exit
-    // exists to prevent. It must skip with a precise reason instead.
+    // mark with no validity guard, unlike the entry path. A mark of EXACTLY 0
+    // (or no quote at all) is not a price, so there is nothing to place and the
+    // expiry sweep owns the position instead. Note the neighbouring case: a
+    // mark that is merely TINY (0.03) is a real quote and now clamps to one
+    // tick rather than refusing — that distinction is the 2026-09-12 fix.
     setAutotradeConfig(liveConfig());
     const pos = openLivePosition({ expiration: '2024-06-05' });
     mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 0 } }) as never);
@@ -1684,6 +1951,136 @@ describe('checkLiveOptionsExits', () => {
     expect(mockPlaceOrder).not.toHaveBeenCalled();
     // Still open — skipped this cycle, not stranded on an unplaceable $0 order.
     expect(listOpenLiveOptionsPositions().map((p) => p.id)).toContain(pos.id);
+  });
+
+  it('clamps a below-the-tick mark to one tick instead of refusing the close (HOOD, 2026-09-11)', async () => {
+    // The live failure this replaces: a 0DTE HOOD call marking 0.03 produced
+    // roundOptionPrice(0.03 * 0.95, 'down') === 0, so the close was refused
+    // with "below the $0.05 option tick" every 60s tick from 14:00 to 17:05 and
+    // the contract expired worthless while the app watched. A contract with a
+    // real (if tiny) quote gets an order at one tick: it either fills or the
+    // broker refuses it once, and both beat never trying.
+    setAutotradeConfig(liveConfig());
+    const pos = openLivePosition({ expiration: '2024-06-05' });
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 0.03 } }) as never);
+    mockAccountState.mockResolvedValue(
+      holdingAccountState(pos.quantity) as Awaited<ReturnType<typeof webullAccountState>>,
+    );
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-TICK' });
+
+    const outcomes = await checkLiveOptionsExits();
+    expect(outcomes[0]).toMatchObject({ requested: true });
+    expect(mockPlaceOrder).toHaveBeenCalledTimes(1);
+    expect(mockPlaceOrder.mock.calls[0][1]).toMatchObject({ limitPrice: 0.05 });
+    expect(detailOf('live_options_exit_placed')).toMatchObject({
+      priceBasis: 'mark',
+      clampedToTick: true,
+      quoteSource: 'chain',
+    });
+    expect(rows('live_options_exit_failed')).toHaveLength(0);
+  });
+
+  it('prices a single-leg close at the BID when the chain carries one, and journals the basis', async () => {
+    // The midpoint is an average of a price nobody is offering and one nobody
+    // is bidding; the bid is where the contract can actually be sold.
+    setAutotradeConfig(liveConfig());
+    const pos = openLivePosition({ expiration: '2024-06-05' });
+    mockGetProvider.mockReturnValue(
+      chainsFor({ AAPL: { side: 'call', strike: 100, mark: 1.47, bid: 1.4, ask: 1.54 } }) as never,
+    );
+    mockAccountState.mockResolvedValue(
+      holdingAccountState(pos.quantity) as Awaited<ReturnType<typeof webullAccountState>>,
+    );
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-BID' });
+
+    await checkLiveOptionsExits();
+    const intent = mockPlaceOrder.mock.calls[0][1];
+    expect(intent).toMatchObject({ limitPrice: 1.4 });
+    // The fat-finger guardrail judges |limit - reference|; a bid-priced close
+    // against a delayed midpoint reference would read as a deviation and be
+    // blocked exactly when it is most needed.
+    expect(intent.referencePrice).toBe(1.4);
+    expect(detailOf('live_options_exit_placed')).toMatchObject({ priceBasis: 'bid', bid: 1.4, mark: 1.47 });
+  });
+
+  it('prefers the real-time OPRA bid over the ~15-minute delayed chain', async () => {
+    setAutotradeConfig(liveConfig());
+    const pos = openLivePosition({ expiration: '2024-06-05', contractSymbol: 'AAPL240605C00100000' });
+    mockGetProvider.mockReturnValue(
+      chainsFor({ AAPL: { side: 'call', strike: 100, mark: 1.47, bid: 1.4, ask: 1.54 } }) as never,
+    );
+    mockOptionQuotes.mockResolvedValue({
+      ok: true,
+      quotes: [{ symbol: 'AAPL240605C00100000', bid: 0.85, ask: 0.95, quoteTime: Date.now() }],
+    });
+    mockAccountState.mockResolvedValue(
+      holdingAccountState(pos.quantity) as Awaited<ReturnType<typeof webullAccountState>>,
+    );
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-OPRA' });
+
+    await checkLiveOptionsExits();
+    expect(mockPlaceOrder.mock.calls[0][1]).toMatchObject({ limitPrice: 0.85 });
+    expect(detailOf('live_options_exit_placed')).toMatchObject({ priceBasis: 'bid', quoteSource: 'opra' });
+  });
+
+  it('falls back to the chain when the OPRA snapshot is stale', async () => {
+    setAutotradeConfig(liveConfig());
+    const pos = openLivePosition({ expiration: '2024-06-05', contractSymbol: 'AAPL240605C00100000' });
+    mockGetProvider.mockReturnValue(
+      chainsFor({ AAPL: { side: 'call', strike: 100, mark: 1.47, bid: 1.4, ask: 1.54 } }) as never,
+    );
+    mockOptionQuotes.mockResolvedValue({
+      ok: true,
+      quotes: [{ symbol: 'AAPL240605C00100000', bid: 0.85, ask: 0.95, quoteTime: Date.now() - 10 * 60_000 }],
+    });
+    mockAccountState.mockResolvedValue(
+      holdingAccountState(pos.quantity) as Awaited<ReturnType<typeof webullAccountState>>,
+    );
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-STALE' });
+
+    await checkLiveOptionsExits();
+    expect(mockPlaceOrder.mock.calls[0][1]).toMatchObject({ limitPrice: 1.4 });
+    expect(detailOf('live_options_exit_placed')).toMatchObject({ quoteSource: 'chain' });
+  });
+
+  it('ignores a corrupt bid far under the mark and prices off the mark instead', async () => {
+    // Bid-first pricing has exactly one way to sell cheap: a stale or malformed
+    // bid. The account's own fat-finger tolerance is the bar.
+    setAutotradeConfig(liveConfig({ liveOptionsFatFingerPct: 10 }));
+    const pos = openLivePosition({ expiration: '2024-06-05' });
+    mockGetProvider.mockReturnValue(
+      chainsFor({ AAPL: { side: 'call', strike: 100, mark: 1.4, bid: 0.05, ask: 1.5 } }) as never,
+    );
+    mockAccountState.mockResolvedValue(
+      holdingAccountState(pos.quantity) as Awaited<ReturnType<typeof webullAccountState>>,
+    );
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-CORRUPT' });
+
+    await checkLiveOptionsExits();
+    // 1.4 * 0.95 = 1.33 -> nickel grid, down -> 1.30. NOT the 0.05 bid.
+    expect(mockPlaceOrder.mock.calls[0][1]).toMatchObject({ limitPrice: 1.3 });
+    expect(detailOf('live_options_exit_placed')).toMatchObject({ priceBasis: 'mark' });
+    expect(rows('live_options_exit_stale_quote').length).toBeGreaterThan(0);
+  });
+
+  it('journals a repeating exit failure once per position per cause per day', async () => {
+    // 2026-09-11: 122 identical "No usable exit quote" rows in one afternoon
+    // buried the one occurrence that mattered. The outcome still returns every
+    // tick; only the row is deduped.
+    setAutotradeConfig(liveConfig());
+    const pos = openLivePosition({ expiration: '2024-06-05' });
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 1.2 } }) as never);
+    mockAccountState.mockResolvedValue(
+      holdingAccountState(pos.quantity) as Awaited<ReturnType<typeof webullAccountState>>,
+    );
+    mockPreviewPositions.mockResolvedValue({ ok: false, error: 'broker down', positions: [] } as never);
+
+    for (let i = 0; i < 3; i++) {
+      const outcomes = await checkLiveOptionsExits();
+      expect(outcomes[0]).toMatchObject({ requested: false });
+    }
+    expect(rows('live_options_exit_failed')).toHaveLength(1);
+    expect(detailOf('live_options_exit_failed')).toMatchObject({ kind: 'positions_unavailable' });
   });
 
   it('does not place a spread close when the quote is crossed (net value <= 0)', async () => {

@@ -85,9 +85,9 @@ function shiftDays(date: string, days: number): string {
  * market holiday). Returns null when nothing usable is within reach, which the
  * classifier treats as unknown.
  */
-function closeAtExpiry(closes: Map<string, number>, p: ExpiryLookupItem): number | null {
+function closeAtExpiry(closes: Map<string, number>, p: ExpiryLookupItem, maxBack = 5): number | null {
   if (!p.expiration) return null;
-  for (let back = 0; back <= 5; back++) {
+  for (let back = 0; back <= maxBack; back++) {
     const day = shiftDays(p.expiration, -back);
     const hit = closes.get(`${p.symbol}|${day}`);
     if (hit !== undefined && Number.isFinite(hit) && hit > 0) return hit;
@@ -105,9 +105,19 @@ function closeAtExpiry(closes: Map<string, number>, p: ExpiryLookupItem): number
  * implementation that could quietly disagree about what a position was worth
  * at expiry.
  */
-export async function resolveExpiryCloses<T extends ExpiryLookupItem>(items: T[]): Promise<(p: T) => number | null> {
+export async function resolveExpiryCloses<T extends ExpiryLookupItem>(
+  items: T[],
+  opts: {
+    /** How many days back the walk may reach for THIS item, when the expiry
+     *  date itself has no bar. The default 5 covers a Saturday-dated expiry or
+     *  a holiday. A caller settling a contract on its OWN expiration day must
+     *  pass 0: yesterday's close is not this contract's settlement price, and
+     *  substituting it could book $0 on a contract that finished in the money. */
+    maxWalkBackDays?: (p: T) => number;
+  } = {},
+): Promise<(p: T) => number | null> {
   const closes = await buildCloseLookup(items);
-  return (p) => closeAtExpiry(closes, p);
+  return (p) => closeAtExpiry(closes, p, opts.maxWalkBackDays?.(p) ?? 5);
 }
 
 /**

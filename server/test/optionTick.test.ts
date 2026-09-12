@@ -199,14 +199,22 @@ describe('no live options price site rounds to the cent by hand', () => {
     // The exact shape all four sites carried: a cent-grid round assigned to a limit.
     expect(code).not.toMatch(/limitPrice\s*=\s*Math\.round\([^)]*\*\s*100\)\s*\/\s*100/);
     // THREE, not four, since 2026-09-11: the single-leg and debit-spread SELL
-    // limits both derive from sellExitLimit() now, so what used to be two
-    // copies of "mark × buffer, rounded down" is one. That is the direction
-    // this guard wants — fewer places deriving the same price — so the count
-    // dropping is a pass, not a hole. What it must never do is RISE without a
-    // new genuinely distinct price, or fall to zero.
+    // limits share one rounding site, so what used to be two copies of "mark ×
+    // buffer, rounded down" is one. That is the direction this guard wants —
+    // fewer places deriving the same price — so the count dropping is a pass,
+    // not a hole. What it must never do is RISE without a new genuinely
+    // distinct price, or fall to zero.
+    //
+    // It survived the 2026-09-12 bid-first rewrite unchanged, and that was the
+    // point of it: the sell side grew a second HELPER (a spread sells its long
+    // leg into a bid and buys its short back at an ask — genuinely different
+    // arithmetic from one contract's bid) but both still round in one place,
+    // sellLimitFromRaw(). A helper per shape is fine; a rounding per shape is
+    // not, because that is how the two disagree about what is placeable, and
+    // the placeability probe's answer has to bind the placement's.
     const sites = code.match(/roundOptionPrice\(/g) ?? [];
     expect(sites).toHaveLength(3);
-    // And the shared one really is shared: both sell paths call it.
-    expect((code.match(/sellExitLimit\(/g) ?? []).length).toBeGreaterThanOrEqual(3);
+    // And the shared one really is shared: both sell paths reach it.
+    expect((code.match(/sellLimitFromRaw\(/g) ?? []).length).toBeGreaterThanOrEqual(3);
   });
 });

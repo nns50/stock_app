@@ -14,6 +14,10 @@ vi.mock('../src/providers/webull/orders', async (importOriginal) => {
     // unchanged — but it is now overridable by a test that needs the broker to
     // answer.
     listWebullOpenOrders: vi.fn(async () => ({ ok: false, orders: [], error: 'Webull is not configured.' })),
+    // Same convention: defaults to what the unmocked call produced (Webull is
+    // not configured in tests), overridable by the cases that need the broker
+    // to accept a protective re-arm.
+    webullPlaceStandaloneBracket: vi.fn(async () => ({ ok: false, error: 'Webull is not configured.' })),
     webullOrderStatus,
     webullOrderStatusBatch: batchFromSingle(webullOrderStatus),
   };
@@ -35,6 +39,7 @@ import {
   webullPlaceOrder,
   webullOrderStatus,
   listWebullOpenOrders,
+  webullPlaceStandaloneBracket,
   WebullOrderStatus,
 } from '../src/providers/webull/orders';
 import { initDb, db } from '../src/db';
@@ -54,8 +59,10 @@ import {
   getLiveEntryOrderForPosition,
   listPendingLiveOrders,
   countLiveAddOns,
+  recordLiveOrder,
+  setLiveOrderPositionId,
 } from '../src/db/autotradeLiveOrders';
-import { getIntent, listIntents, transitionIntent } from '../src/db/orders';
+import { getIntent, listIntents, transitionIntent, createIntent } from '../src/db/orders';
 import { UNKNOWN_PLACEMENT_RETIRE_GRACE_MS } from '../src/services/trading/reconcile';
 import { evaluateRiskCheck, RiskCheckResult } from '../src/services/autotrading/riskCheck';
 import { TradeSignal } from '../src/services/autotrading/decide';
@@ -74,6 +81,7 @@ import {
   checkLiveEquityScaleOuts,
   checkLiveEquityStopAdjusts,
   checkLiveEquityTimeExits,
+  entryIntentIdForPosition,
 } from '../src/services/autotrading/liveExecute';
 import { resetUnplaceableSymbols } from '../src/services/autotrading/unplaceableSymbols';
 import { runWebullPositionsSync } from '../src/providers/webull/positions';
@@ -219,6 +227,10 @@ beforeEach(() => {
   mockAccountState.mockReset();
   mockPlaceOrder.mockReset();
   mockOrderStatus.mockReset();
+  vi.mocked(webullPlaceStandaloneBracket).mockReset();
+  // Back to the module mock's own default: Webull is not configured in tests,
+  // so a re-arm fails with a KNOWN error unless a case says otherwise.
+  vi.mocked(webullPlaceStandaloneBracket).mockResolvedValue({ ok: false, error: 'Webull is not configured.' });
   vi.mocked(priceMap).mockReset();
   vi.mocked(priceMap).mockImplementation(
     async (positions) => new Map(positions.map((p) => [p.id, { price: 100, stale: false, asOf: 0 }])),
@@ -1980,6 +1992,126 @@ describe('adoptOrphanedLivePositions', () => {
     const detail = JSON.parse(unprotectedEvents()[0].detail ?? '{}') as Record<string, unknown>;
     expect(detail.heldAtBroker).toBe(10);
     expect(String(detail.reason)).toMatch(/broker confirms 10 share\(s\) still held, so this is real/);
+  });
+
+  // -------------------------------------------------------------------------
+  // Regression cover for two exit failures seen live in August 2026, both
+  // already fixed in code but neither pinned by a test of its own. At the
+  // sizing this book is moving to, an exit that cannot be placed is the
+  // expensive kind of bug, so each gets one.
+  // -------------------------------------------------------------------------
+  it("finds an ADOPTED position's entry intent through the order row (CTVA, 2026-08-24)", () => {
+    // positions.source_intent_id is only set when a fill materializes through
+    // the create path; a position adopted from the broker never gets one. When
+    // this was read alone, an adopted CTVA position failed its stagnation close
+    // 21 ticks running with "No source intent on this position — cannot locate
+    // its bracket to cancel", and later the naked-position alarm went quiet for
+    // ten days on a book that had become almost entirely adopted.
+    const intent = createIntent(
+      {
+        symbol: 'CTVA',
+        assetKind: 'stock',
+        side: 'buy',
+        openClose: 'open',
+        quantity: 5,
+        orderType: 'limit',
+        limitPrice: 60,
+      },
+      'CID-ADOPT',
+    );
+    const pos = createPosition({
+      assetType: 'stock',
+      symbol: 'CTVA',
+      side: 'long',
+      quantity: 5,
+      entryPrice: 60,
+      entryDate: '2026-08-24',
+      tags: ['live', 'autotrade'],
+    });
+    recordLiveOrder({
+      intentId: intent.id,
+      symbol: 'CTVA',
+      stopPrice: 57,
+      targetPrice: 66,
+      riskAmount: 15,
+      riskProfile: 'MODERATE',
+      entryScore: 80,
+    });
+    // The reverse link adoption establishes, and the only one it establishes.
+    setLiveOrderPositionId(intent.id, pos.id);
+
+    expect(pos.sourceIntentId).toBeNull();
+    expect(entryIntentIdForPosition(pos)).toBe(intent.id);
+  });
+
+  // -------------------------------------------------------------------------
+  // RE-ARM, don't just page (2026-09-12).
+  //
+  // This check has been able to PROVE a position naked since the held-quantity
+  // read went in: shares confirmed at the broker, zero resting stop. Its
+  // response was a journal row telling a human to re-arm by hand, and GRMN sat
+  // that way on 2026-08-25. The machinery to fix it already existed for the
+  // scale-out's own rollback.
+  // -------------------------------------------------------------------------
+  it('RE-ARMS a confirmed-naked position instead of only paging', async () => {
+    await agedProtectionCandidate('AAPL', 10);
+    vi.mocked(listWebullOpenOrders).mockResolvedValueOnce({ ok: true, orders: [] });
+    vi.mocked(webullPlaceStandaloneBracket).mockResolvedValueOnce({ ok: true, clientComboOrderId: 'GRP-REARM' });
+
+    await checkLiveBracketProtection();
+
+    expect(webullPlaceStandaloneBracket).toHaveBeenCalledTimes(1);
+    const [, intent, target, stop] = vi.mocked(webullPlaceStandaloneBracket).mock.calls[0];
+    expect(intent).toMatchObject({ symbol: 'AAPL', side: 'sell', openClose: 'close', quantity: 10 });
+    expect(stop).toBe(95);
+    expect(target).toBe(110);
+    // Re-armed, so nobody is paged.
+    expect(unprotectedEvents()).toHaveLength(0);
+    const rearmed = listAutotradeEvents({ stage: 'execution', actions: ['live_bracket_rearmed'] });
+    expect(rearmed).toHaveLength(1);
+    expect(JSON.parse(rearmed[0].detail ?? '{}')).toMatchObject({ stopPrice: 95, quantity: 10 });
+  });
+
+  it('pages when the re-arm FAILS, and says why', async () => {
+    await agedProtectionCandidate('AAPL', 10);
+    vi.mocked(listWebullOpenOrders).mockResolvedValueOnce({ ok: true, orders: [] });
+    vi.mocked(webullPlaceStandaloneBracket).mockResolvedValueOnce({ ok: false, error: 'rejected by broker' });
+
+    await checkLiveBracketProtection();
+
+    expect(unprotectedEvents()).toHaveLength(1);
+    const detail = JSON.parse(unprotectedEvents()[0].detail ?? '{}') as Record<string, unknown>;
+    expect(detail.rearmOutcome).toBe('rejected by broker');
+    expect(String(detail.reason)).toMatch(/automatic re-arm failed/);
+  });
+
+  it('never stacks a second bracket after an UNANSWERED re-arm', async () => {
+    // Ambiguous means the bracket MAY be resting. Two stops against one
+    // position is the accidental short.
+    await agedProtectionCandidate('AAPL', 10);
+    vi.mocked(listWebullOpenOrders).mockResolvedValueOnce({ ok: true, orders: [] });
+    vi.mocked(webullPlaceStandaloneBracket).mockResolvedValueOnce({
+      ok: false,
+      ambiguous: true,
+      error: 'timeout',
+    });
+
+    await checkLiveBracketProtection();
+
+    expect(webullPlaceStandaloneBracket).toHaveBeenCalledTimes(1);
+    const detail = JSON.parse(unprotectedEvents()[0].detail ?? '{}') as Record<string, unknown>;
+    expect(detail.rearmOutcome).toBe('unanswered');
+    expect(String(detail.reason)).toMatch(/UNANSWERED/);
+  });
+
+  it('does not re-arm when the broker holds nothing — there is nothing to protect', async () => {
+    await agedProtectionCandidate('AAPL', 0);
+    vi.mocked(listWebullOpenOrders).mockResolvedValueOnce({ ok: true, orders: [] });
+
+    await checkLiveBracketProtection();
+
+    expect(webullPlaceStandaloneBracket).not.toHaveBeenCalled();
+    expect(unprotectedEvents()).toHaveLength(0);
   });
 
   it('pages on a PARTIAL fill — the shares that remain really have no stop', async () => {

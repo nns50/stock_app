@@ -24,7 +24,10 @@ vi.mock('../src/providers/webull/orders', async (importOriginal) => {
     webullCancelOrder: vi.fn(),
     webullReplaceOrder: vi.fn(),
     webullReplaceOrders: vi.fn(),
-    webullPlaceStandaloneBracket: vi.fn(),
+    // A default, because checkLiveBracketProtection now CALLS this to re-arm a
+    // confirmed-naked position: a bare vi.fn() returns undefined, which the
+    // real helper never does. Cases that care override it.
+    webullPlaceStandaloneBracket: vi.fn(async () => ({ ok: false, error: 'Webull is not configured.' })),
     listWebullOpenOrders: vi.fn(),
   };
 });

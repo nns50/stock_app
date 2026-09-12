@@ -42,6 +42,38 @@ export function isUsEquityMarketOpen(now: Date = new Date()): boolean {
 }
 
 /**
+ * Whether `now` is a trading day whose session has already ENDED.
+ *
+ * Not the negation of isUsEquityMarketOpen: that is also false all weekend, on
+ * holidays, and before the open, none of which mean "today's session is over".
+ * The distinction matters for anything that settles a trading day once it is
+ * finished — a 0DTE contract can only be booked at zero after its own session
+ * closed, and never on a day the market did not open at all.
+ *
+ * Early closes are honoured through sessionCloseMinute, so a 13:00 half-day is
+ * over at 13:00.
+ */
+export function isAfterSessionClose(now: Date | number = new Date()): boolean {
+  const at = typeof now === 'number' ? new Date(now) : now;
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(at);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
+
+  const weekday = get('weekday');
+  if (weekday === 'Sat' || weekday === 'Sun') return false;
+  if (isMarketHoliday(at)) return false;
+
+  const hour = Number(get('hour')) % 24;
+  const minutes = hour * 60 + Number(get('minute'));
+  return minutes >= sessionCloseMinute(at);
+}
+
+/**
  * The `marketOpen` flag to feed the guardrails for THIS order. Only meaningful
  * for orders that target regular hours: every option, and any core-session
  * stock order. For an explicitly extended/overnight stock order the trader has

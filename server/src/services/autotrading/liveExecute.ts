@@ -2871,6 +2871,62 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
       continue;
     }
     outcomes.push({ positionId: pos.id, symbol, protectedAtBroker: false, heldAtBroker: heldQty });
+
+    // RE-ARM IT (2026-09-12), rather than only paging a human.
+    //
+    // This check has been able to prove a position naked since 2026-09-08 —
+    // shares confirmed held at the broker, zero resting stop — and its response
+    // was a journal row saying "re-arm protection by hand". GRMN sat that way on
+    // 2026-08-25. At 1.25% risk an unprotected position was a bad hour; at the
+    // sizing this book is moving to it is a bad day, and the machinery to fix it
+    // already exists (webullPlaceStandaloneBracket, used by the scale-out's own
+    // rollback). The stop and target come from the position row, which is the
+    // same geometry the original bracket carried.
+    //
+    // Only on a CONFIRMED naked position: heldQty null means the account read
+    // failed, and placing a bracket against an unknown holding is how a covered
+    // position becomes a short. An AMBIGUOUS placement is never retried for the
+    // same reason the scale-out does not retry one — a second bracket on top of
+    // a possibly-live one is two stops against one position.
+    let rearmed = false;
+    let rearmNote: string | null = null;
+    if (heldQty !== null && heldQty > 0 && pos.stopPrice !== null && config.trading.placeEnabled) {
+      const rearm = await webullPlaceStandaloneBracket(
+        accountId,
+        {
+          symbol,
+          assetKind: 'stock',
+          side: pos.side === 'short' ? 'buy' : 'sell',
+          openClose: 'close',
+          quantity: Math.min(pos.remainingQuantity, heldQty),
+          orderType: 'limit',
+        },
+        pos.targetPrice ?? undefined,
+        pos.stopPrice,
+      );
+      rearmed = rearm.ok;
+      rearmNote = rearm.ok ? null : rearm.ambiguous ? 'unanswered' : (rearm.error ?? 'unknown');
+      if (rearm.ok) {
+        logAutotradeEvent({
+          symbol,
+          stage: 'execution',
+          action: 'live_bracket_rearmed',
+          detail: {
+            positionId: pos.id,
+            quantity: Math.min(pos.remainingQuantity, heldQty),
+            stopPrice: pos.stopPrice,
+            targetPrice: pos.targetPrice,
+            clientComboOrderId: rearm.clientComboOrderId ?? null,
+            reason: 'position was confirmed naked at the broker — protection re-armed automatically',
+          },
+          riskProfile: getLiveEntryOrderForPosition(pos.id)?.riskProfile ?? cfg.riskProfile,
+        });
+        continue;
+      }
+    }
+
+    // Still naked: either the re-arm was not attempted (unreadable account, no
+    // recorded stop, placement disabled) or it failed. NOW page a human.
     // Once per position per ET day: this condition persists until a human acts,
     // so journaling every tick would bury it, and journaling once ever would let
     // it go quiet while the position is still naked.
@@ -2889,12 +2945,21 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
           // direction for a protection alarm, but the reader must be able to
           // tell that case from a confirmed naked position.
           heldAtBroker: heldQty,
+          // Why the automatic re-arm did not save it — the first question a
+          // reader of this row now has.
+          rearmAttempted: rearmNote !== null || rearmed,
+          rearmOutcome: rearmed ? 'ok' : rearmNote,
           reason:
             (restingLegs.length === 0
               ? 'This position was opened with a bracket, but the broker shows no resting ' +
                 `${exitSide} order on ${symbol} — its stop may never have been accepted, or was cancelled. `
               : `This position's TAKE-PROFIT leg is still resting on ${symbol}, but its STOP is not. ` +
                 'The position is running with no downside protection while looking like it has a bracket. ') +
+            (rearmNote === null
+              ? ''
+              : rearmNote === 'unanswered'
+                ? 'An automatic re-arm was UNANSWERED, so a second bracket was not stacked on a possibly-live one. '
+                : `An automatic re-arm failed (${rearmNote}). `) +
             (heldQty === null
               ? 'The account read FAILED, so it is NOT confirmed that these shares are still held — ' +
                 'a stop that has just filled looks the same from here. Check the broker before acting.'

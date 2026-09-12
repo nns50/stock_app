@@ -95,7 +95,7 @@ the read reports the distribution and says so.
 
 | # | Trigger | Response |
 |---|---|---|
-| A1 | Any options position open after the close | **Lead the report with it.** The ladder failed. Everything else in the report is secondary. |
+| A1 | Any options position open after the close | **Lead the report with it.** The ladder failed. Everything else in the report is secondary. Since 2026-09-12 the expiry sweep settles an expired 0DTE the same evening, so an *expired* contract no longer lingers overnight — the evidence for this rule is now `live_options_expired_worthless` with `expiration` equal to the session date, a `live_options_expired_needs_review`, or an open position with no expiry at all. `live_options_exit_reprice_deferred` (reason `daily_cap`) is the near-miss: the close was chased twenty times and still could not be sold. |
 
 ---
 
@@ -211,6 +211,8 @@ did not happen for the purposes of the next analysis.
 
 | Date | Change | Trigger | Evidence | Expected effect | Outcome |
 |---|---|---|---|---|---|
+| 2026-09-12 | **No parameter change.** Mechanism: options closes priced at the real-time **bid** (OPRA snapshot, then the chain's bid, then 5% through the mark); a working close **chased every tick** instead of only when a clock rule fires; a sub-tick price floored at one tick instead of refused; the expiry sweep settling a 0DTE the same evening | Rule A1 fired — HOOD 260911C116 was open after the close on 2026-09-11 | One contract at $0.90, 10:16 ET. `take_profit` at +64% placed 1.40 against a 1.47 mark and never filled; nothing re-examined it until `give_back` at 11:15 (−43%); the 14:00 `hard_time` replacement computed `roundOptionPrice(0.03 × 0.95) = 0` and was refused "below the $0.05 option tick" every tick to 17:05; expired worthless. +$58 became −$90. The ladder decided correctly three times | Decisions the ladder already makes correctly start reaching the account. No change to any rule LEVEL — take-profit stays 60, the give-back arm/fraction stay 40/50, the underlying stop stays 0.5% | — |
+| 2026-09-12 | `optionsTakeProfitPct` **kept at 60** (a rise to 100 was proposed and withdrawn) | Considered as part of the 3%-goal push | Re-scoring the paper book's 20 short-dated trades (avg **+17% of premium**, 12 winners; 5 take-profits at +64…+88%, 5 give-backs at +9…+28% off peaks of 42–64%) against lower and higher targets: 40% reads ≈ +13%, 30% ≈ +9%, and a higher target is what the give-back trail already protects against. The level is not the problem; the fill was | Nothing changes. Recorded so the next reader does not re-propose it | — |
 | 2026-08-27 | `shortDatedOptionsEnabled` false → **true**; DTE band 7–21 → **0–2**; `liveOptionsEnabled` true → **false** | Roll-out step 3 of the spec | 2026-08-26: 14 live options signals, 0 orders, all on risk budget vs $241–340 contracts against a ~$44 budget | Options become affordable; paper starts producing exit-rule data | — |
 | 2026-08-27 | `optionsTakeProfitPct` 75 → **60** | Spec §D3 | Modelled: reachable on a ~+0.8% underlying move before noon; 75 was not | `take_profit` fires at all, rather than every winner ending on `give_back` or `hard_time` | — |
 | 2026-08-27 | `optionsMaxConcurrentPositions` 0 → **1** | F8 | 184 options signals that session, **zero** orders — 930 blocks all reading "2 open vs cap 2" while paper equity (GREE, HRL) held both slots from the open | The paper options book can open a position at all, so the evidence track produces evidence | — |

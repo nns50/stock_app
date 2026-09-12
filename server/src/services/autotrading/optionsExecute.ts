@@ -176,6 +176,13 @@ export interface ContractQuote {
    *  i.e. the chain had no usable bid/ask and this is the only number
    *  available. See fetchContractQuote for why callers should care. */
   fromLastTrade: boolean;
+  /** The chain's own bid/ask when it carried them. Passed through rather than
+   *  collapsed into `price` because a SELL-to-close can be priced at the bid —
+   *  the price the contract can actually be sold at — instead of guessing a
+   *  buffer under the midpoint (liveOptionsExecute.ts's sellableExitLimit).
+   *  Undefined when the chain omitted the side. */
+  bid?: number;
+  ask?: number;
 }
 
 /**
@@ -206,8 +213,9 @@ export async function fetchContractQuote(
   const chain = await getProvider().getOptionsChain(symbol, expiration);
   const pool = side === 'call' ? chain.calls : chain.puts;
   const match = pool.find((c) => Math.abs(c.strike - strike) < 1e-6);
-  if (match?.mark !== undefined) return { price: match.mark, fromLastTrade: false };
-  if (match?.last !== undefined) return { price: match.last, fromLastTrade: true };
+  const sides = { bid: match?.bid, ask: match?.ask };
+  if (match?.mark !== undefined) return { price: match.mark, fromLastTrade: false, ...sides };
+  if (match?.last !== undefined) return { price: match.last, fromLastTrade: true, ...sides };
   throw new Error(`No current quote for ${symbol} ${strike}${side === 'call' ? 'C' : 'P'}`);
 }
 
