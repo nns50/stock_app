@@ -34,6 +34,55 @@ import { isTradingSession } from '../trading/marketCalendar';
  *  closed, and what it realized in R. Built by dailyTargetSweepData.ts from
  *  whichever book is being read; the R denominator is that book's own
  *  (initialRiskOf for the journal, riskAmount for the autotrade tables). */
+/**
+ * WHY a trade could not be given an R, counted per cause (2026-09-12).
+ *
+ * `droppedTrades` was a bare number, and on the deployed book it read 18 of
+ * roughly 117 live trades — 15% of the record excluded from every R-based
+ * measurement the review depends on (mean day, goal rate, realized edge),
+ * with nothing to say which of four unrelated problems it was. "No initial
+ * risk" would mean those positions had no recorded stop, which is a risk
+ * fact worth acting on; "no entry time" is a historical adoption gap that was
+ * fixed on 2026-08-31 and needs nothing. A single count cannot tell them
+ * apart, and this branch has already fixed one count-without-a-cause
+ * (`01e864f`, the red-day drivers) for the same reason.
+ */
+export interface DropReasons {
+  /** Closed with no exit row, or no entry date at all — not a usable trade. */
+  noEntryOrExit: number;
+  /** An entry date that could not be placed on the ET clock, and no same-day
+   *  createdAt to fall back on. */
+  noEntryTime: number;
+  /** initialRiskOf() returned null: no stop recorded, or a stop that was not
+   *  below the entry. These positions have no R because they had no risk
+   *  denominator — worth looking at, not just counting. */
+  noInitialRisk: number;
+  /** An exit whose date could not be parsed at all. */
+  unparseableExit: number;
+  /** Options rows missing an exit price, exit time, or a risk amount. */
+  optionsIncomplete: number;
+  /** Added by the leak scan's join, not by the collectors: a trade the sweep
+   *  could score in R but for which no per-trade attributes (symbol, sector,
+   *  score, entry minute) could be matched, so no dimension can bucket it. */
+  noAttributes: number;
+}
+
+export const NO_DROPS: DropReasons = {
+  noEntryOrExit: 0,
+  noEntryTime: 0,
+  noInitialRisk: 0,
+  unparseableExit: 0,
+  optionsIncomplete: 0,
+  noAttributes: 0,
+};
+
+/** The one place the total is derived, so the breakdown and the number can
+ *  never disagree (CLAUDE.md: two derivations of the same quantity must agree
+ *  by construction). */
+export function dropTotal(d: DropReasons): number {
+  return d.noEntryOrExit + d.noEntryTime + d.noInitialRisk + d.unparseableExit + d.optionsIncomplete + d.noAttributes;
+}
+
 export interface SweepTrade {
   /** Stable, book-prefixed id (`pos:12`, `paper:7`, …) — ties are broken on it. */
   id: string;
@@ -108,6 +157,10 @@ export interface RealizedEdge {
   sessionsWithoutEntries: number;
   /** Trades the collector could not place on the timeline or score in R. */
   droppedTrades: number;
+  /** The same total, split by cause (2026-09-12). A bare 18-of-117 could not
+   *  tell "no recorded stop" — a risk fact — from "no entry time", a history
+   *  gap fixed on 2026-08-31. See DropReasons. */
+  dropReasons: DropReasons;
   remappedEvents: number;
   eventsOutsideWindow: number;
   /** The window that was asked for — `sessions` can be smaller when the book
@@ -133,6 +186,7 @@ export function emptyRealizedEdge(lookbackSessions: number): RealizedEdge {
     activeSessions: 0,
     sessionsWithoutEntries: 0,
     droppedTrades: 0,
+    dropReasons: { ...NO_DROPS },
     remappedEvents: 0,
     eventsOutsideWindow: 0,
     lookbackSessions,
@@ -237,6 +291,7 @@ export interface RealizedEdgeInput {
   trades: SweepTrade[];
   sessionDates: string[];
   droppedTrades: number;
+  dropReasons?: DropReasons;
   lookbackSessions: number;
 }
 
@@ -271,6 +326,7 @@ export function computeRealizedEdge(input: RealizedEdgeInput): RealizedEdge {
     activeSessions: active.length,
     sessionsWithoutEntries: sessions - active.length,
     droppedTrades: input.droppedTrades,
+    dropReasons: input.dropReasons ?? { ...NO_DROPS },
     remappedEvents,
     eventsOutsideWindow,
     lookbackSessions: input.lookbackSessions,

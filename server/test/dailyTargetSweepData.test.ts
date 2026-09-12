@@ -20,6 +20,7 @@ import {
   lastCompletedSessionDate,
   sessionWindowFor,
 } from '../src/services/autotrading/dailyTargetSweepData';
+import { dropTotal } from '../src/services/autotrading/dailyTargetSweep';
 import { initialRiskOf, realizedPnlOf } from '../src/services/pnl';
 import { etDateTimeToMs } from '../src/util/marketDate';
 import { seedClosedAutotradeSessions } from './helpers/autotradeSessions';
@@ -75,9 +76,48 @@ describe('collectLiveTrades', () => {
       `INSERT INTO positions (asset_type, symbol, side, quantity, entry_price, entry_date, entry_time, fees, multiplier, status, tags, stop_price, created_at, updated_at)
        VALUES ('stock', 'NOSTOP', 'long', 10, 100, '2026-09-01', '12:00', 0, 1, 'closed', '["autotrade"]', NULL, ?, ?)`,
     ).run(now, now);
-    const { trades, droppedTrades } = collectLiveTrades(listPositions({ status: 'closed' }), []);
+    const { trades, droppedTrades, dropReasons } = collectLiveTrades(listPositions({ status: 'closed' }), []);
     expect(trades.map((t) => t.r)).toEqual([-1]);
     expect(droppedTrades).toBe(2);
+    // WHY, not just how many (2026-09-12). On the deployed book this count read
+    // 18 of ~117 live trades — 15% of the record excluded from every R-based
+    // measurement the review depends on — with nothing to say which of six
+    // unrelated problems it was.
+    //
+    // BOTH land in noEntryOrExit here, and the ordering that makes that true is
+    // worth pinning: neither fixture row has an exit, and "closed with no exit
+    // row" is checked before the stop is ever looked at. So NOSTOP is dropped
+    // for having no exit, not for having no stop. The test below builds the
+    // no-stop case properly, with an exit on it.
+    expect(dropReasons).toMatchObject({ noEntryOrExit: 2, noInitialRisk: 0 });
+    expect(dropTotal(dropReasons)).toBe(droppedTrades);
+  });
+
+  it('splits every drop cause apart, and the total is derived from the split', () => {
+    // One row per cause, so a future edit that folds two of them together fails
+    // here rather than silently merging a risk fact into a history gap.
+    const now = at('2026-09-01', '10:00');
+    const mk = (symbol: string, cols: string, vals: string) =>
+      db
+        .prepare(
+          `INSERT INTO positions (asset_type, symbol, side, quantity, entry_price, fees, multiplier, status, tags, created_at, updated_at${cols})
+           VALUES ('stock', ?, 'long', 10, 100, 0, 1, 'closed', '["autotrade"]', ?, ?${vals})`,
+        )
+        .run(symbol, now, now);
+    mk('NOEXIT', ', entry_date, entry_time, stop_price', ", '2026-09-01', '10:00', 95"); // closed, no exit row
+    mk('NODATE2', ', stop_price', ', 95'); // no entry date
+    mk('NOSTOP2', ', entry_date, entry_time', ", '2026-09-01', '10:00'"); // no stop
+    const id = (db.prepare("SELECT id FROM positions WHERE symbol = 'NOSTOP2'").get() as { id: number }).id;
+    db.prepare(
+      `INSERT INTO position_exits (position_id, quantity, exit_price, exit_date, fees, created_at) VALUES (?, 10, 105, '2026-09-01', 0, ?)`,
+    ).run(id, at('2026-09-01', '15:00'));
+
+    const { dropReasons, droppedTrades } = collectLiveTrades(listPositions({ status: 'closed' }), []);
+    expect(dropReasons.noEntryOrExit).toBe(2); // NOEXIT (no exit) and NODATE2 (no date)
+    expect(dropReasons.noInitialRisk).toBe(1); // NOSTOP2
+    // The total is dropTotal() of the split, never a second counter beside it —
+    // two derivations of one quantity must agree by construction (CLAUDE.md).
+    expect(droppedTrades).toBe(dropTotal(dropReasons));
   });
 
   it('falls back to createdAt for a row with no entry time only when it lands on the entry date', () => {
@@ -97,10 +137,13 @@ describe('collectLiveTrades', () => {
         `INSERT INTO position_exits (position_id, quantity, exit_price, exit_date, fees, created_at) VALUES (?, 10, 105, '2026-09-02', 0, ?)`,
       ).run(id, at('2026-09-02', '15:00'));
     }
-    const { trades, droppedTrades } = collectLiveTrades(listPositions({ status: 'closed' }), []);
+    const { trades, droppedTrades, dropReasons } = collectLiveTrades(listPositions({ status: 'closed' }), []);
     expect(trades).toHaveLength(1);
     expect(trades[0].entryAt).toBe(onDate);
     expect(droppedTrades).toBe(1);
+    // A history gap (adoption only began stamping entry_time on 2026-08-31),
+    // NOT a missing stop — both rows here carry one.
+    expect(dropReasons).toMatchObject({ noEntryTime: 1, noInitialRisk: 0 });
   });
 
   it('approximates an exit whose reconcile timestamp fell on another day to the close of its exit date', () => {

@@ -1,5 +1,12 @@
 import { computeSignificanceStats } from './significance';
-import { buildSessionPaths, isActiveSession, simulateSession, SweepTrade } from './dailyTargetSweep';
+import {
+  buildSessionPaths,
+  DropReasons,
+  isActiveSession,
+  NO_DROPS,
+  simulateSession,
+  SweepTrade,
+} from './dailyTargetSweep';
 import { etToday } from '../../util/marketDate';
 
 // ---------------------------------------------------------------------------
@@ -271,6 +278,9 @@ export interface CollectedLeakBook {
   trades: LeakTrade[];
   sessionDates: string[];
   droppedTrades: number;
+  /** Why those were dropped. Optional so a caller building a book by hand
+   *  (the tests) need not enumerate six zeroes. */
+  dropReasons?: DropReasons;
 }
 
 export interface EdgeLeakScanInput {
@@ -309,6 +319,10 @@ export interface EdgeLeakScanResult {
     paperTrades: number;
     liveDropped: number;
     paperDropped: number;
+    /** The two counts above, split by cause — a bare total cannot tell "no
+     *  recorded stop" from "no entry time". See DropReasons. */
+    liveDropReasons: DropReasons;
+    paperDropReasons: DropReasons;
     sessions: number;
     /**
      * True when the journal read that classifies untaken paper entries hit its
@@ -815,6 +829,8 @@ export function runEdgeLeakScan(input: EdgeLeakScanInput): EdgeLeakScanResult {
       paperTrades: paper.length,
       liveDropped: input.live.droppedTrades,
       paperDropped: input.paper.droppedTrades,
+      liveDropReasons: input.live.dropReasons ?? { ...NO_DROPS },
+      paperDropReasons: input.paper.dropReasons ?? { ...NO_DROPS },
       sessions: input.live.sessionDates.length,
       journalSkipsTruncated: input.journalSkipsTruncated ?? false,
     },

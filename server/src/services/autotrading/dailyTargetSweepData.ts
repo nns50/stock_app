@@ -11,7 +11,7 @@ import {
   sessionCloseMinute,
   sessionDatesEndingAt,
 } from '../trading/marketCalendar';
-import { computeRealizedEdge, RealizedEdge, SweepTrade } from './dailyTargetSweep';
+import { computeRealizedEdge, DropReasons, dropTotal, NO_DROPS, RealizedEdge, SweepTrade } from './dailyTargetSweep';
 
 // ---------------------------------------------------------------------------
 // The DB half of dailyTargetSweep.ts: turn each book's closed positions into
@@ -45,6 +45,9 @@ const SESSION_CLOSE_TIME = '16:00';
 export interface CollectedTrades {
   trades: SweepTrade[];
   droppedTrades: number;
+  /** The same total, split by cause. Sums to `droppedTrades` by construction —
+   *  `dropTotal()` is what both are derived from. */
+  dropReasons: DropReasons;
   /** Journal exits whose moment was approximated to the close of their exit
    *  date because the reconcile timestamp fell on a different day. */
   approximatedExits: number;
@@ -71,19 +74,26 @@ const isAutotradePosition = (p: Position): boolean => p.tags.includes('autotrade
  */
 export function collectLiveTrades(closed: Position[], liveOptionsClosed: LiveOptionsPosition[]): CollectedTrades {
   const trades: SweepTrade[] = [];
-  let droppedTrades = 0;
+  const drops: DropReasons = { ...NO_DROPS };
   let approximatedExits = 0;
   for (const p of closed) {
     if (!isAutotradePosition(p) || p.status !== 'closed') continue;
     if (p.entryDate === null || p.exits.length === 0) {
-      droppedTrades += 1;
+      drops.noEntryOrExit += 1;
       continue;
     }
     let entryAt = p.entryTime ? etDateTimeToMs(p.entryDate, p.entryTime) : null;
     if (entryAt === null && etToday(p.createdAt) === p.entryDate) entryAt = p.createdAt;
     const risk = initialRiskOf(p);
-    if (entryAt === null || risk === null) {
-      droppedTrades += 1;
+    // Counted SEPARATELY, and deliberately not as one "unusable" bucket: a
+    // missing entry time is a fixed history gap, a missing initial risk means
+    // the position had no recorded stop. Same drop, opposite significance.
+    if (entryAt === null) {
+      drops.noEntryTime += 1;
+      continue;
+    }
+    if (risk === null) {
+      drops.noInitialRisk += 1;
       continue;
     }
     const last = p.exits.reduce((a, b) => (b.createdAt > a.createdAt ? b : a));
@@ -91,7 +101,7 @@ export function collectLiveTrades(closed: Position[], liveOptionsClosed: LiveOpt
     if (etToday(exitAt) !== last.exitDate) {
       const approx = etDateTimeToMs(last.exitDate, SESSION_CLOSE_TIME);
       if (approx === null) {
-        droppedTrades += 1;
+        drops.unparseableExit += 1;
         continue;
       }
       exitAt = approx;
@@ -101,7 +111,7 @@ export function collectLiveTrades(closed: Position[], liveOptionsClosed: LiveOpt
   }
   for (const p of liveOptionsClosed) {
     if (p.status !== 'closed' || p.exitPrice === null || p.exitAt === null || !(p.riskAmount > 0)) {
-      droppedTrades += 1;
+      drops.optionsIncomplete += 1;
       continue;
     }
     trades.push({
@@ -111,24 +121,30 @@ export function collectLiveTrades(closed: Position[], liveOptionsClosed: LiveOpt
       r: liveOptionsPnl(p, p.exitPrice) / p.riskAmount,
     });
   }
-  return { trades, droppedTrades, approximatedExits };
+  return { trades, droppedTrades: dropTotal(drops), dropReasons: drops, approximatedExits };
 }
 
 /** The paper book — the control group the live book is measured against. */
 export function collectPaperTrades(paper: PaperPosition[], optionsPaper: OptionsPaperPosition[]): CollectedTrades {
   const trades: SweepTrade[] = [];
-  let droppedTrades = 0;
+  const drops: DropReasons = { ...NO_DROPS };
   for (const p of paper) {
     const r = paperRealizedR(p);
-    if (p.status !== 'closed' || p.exitAt === null || r === null) {
-      droppedTrades += 1;
+    if (p.status !== 'closed' || p.exitAt === null) {
+      drops.noEntryOrExit += 1;
+      continue;
+    }
+    // The paper twin of the live book's noInitialRisk: paperRealizedR is null
+    // when the row carries no usable risk denominator.
+    if (r === null) {
+      drops.noInitialRisk += 1;
       continue;
     }
     trades.push({ id: `paper:${p.id}`, entryAt: p.entryAt, exitAt: p.exitAt, r });
   }
   for (const p of optionsPaper) {
     if (p.status !== 'closed' || p.exitAt === null || p.exitPrice === null || !(p.riskAmount > 0)) {
-      droppedTrades += 1;
+      drops.optionsIncomplete += 1;
       continue;
     }
     trades.push({
@@ -138,7 +154,7 @@ export function collectPaperTrades(paper: PaperPosition[], optionsPaper: Options
       r: optionsPaperRealizedPnl(p) / p.riskAmount,
     });
   }
-  return { trades, droppedTrades, approximatedExits: 0 };
+  return { trades, droppedTrades: dropTotal(drops), dropReasons: drops, approximatedExits: 0 };
 }
 
 /** The most recent session that has already CLOSED at `now`: today once the
@@ -208,6 +224,7 @@ export function realizedEdgeOf(collected: CollectedBook): RealizedEdge {
     trades: collected.trades,
     sessionDates: collected.sessionDates,
     droppedTrades: collected.droppedTrades,
+    dropReasons: collected.dropReasons,
     lookbackSessions: collected.lookbackSessions,
   });
 }

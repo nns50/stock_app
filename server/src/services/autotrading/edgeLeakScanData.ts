@@ -10,7 +10,7 @@ import { etDateTimeToMs, etToday } from '../../util/marketDate';
 import { previousTradingSession } from '../trading/marketCalendar';
 import { buildSectorOf } from './riskCheck';
 import { collectBook, CollectedBook, DEFAULT_LOOKBACK_SESSIONS } from './dailyTargetSweepData';
-import { goalInR } from './dailyTargetSweep';
+import { DropReasons, dropTotal, goalInR } from './dailyTargetSweep';
 import { deriveDollarCaps, DOLLAR_CAP_KEYS, handEditedDollarCaps } from './targetTune';
 import { maxAffordablePremiumPerShare, riskPctUpperBound } from './optionsAffordability';
 import { getOptionsProbationStatus } from './liveOptionsExecute';
@@ -344,11 +344,11 @@ function attributesForPaperBook(
  */
 export function joinLeakTrades(collected: CollectedBook, attributes: Map<string, PartialLeakTrade>): CollectedLeakBook {
   const trades: LeakTrade[] = [];
-  let dropped = collected.droppedTrades;
+  const drops: DropReasons = { ...collected.dropReasons };
   for (const t of collected.trades) {
     const attrs = attributes.get(t.id);
     if (!attrs) {
-      dropped += 1;
+      drops.noAttributes += 1;
       continue;
     }
     trades.push({ ...attrs, entryAt: t.entryAt, exitAt: t.exitAt, r: t.r, round: 0 });
@@ -364,7 +364,12 @@ export function joinLeakTrades(collected: CollectedBook, attributes: Map<string,
     rows.sort((a, b) => a.entryAt - b.entryAt);
     rows.forEach((t, i) => (t.round = i + 1));
   }
-  return { trades, sessionDates: collected.sessionDates, droppedTrades: dropped };
+  return {
+    trades,
+    sessionDates: collected.sessionDates,
+    droppedTrades: dropTotal(drops),
+    dropReasons: drops,
+  };
 }
 
 /** Execution occurrences over the last EXECUTION_LOOKBACK_SESSIONS sessions. */
