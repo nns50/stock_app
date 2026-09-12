@@ -2024,6 +2024,13 @@ export interface DailyTargetSweepResult {
 export interface DailyGoalEvidence extends RealizedEdge {
   impliedDailyGainPct: number | null;
   targetOverImplied: number | null;
+  /** The stored goal on the R axis at the stored risk %, and how often the
+   *  book actually reached it. The goal's height in R is what decides whether
+   *  it is reachable at all, so the rate moves the day the risk % does. */
+  storedTargetR: number | null;
+  goalReachedSessions: number;
+  activeSessionsCounted: number;
+  goalRatePct: number | null;
 }
 
 export interface EquitySyncResult {
@@ -2865,6 +2872,20 @@ export interface AutotradeDashboard {
    *  skipped by every automatic re-anchor — which is correct, but invisible
    *  until it is shown (Decision 10, 2026-09-12). */
   capsCoherence: AutotradeCapCoherence[];
+
+  /** What the LAST edge-leak scan found. Null until one has run — the scan is
+   *  on-demand (a journal route and the daily routine), so this is a read of a
+   *  stored fact, not a recomputation on every poll. */
+  edgeLeakSummary: AutotradeEdgeLeakSummary | null;
+}
+
+export interface AutotradeEdgeLeakSummary {
+  leaks: number;
+  watches: number;
+  findings: number;
+  asOf: number;
+  etDate: string;
+  topLeak: { dimension: string; bucket: string; meanR: number | null; n: number; severityR: number } | null;
 }
 
 export interface AutotradeCapCoherence {

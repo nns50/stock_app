@@ -41,6 +41,9 @@ import { aggregateSlippage, computeSlippage, SlippageRow } from '../services/sli
 import { aggregateStopOverruns, classifyStopExit, computeStopOverrun, StopOverrunRow } from '../services/stopOverrun';
 import { computeBenchmark } from '../services/benchmark';
 import { getAutotradeConfig } from '../db/autotradeConfig';
+import { runEdgeLeakScanFromDb } from '../services/autotrading/edgeLeakScanData';
+import type { LeakBook } from '../services/autotrading/edgeLeakScan';
+import { saveEdgeLeakScan } from '../db/edgeLeakScans';
 import { etDateTimeToMs, etTimeOfDay, etToday } from '../util/marketDate';
 import { mapPool } from '../util/async';
 import { computeAutoTuneRiskEfficacy } from '../services/autotrading/autoTuneEfficacy';
@@ -800,6 +803,46 @@ journalRouter.get(
       }
     }
     res.json(aggregateStopOverruns(rows));
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// THE EDGE-LEAK SCAN (Decision 11, 2026-09-12).
+//
+// Walks a fixed catalog of dimensions over both books under one statistical
+// bar and reports what fails it, with the lever that closes it. DB and journal
+// only — no market data, no provider quota — so it is safe to run from the
+// daily routine as well as on demand.
+//
+// It PERSISTS its result (one row, edge_leak_scans) because the dashboard's
+// card reads the last scan rather than running one: a per-bucket bootstrap over
+// both books is CPU the poll path must not pay. Same arrangement as the
+// daily-target sweep.
+//
+// Why it exists at all is worth repeating here, where someone will read it:
+// every leak found in this book so far was found because a human happened to
+// look, and all of them were visible in journals the app was already writing.
+// ---------------------------------------------------------------------------
+journalRouter.get(
+  '/edge-leaks',
+  asyncHandler(async (req, res) => {
+    const { sessions, book, persist } = parseQuery(
+      z.object({
+        sessions: z.coerce.number().int().min(1).max(250).optional(),
+        book: z.enum(['live', 'paper', 'both']).optional(),
+        /** The daily routine persists; an exploratory read does not have to.
+         *  NOT z.coerce.boolean(), which is how the neighbouring `force` flags
+         *  are written: Boolean('false') is TRUE, so `persist=false` would
+         *  silently persist. A flag whose whole purpose is to say "no" has to
+         *  be able to. */
+        persist: z.enum(['true', 'false']).optional(),
+      }),
+      req,
+    );
+    const books: LeakBook[] = book === 'live' ? ['live'] : book === 'paper' ? ['paper'] : ['live', 'paper'];
+    const result = runEdgeLeakScanFromDb({ lookbackSessions: sessions, books });
+    if (persist !== 'false') saveEdgeLeakScan(result);
+    res.json(result);
   }),
 );
 

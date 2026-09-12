@@ -469,6 +469,23 @@ CREATE TABLE IF NOT EXISTS ml_regime_readings (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
+-- The last edge-leak scan (services/autotrading/edgeLeakScan.ts, 2026-09-12).
+-- Singleton: the dashboard wants "what did the most recent scan find", and the
+-- scan itself is on-demand (a route, and the daily routine) because the
+-- per-bucket bootstrap is CPU the poll path must not pay. Keeping one row means
+-- the Auto page's card is a read of a fact, not a recomputation per poll.
+-- The full result is stored as JSON so a later reader can see the whole catalog
+-- without re-running the scan over a book that has since changed.
+CREATE TABLE IF NOT EXISTS edge_leak_scans (
+  id          INTEGER PRIMARY KEY CHECK(id = 1),   -- singleton row
+  et_date     TEXT NOT NULL,           -- YYYY-MM-DD in America/New_York
+  leaks       INTEGER NOT NULL,
+  watches     INTEGER NOT NULL,
+  findings    INTEGER NOT NULL,
+  result      TEXT NOT NULL,           -- JSON EdgeLeakScanResult
+  created_at  INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS autotrade_last_tick (
   id          INTEGER PRIMARY KEY CHECK(id = 1),   -- singleton row
   summary     TEXT NOT NULL,           -- JSON LoopTickSummary

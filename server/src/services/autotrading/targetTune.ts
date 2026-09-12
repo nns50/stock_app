@@ -581,12 +581,42 @@ export const TARGET_OVER_IMPLIED_WARN_RATIO = 2;
 export interface DailyGoalEvidence extends RealizedEdge {
   impliedDailyGainPct: number | null;
   targetOverImplied: number | null;
+  /** The stored goal on the R axis at the stored risk %: how many full R a
+   *  goal day is. Null when no goal is armed or risk is 0. This is the number
+   *  that actually decides how often the goal is reachable — the sweep's own
+   *  finding is that the live book produces +1R days about a third of the time
+   *  and +2.4R days once in sixteen, and the only difference between those two
+   *  rows is where the goal sits on this axis. */
+  storedTargetR: number | null;
+  /** Sessions in the window that REACHED that level, counted the way the sweep
+   *  counts it (`simulateSession` under the `bank` policy), and the active
+   *  sessions they are out of. Null goal ⇒ 0 reached. */
+  goalReachedSessions: number;
+  activeSessionsCounted: number;
+  goalRatePct: number | null;
 }
+
+/** The goal-rate half of the evidence: how often the stored goal was actually
+ *  reached. Separate from the identity above because it needs the session
+ *  PATHS, not just the summary edge — and because a caller without them (the
+ *  tune preview) should get nulls rather than a fabricated rate. */
+export interface GoalRateInput {
+  storedTargetR: number | null;
+  goalReachedSessions: number;
+  activeSessionsCounted: number;
+}
+
+export const NO_GOAL_RATE: GoalRateInput = {
+  storedTargetR: null,
+  goalReachedSessions: 0,
+  activeSessionsCounted: 0,
+};
 
 export function dailyGoalEvidence(
   realized: RealizedEdge,
   riskPerTradePct: number,
   targetDailyGainPct: number | null,
+  goalRate: GoalRateInput = NO_GOAL_RATE,
 ): DailyGoalEvidence {
   const implied =
     realized.avgR !== null && realized.tradesPerSession !== null
@@ -594,7 +624,22 @@ export function dailyGoalEvidence(
       : null;
   const ratio =
     implied !== null && implied > 0 && targetDailyGainPct !== null ? round1(targetDailyGainPct / implied) : null;
-  return { ...realized, impliedDailyGainPct: implied, targetOverImplied: ratio };
+  return {
+    ...realized,
+    impliedDailyGainPct: implied,
+    targetOverImplied: ratio,
+    storedTargetR: goalRate.storedTargetR,
+    goalReachedSessions: goalRate.goalReachedSessions,
+    activeSessionsCounted: goalRate.activeSessionsCounted,
+    // Null, not 0, when no goal is armed. "Reached the goal on 0% of sessions"
+    // is a fabricated answer to a question nobody asked — there is no goal to
+    // have reached — and it is exactly the kind of confident zero this file's
+    // other nulls exist to avoid.
+    goalRatePct:
+      goalRate.storedTargetR !== null && goalRate.activeSessionsCounted
+        ? round1((goalRate.goalReachedSessions / goalRate.activeSessionsCounted) * 100)
+        : null,
+  };
 }
 
 /** Expected R per trade under the chosen basis, floored so it can't blow up the

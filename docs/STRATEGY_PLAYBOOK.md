@@ -27,8 +27,9 @@ app's tools, not a "buy signal."
 9. [Tuning stops & targets with MAE/MFE](#tuning-stops--targets-with-maemfe)
 10. [Reducing slippage with execution quality](#reducing-slippage-with-execution-quality)
 11. [Guardrails: risk of ruin & the benchmark](#guardrails-risk-of-ruin--the-benchmark)
-12. [The weekly review checklist](#the-weekly-review-checklist)
-13. [Anti-patterns to avoid](#anti-patterns-to-avoid)
+12. [The edge-leak scan](#the-edge-leak-scan)
+13. [The weekly review checklist](#the-weekly-review-checklist)
+14. [Anti-patterns to avoid](#anti-patterns-to-avoid)
 
 ---
 
@@ -1718,6 +1719,81 @@ reading rather than clicking past — each one means your records and your broke
 disagree, and the fix is to look at the broker, not to retry. The one that should never
 wait is **"no resting stop"**: that is a live position with no downside protection, and
 it needs you at the broker now, not at the next review.
+
+---
+
+## The edge-leak scan
+
+**Why it exists.** Three leaks were found in this book in one week, and every one of
+them was found because a human happened to look:
+
+- second entries on a stock that had already run gave back what the first entries made
+  (live round 1 **+$342**, round 2 **−$185**) — remembered by the operator, not reported
+  by anything;
+- the options sleeve decided its exits correctly and then never filled them — found by
+  reading one position's tick timeline by hand;
+- the options order cap was 14× too large, hand-frozen, and describing an account that
+  had since moved — found while writing a plan.
+
+All three were visible in journals the app was already writing. They surfaced when
+someone thought to look in the right place, which is not a process. **The scan is the
+process**: `GET /api/journal/edge-leaks?sessions=40&book=both` walks a fixed catalog of
+dimensions over both books, applies one statistical bar to every one, and reports what
+fails it with the lever that closes it. The Auto page shows the count; the daily routine
+runs it and reports what is new.
+
+**The catalog (v1).** Round within symbol-day · entry half-hour and the after-13:00
+aggregate · score band · VWAP extension · % of session range · exit reason · hold time ·
+symbol (n ≥ 5) · sector · weekday · ML regime · asset · position size. Plus three
+non-behavioural groups: the **day level** (goal reached on N of M active sessions, the
+1R comparison, the red-day decomposition), the **attribution** (paper-versus-live on the
+same decision, and why the live book skipped what paper took), and **findings** —
+execution occurrences and configuration mismatches, where any occurrence is one.
+
+**The bar, the same for every dimension.**
+
+| verdict | rule |
+| --- | --- |
+| **leak** | n ≥ 15, the whole 95% interval below zero, and the paper control (n ≥ 10) agrees in sign |
+| **unconfirmed** | the same, but paper has fewer than 10 trades in that bucket — never acted on automatically |
+| **watch** | n ≥ 10 and the interval within 0.05R of clearing the bar |
+| **ok** | everything else |
+
+The control arm is load-bearing. Both books consume the same signals in the same tick,
+so a bucket that loses in **both** is a property of the decision (fix it with a setting),
+while one that loses only in the live book is a property of **execution** (fix it in
+code). Those are different findings with different fixes, and the scan will not hand the
+decision's lever to an execution problem.
+
+**Severity is R left on the table** over the window — a leak that has cost nothing yet is
+still a leak, just not urgent — and every leak carries its lever: the config field with
+the value that closes it, or the code path when no setting expresses it. A lever is
+tagged `safe` (it reduces exposure) or `exposure`; only `safe` levers are ever eligible
+to be applied by the app.
+
+**The rule that keeps the catalog honest.** When a human finds a leak the scan missed,
+the dimension that would have caught it goes into the catalog **in the same PR that fixes
+the leak**. Otherwise the next miss is silent for the same reason this one was.
+
+**The first reading, pre-committed (2026-09-12).** On the book as it stands the scan must
+report round 2 as a leak (both books negative, lever `symbolReentryCooldownMinutes` →
+390), the HOOD options day as an execution finding, the options order cap as a
+configuration finding (hand-frozen), and the entry-extension buckets as watches at most.
+If it does not, the scan is wrong, not the record.
+
+**Two readings it replaces**, each with its own written rule:
+
+- _Where the live book loses the paper book's edge._ The attribution pairs each paper
+  entry with a live entry on the same symbol and ET date within 60 seconds, and reports
+  the mean per-trade difference plus the live book's entry slippage. Unpaired paper
+  entries are classified by the live journal's own word for the skip. **The rule:** a
+  skip class whose left-behind R exceeds 20 trades with a positive interval is the next
+  gate to loosen; mean entry slippage above 0.5% is an execution finding.
+- _The entry-hour record._ The `entryAfter13` dimension carries it. **The rule:** an
+  equity no-entry cutoff (`liveNoEntryMinutesBeforeClose`, the twin of the options one)
+  is BUILT only when the after-13:00 bucket reads ≥ 20 trades with its interval below
+  zero on the live book **and** the paper control agrees in sign. Until then the bucket is
+  a measurement, not a gate.
 
 ---
 

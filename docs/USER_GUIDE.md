@@ -926,6 +926,30 @@ tabs of one **Analytics** button (top right) — pick a tab, the report loads on
   one way. Both books count; a tightened *options* trade is counted but not measured (its
   excursion is on the underlying, not the premium), and like Excursions it says what it
   left out.
+- **Edge leaks** (2026-09-12) — the app's own hunt for the places the book is losing
+  money, run over **both books at once**. It cuts the record a fixed set of ways — round
+  within a symbol-day (first entry, second, third+), entry half-hour and "after 13:00",
+  score band, VWAP extension, % of the session's range, exit reason, hold time, symbol,
+  sector, weekday, ML regime, asset, position size — and applies the **same bar** to every
+  one: a bucket is a **leak** when it has at least 15 trades, its whole 95% interval sits
+  below zero, and the **paper book agrees in sign**; **unconfirmed** when paper has fewer
+  than 10 trades to say so; a **watch** when it is within 0.05R of the bar with at least
+  10 trades. The paper control is the point of the design — both books see the same
+  signals in the same tick, so a bucket that loses in both is the *decision* (a setting
+  fixes it) while one that loses only live is *execution* (code fixes it). Every leak
+  carries its **lever**: the exact setting and value that closes it, or the code path when
+  no setting expresses it, plus the **R it has left on the table**. Alongside the buckets
+  it reports the **day level** (how often the stored goal was actually reached, the same
+  count at 1R, and what the red days were made of), the **paper-vs-live attribution**
+  (the same decision in both books, and why the live book skipped what paper took), and
+  **findings** — anything that simply went wrong (an exit that failed, a position with no
+  stop, a cap that no longer matches its own formula, a tuner row on a day the tuner is
+  off), where one occurrence is enough. It reads the database and the journal only: no
+  market data, no provider quota. The Auto page shows the count and the worst open leak;
+  the full table is here. It exists because every leak found in this book so far was
+  found because a person happened to look, and all of them were already sitting in
+  journals the app was writing — see the Playbook's "The edge-leak scan" for the catalog,
+  the bar and the pre-committed first reading.
 
 ### Benchmark
 
@@ -1199,7 +1223,14 @@ equally-weighted cards in the order they happened to be built:
   realized record the tune's evidence line reads, with its counts and a "thin record"
   note under 20 trades / 20 sessions), so a 3% goal is never shown without the ≈ 0.6%
   day the loop actually produces next to it; with no goal set the line still shows the
-  expected day, for choosing one. It
+  expected day, for choosing one. Since 2026-09-12 the same line adds the **goal rate**:
+  the goal expressed in **R** at the stored risk % (`target% ÷ risk%`) and how often it
+  was actually reached — "the goal is 1.20R; reached on 4 of 16 active sessions (25%)".
+  That number is the one a sizing change moves first, because raising the risk % lowers
+  the goal's height in R without the book changing at all; it is counted by the same
+  function the daily-target sweep counts levels with, so the card and the sweep can never
+  disagree, and it counts sessions that **reached** the goal rather than sessions that
+  closed above it (a day can bank the goal and still finish below it). It
   never sizes UP to chase a shortfall — behind the target, sizing stays exactly what
   the tune calibrated. **Reset to moderate** (or clearing the field) disarms it.
   Since 2026-08-27 a **deposit or withdrawal no longer counts as gain**: the goal is a

@@ -20,10 +20,13 @@ import { computeExposure, ExposureSlice, ExposureInput } from '../exposure';
 import { daysToExpiration } from '../../options/blackScholes';
 import { listAutotradeEvents } from '../../db/autotradeEvents';
 import { getLastTick, LastTickRecord } from '../../db/autotradeLastTick';
-import { collectBook, DEFAULT_LOOKBACK_SESSIONS, realizedEdgeOf } from './dailyTargetSweepData';
+import { getLastEdgeLeakScan } from '../../db/edgeLeakScans';
+import { collectBook, CollectedBook, DEFAULT_LOOKBACK_SESSIONS, realizedEdgeOf } from './dailyTargetSweepData';
+import { buildSessionPaths, isActiveSession, simulateSession } from './dailyTargetSweep';
 import {
   DailyGoalEvidence,
   dailyGoalEvidence,
+  GoalRateInput,
   deriveDollarCaps,
   DOLLAR_CAP_KEYS,
   DollarCapKey,
@@ -252,6 +255,23 @@ export interface AutotradeDashboard {
    *  test liveCapsReanchor uses to decide whether it may move it, read here
    *  through handEditedDollarCaps rather than re-implemented. */
   capsCoherence: CapCoherence[];
+
+  /** What the LAST edge-leak scan found. Null until one has run — the scan is
+   *  on-demand (route + daily routine) because the per-bucket bootstrap is CPU
+   *  the poll path must not pay, so this is a read of a stored fact rather
+   *  than a recomputation. */
+  edgeLeakSummary: EdgeLeakSummary | null;
+}
+
+export interface EdgeLeakSummary {
+  leaks: number;
+  watches: number;
+  findings: number;
+  asOf: number;
+  etDate: string;
+  /** The worst open leak's dimension and bucket, so the card can say what it
+   *  is without the reader opening the table. Null when there are none. */
+  topLeak: { dimension: string; bucket: string; meanR: number | null; n: number; severityR: number } | null;
 }
 
 export interface CapCoherence {
@@ -339,6 +359,33 @@ function computeAutotradeSectorExposure(
   return computeExposure(inputs, sectorOf).bySector;
 }
 
+/**
+ * How often the STORED goal was actually reached over the window.
+ *
+ * Counted through the sweep's own `simulateSession` under the `bank` policy —
+ * the same function `GET /api/autotrade/daily-target/sweep` counts levels with
+ * — so the card and the sweep can never report different numbers for the same
+ * question. No bootstrap: this is a count of sessions, not an estimate, and
+ * the dashboard is polled.
+ *
+ * The goal on the R axis is `targetDailyGainPct / riskPerTradePct`, the same
+ * conversion `DailyTargetSweepResult.storedTargetR` makes. Both factors are
+ * live config, so raising the risk % lowers the goal in R and this rate moves
+ * the same day — which is the entire mechanism the 2026-09-12 sizing change is
+ * betting on, and therefore the number that says whether the bet paid.
+ */
+function goalRateFor(book: CollectedBook, config: AutotradeConfig): GoalRateInput {
+  const storedTargetR =
+    config.targetDailyGainPct !== null && config.targetDailyGainPct > 0 && config.riskPerTradePct > 0
+      ? Math.round((config.targetDailyGainPct / config.riskPerTradePct) * 100) / 100
+      : null;
+  const { paths } = buildSessionPaths(book.trades, book.sessionDates);
+  const active = paths.filter(isActiveSession);
+  const reached =
+    storedTargetR === null ? 0 : active.filter((p) => simulateSession(p, 'bank', storedTargetR).reached).length;
+  return { storedTargetR, goalReachedSessions: reached, activeSessionsCounted: active.length };
+}
+
 export function getAutotradeDashboard(): AutotradeDashboard {
   const config = getAutotradeConfig();
   const equity = config.accountEquityUsd ?? 0;
@@ -357,6 +404,14 @@ export function getAutotradeDashboard(): AutotradeDashboard {
   const tightenedPaper = countTightenedClosedPaperPositions();
   const liveOptionsClosed = listLiveOptionsPositions({ status: 'closed' });
 
+  // One collection of the live book, read three ways: the realized edge (the
+  // identity's two factors) and the goal RATE (how often the goal was actually
+  // reached). DB only — no market data on the dashboard poll path.
+  const liveBook = collectBook('live', DEFAULT_LOOKBACK_SESSIONS, now.getTime(), {
+    closed: closedAutotrade,
+    liveOptionsClosed,
+  });
+
   return {
     enabled: config.enabled,
     killSwitch: config.killSwitch,
@@ -364,11 +419,10 @@ export function getAutotradeDashboard(): AutotradeDashboard {
     equity: config.accountEquityUsd,
     dailyTarget: evaluateDailyTarget(config, getDailyBaseline()),
     dailyGoalEvidence: dailyGoalEvidence(
-      realizedEdgeOf(
-        collectBook('live', DEFAULT_LOOKBACK_SESSIONS, now.getTime(), { closed: closedAutotrade, liveOptionsClosed }),
-      ),
+      realizedEdgeOf(liveBook),
       config.riskPerTradePct,
       config.targetDailyGainPct,
+      goalRateFor(liveBook, config),
     ),
     mlRegime: peekMarketRegime(),
     mlRegimeReadiness: getMlRegimeReadiness(now.getTime()),
@@ -440,6 +494,31 @@ export function getAutotradeDashboard(): AutotradeDashboard {
     liveOptionsProbation: getOptionsProbationStatus(config),
 
     capsCoherence: buildCapsCoherence(config),
+    edgeLeakSummary: buildEdgeLeakSummary(),
+  };
+}
+
+/** The last scan's headline. `dimension` comes off the leak row the scan
+ *  already labelled, so the card and the table name the same cut. */
+export function buildEdgeLeakSummary(): EdgeLeakSummary | null {
+  const last = getLastEdgeLeakScan();
+  if (!last) return null;
+  const top = last.result.leaks[0];
+  return {
+    leaks: last.leaks,
+    watches: last.watches,
+    findings: last.findings,
+    asOf: last.result.asOf,
+    etDate: last.etDate,
+    topLeak: top
+      ? {
+          dimension: top.dimension,
+          bucket: top.bucket,
+          meanR: top.meanR,
+          n: top.n,
+          severityR: top.severityR,
+        }
+      : null,
   };
 }
 

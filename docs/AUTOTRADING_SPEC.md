@@ -8099,3 +8099,91 @@ re-anchor consults, rather than a second reading of the same question.
 one — at which point it must flip to `anchorOwned: true` and stay there through the next
 `live_caps_reanchored`. If the options cap is still reported frozen after that write,
 the derivation and the write disagree and one of them is wrong.
+
+## 2026-09-12 — the app looks for its own leaks
+
+Three leaks were found in this book in one week. Every one of them was found because a
+human happened to look, and every one of them was already sitting in a journal the app
+was writing:
+
+- second entries on a stock that had already run gave back what the first entries made
+  (live round 1 n=64 **+$342**, round 2 n=20 **−$185**; the paper book agrees) — the
+  operator remembered it;
+- the options sleeve decided its exits correctly and never filled them — found by
+  reading one position's tick timeline by hand;
+- the options per-order cap was 14× too large, hand-frozen, and describing an account
+  that had since moved — found while writing a plan.
+
+"Why are these only found when I tell you about them" is a fair question with a
+structural answer: nothing walked the book looking for them. The scan does.
+
+**What it is.** `services/autotrading/edgeLeakScan.ts` (pure) plus
+`edgeLeakScanData.ts` (the DB half) and `GET /api/journal/edge-leaks?sessions=40&book=
+live|paper|both`. It cuts both books by a fixed catalog of dimensions, applies one
+statistical bar to every bucket, and reports what fails it with the lever that closes it.
+Database and journal only — no market data, no provider quota — so the daily routine can
+run it every evening.
+
+**One bar, every dimension.** A bucket is a **leak** at n ≥ 15 when its whole 95%
+bootstrap interval sits below zero AND the paper control (n ≥ 10) agrees in sign;
+**unconfirmed** when the control cannot speak to it; a **watch** at n ≥ 10 within 0.05R
+of the bar. Nothing else is reported. The control arm is the load-bearing part: both
+books consume the same `decision.signals` in the same tick (paper first, `loop.ts`), so a
+bucket that loses in both is a property of the DECISION and a config lever closes it,
+while one that loses only live is a property of EXECUTION and code closes it. Those are
+different findings, and the scan refuses to hand the decision's lever to an execution
+problem.
+
+Deliberately 15 rather than `significance.ts`'s own `MIN_RELIABLE_TRADES` of 20: this is
+a screen that says "go look", not a conclusion, and the control plus the interval carry
+the weight the sample size does not.
+
+**What the catalog cuts by (v1).** Round within symbol-day · entry half-hour · the
+after-13:00 aggregate · score band · VWAP extension · % of session range · exit reason ·
+hold time · symbol (n ≥ 5) · sector · weekday · ML regime · asset · position size.
+Alongside them: the **day level** (goal reached on N of M active sessions counted through
+the sweep's own `simulateSession`, the same count at 1R, red-day decomposition by exit
+reason, mean and worst red day), the **attribution** (each paper entry paired to a live
+entry on the same symbol and ET date within 60 s → mean per-trade R difference and entry
+slippage; unpaired paper entries classified by the live journal's own skip action), and
+**findings** — execution occurrences over the last 10 sessions and configuration
+mismatches, where one occurrence is enough.
+
+**A trade with no value for a cut is EXCLUDED and counted, never pooled into
+"unknown".** An unknown bucket mixes unrelated trades and then reports a mean for them,
+which is how a measurement becomes a fiction. Every dimension reports `covered` and
+`uncovered` so a thin cut is visible as thin.
+
+**Determinism matters more than it looks.** The bootstrap is seeded from a constant, so
+the same book produces the same intervals on every run. A leak that appears and
+disappears between two reads of identical data is worse than no scan at all.
+
+**The rule that keeps the catalog honest**, written into the playbook: when a human finds
+a leak the scan missed, the dimension that would have caught it goes into `DIMENSIONS` in
+the same PR that fixes the leak. Otherwise the next miss is silent for exactly the reason
+this one was.
+
+**Pre-committed first reading.** On the book as it stands the scan must report round 2 as
+a leak (both books negative, lever `symbolReentryCooldownMinutes` → 390), the HOOD
+options day as an execution finding, the options order cap as a configuration finding
+(hand-frozen), and the entry-extension buckets as watches at most. **If it does not, the
+scan is wrong, not the record.** That sentence is the check: it is written before the
+first production read, so the scan cannot be quietly adjusted until it agrees with
+whatever it happens to say.
+
+**The goal-rate line.** `DailyGoalEvidence` gains `storedTargetR`,
+`goalReachedSessions`, `activeSessionsCounted` and `goalRatePct`, and the Auto page shows
+"the goal is 1.20R; reached on 4 of 16 active sessions (25%)" beside the expected-day
+identity. The two answer different questions and the rate is the one a sizing change
+moves first: the goal's height in R is `targetPct ÷ riskPct`, so raising the risk % lowers
+the bar without the book changing at all. It counts sessions that REACHED the goal, not
+sessions that closed above it — `SessionOutcome.reached` was computed by `simulateSession`
+since the sweep was written and returned by nothing, which is the same
+value-computed-and-never-consumed shape CLAUDE.md's own scars are made of. Under `bank`
+the day halts new entries at the level while open trades run on, so a session can reach
+the goal and still close below it; `dayR >= levelR` would have quietly undercounted.
+
+**Where it is read.** The dashboard carries `edgeLeakSummary` from the LAST persisted
+scan (one row, `edge_leak_scans`) rather than running one per poll — a per-bucket
+bootstrap over both books is real CPU and the dashboard is polled. The Auto page's line
+is silent on a clean scan: "0 leaks" every day trains the eye to skip it.

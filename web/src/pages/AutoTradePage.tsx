@@ -25,6 +25,7 @@ import {
 import type {
   AutotradeConfig,
   AutotradeCapCoherence,
+  AutotradeEdgeLeakSummary,
   AutotradeDashboard,
   AutotradeDecideResponse,
   AutotradeLivePosition,
@@ -1187,6 +1188,36 @@ const CAP_COHERENCE_LABELS: Record<AutotradeCapCoherence['key'], string> = {
  * believed the caps were tracking equity. Setting a frozen cap back to its
  * derived value hands it back to the re-anchor.
  */
+/**
+ * What the last edge-leak scan found (2026-09-12).
+ *
+ * The point of the scan is that leaks in this book have only ever been found
+ * when a human happened to look — so the count belongs where the operator
+ * already looks, not only behind a route. Silent when a scan has run and found
+ * nothing, because "0 leaks" every day trains the eye to skip the line.
+ */
+function EdgeLeakLine({ s }: { s: AutotradeEdgeLeakSummary | null }) {
+  if (!s || (s.leaks === 0 && s.findings === 0 && s.watches === 0)) return null;
+  const top = s.topLeak;
+  return (
+    <p className="text-[11px] text-slate-500" data-testid="edge-leak-summary">
+      <span className="text-slate-400">Edge leaks:</span>{' '}
+      <span className={s.leaks > 0 ? 'text-amber-300' : 'text-slate-300'}>
+        {s.leaks} open, {s.watches} watching, {s.findings} finding{s.findings === 1 ? '' : 's'}
+      </span>
+      {top && (
+        <>
+          {' '}
+          — worst is <span className="text-slate-300">{top.dimension}</span> ={' '}
+          <span className="text-slate-300">{top.bucket}</span> ({fmtNum(top.meanR, 3)}R over {top.n} trades,{' '}
+          {fmtNum(top.severityR, 1)}R left on the table)
+        </>
+      )}
+      . Full table: Journal › Analytics › Edge leaks. Scanned {s.etDate}.
+    </p>
+  );
+}
+
 function CapsCoherenceStrip({ rows }: { rows: AutotradeCapCoherence[] | undefined }) {
   if (!rows || rows.length === 0) return null;
   const anchor = rows[0].anchorEquityUsd;
@@ -1864,6 +1895,23 @@ function MonitoringDashboard({
           </>
         )}
         .
+        {/* The goal RATE (2026-09-12). The identity above says what a normal
+            day is worth; this says how often the goal was actually reached,
+            counted the way the sweep counts it. The two answer different
+            questions and the rate is the one a sizing change moves first: the
+            goal's height in R is targetPct / riskPct, so raising the risk %
+            lowers the bar and this number responds the same day. */}
+        {ev.storedTargetR !== null && ev.activeSessionsCounted > 0 && (
+          <>
+            {' '}
+            At the stored risk the goal is{' '}
+            <span className="tabular-nums text-slate-200">{fmtNum(ev.storedTargetR, 2)}R</span>; reached on{' '}
+            <span className="tabular-nums text-slate-200">
+              {ev.goalReachedSessions} of {ev.activeSessionsCounted}
+            </span>{' '}
+            active sessions ({fmtNum(ev.goalRatePct, 0)}%).
+          </>
+        )}
       </>
     );
 
@@ -1938,6 +1986,7 @@ function MonitoringDashboard({
           Journal › Analytics › Regime tighten — the pre-committed reading needs {rt.minForReading}.
         </p>
       )}
+      <EdgeLeakLine s={dash.edgeLeakSummary} />
       <RegimeReadinessLine r={dash.mlRegimeReadiness} />
       {dash.symbolCooldowns.length > 0 && (
         <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">

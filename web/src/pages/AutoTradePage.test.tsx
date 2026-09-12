@@ -321,6 +321,10 @@ function dashboardFixture(overrides: Partial<AutotradeDashboard> = {}): Autotrad
       reliable: false,
       impliedDailyGainPct: null,
       targetOverImplied: null,
+      storedTargetR: null,
+      goalReachedSessions: 0,
+      activeSessionsCounted: 0,
+      goalRatePct: null,
     },
     methodPerformance: [],
     symbolCooldowns: [],
@@ -365,6 +369,7 @@ function dashboardFixture(overrides: Partial<AutotradeDashboard> = {}): Autotrad
     liveOptionsMaxOrdersPerDay: 6,
     liveOptionsProbation: { active: false, multiplier: 1, tradesPlaced: 0, tradesRemaining: 20 },
     capsCoherence: capsCoherenceFixture(),
+    edgeLeakSummary: null,
     ...overrides,
   };
 }
@@ -3484,6 +3489,103 @@ describe('AutoTradePage', () => {
       expect(line).toHaveTextContent(/Daily goal: none set/);
       expect(line).toHaveTextContent(/Expected day at current sizing ≈ 0\.40%/);
       expect(line).toHaveTextContent(/thin record, 7 of 20 trades, 5 of 20 active sessions/);
+    });
+
+    // -----------------------------------------------------------------------
+    // The goal RATE (2026-09-12). The expected-day identity says what a normal
+    // day is worth; this says how often the goal was actually reached. A
+    // sizing change moves the rate first, because the goal's height in R is
+    // targetPct / riskPct.
+    // -----------------------------------------------------------------------
+    it('shows the goal in R beside how often it was actually reached', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({
+          dailyGoalEvidence: {
+            ...dashboardFixture().dailyGoalEvidence,
+            avgR: 0.05,
+            rTrades: 43,
+            tradesPerSession: 5,
+            sessions: 40,
+            activeSessions: 16,
+            reliable: true,
+            impliedDailyGainPct: 0.1,
+            targetOverImplied: 30,
+            storedTargetR: 1.2,
+            goalReachedSessions: 4,
+            activeSessionsCounted: 16,
+            goalRatePct: 25,
+          },
+        }),
+      );
+      renderDashboard();
+      const line = await screen.findByTestId('daily-goal-evidence');
+      expect(line).toHaveTextContent(
+        /At the stored risk the goal is 1\.20R; reached on 4 of 16 active sessions \(25%\)/,
+      );
+    });
+
+    it('says nothing about a goal rate when no goal is armed', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({
+          dailyGoalEvidence: {
+            ...dashboardFixture().dailyGoalEvidence,
+            avgR: 0.05,
+            rTrades: 43,
+            impliedDailyGainPct: 0.1,
+            storedTargetR: null,
+            goalReachedSessions: 0,
+            activeSessionsCounted: 0,
+            goalRatePct: null,
+          },
+        }),
+      );
+      renderDashboard();
+      const line = await screen.findByTestId('daily-goal-evidence');
+      expect(line).not.toHaveTextContent(/active sessions \(/);
+    });
+
+    // -----------------------------------------------------------------------
+    // The edge-leak card. Every leak in this book so far was found because a
+    // human happened to look, so the count belongs where the operator already
+    // looks — and stays silent on a clean scan, because "0 leaks" every day
+    // trains the eye to skip the line.
+    // -----------------------------------------------------------------------
+    it('names the worst open leak and what it has cost', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({
+          edgeLeakSummary: {
+            leaks: 1,
+            watches: 2,
+            findings: 3,
+            asOf: Date.parse('2026-09-12T21:00:00Z'),
+            etDate: '2026-09-12',
+            topLeak: { dimension: 'round', bucket: '2', meanR: -0.136, n: 20, severityR: 2.7 },
+          },
+        }),
+      );
+      renderDashboard();
+      const line = await screen.findByTestId('edge-leak-summary');
+      expect(line).toHaveTextContent(/1 open, 2 watching, 3 findings/);
+      expect(line).toHaveTextContent(/worst is round = 2 \(-0\.136R over 20 trades, 2\.7R left on the table\)/);
+      expect(line).toHaveTextContent(/Scanned 2026-09-12/);
+    });
+
+    it('stays quiet when the last scan found nothing, and when none has run', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({
+          edgeLeakSummary: {
+            leaks: 0,
+            watches: 0,
+            findings: 0,
+            asOf: Date.parse('2026-09-12T21:00:00Z'),
+            etDate: '2026-09-12',
+            topLeak: null,
+          },
+        }),
+      );
+      renderDashboard();
+      await screen.findByTestId('daily-goal-evidence');
+      expect(screen.queryByTestId('edge-leak-summary')).toBeNull();
     });
 
     it('points at the regime-tighten ledger once ten tightened trades have closed', async () => {
