@@ -8484,6 +8484,42 @@ it — so when execution defects are open and the measurable findings total unde
 points, the headline leads with **"fix what is broken before tuning what is merely
 small"** instead of ranking the small thing first.
 
+## 2026-09-12 — the last silent refusal on the live entry path
+
+Auditing every early exit in `runLiveExecution` for a journal row left exactly
+one that refused a candidate and wrote nothing:
+
+```ts
+if (skipSymbols.has(symbol)) {
+  outcomes.push({ symbol, ok: false, reason: 'Already has an open live position' });
+  continue;
+}
+```
+
+Two reasons it matters more than it looks:
+
+1. **It fed the residual bucket.** A paper entry the live book passed on for
+   this reason reached the attribution as `no_live_row` — "nothing the journal
+   explains" — pooled with genuine recording gaps.
+2. **`skipSymbols` is not autotrade-only.** It is every open position on the
+   account plus every working order, so a name the OPERATOR holds by hand
+   silently suppresses every live signal on it for as long as they hold it.
+   Nothing anywhere said so.
+
+It is now journaled as `live_symbol_held_skipped`, once per symbol per ET day
+(`journalEntrySkipOncePerDay` — a held name is a steady-state condition that
+would otherwise write a row every tick for the whole hold), with a `holder`
+field of `autotrade` / `manual` / `pending_order`. The three are not the same
+finding and must not pool: an autotrade hold is the book working as designed, a
+manual hold is the operator unknowingly muting a name, and a working order is a
+transient that clears in a tick or two.
+
+The advisor gives this class **no config field** on purpose. One position per
+symbol is a structural rule, not a setting; the levers that change how often it
+bites are the slot count and the hold time, and which applies depends on the
+`holder`. A `code` action asking for that breakdown is the honest
+recommendation, not a number to turn.
+
 ## 2026-09-12 — the scan was reading 1,000 of 1,928 skip rows, and said nothing
 
 The tune advisor's top recommendation, at strong confidence, was **"the live

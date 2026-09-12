@@ -1789,9 +1789,77 @@ describe('runLiveExecution', () => {
       { signal: signal({ symbol: 'MSFT' }) }, // genuinely free — must still go through
     ]);
 
-    expect(outcomes[0]).toMatchObject({ symbol: 'AAPL', ok: false, reason: 'Already has an open live position' });
+    expect(outcomes[0]).toMatchObject({
+      symbol: 'AAPL',
+      ok: false,
+      reason: 'Already has an open live position (manual)',
+    });
     expect(outcomes[1]).toMatchObject({ symbol: 'MSFT', ok: true }); // not over-broadened to block everything
     expect(mockPlaceOrder).toHaveBeenCalledTimes(1); // only MSFT ever reached the broker
+
+    // …and it is JOURNALED (2026-09-12). This was the last silent refusal on
+    // the entry path, so a paper entry the live book passed on for this reason
+    // reached the attribution as `no_live_row` — pooled with a genuine
+    // recording gap. `holder: 'manual'` is the part worth surfacing: a name the
+    // operator holds by hand mutes every live signal on it, which is invisible
+    // without this row.
+    const rows = listAutotradeEvents({ actions: ['live_symbol_held_skipped'], limit: 20 });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].symbol).toBe('AAPL');
+    expect(JSON.parse(rows[0].detail as string)).toMatchObject({ holder: 'manual' });
+  });
+
+  it('names an autotrade hold differently from a manual one — they are not the same finding', async () => {
+    const now = Date.now();
+    db.prepare(
+      `INSERT INTO positions (asset_type, symbol, side, quantity, entry_price, entry_date, fees, multiplier, status, tags, created_at, updated_at)
+       VALUES ('stock','AAPL','long',10,100,'2026-07-01',0,1,'open',?,?,?)`,
+    ).run(JSON.stringify(['autotrade', 'live']), now, now);
+
+    setAutotradeConfig({
+      accountEquityUsd: 100_000,
+      riskProfile: 'MODERATE',
+      liveAccountId: 'ACC1',
+      liveTradingEnabled: true,
+      liveEnabledAt: Date.now(),
+      liveMaxOrderUsd: 50_000,
+      liveMaxDailyLossUsd: 5_000,
+      liveMaxOrdersPerDay: 20,
+      killSwitch: false,
+    });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+
+    await runLiveExecution([{ signal: signal({ symbol: 'AAPL' }) }]);
+    const rows = listAutotradeEvents({ actions: ['live_symbol_held_skipped'], limit: 20 });
+    expect(JSON.parse(rows[0].detail as string)).toMatchObject({ holder: 'autotrade' });
+  });
+
+  it('journals the held-symbol skip once per day, not once per tick', async () => {
+    const now = Date.now();
+    db.prepare(
+      `INSERT INTO positions (asset_type, symbol, side, quantity, entry_price, entry_date, fees, multiplier, status, tags, created_at, updated_at)
+       VALUES ('stock','AAPL','long',10,100,'2026-07-01',0,1,'open',?,?,?)`,
+    ).run(JSON.stringify(['autotrade', 'live']), now, now);
+
+    setAutotradeConfig({
+      accountEquityUsd: 100_000,
+      riskProfile: 'MODERATE',
+      liveAccountId: 'ACC1',
+      liveTradingEnabled: true,
+      liveEnabledAt: Date.now(),
+      liveMaxOrderUsd: 50_000,
+      liveMaxDailyLossUsd: 5_000,
+      liveMaxOrdersPerDay: 20,
+      killSwitch: false,
+    });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+
+    // A held name is a steady-state condition: the loop refuses it on every
+    // tick for the whole hold. One row a day, or the journal drowns.
+    for (let i = 0; i < 4; i++) await runLiveExecution([{ signal: signal({ symbol: 'AAPL' }) }]);
+    expect(listAutotradeEvents({ actions: ['live_symbol_held_skipped'], limit: 20 })).toHaveLength(1);
   });
 });
 

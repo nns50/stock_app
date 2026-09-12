@@ -187,6 +187,13 @@ export function fieldForUntakenReason(reason: string): { field: string; directio
     return { field: 'symbolReentryCooldownMinutes', direction: 'exposure' };
   }
   if (reason === 'symbol_cooldown_skipped') return { field: 'symbolCooldownDays', direction: 'exposure' };
+  // `live_symbol_held_skipped` deliberately has NO field. One position per
+  // symbol is a structural rule, not a setting — the levers that would change
+  // how often it bites are the slot count and the hold time, and which of
+  // those applies depends on why the name was held (an autotrade position, a
+  // manual one, or a working order). The detail carries that; a `code` action
+  // asking for the breakdown is the honest recommendation.
+  if (reason === 'live_symbol_held_skipped') return null;
   return null;
 }
 
@@ -257,6 +264,7 @@ function flowRecommendations(input: TuneAdvisorInput, gap: GoalGap): TuneRecomme
 function humanReason(reason: string): string {
   if (reason.startsWith('live_risk_blocked:')) return `the ${reason.slice('live_risk_blocked:'.length)} rule`;
   if (reason === 'no_live_row') return 'nothing the journal explains';
+  if (reason === 'live_symbol_held_skipped') return 'already holding the name (or an order working on it)';
   return reason.replace(/_/g, ' ');
 }
 

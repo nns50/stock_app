@@ -124,6 +124,7 @@ export function tunerDisabledAt(now: number): number | null {
 
 /** Live-book skips that explain why a paper entry had no live twin. */
 const SKIP_ACTIONS = [
+  'live_symbol_held_skipped',
   'live_score_floor_skipped',
   'symbol_reentry_cooldown_skipped',
   'symbol_cooldown_skipped',
