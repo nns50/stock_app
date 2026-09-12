@@ -108,18 +108,33 @@ export function buildGatedSwitchSnapshot(now: number): GatedSwitchSnapshot {
 }
 
 /**
- * Evaluate every rule for `now`'s session and act on the result.
+ * Evaluate every rule for `now`'s session and act on the result. Null when
+ * every rule has already been evaluated on this ET date.
  *
  * Writes go through `setAutotradeConfig`, which sanitises every field, and the
  * patch has already passed `assertWritable` inside the engine — belt and
  * braces on purpose, because a patch assembled from a leak scan's lever is
  * data rather than literal code.
+ *
+ * THE DATE CHECK HAPPENS TWICE, and deliberately. The engine holds the
+ * authoritative per-RULE guard (a rule added mid-day has no row yet, so it is
+ * still evaluated today while its neighbours are skipped). The cheap check
+ * below is only about work: the loop calls this on every tick from the close
+ * to midnight — roughly 480 times a night — and without it the snapshot would
+ * be rebuilt each time only for the engine to discard the lot. Five rows of
+ * state to find that out, against a readiness read, the whole daily-results
+ * table and a caps derivation.
  */
-export function runGatedSwitches(now: number = Date.now()): GatedSwitchResult {
+export function runGatedSwitches(now: number = Date.now()): GatedSwitchResult | null {
+  const etDate = etToday(now);
+  const states = listSwitchStates();
+  const pending = GATED_SWITCH_RULES.some((r) => states.get(r.id)?.lastEvaluatedEtDate !== etDate);
+  if (!pending) return null;
+
   const snapshot = buildGatedSwitchSnapshot(now);
   const result = evaluateGatedSwitches({
     snapshot,
-    states: listSwitchStates(),
+    states,
     enabled: snapshot.config.gatedSwitchesEnabled,
     now,
     rules: GATED_SWITCH_RULES,
