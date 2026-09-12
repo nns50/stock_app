@@ -205,6 +205,28 @@ describe('runAutotradeScreen', () => {
       expect(result.candidates).toHaveLength(1);
     });
 
+    it('uses the ET calendar, not the UTC one, on an evening tick', async () => {
+      // 2026-09-14 21:00 ET is 2026-09-15 01:00 UTC — the window where the two
+      // calendars disagree, which opens at 20:00 ET every day the loop runs
+      // late. Earnings are TODAY in ET. Taking toISOString() made "today"
+      // 09-15, so the symbol read as diffDays -1 and left the blackout
+      // entirely — the one case the filter exists for.
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(Date.parse('2026-09-15T01:00:00Z'));
+        earningsFixture.current.SCREARN6 = { earningsTimestamp: new Date('2026-09-14T00:00:00Z') };
+        const result = await runAutotradeScreen({
+          symbols: ['SCREARN6'],
+          config: { filters: RELAXED_FILTERS },
+          earningsBlackoutDays: 3,
+        });
+        expect(result.candidates).toHaveLength(0);
+        expect(result.excluded.find((e) => e.symbol === 'SCREARN6')?.reason).toMatch(/blackout/i);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('does not exclude (fails open) when the earnings date is unknown', async () => {
       // No earningsFixture entry at all for this symbol -> the mocked quote()
       // returns a bare {symbol}, same shape a real "Yahoo has nothing" response
