@@ -8433,3 +8433,65 @@ re-anchor and the derivation have diverged. No `config_auto_applied` row may app
 before a rule has five evaluations behind it; if one does, the graduation gate is not
 doing its job and the engine should be switched off at `gatedSwitchesEnabled` while it is
 worked out.
+
+## 2026-09-12 — the tune advisor: what to change next, and how much it is worth
+
+The app collects a great deal and synthesises none of it. The goal evidence says what a
+normal day is worth, the sweep says what goal is reachable, the edge-leak scan says where
+money is lost, the attribution says what the live book refuses — and a reader has to hold
+all four in their head to answer "so what should I change". `services/autotrading/
+tuneAdvisor.ts` answers it, ranked.
+
+**Everything here is one equation, differentiated.** The app's own identity is
+
+    expected day % = trades/session × risk% × avg R
+
+so there are exactly three factors to move, plus the execution drag that stops a decided
+trade from becoming the R it was worth. Every recommendation names which factor it moves
+and estimates its effect in **percentage points of the expected day** through that same
+identity. That is what makes them rankable against each other rather than a list of good
+ideas.
+
+Two arithmetic choices worth stating, because both are easy to get wrong in the
+flattering direction:
+
+- **A leak is spread over the WHOLE book, not its own bucket.** Closing a bucket that
+  loses 5R lifts avg R by 5R ÷ *all* live trades, not by that bucket's own −0.24R mean.
+  The second number is five times larger and answers a question nobody asked.
+- **An execution defect gets no estimate at all.** An exit that failed cost whatever that
+  trade would have made, which a count cannot tell you. A fabricated number would let a
+  defect be ranked against a distribution as though the two were measured the same way.
+  They are ranked above it instead, by construction: a broken stop is not a distribution.
+
+**A recommendation is not only a setting.** Where the data implies something with no
+config field — an entry cutoff that does not exist yet, an exit path that decides
+correctly and fills badly — the action comes back as `kind: 'code'` with what to build,
+and where the honest next step is a measurement rather than a change, as `'research'`.
+"Tune" means the workflow, not just the knobs.
+
+**And it is not permission.** Decision 7 pre-commits to one change set with no mid-course
+knob turning except the revert, precisely because a daily recommender invites the
+opposite. So anything that would widen the trial's own settings before the 10-session
+review is `blocked_by_review`, with the session count that will unblock it. A leak's lever
+is NOT held that way: the review guards against widening mid-trial, not against plugging a
+hole.
+
+**The headline can say the change will not get you there**, and usually will. On a book
+whose implied day is 0.5% against a 3% goal, the sum of everything measurable is a
+fraction of the gap, and the honest sentence is "the rest is distribution, not a setting".
+A recommender that always finds something worth doing trains its reader to stop believing
+it — so when execution defects are open and the measurable findings total under 0.05
+points, the headline leads with **"fix what is broken before tuning what is merely
+small"** instead of ranking the small thing first.
+
+**Where it does not go.** There is no Auto-page card. The advice is a daily *read*, not a
+glance, and the page already carries four cards the operator scans; this one is delivered
+by the post-close routine and available at `GET /api/journal/tune-advice`. It collects
+nothing of its own — the goal evidence, the scan and the review window are all already
+kept for their own reasons — so its numbers cannot disagree with the cards beside them.
+
+**What it cannot do**, stated so nobody waits for it: propose a feature. A pure function
+over the book's own record can rank what the record implies; it cannot notice that the
+options sleeve has no attribution of its own, or that a gate would be better expressed
+some other way. That half stays a judgement, made against the data and the codebase, and
+the routine asks for it explicitly rather than pretending the advisor covers it.

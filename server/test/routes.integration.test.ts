@@ -726,6 +726,42 @@ describe('GET/POST /journal/daily-results (integration)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// The tune advisor through the real route (2026-09-12).
+// ---------------------------------------------------------------------------
+describe('GET /journal/tune-advice (integration)', () => {
+  beforeEach(() => {
+    db.exec('DELETE FROM autotrade_events; DELETE FROM edge_leak_scans; DELETE FROM autotrade_daily_results;');
+  });
+
+  it('frames the gap from the same evidence the goal card reads', async () => {
+    setAutotradeConfig({ riskPerTradePct: 2.5, targetDailyGainPct: 3 });
+    seedClosedAutotradeSessions({
+      sessions: Object.fromEntries(
+        weekdaysEndingAt('2026-09-10', 4).map((d) => [d, [{ entryTime: '09:35', exitTime: '10:00', r: 0.4 }]]),
+      ),
+    });
+
+    const advice = (await getJson('/api/journal/tune-advice')) as {
+      gap: { targetDailyGainPct: number; riskPerTradePct: number; storedTargetR: number; activeSessions: number };
+      recommendations: unknown[];
+      headline: string;
+    };
+    expect(advice.gap.targetDailyGainPct).toBe(3);
+    expect(advice.gap.riskPerTradePct).toBe(2.5);
+    // 3% / 2.5% — the same conversion the dashboard's goal-rate line makes.
+    expect(advice.gap.storedTargetR).toBe(1.2);
+    expect(advice.gap.activeSessions).toBeGreaterThan(0);
+    // No scan has been persisted, so it says so rather than ranking nothing.
+    expect(advice.headline).toMatch(/No edge-leak scan has run yet/);
+    expect(advice.recommendations).toEqual([]);
+  });
+
+  it('rejects a nonsense window', async () => {
+    expect((await fetch(`${base}/api/journal/tune-advice?sessions=0`)).status).toBe(400);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // The edge-leak scan through the real route (2026-09-12). The scan's own suite
 // covers the bar and the catalog; what matters here is that the route answers,
 // that `book` narrows what it reads, and that it PERSISTS by default — the
