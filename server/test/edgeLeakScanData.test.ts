@@ -111,6 +111,70 @@ describe('the configuration findings', () => {
     );
   });
 
+  // -------------------------------------------------------------------------
+  // The finding asks "did the tuner write while it was meant to be off", and
+  // that has no answer without a moment to measure from. On 2026-09-12 the
+  // first production read counted 14 rows from the week BEFORE the tuner was
+  // switched off — all of them legitimate, and all of them due to be reported
+  // again on each of the next five routine runs.
+  // -------------------------------------------------------------------------
+  it('counts only tuner rows NEWER than the switch, once the switch is journaled', () => {
+    const now = Date.parse('2026-09-12T18:00:00Z');
+    const day = 24 * 60 * 60 * 1000;
+    setAutotradeConfig({ ...defaultAutotradeConfig(), autoTuneEnabled: false });
+    // Two legitimate runs from before the switch, one violation after it.
+    const write = (action: string, at: number) =>
+      db
+        .prepare(
+          "INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) VALUES (NULL,'config',?,'{}',NULL,?)",
+        )
+        .run(action, at);
+    write('auto_tune_ran', now - 4 * day);
+    write('auto_tune_ran', now - 3 * day);
+    write('auto_tune_disabled', now - 2 * day);
+    write('auto_tune_ran', now - day);
+
+    const finding = collectConfigurationFindings(getAutotradeConfig(), now).find(
+      (f) => f.id === 'configuration:auto_tune_ran',
+    );
+    expect(finding?.count).toBe(1);
+    expect(finding?.detail).toMatch(/since the tuner was switched off/);
+  });
+
+  it('does not report the switch itself as the tuner misbehaving', () => {
+    const now = Date.parse('2026-09-12T18:00:00Z');
+    setAutotradeConfig({ ...defaultAutotradeConfig(), autoTuneEnabled: false });
+    db.prepare(
+      "INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) VALUES (NULL,'config','auto_tune_disabled','{}',NULL,?)",
+    ).run(now - 60_000);
+    expect(collectConfigurationFindings(getAutotradeConfig(), now).map((f) => f.id)).not.toContain(
+      'configuration:auto_tune_ran',
+    );
+  });
+
+  it('falls back to TODAY when the journal never recorded the switch', () => {
+    // The 2026-09-12 case: the flag flipped before the transition row existed.
+    // Yesterday's legitimate run must not be reported; a run dated today must.
+    const now = Date.parse('2026-09-12T18:00:00Z');
+    setAutotradeConfig({ ...defaultAutotradeConfig(), autoTuneEnabled: false });
+    const write = (at: number) =>
+      db
+        .prepare(
+          "INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) VALUES (NULL,'config','auto_tune_ran','{}',NULL,?)",
+        )
+        .run(at);
+    write(Date.parse('2026-09-11T04:00:00Z')); // yesterday 00:00 ET — legitimate
+    expect(collectConfigurationFindings(getAutotradeConfig(), now).map((f) => f.id)).not.toContain(
+      'configuration:auto_tune_ran',
+    );
+
+    write(Date.parse('2026-09-12T04:00:00Z')); // today 00:00 ET — a real violation
+    const finding = collectConfigurationFindings(getAutotradeConfig(), now).find(
+      (f) => f.id === 'configuration:auto_tune_ran',
+    );
+    expect(finding?.count).toBe(1);
+  });
+
   it('reports a held equity reading, which is the caps refusing to follow a bad number', () => {
     setAutotradeConfig(defaultAutotradeConfig());
     logAutotradeEvent({

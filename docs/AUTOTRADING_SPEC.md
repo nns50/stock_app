@@ -8247,3 +8247,84 @@ below the calendar is the accessible twin of the heatmap.
 against the stored daily GOAL, not a hardcoded percentage, so the calendar re-scales
 itself the moment the goal or the risk % changes. A day that reaches the goal is always a
 full-strength tile, whatever the goal happens to be.
+
+## 2026-09-12 (post-deploy) — the first scan reading, and the pre-commitment that failed
+
+The 3%-goal plan's sizing change went in and the edge-leak scan ran for the first time on
+the deployed book. Both are recorded here because one of them contradicts this plan's own
+written prediction, and a pre-commitment that is quietly dropped when it is inconvenient is
+worse than none.
+
+**What was applied.** Risk 1.25 → 2.5%, exposure 190, aggregate 7.5, halt 7.5, expectancy
+max 1.25, scale-out off, target 1R, stagnation 60, re-entry cooldown 390, auto-tuner off,
+the regime overlay on at cut 50 / tighten 15; then the options sleeve to 2 slots, 6 orders a
+day, and a per-order cap of $236 (the derived value). The goal itself did not move.
+
+**The new machinery proved itself within a minute.** Raising the risk % put `liveMaxOrderUsd`
+($2,744) below the sizer's own floor (100% of equity at 2.5/2.5). The blocking rule plus the
+new 5% threshold re-anchored at 03:56:37Z on a **3.7% drift** — a move the old 15% rule would
+have ignored, leaving a cap that blocks every entry. It rewrote the cap to $5,284. All four
+dollar caps then read `anchorOwned: true` for the first time since 2026-09-06.
+
+**The goal-rate line landed on the plan's estimate**: the goal is **1.20R**, reached on
+**4 of 16** active sessions (**25%**) — the "roughly one active session in four" the sweep
+projected, now measured rather than assumed.
+
+### The pre-committed reading did not hold
+
+The scan was shipped with this written down: *"on today's data the scan must report round 2
+as a leak (both books negative, lever `symbolReentryCooldownMinutes` → 390) … If it does not,
+the scan is wrong, not the record."*
+
+It reported **zero leaks**. On the evidence the record moved, and the scan is right:
+
+| round | live | paper (control) |
+| --- | --- | --- |
+| 1 | n=73, +0.01R, +$107 | n=77, +0.05R |
+| **2** | **n=23, −0.24R, −$132.08**, CI **[−0.65, +0.10]** | **n=25, +0.04R** |
+| 3+ | n=6, +0.07R, +$14 | n=26, +0.06R |
+
+Two of the bar's three tests fail. The live interval straddles zero, and — the one that
+matters — **the paper control disagrees in sign**. The plan's hand analysis had paper round 2
+at −0.01R over 12 trades; that sample has since doubled to 25 and come out slightly positive.
+Under the scan's own logic, "loses live, does not lose in paper" is an **execution** pattern,
+not a decision one, and the scan correctly refuses to hand it the decision's lever.
+
+The cooldown stays at 390 by the operator's decision, recorded in
+`docs/TUNE_FROM_TARGET.md`'s goal log as a **judgment call rather than a demonstrated leak**,
+to be re-read at the 10-session review. The important part is the shape of what happened: the
+pre-commitment did its job. It was written before the first read precisely so the scan could
+not be tuned until it agreed with the prose, and when the two disagreed the prose lost.
+
+### Two other readings worth keeping
+
+- **The 13:00 question is settled, negatively.** Live after-13:00 is +0.06R (n=28); paper is
+  −0.33R (n=17). The books point opposite ways, so the playbook's written rule — build the
+  equity entry cutoff only when the live bucket clears the bar AND paper agrees in sign —
+  says do not build it. That is the rule refusing a change, which is the harder half of
+  having one.
+- **The options sleeve's gap, in numbers.** Live options −0.71R over 3 trades (−$171);
+  paper options +0.23R over 20. Live-only again, which is exactly the execution gap PR A
+  addresses. No live options trade has yet run under the fixed code, so the first one is the
+  real test — not the sleeve's widening.
+
+The only watch is Mondays (n=10, −0.21R, CI [−0.46, +0.01]). Execution findings are dominated
+by pre-fix history: `live_options_exit_failed` ×261 is the 2026-09-11 HOOD day firing on every
+tick before the throttle shipped, and `live_scale_out_blocked` ×147 is a mechanism now
+switched off.
+
+### The tuner finding needed a moment to measure from
+
+The scan's first run also reported "the tuner wrote while it was meant to be off ×14" — all
+fourteen from the week **before** the tuner was switched off, and all of them legitimate. The
+check asked a question it had no baseline for, and would have repeated the same false finding
+on each of the next five routine runs.
+
+The config row cannot supply that baseline: its `updated_at` moves on every loop tick, because
+the equity sync writes `accountEquityUsd` every minute. So the moment is journaled explicitly
+— `auto_tune_disabled` / `auto_tune_enabled` on the flag's transition — and the finding counts
+only rows newer than the switch. When the journal does not say (a flag that flipped before
+that row existed, which is this very day), it falls back to **today only**: the narrowest
+window that still has teeth, since the tuner runs once per ET day at 00:00 and a real
+violation therefore surfaces on the next day's scan rather than never. The two transition
+actions are excluded from the count, or switching the tuner off would report itself.

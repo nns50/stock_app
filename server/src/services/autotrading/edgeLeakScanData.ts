@@ -71,6 +71,34 @@ export const EXECUTION_ACTIONS: { action: string; label: string }[] = [
   { action: 'give_back_halt', label: 'The give-back guard halted the day' },
 ];
 
+/** The two rows that record the tuner's SWITCH rather than a tuner RUN. They
+ *  share the `auto_tune_` prefix, so the violation count below must exclude
+ *  them or turning the tuner off would report itself as the tuner misbehaving. */
+export const TUNER_TRANSITION_ACTIONS = ['auto_tune_disabled', 'auto_tune_enabled'];
+
+/**
+ * When the continuous tuner was last switched OFF, or null if the journal does
+ * not say.
+ *
+ * The finding this feeds asks "did the tuner write while it was meant to be
+ * off", and that question has no answer without a moment to measure from. The
+ * config row cannot supply one: `updated_at` moves on every loop tick, because
+ * the equity sync writes `accountEquityUsd` every minute. So the moment is
+ * journaled explicitly by the config route when the flag flips.
+ *
+ * Null is the honest answer for a flag that flipped before that row existed
+ * (2026-09-12 is one such day) — the caller falls back to "today only", which
+ * is the narrowest window that still has teeth: the tuner runs once per ET day
+ * at 00:00, so a tuner that really is writing while disabled shows up on the
+ * next day's scan rather than never.
+ */
+export function tunerDisabledAt(now: number): number | null {
+  const since = now - 30 * 24 * 60 * 60 * 1000;
+  const rows = listAutotradeEvents({ stage: 'config', actions: ['auto_tune_disabled'], since, limit: 10 });
+  // listAutotradeEvents orders newest first.
+  return rows.length ? rows[0].createdAt : null;
+}
+
 /** Live-book skips that explain why a paper entry had no live twin. */
 const SKIP_ACTIONS = [
   'live_score_floor_skipped',
@@ -341,16 +369,18 @@ export function collectConfigurationFindings(cfg: AutotradeConfig, now: number):
   }
 
   const since = now - 7 * 24 * 60 * 60 * 1000;
-  const tuner = listAutotradeEvents({ stage: 'config', since, limit: 200 }).filter((e) =>
-    e.action.startsWith('auto_tune_'),
+  const tuner = listAutotradeEvents({ stage: 'config', since, limit: 200 }).filter(
+    (e) => e.action.startsWith('auto_tune_') && !TUNER_TRANSITION_ACTIONS.includes(e.action),
   );
-  if (!cfg.autoTuneEnabled && tuner.length > 0) {
+  const tunerSince = tunerDisabledAt(now) ?? etDateTimeToMs(etToday(now), '00:00') ?? now;
+  const offending = tuner.filter((e) => e.createdAt >= tunerSince);
+  if (!cfg.autoTuneEnabled && offending.length > 0) {
     out.push({
       id: 'configuration:auto_tune_ran',
       kind: 'configuration',
       label: 'The continuous tuner wrote while it was meant to be off',
-      count: tuner.length,
-      detail: `${tuner.length} auto_tune_* row(s) in the last 7 days with autoTuneEnabled false — the trial's sizing is not the sizing that was agreed`,
+      count: offending.length,
+      detail: `${offending.length} auto_tune_* row(s) since the tuner was switched off — the trial's sizing is not the sizing that was agreed`,
       lever: {
         kind: 'config',
         field: 'autoTuneEnabled',

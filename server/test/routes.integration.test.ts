@@ -20,7 +20,7 @@ import { openPaperPosition } from '../src/db/autotradePaperPositions';
 import { openOptionsPaperPosition } from '../src/db/autotradeOptionsPaperPositions';
 import { createLiveOptionsPosition } from '../src/db/autotradeLiveOptionsPositions';
 import { saveLastTick } from '../src/db/autotradeLastTick';
-import { logAutotradeEvent } from '../src/db/autotradeEvents';
+import { listAutotradeEvents, logAutotradeEvent } from '../src/db/autotradeEvents';
 import { getProvider } from '../src/providers';
 import { seedClosedAutotradeSessions, weekdaysEndingAt } from './helpers/autotradeSessions';
 
@@ -1869,6 +1869,21 @@ describe('autotrade config routes (integration)', () => {
       autoTuneSlippageExcludePct: 3,
       accountEquityUsd: 30_000,
     });
+  });
+
+  it('journals the tuner switch, so a later scan can date it', async () => {
+    // The edge-leak scan asks "did the tuner write while it was meant to be
+    // off". The config row cannot date that — its updated_at moves on every
+    // loop tick, because the equity sync writes accountEquityUsd every minute.
+    db.exec("DELETE FROM autotrade_events WHERE action LIKE 'auto_tune_%'");
+    await put('/api/autotrade/config', { autoTuneEnabled: true });
+    await put('/api/autotrade/config', { autoTuneEnabled: false });
+    // An unrelated write must not journal a switch that did not happen.
+    await put('/api/autotrade/config', { accountEquityUsd: 30_000 });
+
+    const rows = listAutotradeEvents({ stage: 'config', actions: ['auto_tune_enabled', 'auto_tune_disabled'] });
+    expect(rows.map((r) => r.action)).toEqual(['auto_tune_disabled', 'auto_tune_enabled']); // newest first
+    expect(JSON.parse(rows[0].detail!)).toEqual({ from: true, to: false });
   });
 
   it('accountEquityUsd: null still explicitly clears it, distinct from omitting the field entirely', async () => {

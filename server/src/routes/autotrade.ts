@@ -817,6 +817,19 @@ autotradeRouter.put(
         riskProfile: next.riskProfile,
       });
     }
+    // The tuner's own switch, journaled so the edge-leak scan can tell a tuner
+    // row that predates the switch from one that should never have happened
+    // (edgeLeakScanData.ts's tunerDisabledAt). The config row cannot answer
+    // that: its `updated_at` moves every tick, because the equity sync writes
+    // accountEquityUsd every minute.
+    if (next.autoTuneEnabled !== before.autoTuneEnabled) {
+      logAutotradeEvent({
+        stage: 'config',
+        action: next.autoTuneEnabled ? 'auto_tune_enabled' : 'auto_tune_disabled',
+        detail: { from: before.autoTuneEnabled, to: next.autoTuneEnabled },
+        riskProfile: next.riskProfile,
+      });
+    }
     res.json(next);
   }),
 );
