@@ -1206,6 +1206,10 @@ const CAP_COHERENCE_LABELS: Record<AutotradeCapCoherence['key'], string> = {
  */
 function GatedSwitchesCard({ rules }: { rules: AutotradeGatedSwitch[] }) {
   if (!rules || rules.length === 0) return null;
+  const lastRun = rules.reduce<string | null>(
+    (a, r) => (r.lastEvaluatedEtDate !== null && (a === null || r.lastEvaluatedEtDate > a) ? r.lastEvaluatedEtDate : a),
+    null,
+  );
   return (
     <div className="rounded-lg border border-ink-600/60 p-3" data-testid="gated-switches">
       <h4 className="text-xs uppercase tracking-wide text-slate-400 mb-2">Automatic switches</h4>
@@ -1235,6 +1239,21 @@ function GatedSwitchesCard({ rules }: { rules: AutotradeGatedSwitch[] }) {
               {r.contradictions > 0 && (
                 <span className="text-bear"> — contradicted itself {r.contradictions}×, will not graduate</span>
               )}
+              {/* The footer below states a THREE-part rule; the line above showed
+                  two of its parts. Without the proposal count a rule sitting at
+                  0 -- which can never graduate, however many sessions it
+                  accumulates -- reads exactly like one that graduates next
+                  session. That distinction is the whole point of the card. */}
+              {r.direction === 'safe' && !r.graduated && r.contradictions === 0 && (
+                <span className={r.proposals === 0 ? 'text-slate-400' : undefined}>
+                  {r.proposals === 0
+                    ? ' — never fired yet, so it cannot graduate on session count alone'
+                    : ` — fired ${r.proposals}×`}
+                </span>
+              )}
+              {r.graduated && r.graduatedAt !== null && (
+                <span> — since {new Date(r.graduatedAt).toISOString().slice(0, 10)}</span>
+              )}
             </div>
           </div>
         ))}
@@ -1243,6 +1262,11 @@ function GatedSwitchesCard({ rules }: { rules: AutotradeGatedSwitch[] }) {
         A rule that reduces exposure applies itself once it has been evaluated on{' '}
         {rules[0]?.shadowEvaluationsRequired ?? 5} sessions, fired at least once, and never contradicted itself. One
         that adds exposure is reported and waits for you, always.
+        {/* When the engine last ran. The whole card is evidence of a process
+            that runs once per session after the close; a date that stops
+            advancing is the only visible sign that the hook has stopped, and
+            every count above would keep reading plausibly while it was stale. */}
+        {lastRun !== null && <> Last evaluated {lastRun}.</>}
       </p>
     </div>
   );

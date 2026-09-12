@@ -3,6 +3,7 @@ import {
   buildSessionPaths,
   computeRealizedEdge,
   emptyRealizedEdge,
+  goalInR,
   guardLevelsForR,
   MIN_RELIABLE_SESSIONS,
   runDailyTargetSweep,
@@ -440,5 +441,52 @@ describe('runDailyTargetSweep', () => {
     const a = run({ rng: seeded(42) });
     const b = run({ rng: seeded(42) });
     expect(a).toEqual(b);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The goal on the R axis has ONE derivation (2026-09-12).
+//
+// Four places computed `targetDailyGainPct / riskPerTradePct` themselves, each
+// with a comment asserting it matched the others. They did match, which is how
+// a divergence would have shipped: change the rounding or add a clamp in three
+// of four and the fourth quietly answers a different question -- and the
+// question is "did the book reach its goal today".
+// ---------------------------------------------------------------------------
+describe('goalInR', () => {
+  it('converts the stored daily target into R at the configured risk', () => {
+    expect(goalInR(3, 2.5)).toBe(1.2);
+    expect(goalInR(3, 1.25)).toBe(2.4);
+    // Two decimals, so a repeating quotient does not leak float noise into a
+    // level comparison that uses an exact epsilon.
+    expect(goalInR(1, 3)).toBe(0.33);
+  });
+
+  it('is null whenever the goal would be meaningless rather than large', () => {
+    expect(goalInR(null, 2.5)).toBeNull();
+    expect(goalInR(0, 2.5)).toBeNull();
+    expect(goalInR(-1, 2.5)).toBeNull();
+    // Risk of zero would make the goal infinite R, not an enormous number.
+    expect(goalInR(3, 0)).toBeNull();
+    expect(goalInR(3, null)).toBeNull();
+  });
+
+  it('is the same number the sweep marks as the stored target', () => {
+    // The consumer, not the producer: whatever goalInR returns must be the
+    // level the sweep flags, or the card and the sweep disagree about which
+    // row is the goal.
+    const r = runDailyTargetSweep({
+      book: 'live',
+      trades: [{ id: 'pos:1', entryAt: at('2026-09-10', '09:35'), exitAt: at('2026-09-10', '10:00'), r: 0.5 }],
+      sessionDates: ['2026-09-10'],
+      droppedTrades: 0,
+      approximatedExits: 0,
+      lookbackSessions: 40,
+      storedTargetPct: 3,
+      riskPerTradePct: 2.5,
+      resamples: 50,
+    });
+    expect(r.storedTargetR).toBe(goalInR(3, 2.5));
+    expect(r.levels.filter((l) => l.isStoredTarget).map((l) => l.levelR)).toEqual([1.2]);
   });
 });

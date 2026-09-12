@@ -9,7 +9,6 @@ import type {
   EntryStrategyConfig,
   ExcursionReport,
   RegimeTightenLedger,
-  DailyResult,
   DailyResultsReport,
   ExitCheckRow,
   ExitRulesConfig,
@@ -376,13 +375,10 @@ export const client = {
     const q = qs.toString();
     return api<DailyResultsReport>(`/journal/daily-results${q ? `?${q}` : ''}`);
   },
-  journalRecordDailyResult: (date: string) =>
-    api<DailyResult>(`/journal/daily-results/record?date=${encodeURIComponent(date)}`, post({})),
-  journalBackfillDailyResults: (from: string) =>
-    api<{ written: number; dates: string[] }>(
-      `/journal/daily-results/backfill?from=${encodeURIComponent(from)}`,
-      post({}),
-    ),
+  // No client method for POST /journal/daily-results/record or /backfill: both
+  // are operator-invoked corrections, run by hand against the API as the User
+  // Guide describes, and there is no UI control for either. Wire methods with
+  // no caller drift from the routes they describe without anything noticing.
 
   // --- data export / restore ---
   importPositions: (positions: unknown[], mode: 'merge' | 'replace') =>

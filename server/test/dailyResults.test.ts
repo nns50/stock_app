@@ -234,6 +234,20 @@ describe('aggregates', () => {
     expect(month.worstDayPct).toBe(-2);
   });
 
+  it('reports the mean RED day, which the worst day cannot stand in for', () => {
+    // Decision 9's yardstick is "mean red day <= -1.5%". These two months have
+    // the SAME worst day and the same count of red days; only the mean tells
+    // them apart, which is the whole reason it is a field.
+    const oneBadDay = buildDailyResultsReport([row('2026-09-08', -3), row('2026-09-09', -0.1), row('2026-09-10', 2)]);
+    const aRunOfThem = buildDailyResultsReport([row('2026-08-10', -3), row('2026-08-11', -2.9), row('2026-08-12', 2)]);
+    expect(oneBadDay.monthly[0].worstDayPct).toBe(aRunOfThem.monthly[0].worstDayPct);
+    expect(oneBadDay.monthly[0].redDays).toBe(aRunOfThem.monthly[0].redDays);
+    expect(oneBadDay.monthly[0].meanRedDayPct).toBeCloseTo(-1.55, 2);
+    expect(aRunOfThem.monthly[0].meanRedDayPct).toBeCloseTo(-2.95, 2);
+    // The green day is not averaged in, and a month with no red day has none.
+    expect(buildDailyResultsReport([row('2026-09-08', 1)]).monthly[0].meanRedDayPct).toBeNull();
+  });
+
   it('buckets by ISO week, so a week that crosses a month boundary stays one week', () => {
     expect(isoWeekKey('2026-09-07')).toBe(isoWeekKey('2026-09-11'));
     expect(isoWeekKey('2026-09-11')).not.toBe(isoWeekKey('2026-09-14'));

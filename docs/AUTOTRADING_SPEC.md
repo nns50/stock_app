@@ -8433,3 +8433,122 @@ re-anchor and the derivation have diverged. No `config_auto_applied` row may app
 before a rule has five evaluations behind it; if one does, the graduation gate is not
 doing its job and the engine should be switched off at `gatedSwitchesEnabled` while it is
 worked out.
+
+## 2026-09-12 — the tune advisor: what to change next, and how much it is worth
+
+The app collects a great deal and synthesises none of it. The goal evidence says what a
+normal day is worth, the sweep says what goal is reachable, the edge-leak scan says where
+money is lost, the attribution says what the live book refuses — and a reader has to hold
+all four in their head to answer "so what should I change". `services/autotrading/
+tuneAdvisor.ts` answers it, ranked.
+
+**Everything here is one equation, differentiated.** The app's own identity is
+
+    expected day % = trades/session × risk% × avg R
+
+so there are exactly three factors to move, plus the execution drag that stops a decided
+trade from becoming the R it was worth. Every recommendation names which factor it moves
+and estimates its effect in **percentage points of the expected day** through that same
+identity. That is what makes them rankable against each other rather than a list of good
+ideas.
+
+Two arithmetic choices worth stating, because both are easy to get wrong in the
+flattering direction:
+
+- **A leak is spread over the WHOLE book, not its own bucket.** Closing a bucket that
+  loses 5R lifts avg R by 5R ÷ *all* live trades, not by that bucket's own −0.24R mean.
+  The second number is five times larger and answers a question nobody asked.
+- **An execution defect gets no estimate at all.** An exit that failed cost whatever that
+  trade would have made, which a count cannot tell you. A fabricated number would let a
+  defect be ranked against a distribution as though the two were measured the same way.
+  They are ranked above it instead, by construction: a broken stop is not a distribution.
+
+**A recommendation is not only a setting.** Where the data implies something with no
+config field — an entry cutoff that does not exist yet, an exit path that decides
+correctly and fills badly — the action comes back as `kind: 'code'` with what to build,
+and where the honest next step is a measurement rather than a change, as `'research'`.
+"Tune" means the workflow, not just the knobs.
+
+**And it is not permission.** Decision 7 pre-commits to one change set with no mid-course
+knob turning except the revert, precisely because a daily recommender invites the
+opposite. So anything that would widen the trial's own settings before the 10-session
+review is `blocked_by_review`, with the session count that will unblock it. A leak's lever
+is NOT held that way: the review guards against widening mid-trial, not against plugging a
+hole.
+
+**The headline can say the change will not get you there**, and usually will. On a book
+whose implied day is 0.5% against a 3% goal, the sum of everything measurable is a
+fraction of the gap, and the honest sentence is "the rest is distribution, not a setting".
+A recommender that always finds something worth doing trains its reader to stop believing
+it — so when execution defects are open and the measurable findings total under 0.05
+points, the headline leads with **"fix what is broken before tuning what is merely
+small"** instead of ranking the small thing first.
+
+### The sweep that followed (2026-09-12)
+
+Two of these in a row was enough to go looking deliberately rather than by
+accident, across everything shipped on 2026-09-12. Three more, all the same
+disease at a different layer:
+
+- **`storedTargetR` had four derivations.** `targetDailyGainPct / riskPerTradePct`
+  — the conversion that decides what "reached the goal" MEANS — was written out
+  by hand in the sweep, the dashboard's goal-rate line, the leak scan's day
+  level and the tune advisor, each with a comment asserting it matched the
+  others. They did match, character for character, which is precisely how a
+  divergence ships: add a clamp or change the rounding in three of four and the
+  fourth quietly answers a different question. `goalInR()` in
+  `dailyTargetSweep.ts` is now the only one, and a test asserts the number it
+  returns is the level the sweep flags as the stored target.
+- **The Automatic switches card taught a three-part rule and showed two parts.**
+  Graduation needs sessions AND a proposal AND no contradiction; the card showed
+  the session count and the contradiction count. A rule sitting at zero
+  proposals — which can never graduate, however many sessions it accumulates —
+  read exactly like one that graduates next session. It now says so, shows the
+  graduation date, and shows when the engine last ran (a date that stops
+  advancing is the only visible sign the after-close hook has stopped, while
+  every count beside it keeps reading plausibly).
+- **One journal action carried two severities.**
+  `live_options_exit_reprice_deferred` covers the chase standing aside for a
+  partial fill (`mid_fill`, benign and correct) and the chase having given up
+  after its 20 re-prices with the order still resting (`daily_cap`, the HOOD
+  failure mode recurring). The leak scan reported both under one label as an
+  execution finding of equal weight, so the benign one would cry wolf every
+  time a partial filled and the real one would hide behind it. The scan splits
+  on the reason now, and an occurrence whose detail will not parse stays
+  counted under the unsplit action rather than being dropped.
+
+Also removed: two API client methods (`journalRecordDailyResult`,
+`journalBackfillDailyResults`) with no caller anywhere. Both routes are
+operator-invoked corrections run by hand, as the User Guide says; a wire method
+with no caller drifts from the route it describes without anything noticing.
+
+**Decision 9's yardstick got a field too, in the same pass and for the same reason.**
+The plan's "least loss on red days" objective is measured as *mean red day ≤ −1.5%*, and
+`ResultsAggregate` carried `worstDayPct` but no mean of the red days — so the routine
+that reports it every evening would have had to recompute it from the rows, differently
+each time anyone rewrote the prompt. `redDays` and `meanRedDayPct` are fields now, and a
+test pins the case the worst day cannot see: one bad day among small ones and a run of
+bad ones have the SAME worst day and the same red-day count, and differ only in the mean.
+The unit is percent, over the calendar's window; the leak scan's `dayLevel.meanRedSessionR`
+is R over the scan's window. They will not agree and are not meant to — quote whichever
+the rule being applied is written in.
+
+**The review clock is a field, not prose.** `gap.activeSessionsSinceChange` and
+`gap.reviewSessionsRequired` are on every response. They were briefly available only
+inside a blocked recommendation's `statusReason`, which is the same mistake this spec
+keeps recording one layer up: the routine that reports the clock every evening would have
+found it only on the days something happened to be blocked. It is distinct from
+`gap.activeSessions`, which counts the whole lookback window — most of which predates the
+trial — and the route integration test asserts both reach the wire.
+
+**Where it does not go.** There is no Auto-page card. The advice is a daily *read*, not a
+glance, and the page already carries four cards the operator scans; this one is delivered
+by the post-close routine and available at `GET /api/journal/tune-advice`. It collects
+nothing of its own — the goal evidence, the scan and the review window are all already
+kept for their own reasons — so its numbers cannot disagree with the cards beside them.
+
+**What it cannot do**, stated so nobody waits for it: propose a feature. A pure function
+over the book's own record can rank what the record implies; it cannot notice that the
+options sleeve has no attribution of its own, or that a gate would be better expressed
+some other way. That half stays a judgement, made against the data and the codebase, and
+the routine asks for it explicitly rather than pretending the advisor covers it.

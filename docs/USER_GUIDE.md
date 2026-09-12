@@ -27,11 +27,12 @@ places trades.
 9. [Journal & analytics](#journal--analytics)
 10. [Alerts](#alerts)
 11. [Auto-Trade](#auto-trade)
-12. [Automatic switches](#automatic-switches-what-the-app-changes-by-itself)
-13. [Results (the daily calendar)](#results-the-daily-calendar)
-14. [Settings](#settings)
-15. [A recommended daily workflow](#a-recommended-daily-workflow)
-16. [Data, privacy & providers](#data-privacy--providers)
+12. [Tune advice](#tune-advice-what-to-change-next-and-what-it-is-worth)
+13. [Automatic switches](#automatic-switches-what-the-app-changes-by-itself)
+14. [Results (the daily calendar)](#results-the-daily-calendar)
+15. [Settings](#settings)
+16. [A recommended daily workflow](#a-recommended-daily-workflow)
+17. [Data, privacy & providers](#data-privacy--providers)
 
 ---
 
@@ -2556,6 +2557,49 @@ come.
 
 ---
 
+## Tune advice (what to change next, and what it is worth)
+
+`GET /api/journal/tune-advice`, and reported by the post-close routine each weekday.
+
+Everything the app collects gets synthesised into one ranked list: what to change next,
+which part of the goal equation it moves, and **how many percentage points of the
+expected day it is estimated to add**. The equation is the app's own —
+`expected day % = trades/session × risk% × avg R` — so a recommendation is always one of:
+
+| factor | what it moves |
+|---|---|
+| **flow** | trades per session — a gate the live book applies that paper made money on |
+| **edge** | average R — a losing bucket the leak scan confirmed |
+| **execution** | trades that were decided correctly and did not execute |
+| **risk** | the size of each trade |
+| **goal** | the height of the bar itself (`goal in R = target% ÷ risk%`) |
+
+**Recommendations are not only settings.** Where the data implies something with no
+config field, the action comes back as **code** — what to build — and where the honest
+next step is a measurement first, as **research**. Tuning here means the workflow, not
+just the knobs.
+
+**Anything that widens exposure mid-trial is held.** The plan's pre-committed review runs
+over 10 active sessions with no mid-course knob turning, so a recommendation that would
+loosen a gate before then is marked *blocked by review* with the session count that
+unblocks it. A recommendation that CLOSES a leak is not held — the review guards against
+widening, not against plugging a hole. The clock itself is on every response, blocked
+recommendations or not: `gap.activeSessionsSinceChange` against `gap.reviewSessionsRequired`.
+Do not confuse it with `gap.activeSessions`, which counts the whole lookback window —
+most of which predates the trial.
+
+**The headline is allowed to say this will not get you there.** On a book whose implied
+day is well under its goal, the sum of everything measurable is usually a fraction of the
+gap, and the advice says so in those words rather than ranking a small thing first. When
+execution defects are open it leads with them: fix what is broken before tuning what is
+merely small.
+
+One thing it deliberately does not do is invent features. Ranking what the record implies
+is a calculation; noticing that some part of the workflow should exist at all is a
+judgement, and the routine asks for that separately.
+
+---
+
 ## Automatic switches (what the app changes by itself)
 
 Several of the app's own rules are written down with a criterion attached — "revert the
@@ -2634,8 +2678,15 @@ than the baseline does.
 
 **Weekly and monthly totals sum DOLLARS, and average percentages.** A sum of daily
 percentages is wrong twice over: it is not how compounding works, and it counts deposits.
-The month summary reports sessions, the mean day, the strategy P&L, positive days, goal
-days, and the best and worst day.
+The month summary reports sessions, the mean day, the strategy P&L, positive days, the
+**mean red day**, goal days, and the best and worst day.
+
+**Why the mean red day is there.** "Red days as small as possible" is one of the two
+stated objectives, and the worst day cannot measure it: one −3% day among small ones and
+a run of −3% days show the same worst day. The yardstick is **mean red day ≤ −1.5%**.
+Note the unit — this is a mean of *percentages* over the calendar's window, while the
+edge-leak scan's red-day decomposition reports a mean in *R* over its own window. The two
+are not meant to agree; quote whichever the rule you are applying is written in.
 
 **Where the rows come from.** The loop writes today's row on every tick after the close
 and rewrites it as late exits reconcile, so the row is current rather than frozen at

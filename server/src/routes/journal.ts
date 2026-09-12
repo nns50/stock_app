@@ -44,6 +44,7 @@ import { getAutotradeConfig } from '../db/autotradeConfig';
 import { runEdgeLeakScanFromDb } from '../services/autotrading/edgeLeakScanData';
 import type { LeakBook } from '../services/autotrading/edgeLeakScan';
 import { saveEdgeLeakScan } from '../db/edgeLeakScans';
+import { buildTuneAdviceFromDb } from '../services/autotrading/tuneAdvisorData';
 import { listDailyResults } from '../db/dailyResults';
 import { backfillDailyResults, buildDailyResultsReport, recordDailyResult } from '../services/autotrading/dailyResults';
 
@@ -850,6 +851,29 @@ journalRouter.post(
   asyncHandler(async (req, res) => {
     const { from } = parseQuery(z.object({ from: z.string().regex(ET_DATE) }), req);
     res.json(backfillDailyResults(from));
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// THE TUNE ADVISOR (2026-09-12): what to change next, ranked by how much of the
+// gap to the daily goal each change would actually close.
+//
+// Everything it returns is the app's own identity differentiated —
+// `expected day % = trades/session x risk% x avg R` — so a recommendation names
+// which term it moves and estimates its effect in percentage points of the
+// expected day. Recommendations are not only settings: where the data implies
+// something that has no config field, the action comes back as `code` with what
+// to build.
+//
+// It reads the goal evidence, the last edge-leak scan and the review window.
+// Nothing new is collected, so its numbers cannot disagree with the cards the
+// operator is already reading.
+// ---------------------------------------------------------------------------
+journalRouter.get(
+  '/tune-advice',
+  asyncHandler(async (req, res) => {
+    const { sessions } = parseQuery(z.object({ sessions: z.coerce.number().int().min(1).max(250).optional() }), req);
+    res.json(buildTuneAdviceFromDb(Date.now(), sessions));
   }),
 );
 

@@ -24,7 +24,7 @@ import { getLastEdgeLeakScan } from '../../db/edgeLeakScans';
 import { listSwitchStates } from '../../db/gatedSwitchState';
 import { freshSwitchState, GATED_SWITCH_RULES, graduationVerdict, SHADOW_MIN_EVALUATIONS } from './gatedSwitches';
 import { collectBook, CollectedBook, DEFAULT_LOOKBACK_SESSIONS, realizedEdgeOf } from './dailyTargetSweepData';
-import { buildSessionPaths, isActiveSession, simulateSession } from './dailyTargetSweep';
+import { buildSessionPaths, goalInR, isActiveSession, simulateSession } from './dailyTargetSweep';
 import {
   DailyGoalEvidence,
   dailyGoalEvidence,
@@ -400,10 +400,7 @@ function computeAutotradeSectorExposure(
  * betting on, and therefore the number that says whether the bet paid.
  */
 function goalRateFor(book: CollectedBook, config: AutotradeConfig): GoalRateInput {
-  const storedTargetR =
-    config.targetDailyGainPct !== null && config.targetDailyGainPct > 0 && config.riskPerTradePct > 0
-      ? Math.round((config.targetDailyGainPct / config.riskPerTradePct) * 100) / 100
-      : null;
+  const storedTargetR = goalInR(config.targetDailyGainPct, config.riskPerTradePct);
   const { paths } = buildSessionPaths(book.trades, book.sessionDates);
   const active = paths.filter(isActiveSession);
   const reached =
