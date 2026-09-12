@@ -8484,6 +8484,70 @@ it — so when execution defects are open and the measurable findings total unde
 points, the headline leads with **"fix what is broken before tuning what is merely
 small"** instead of ranking the small thing first.
 
+## 2026-09-12 — the options sleeve was invisible to every measurement
+
+The plan counts the short-dated options sleeve as part of the 3%: its paper
+book averaged +17% of premium over 20 trades. Over 2026-09-08..09 the LIVE
+sleeve refused **29 of 31** candidates with `failedRules[0] === 'quantity'` —
+the check whose own message reads *"risk budget is too small to size even one
+contract at $2.93 premium (risking 70% of it)"*. Two orders got through.
+Nothing reported the other twenty-nine, because every instrument here is
+equity-shaped:
+
+| surface | covered the options sleeve? |
+| --- | --- |
+| paired attribution | no — it matches paper EQUITY entries to live EQUITY entries |
+| `EXECUTION_ACTIONS` | no options entry class at all |
+| tune advisor | the word "options" appeared **zero** times |
+
+**It is not a defect.** One contract of a $2.93 option risks $205 at a 70%
+disaster stop, against a per-trade budget a fraction of that. It is arithmetic
+on a small account, so it is reported as a `configuration` finding with the
+binding number said out loud rather than left to be derived:
+
+```
+largest affordable premium is $1.57/share — HALVED by probation
+(0.5x, 8 trades left), which lifts to $3.14 when it ends
+```
+
+The ceiling reconciles the deployed order cap exactly: equity $3,522.81 ×
+(2.5% × 1.25 expectancy lean, which applies because `methodWeightingEnabled`
+is on) ÷ 70% ÷ 100 = $1.57/share, and `ceil($1.57 × 100 × 1.5) = $236`.
+
+**And the advisor read ONLY execution findings**, so the entire `configuration`
+class — frozen caps, tuner rows that should not exist, suspect equity reads,
+and now this — never reached the advice. It does now, with no estimate for the
+same reason an execution defect gets none: a constraint costs whatever the
+trades it refused would have made, which a count cannot tell you. A `research`
+lever comes back as `needs_data`, because this is a decision to take (wait out
+probation, trade only names whose premium fits, or judge the sleeve unsuited to
+an account this size) rather than a value to set.
+
+### The guard that should have caught it had two blind spots
+
+`journalActionsReachability.test.ts` exists to catch a filter on an action no
+emitter writes. It could not see either side of this:
+
+- **Emit side.** It matched only the `action:` property form, so the four
+  actions written through `journalEntrySkipOncePerDay` (a positional argument)
+  looked unwritten. Adding `live_options_risk_blocked` to a filter therefore
+  failed the guard against a live emitter.
+- **Consume side.** It matched `actions: [ … ]` literals, so `actions:
+  SKIP_ACTIONS` — a bare constant — matched nothing. Every skip action the
+  attribution filters on was unchecked, which is the dangerous direction: a
+  genuinely dead filter among them could never have been reported.
+
+With both fixed the guard immediately found one: **`live_entry_cutoff_skipped`
+has been in `SKIP_ACTIONS` since the list was written and nothing has ever
+emitted it** — the equity entry cutoff is gated on a measurement and was never
+built. Removed; when the cutoff ships, its PR adds the action to both sides at
+once.
+
+One false positive was fixed on the way: resolving a constant took every quoted
+string in the array, so `EXECUTION_ACTIONS`' `splitOn: 'reason'` read as an
+unwritten action. An array of objects keyed by `action:` now yields only its
+action values.
+
 ## 2026-09-12 — the biggest red-day driver was a recording gap, not a loss
 
 Decision 9's red-day decomposition, read on the live book:

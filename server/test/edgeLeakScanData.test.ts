@@ -8,6 +8,7 @@ import { collectBook } from '../src/services/autotrading/dailyTargetSweepData';
 import {
   collectConfigurationFindings,
   collectExecutionFindings,
+  collectOptionsFlowFindings,
   joinLeakTrades,
   runEdgeLeakScanFromDb,
   storedTargetRFor,
@@ -78,6 +79,89 @@ describe('joinLeakTrades — one R basis, and the round assigned per symbol-day'
     // Round 1 is the 09:35 HOOD entry plus SMCI plus the next session's HOOD —
     // 0.8 + 0.2 + 0.1.
     expect(byBucket.get('1')?.totalR).toBeCloseTo(1.1, 4);
+  });
+});
+
+describe('the options sleeve, which nothing else in the scan can see', () => {
+  it('reports a sleeve that cannot size a contract, with the binding number', () => {
+    // 2026-09-08..09 on the live book: 29 of 31 candidates refused with
+    // failedRules[0] === 'quantity'. The attribution is equity-only, the
+    // execution catalog has no options entry class, and the advisor filtered
+    // to execution findings — so nobody was told.
+    setAutotradeConfig({
+      ...defaultAutotradeConfig(),
+      accountEquityUsd: 3522.81,
+      riskPerTradePct: 2.5,
+      // The expectancy lean only reaches riskPctUpperBound when method
+      // weighting is ON — which production has, and which is what makes the
+      // deployed order cap $236 rather than $189.
+      methodWeightingEnabled: true,
+      expectancyMaxMultiplier: 1.25,
+      optionsDisasterStopPct: 70,
+      liveOptionsProbationTrades: 0,
+    });
+    const now = etDateTimeToMs('2026-09-10', '17:00') as number;
+    const at = etDateTimeToMs('2026-09-09', '10:00') as number;
+    const ins = db.prepare(
+      "INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) VALUES (?,'risk_check',?,?,NULL,?)",
+    );
+    for (let i = 0; i < 5; i++) {
+      ins.run('AAA', 'live_options_risk_blocked', JSON.stringify({ failedRules: ['quantity'] }), at + i);
+    }
+    // A refusal for a DIFFERENT reason is not this finding.
+    ins.run('BBB', 'live_options_risk_blocked', JSON.stringify({ failedRules: ['max_correlated_exposure'] }), at + 9);
+    db.prepare(
+      "INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) VALUES ('CCC','execution','live_options_order_placed','{}',NULL,?)",
+    ).run(at + 10);
+
+    const [f] = collectOptionsFlowFindings(getAutotradeConfig(), now);
+    expect(f).toBeTruthy();
+    expect(f.kind).toBe('configuration');
+    expect(f.count).toBe(5);
+    expect(f.lastSeenEtDate).toBe('2026-09-09');
+    // 5 refused of 6 candidates (5 + 1 placed) = 83%.
+    expect(f.detail).toMatch(/5 of 6 live options candidates \(83%\)/);
+    // The ceiling: equity 3522.81 x (2.5 x 1.25)% / 70% / 100 = $1.57/share.
+    expect(f.detail).toMatch(/largest affordable premium is \$1\.57\/share/);
+    // It is a decision, not a knob.
+    expect(f.lever?.direction).toBe('research');
+  });
+
+  it('says when probation is the thing halving it, and what it lifts to', () => {
+    setAutotradeConfig({
+      ...defaultAutotradeConfig(),
+      accountEquityUsd: 3522.81,
+      riskPerTradePct: 2.5,
+      // The expectancy lean only reaches riskPctUpperBound when method
+      // weighting is ON — which production has, and which is what makes the
+      // deployed order cap $236 rather than $189.
+      methodWeightingEnabled: true,
+      expectancyMaxMultiplier: 1.25,
+      optionsDisasterStopPct: 70,
+      liveOptionsProbationTrades: 10,
+      liveOptionsProbationSizeMultiplier: 0.5,
+      // Probation only exists once the sleeve has been switched on — the
+      // status counts orders placed SINCE that moment.
+      liveOptionsEnabledAt: etDateTimeToMs('2026-09-01', '09:30') as number,
+    });
+    const now = etDateTimeToMs('2026-09-10', '17:00') as number;
+    const at = etDateTimeToMs('2026-09-09', '10:00') as number;
+    db.prepare(
+      "INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) VALUES ('AAA','risk_check','live_options_risk_blocked',?,NULL,?)",
+    ).run(JSON.stringify({ failedRules: ['quantity'] }), at);
+
+    const [f] = collectOptionsFlowFindings(getAutotradeConfig(), now);
+    expect(f.detail).toMatch(/HALVED by probation \(0\.5x/);
+    // Halved to 0.79, lifting back to 1.57 when probation ends.
+    expect(f.detail).toMatch(/\$0\.79\/share/);
+    expect(f.detail).toMatch(/lifts to \$1\.57/);
+  });
+
+  it('stays silent when the sleeve is sizing fine', () => {
+    setAutotradeConfig({ ...defaultAutotradeConfig(), accountEquityUsd: 100_000 });
+    expect(collectOptionsFlowFindings(getAutotradeConfig(), etDateTimeToMs('2026-09-10', '17:00') as number)).toEqual(
+      [],
+    );
   });
 });
 

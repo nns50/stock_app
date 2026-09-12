@@ -41,7 +41,7 @@ import type { SizingReview } from './gatedSwitches';
 
 /** Which term of the identity a recommendation moves. `goal` is the fourth
  *  option nobody likes: move the target instead of the book. */
-export type TuneFactor = 'flow' | 'risk' | 'edge' | 'execution' | 'goal';
+export type TuneFactor = 'flow' | 'risk' | 'edge' | 'execution' | 'configuration' | 'goal';
 
 export type TuneStatus = 'actionable' | 'blocked_by_review' | 'needs_data';
 
@@ -385,6 +385,52 @@ function executionRecommendations(input: TuneAdvisorInput): TuneRecommendation[]
     });
 }
 
+/**
+ * Configuration findings — a frozen cap, a tuner row that should not exist, an
+ * equity read the caps refused, the options sleeve unable to size a contract.
+ *
+ * The advisor read ONLY execution findings until 2026-09-12, so this entire
+ * class never reached the advice. That mattered most for the options sleeve:
+ * it refused 29 of 31 candidates over two sessions for a sizing reason, and
+ * between the equity-only attribution, an execution catalog with no options
+ * entry class, and this filter, nothing anywhere said so.
+ *
+ * No estimate, for the same reason an execution defect gets none: a constraint
+ * costs whatever the trades it refused would have made, which a count cannot
+ * tell you. A `research` lever means the finding is a decision to take rather
+ * than a value to set, and comes back as `needs_data` so it is not read as a
+ * recommendation.
+ */
+function configurationRecommendations(input: TuneAdvisorInput): TuneRecommendation[] {
+  const scan = input.scan;
+  if (!scan) return [];
+  return scan.findings
+    .filter((f) => f.kind === 'configuration')
+    .map((f) => ({
+      id: `configuration:${f.id}`,
+      factor: 'configuration' as const,
+      title: f.label,
+      evidence: f.detail,
+      expectedDayPctDelta: null,
+      sampleSize: f.count,
+      confidence: confidenceFor(f.count),
+      status: (f.lever?.direction === 'research' ? 'needs_data' : 'actionable') as TuneStatus,
+      statusReason:
+        f.lever?.direction === 'research'
+          ? 'a decision to take deliberately, not a value to set — the detail says what the choices are'
+          : 'a configuration state, not a distribution: it is either right or it is not',
+      lastSeenEtDate: f.lastSeenEtDate ?? null,
+      sessionsSinceLastSeen: f.sessionsSinceLastSeen ?? null,
+      action: {
+        kind: (f.lever?.kind ?? 'code') as 'config' | 'code' | 'research',
+        field: f.lever?.field ?? null,
+        to: f.lever?.value ?? null,
+        detail: f.lever?.detail ?? f.detail,
+        direction: (f.lever?.direction === 'exposure' ? 'exposure' : 'safe') as 'safe' | 'exposure' | 'neutral',
+      },
+    }));
+}
+
 function goalRecommendations(input: TuneAdvisorInput, gap: GoalGap): TuneRecommendation[] {
   if (gap.storedTargetR === null || gap.activeSessions === 0) return [];
   const out: TuneRecommendation[] = [];
@@ -527,6 +573,7 @@ export function buildTuneAdvice(input: TuneAdvisorInput): TuneAdvice {
 
   const recommendations = [
     ...executionRecommendations(input),
+    ...configurationRecommendations(input),
     ...edgeRecommendations(input, gap),
     ...flowRecommendations(input, gap),
     ...redDayRecommendations(input, gap),
