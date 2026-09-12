@@ -5,6 +5,7 @@ import { computeRiskSizing, RiskSizingResult } from '../riskSizing';
 import { dailyReturns, pearsonCorrelation } from '../../indicators/indicators';
 import { getAutotradeConfig } from '../../db/autotradeConfig';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
+import { claimOncePerDay } from './oncePerDayEvents';
 import { listUniverse } from '../../db/universe';
 import { getMarketAtrPct, getMarketRangePct } from './executionGuards';
 import { computeEquityCurveDerisk } from './equityCurveDerisk';
@@ -248,8 +249,8 @@ export async function correlatedNotional(
   positions: { symbol: string; notional: number; side: 'long' | 'short' }[],
   lookbackDays: number,
   threshold: number,
-): Promise<{ amount: number; correlations: { symbol: string; r: number | null }[] }> {
-  if (positions.length === 0) return { amount: 0, correlations: [] };
+): Promise<{ amount: number; unresolved: number; correlations: { symbol: string; r: number | null }[] }> {
+  if (positions.length === 0) return { amount: 0, unresolved: 0, correlations: [] };
   const provider = getProvider();
   const symbols = Array.from(new Set([symbol, ...positions.map((p) => p.symbol)]));
   const closesBySymbol = new Map<string, number[]>();
@@ -278,7 +279,29 @@ export async function correlatedNotional(
     correlations.push({ symbol: pos.symbol, r });
     if (r !== null && Math.abs(r) >= threshold) amount += pos.side === candidateSide ? pos.notional : -pos.notional;
   }
-  return { amount: Math.max(0, amount), correlations };
+  // FAIL-OPEN, SAID OUT LOUD (2026-09-12). A candle fetch that throws leaves
+  // `r` null, and the sum above skips a null — so a provider outage makes the
+  // correlated-exposure cap UNDER-COUNT and quietly admit a position it would
+  // otherwise have refused. Failing closed would be worse (one bad fetch would
+  // stop the book), so the behaviour stands and the weakening is journaled
+  // instead. Once per ET day per candidate symbol: a provider outage affects
+  // every candidate on every tick, and an unthrottled row would bury the
+  // journal in the one condition it most needs to report.
+  const unresolved = correlations.filter((c) => c.r === null).length;
+  if (unresolved > 0 && claimOncePerDay('correlation_data_unavailable', symbol)) {
+    logAutotradeEvent({
+      symbol,
+      stage: 'risk_check',
+      action: 'correlation_data_unavailable',
+      detail: {
+        unresolved,
+        positions: positions.length,
+        reason:
+          'daily candles could not be fetched — the correlated-exposure cap is under-counting by this many positions',
+      },
+    });
+  }
+  return { amount: Math.max(0, amount), unresolved, correlations };
 }
 
 /** Builds the `sectorOf` lookup every sectorNotional() caller needs — one

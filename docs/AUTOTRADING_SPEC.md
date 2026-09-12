@@ -8484,6 +8484,40 @@ it — so when execution defects are open and the measurable findings total unde
 points, the headline leads with **"fix what is broken before tuning what is merely
 small"** instead of ranking the small thing first.
 
+## 2026-09-12 — two risk controls that fail open, and said nothing
+
+A sweep of every `catch` on the trading paths found 56. Most are fine: they
+return a typed failure the caller journals, or warm a cache. Two are different
+— they leave a RISK CONTROL weaker and write nothing.
+
+**Buying power** (`liveExecute.ts`). `undefined` buying power means "no
+constraint" to the sizer, so a broker read that throws — or simply answers
+not-ok, which was equally silent and is more likely — removes both the
+buying-power bound and the exposure headroom for the rest of the batch. The
+comment read *"leave undefined — unconstrained, exactly as before"*, which is a
+compatibility argument, not a safety one.
+
+**Correlated exposure** (`riskCheck.ts`). A daily-candle fetch that throws
+leaves that position's `r` null, and the sum skips a null — so a provider
+outage makes the correlated-exposure cap UNDER-COUNT and admit a position it
+would otherwise refuse.
+
+The second one was also the computed-and-never-consumed pattern again:
+`correlatedNotional` returned `correlations` carrying exactly the `r: null`
+signal that a lookup had failed, and all three callers destructured
+`{ amount }` and discarded it.
+
+**Neither behaviour changed, and that is deliberate.** Failing closed would be
+worse: one bad fetch, or one broker hiccup, would stop the book. What was wrong
+is that the weakening was invisible. Both now journal once per ET day —
+`live_buying_power_unavailable` and `correlation_data_unavailable`, throttled
+because an outage affects every candidate on every tick — and both are in
+`EXECUTION_ACTIONS`, so the leak scan reports them with recency and the advisor
+ranks them.
+
+`correlatedNotional` also returns `unresolved` now, so the count is a value a
+caller can read rather than a shape it has to re-derive.
+
 ## 2026-09-12 — the options sleeve was invisible to every measurement
 
 The plan counts the short-dated options sleeve as part of the 3%: its paper

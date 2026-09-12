@@ -92,6 +92,18 @@ export const EXECUTION_ACTIONS: {
   { action: 'live_stop_adjust_blocked', label: 'A stop ratchet could not find its resting leg' },
   { action: 'live_scale_out_blocked', label: 'A scale-out was refused by the broker' },
   { action: 'live_order_unknown_outcome', label: 'An order ended with an unknown outcome' },
+  // Two RISK CONTROLS that fail open (2026-09-12). Neither is a crash and
+  // neither stops the book — that is the point: on a provider or broker
+  // outage the cap simply admits more than it should, and until these rows
+  // existed nothing anywhere said so.
+  {
+    action: 'live_buying_power_unavailable',
+    label: 'Sizing ran unconstrained by buying power (broker read failed)',
+  },
+  {
+    action: 'correlation_data_unavailable',
+    label: 'The correlated-exposure cap under-counted (candles could not be fetched)',
+  },
   { action: 'daily_drawdown_halt', label: 'The daily drawdown halt tripped' },
   { action: 'give_back_halt', label: 'The give-back guard halted the day' },
 ];
