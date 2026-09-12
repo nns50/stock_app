@@ -8484,6 +8484,33 @@ it — so when execution defects are open and the measurable findings total unde
 points, the headline leads with **"fix what is broken before tuning what is merely
 small"** instead of ranking the small thing first.
 
+## 2026-09-12 — the biggest red-day driver was a recording gap, not a loss
+
+Decision 9's red-day decomposition, read on the live book:
+
+| reason | total R | trades | |
+| --- | --- | --- | --- |
+| **unknown** | **−4.32** | 3 | −1.44R each |
+| stop | −3.29 | 4 | |
+| manual | −2.44 | 3 | |
+| time_exit | −2.27 | 8 | |
+
+`unknown` was the LARGEST driver, and at −1.44R per trade it is worse than an
+actual stop — which reads like trades blowing through their stops, exactly the
+execution failure Decision 9's yardstick names.
+
+It is not. `unknown` is `exitReason ?? 'unknown'`: the reason was never
+recorded. 35 of 117 live autotrade positions (30%) have a null exit reason, and
+every one of them closed between **2026-07-13 and 2026-08-24** — none in
+September. Exit-reason recording was fixed, and it works; the forty-session
+window is simply still carrying the gap.
+
+Same disease as the execution findings above, one table over, so the same fix:
+`redSessionDrivers` entries carry `lastSeenEtDate`. A driver that stopped
+contributing weeks ago is history the window is still showing, not something to
+act on — and `unknown` in particular is a gap in the RECORD rather than a way
+of losing money, which a reader cannot tell without the date.
+
 ## 2026-09-12 — the identity estimates high, and nothing checked it
 
 `expected day % = trades/session × risk% × avg R` uses the **configured** risk

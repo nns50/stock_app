@@ -233,6 +233,38 @@ describe('the day level — the goal rate and what the red days were made of', (
     expect(day.redSessionDrivers.map((d) => d.reason)).toEqual(['stop_loss', 'stagnation']);
     // A winner on a red day is not a driver of it.
     expect(day.redSessionDrivers.every((d) => d.totalR < 0)).toBe(true);
+    // Each driver says when it last contributed.
+    expect(day.redSessionDrivers.every((d) => d.lastSeenEtDate === dates[0])).toBe(true);
+  });
+
+  it('dates an unrecorded exit reason, so old gaps do not read as current losses', () => {
+    // The live book on 2026-09-12: `unknown` was the LARGEST red-day driver at
+    // -4.32R over 3 trades — worse PER TRADE than an actual stop, which reads
+    // like trades blowing through their stops. All 35 such rows were from
+    // 2026-07-13..08-24, before exit-reason recording was fixed; none since.
+    // A forty-session window shows that for weeks, and Decision 9's review
+    // reads this list, so the date has to travel with it.
+    const dates = ['2026-09-08', '2026-09-09'];
+    const live = [
+      trade({
+        etDate: dates[0],
+        entryAt: at(dates[0], '09:35'),
+        exitAt: at(dates[0], '10:00'),
+        r: -1.5,
+        exitReason: null,
+      }),
+      trade({
+        etDate: dates[1],
+        entryAt: at(dates[1], '09:35'),
+        exitAt: at(dates[1], '10:00'),
+        r: -0.5,
+        exitReason: 'stop_loss',
+      }),
+    ];
+    const day = buildDayLevel(live, dates, 2.4);
+    const byReason = new Map(day.redSessionDrivers.map((d) => [d.reason, d]));
+    expect(byReason.get('unknown')?.lastSeenEtDate).toBe(dates[0]);
+    expect(byReason.get('stop_loss')?.lastSeenEtDate).toBe(dates[1]);
   });
 
   it('reports no goal rate at all when no goal is armed', () => {

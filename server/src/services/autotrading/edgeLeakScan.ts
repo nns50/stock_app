@@ -210,8 +210,15 @@ export interface DayLevelReport {
   redSessions: number;
   meanRedSessionR: number | null;
   worstSessionR: number | null;
-  /** Exit reasons that produced the red sessions' losses, biggest first. */
-  redSessionDrivers: { reason: string; totalR: number; trades: number }[];
+  /**
+   * Exit reasons that produced the red sessions' losses, biggest first.
+   *
+   * `lastSeenEtDate` is load-bearing, not decoration: `unknown` means the exit
+   * reason was not recorded, which is a gap in the RECORD rather than a way of
+   * losing money — and a driver that stopped contributing weeks ago is history
+   * the window is still carrying, not something to act on.
+   */
+  redSessionDrivers: { reason: string; totalR: number; trades: number; lastSeenEtDate: string | null }[];
 }
 
 export interface UntakenClass {
@@ -554,14 +561,23 @@ export function buildDayLevel(live: LeakTrade[], sessionDates: string[], storedT
   // reason. The question the operator asked is "least loss on the red days",
   // and that is answerable only if the losses have names.
   const redDates = new Set(red.map(([d]) => d));
-  const drivers = new Map<string, { totalR: number; trades: number }>();
+  const drivers = new Map<string, { totalR: number; trades: number; lastSeenEtDate: string | null }>();
   for (const t of live) {
     if (t.r >= 0) continue;
-    if (!redDates.has(etToday(t.exitAt))) continue;
+    const exitDate = etToday(t.exitAt);
+    if (!redDates.has(exitDate)) continue;
     const key = t.exitReason ?? 'unknown';
-    const hit = drivers.get(key) ?? { totalR: 0, trades: 0 };
+    const hit = drivers.get(key) ?? { totalR: 0, trades: 0, lastSeenEtDate: null };
     hit.totalR = round4(hit.totalR + t.r);
     hit.trades += 1;
+    // WHEN a driver last contributed, for the same reason execution findings
+    // carry it (2026-09-12). On the live book that day, `unknown` was the
+    // LARGEST red-day driver at -4.32R over 3 trades — worse per trade than an
+    // actual stop, which reads like trades blowing through their stops. Every
+    // one of those 35 rows was from 2026-07-13..08-24, before exit-reason
+    // recording was fixed; none since. A forty-session window keeps showing
+    // that for weeks, and Decision 9's review reads this list.
+    if (hit.lastSeenEtDate === null || exitDate > hit.lastSeenEtDate) hit.lastSeenEtDate = exitDate;
     drivers.set(key, hit);
   }
 
