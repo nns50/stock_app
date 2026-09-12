@@ -2678,8 +2678,15 @@ than the baseline does.
 
 **Weekly and monthly totals sum DOLLARS, and average percentages.** A sum of daily
 percentages is wrong twice over: it is not how compounding works, and it counts deposits.
-The month summary reports sessions, the mean day, the strategy P&L, positive days, goal
-days, and the best and worst day.
+The month summary reports sessions, the mean day, the strategy P&L, positive days, the
+**mean red day**, goal days, and the best and worst day.
+
+**Why the mean red day is there.** "Red days as small as possible" is one of the two
+stated objectives, and the worst day cannot measure it: one −3% day among small ones and
+a run of −3% days show the same worst day. The yardstick is **mean red day ≤ −1.5%**.
+Note the unit — this is a mean of *percentages* over the calendar's window, while the
+edge-leak scan's red-day decomposition reports a mean in *R* over its own window. The two
+are not meant to agree; quote whichever the rule you are applying is written in.
 
 **Where the rows come from.** The loop writes today's row on every tick after the close
 and rewrites it as late exits reconcile, so the row is current rather than frozen at

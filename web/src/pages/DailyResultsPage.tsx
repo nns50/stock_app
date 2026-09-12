@@ -49,7 +49,7 @@ function MonthSummary({ a, metric }: { a: DailyResultsAggregate | undefined; met
   if (!a) return <p className="text-xs text-slate-500">No sessions recorded this month.</p>;
   const mean = metric === 'account' ? a.meanAccountGainPct : a.meanStrategyGainPct;
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3" data-testid="results-month-summary">
+    <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3" data-testid="results-month-summary">
       <Stat label="Sessions" value={String(a.sessions)} />
       <Stat
         label="Mean day"
@@ -58,6 +58,15 @@ function MonthSummary({ a, metric }: { a: DailyResultsAggregate | undefined; met
       />
       <Stat label="Strategy P&L" value={fmtSignedUsd(a.strategyPnlUsd, 0)} />
       <Stat label="Positive days" value={`${a.positiveDays} of ${a.sessions}`} />
+      {/* The mean RED day is the plan's "least loss on red days" yardstick
+          (<= -1.5%), which is why it sits beside the mean rather than only in
+          the worst-day cell: one bad day and a run of small ones read very
+          differently and the worst day cannot tell them apart. */}
+      <Stat
+        label="Mean red day"
+        value={a.meanRedDayPct === null ? '—' : `${fmtNum(a.meanRedDayPct, 2)}%`}
+        tone={a.meanRedDayPct === null ? undefined : 'bear'}
+      />
       <Stat label="Goal days" value={String(a.goalDays)} />
       <Stat label="Best" value={a.bestDayPct === null ? '—' : `+${fmtNum(a.bestDayPct, 2)}%`} />
       <Stat label="Worst" value={a.worstDayPct === null ? '—' : `${fmtNum(a.worstDayPct, 2)}%`} />

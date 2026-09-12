@@ -8484,6 +8484,17 @@ it — so when execution defects are open and the measurable findings total unde
 points, the headline leads with **"fix what is broken before tuning what is merely
 small"** instead of ranking the small thing first.
 
+**Decision 9's yardstick got a field too, in the same pass and for the same reason.**
+The plan's "least loss on red days" objective is measured as *mean red day ≤ −1.5%*, and
+`ResultsAggregate` carried `worstDayPct` but no mean of the red days — so the routine
+that reports it every evening would have had to recompute it from the rows, differently
+each time anyone rewrote the prompt. `redDays` and `meanRedDayPct` are fields now, and a
+test pins the case the worst day cannot see: one bad day among small ones and a run of
+bad ones have the SAME worst day and the same red-day count, and differ only in the mean.
+The unit is percent, over the calendar's window; the leak scan's `dayLevel.meanRedSessionR`
+is R over the scan's window. They will not agree and are not meant to — quote whichever
+the rule being applied is written in.
+
 **The review clock is a field, not prose.** `gap.activeSessionsSinceChange` and
 `gap.reviewSessionsRequired` are on every response. They were briefly available only
 inside a blocked recommendation's `statusReason`, which is the same mistake this spec

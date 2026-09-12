@@ -248,6 +248,21 @@ export interface ResultsAggregate {
   /** Mean of the strategy percentages over the days that have one. */
   meanStrategyGainPct: number | null;
   positiveDays: number;
+  /**
+   * Red days, and the mean of them — Decision 9's own yardstick ("mean red
+   * day <= -1.5%"), which had no field until 2026-09-12 and was recomputed by
+   * hand by whoever read the calendar.
+   *
+   * UNITS MATTER HERE and two quantities are easy to confuse: this is a mean
+   * of PERCENTAGES (`dayPctOf`: the account figure where there is one, the
+   * strategy figure otherwise), over the calendar's window. The edge-leak
+   * scan's `dayLevel.meanRedSessionR` is a mean of R over the SCAN's window.
+   * They answer the same question in different units over different spans and
+   * will not agree; quote whichever the rule being applied is written in, and
+   * Decision 9 is written in percent.
+   */
+  redDays: number;
+  meanRedDayPct: number | null;
   goalDays: number;
   haltDays: number;
   bestDayPct: number | null;
@@ -304,6 +319,8 @@ function aggregate(rows: DailyResult[], keyOf: (r: DailyResult) => string): Resu
         meanAccountGainPct: mean(rs.map((r) => r.accountGainPct).filter((p): p is number => p !== null)),
         meanStrategyGainPct: mean(rs.map((r) => r.strategyGainPct).filter((p): p is number => p !== null)),
         positiveDays: pcts.filter((p) => p > 0).length,
+        redDays: pcts.filter((p) => p < 0).length,
+        meanRedDayPct: mean(pcts.filter((p) => p < 0)),
         goalDays: rs.filter((r) => r.goalReached).length,
         haltDays: rs.filter((r) => r.drawdownHalted || r.giveBackHalted).length,
         bestDayPct: pcts.length ? Math.max(...pcts) : null,

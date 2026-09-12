@@ -40,6 +40,8 @@ const REPORT: DailyResultsReport = {
       meanAccountGainPct: 0.43,
       meanStrategyGainPct: 0.28,
       positiveDays: 3,
+      redDays: 1,
+      meanRedDayPct: -2.2,
       goalDays: 1,
       haltDays: 1,
       bestDayPct: 3.1,
@@ -54,6 +56,8 @@ const REPORT: DailyResultsReport = {
       meanAccountGainPct: 0.43,
       meanStrategyGainPct: 0.28,
       positiveDays: 3,
+      redDays: 1,
+      meanRedDayPct: -2.2,
       goalDays: 1,
       haltDays: 1,
       bestDayPct: 3.1,
@@ -103,6 +107,8 @@ describe('DailyResultsPage', () => {
     expect(summary).toHaveTextContent('Sessions4');
     expect(summary).toHaveTextContent('+0.43%');
     expect(summary).toHaveTextContent('Positive days3 of 4');
+    // Decision 9's yardstick is on the page, not only in the payload.
+    expect(summary).toHaveTextContent('Mean red day-2.20%');
     expect(summary).toHaveTextContent('Goal days1');
     expect(screen.getByText(/1 green session/)).toBeTruthy();
   });

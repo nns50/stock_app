@@ -2915,6 +2915,11 @@ export interface DailyResultsAggregate {
   meanAccountGainPct: number | null;
   meanStrategyGainPct: number | null;
   positiveDays: number;
+  redDays: number;
+  /** Mean of the RED days' percentages — Decision 9's yardstick. A mean of
+   *  percentages over this window, not the leak scan's mean red session in R
+   *  over its own window; the two do not agree and are not meant to. */
+  meanRedDayPct: number | null;
   goalDays: number;
   haltDays: number;
   bestDayPct: number | null;
