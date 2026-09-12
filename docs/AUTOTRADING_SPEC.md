@@ -9404,3 +9404,56 @@ allowlist with that reason, which is the outcome the guard exists to force.
 The scan also has a floor assertion (`entrySkips.size > 4`), because a guard whose regex
 stops matching passes vacuously, and this file already carries two other floors for the
 same reason.
+
+## 2026-09-12 — the two books do not act in the same tick, and the pairing rule assumed they did
+
+This is the answer to `no_live_row`, arrived at by measuring rather than by waiting for the
+week's watch to report.
+
+The attribution pairs each paper entry with a live entry on the same symbol and ET date
+**within 60 seconds**. The premise was written down and reasonable: both books consume the
+same `decision.signals` in one tick, paper first, so a twin should be seconds away and
+anything further apart is a different decision.
+
+**The deployed book says otherwise.** Of 39 paper entries that have a live entry on the same
+symbol and the same ET date:
+
+| gap | count |
+| --- | --- |
+| ≤ 60s (paired today) | **7** |
+| 61s – 5 min | 1 |
+| 5 – 30 min | 14 |
+| 30 – 60 min | 10 |
+| > 60 min | 7 |
+
+**Median gap: 1,613 seconds — 27 minutes.** Minimum 10s, maximum 8,511s.
+
+The books diverge for ordinary reasons, every one of them by design: paper has no buying
+power to wait for and no slot to free; the live score floor is **72** against paper's **60**,
+so live enters the same name later when its score rises; live's cooldowns and risk checks
+defer entries paper takes at once; and a live entry time is the *placement* minute, not the
+fill.
+
+**It cost twice over.**
+
+1. `meanDiffR` — the headline *"the live book is 0.27R worse per trade"* — rested on **seven**
+   trades, far under any reliability bar, when 39 were available.
+2. The 32 rejected pairs fell through to `classifyUntaken`, found no skip row in that minute,
+   and were reported as **`no_live_row`**. A name the live book genuinely *traded* that day
+   was being counted as an unexplained refusal — the opposite of what happened.
+
+That second point is the one that matters. Three sections of this document have now chased
+that bucket; between the batch refusals, the unclassified entry skips, and this, the
+"unexplained" label was carrying at least four distinct things that are all explainable, and
+the largest of them was not a refusal at all.
+
+**Pairing is now on symbol + ET date, nearest in time, one live trade per paper trade.** That
+is close to unique by construction: Decision 8 took the live book to one entry per symbol per
+session. `medianPairGapMinutes` is on the report, so how far apart the two books read is a
+number the operator sees rather than an assumption buried in a constant — and if that number
+starts climbing, the pairing is drifting toward "two different decisions" and should be
+questioned again.
+
+`PAIR_TOLERANCE_MS` still governs `classifyUntaken`, and should: *"was a refusal journalled
+at this minute"* is a different question from *"did both books trade this name today"*, and a
+tight window is right for the first.

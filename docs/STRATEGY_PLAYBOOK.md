@@ -1785,8 +1785,15 @@ If it does not, the scan is wrong, not the record.
 **Two readings it replaces**, each with its own written rule:
 
 - _Where the live book loses the paper book's edge._ The attribution pairs each paper
-  entry with a live entry on the same symbol and ET date within 60 seconds, and reports
-  the mean per-trade difference plus the live book's entry slippage. Unpaired paper
+  entry with a live entry on the same symbol and ET **session** — nearest in time, one live
+  trade per paper trade — and reports the mean per-trade difference plus the live book's
+  entry slippage. It used to require the two entries to be within 60 SECONDS, on the premise
+  that both books decide in the same tick. Measured on 2026-09-12 they do not: of 39 same
+  symbol-and-date pairs only 7 were inside a minute and the median gap was **27 minutes**,
+  because paper waits for no buying power, the live floor is 72 against paper's 60, and
+  live's cooldowns defer what paper takes at once. The window was discarding 32 of 39 real
+  pairs and reporting them as unexplained refusals. Read `medianPairGapMinutes` beside the
+  difference: if it climbs, the pairing is drifting toward matching two different decisions. Unpaired paper
   entries are classified by the live journal's own word for the skip. **The rule:** a
   skip class whose left-behind R exceeds 20 trades with a positive interval is the next
   gate to loosen; mean entry slippage above 0.5% is an execution finding.

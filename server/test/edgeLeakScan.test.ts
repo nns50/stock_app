@@ -292,9 +292,30 @@ describe('attribution — where the live book loses the paper book’s edge', ()
     expect(a.untaken).toEqual([]);
   });
 
-  it('does NOT pair two entries 61 seconds apart — that is a different decision', () => {
+  it('pairs the same name on the same session even half an hour apart, and says how far', () => {
+    // The old rule required 60 seconds, on the premise that both books decide
+    // in one tick. Measured on the deployed book: of 39 paper entries with a
+    // live entry on the same symbol AND date, only SEVEN were inside 60s and
+    // the median gap was 1,613s — 27 minutes. The books diverge by design
+    // (paper waits for no buying power, live's floor is 72 against paper's 60,
+    // live's cooldowns defer what paper takes at once), so the window was
+    // throwing away 32 of 39 real pairs — and those 32 then fell through to
+    // classifyUntaken and were reported as `no_live_row`, i.e. a name the live
+    // book genuinely traded counted as an unexplained refusal.
     const live = [trade({ symbol: 'NVDA', entryAt: at('09:35'), r: 0.1 })];
-    const paper = [trade({ symbol: 'NVDA', book: 'paper', entryAt: at('09:35') + 61_000, r: 0.4 })];
+    const paper = [trade({ symbol: 'NVDA', book: 'paper', entryAt: at('10:05'), r: 0.4 })];
+    const a = buildAttribution(live, paper, [], [], [], RNG());
+    expect(a.pairedTrades).toBe(1);
+    expect(a.untaken).toEqual([]);
+    // The looseness is REPORTED, not hidden in a constant.
+    expect(a.medianPairGapMinutes).toBe(30);
+  });
+
+  it('still refuses to pair across DIFFERENT sessions', () => {
+    // Symbol + ET date, not symbol alone: yesterday's trade in the same name is
+    // a different decision by any reading.
+    const live = [trade({ symbol: 'NVDA', etDate: '2026-09-07', entryAt: at('09:35') - 86_400_000, r: 0.1 })];
+    const paper = [trade({ symbol: 'NVDA', book: 'paper', entryAt: at('09:35'), r: 0.4 })];
     const a = buildAttribution(live, paper, [], [], [], RNG());
     expect(a.pairedTrades).toBe(0);
     expect(a.untaken).toHaveLength(1);

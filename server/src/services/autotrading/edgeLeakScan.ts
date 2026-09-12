@@ -239,6 +239,11 @@ export interface AttributionReport {
   /** Paper entries matched to a live entry on the same symbol and ET date
    *  within PAIR_TOLERANCE_MS. */
   pairedTrades: number;
+  /** How far apart the two books entered the names they BOTH traded, in
+   *  minutes. On the deployed book this reads ~27, which is the measurement
+   *  that removed the old seconds-wide pairing window — see buildAttribution.
+   *  Null when nothing paired. */
+  medianPairGapMinutes: number | null;
   /** Mean (live R − paper R) over the pairs: what the live book loses to
    *  execution on the very same decision. */
   meanDiffR: number | null;
@@ -633,13 +638,43 @@ export function buildDayLevel(live: LeakTrade[], sessionDates: string[], storedT
 // --- attribution -----------------------------------------------------------
 
 /**
- * Where the live book loses the paper book's edge.
+ * Where the live book loses the paper book's edge. Split into "we didn't take
+ * it" and "we took it worse", with the reason for each refusal.
  *
- * Both books see the same `decision.signals` in one tick (loop.ts runs paper
- * first), so a paper entry with no live twin is a REFUSAL somewhere in the live
- * path, and a paired trade whose R differs is execution. The ~10x gap between
- * the two books' returns has never been attributed; this splits it into "we
- * didn't take it" and "we took it worse", with the reason for each refusal.
+ * THE TWO BOOKS DO NOT ACT IN THE SAME TICK (measured 2026-09-12), and the
+ * pairing rule assumed they did.
+ *
+ * The premise was reasonable and written down: both books see the same
+ * `decision.signals` in one tick (loop.ts runs paper first), so a twin should
+ * be seconds away and anything further apart is a different decision. The
+ * deployed book says otherwise. Of 39 paper entries with a live entry on the
+ * SAME SYMBOL and the SAME ET DATE, only **7** were within 60 seconds. The
+ * median gap was **1,613 seconds — 27 minutes**; a third were more than half an
+ * hour apart.
+ *
+ * The books diverge for ordinary reasons, all of them by design: paper has no
+ * buying power to wait for and no slot to free, the live floor is higher than
+ * paper's (72 vs 60) so live enters the same name later when its score rises,
+ * and live's cooldowns and risk checks defer entries that paper takes at once.
+ * A live entry time is also the PLACEMENT minute, not the fill.
+ *
+ * So the 60-second rule discarded 32 of 39 real pairs, and it cost twice over:
+ * `meanDiffR` — the headline "the live book is 0.27R worse per trade" — rested
+ * on SEVEN trades, and the 32 it rejected fell through to `classifyUntaken`,
+ * found no skip row in that minute, and were reported as `no_live_row`. A name
+ * the live book genuinely TRADED that day was being counted as an unexplained
+ * refusal, which is the opposite of what happened.
+ *
+ * Pairing is therefore on SYMBOL + ET DATE, nearest in time, one live trade per
+ * paper trade. That is close to unique by construction now: Decision 8 took the
+ * live book to one entry per symbol per session. The gap is not hidden by the
+ * looser rule — `medianPairGapMinutes` is on the report, so how far apart the
+ * two books are reading is a number the operator sees rather than an assumption
+ * buried in a constant.
+ *
+ * PAIR_TOLERANCE_MS still governs `classifyUntaken`, and should: "was a refusal
+ * journalled at this minute" is a different question from "did both books trade
+ * this name today", and a tight window is right for the first.
  */
 export function buildAttribution(
   live: LeakTrade[],
@@ -660,16 +695,18 @@ export function buildAttribution(
   }
 
   const diffs: number[] = [];
+  const pairGapsMs: number[] = [];
   const untakenTrades: { trade: LeakTrade; reason: string }[] = [];
   const usedLiveIds = new Set<string>();
   for (const p of paper) {
-    const candidates = (liveByKey.get(`${p.symbol}|${p.etDate}`) ?? []).filter(
-      (l) => !usedLiveIds.has(l.id) && Math.abs(l.entryAt - p.entryAt) <= PAIR_TOLERANCE_MS,
-    );
+    // Same symbol, same session, nearest in time — see this function's header
+    // for why there is no longer a seconds-wide window here.
+    const candidates = (liveByKey.get(`${p.symbol}|${p.etDate}`) ?? []).filter((l) => !usedLiveIds.has(l.id));
     const match = candidates.sort((a, b) => Math.abs(a.entryAt - p.entryAt) - Math.abs(b.entryAt - p.entryAt))[0];
     if (match) {
       usedLiveIds.add(match.id);
       diffs.push(match.r - p.r);
+      pairGapsMs.push(Math.abs(match.entryAt - p.entryAt));
       continue;
     }
     untakenTrades.push({ trade: p, reason: classifyUntaken(p, skips, batchRefusals) });
@@ -688,6 +725,9 @@ export function buildAttribution(
   );
   return {
     pairedTrades: diffs.length,
+    medianPairGapMinutes: pairGapsMs.length
+      ? round2([...pairGapsMs].sort((a, b) => a - b)[Math.floor(pairGapsMs.length / 2)] / 60_000)
+      : null,
     meanDiffR: sig.expectancy === null ? null : round4(sig.expectancy),
     ciLow: sig.ciLow,
     ciHigh: sig.ciHigh,
