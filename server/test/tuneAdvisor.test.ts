@@ -476,6 +476,23 @@ describe('recommendations that are code, not settings', () => {
     expect(rec.title).toMatch(/nothing the journal explains/);
   });
 
+  it('never recommends loosening the live book’s own stand-down', () => {
+    // live_entries_halted is the day BANKED at +3%, the give-back guard
+    // protecting a fading green day, or the kill switch. Every one of those is
+    // the plan working. Left in the ranking it would get louder exactly as the
+    // book got better at reaching the target, and its only honest lever would
+    // be "stop banking the day" — which Decision 2 settled.
+    const a = advise({
+      scan: scan({
+        attribution: {
+          ...scan().attribution,
+          untaken: [{ reason: 'live_entries_halted', n: 14, paperMeanR: 0.5, paperTotalR: 7 }],
+        },
+      }),
+    });
+    expect(a.recommendations.filter((r) => r.factor === 'flow')).toEqual([]);
+  });
+
   it('maps the refusal classes that DO have a field', () => {
     expect(fieldForUntakenReason('live_risk_blocked:max_concurrent_positions')).toEqual({
       field: 'maxConcurrentPositions',

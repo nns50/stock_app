@@ -259,6 +259,14 @@ export interface JournalSkip {
   failedRule: string | null;
 }
 
+/** A live refusal journalled for a whole TICK rather than a candidate, so it
+ *  names no symbol: the end-of-day entry cutoff, and the live book standing
+ *  down while paper trades. Matched to a paper entry by time. */
+export interface BatchRefusal {
+  at: number;
+  action: string;
+}
+
 export interface CollectedLeakBook {
   trades: LeakTrade[];
   sessionDates: string[];
@@ -278,10 +286,9 @@ export interface EdgeLeakScanInput {
   journalSkips: JournalSkip[];
   /** Whether `journalSkips` is the complete window or was cut short. */
   journalSkipsTruncated?: boolean;
-  /** Epoch ms of each batch-level `entry_window_closed` row in the window.
-   *  Separate from `journalSkips` because it carries no symbol — see
-   *  classifyUntaken for why that made it invisible. */
-  entryWindowClosures?: number[];
+  /** The batch-level live refusals in the window — the ones that carry NO
+   *  symbol, so `journalSkips` cannot hold them. See classifyUntaken. */
+  batchRefusals?: BatchRefusal[];
   asOf: number;
   /** Injectable for tests; the route seeds it so one book produces one scan. */
   rng?: () => number;
@@ -616,9 +623,9 @@ export function buildAttribution(
   live: LeakTrade[],
   paper: LeakTrade[],
   skips: JournalSkip[],
-  /** Epoch ms of each batch-level `entry_window_closed` row in the window —
-   *  the one live refusal that names no symbol. See classifyUntaken. */
-  entryWindowClosures: number[],
+  /** The batch-level live refusals in the window — the ones that name no
+   *  symbol. See classifyUntaken. */
+  batchRefusals: BatchRefusal[],
   entrySlippagePct: number[],
   rng: () => number,
 ): AttributionReport {
@@ -643,7 +650,7 @@ export function buildAttribution(
       diffs.push(match.r - p.r);
       continue;
     }
-    untakenTrades.push({ trade: p, reason: classifyUntaken(p, skips, entryWindowClosures) });
+    untakenTrades.push({ trade: p, reason: classifyUntaken(p, skips, batchRefusals) });
   }
 
   const byReason = new Map<string, LeakTrade[]>();
@@ -682,37 +689,42 @@ export function buildAttribution(
  * minute of the paper entry. `no_live_row` is the honest answer when the
  * journal says nothing — it is a gap in the record, not a cause.
  *
- * THE END-OF-DAY CUTOFF IS MATCHED BY TIME, NOT BY SYMBOL (2026-09-12).
+ * BATCH REFUSALS ARE MATCHED BY TIME, NOT BY SYMBOL (2026-09-12).
  *
- * Every other refusal on the live entry path names the symbol it refused.
- * `entry_window_closed` cannot: `evaluateEntryCutoff` runs BEFORE the per-
- * candidate loop and refuses the whole batch at once, so the row carries a
- * count (`refused`) and no symbol at all. `collectJournalSkips` then drops it
- * (`.filter(e => e.symbol !== null)`) and the symbol match below could never
- * have hit it anyway — so every paper entry the live book declined because the
- * flatten was about to swallow it was reported as `no_live_row`, the bucket
- * that means "nothing the journal explains".
+ * Almost every refusal on the live entry path names the symbol it refused. Two
+ * do not, because they are decided for the whole TICK before any candidate is
+ * looked at, and both were therefore invisible here — `collectJournalSkips`
+ * drops a symbol-less row (`.filter(e => e.symbol !== null)`) and the symbol
+ * match below could never have hit one anyway:
  *
- * It is the single largest untaken bucket and the one the routine watches, so a
- * deliberate, correct refusal reading as an unexplained gap points the operator
- * at loosening a gate that is doing its job. The plan's own design for this
- * classifier said "`entry_window_closed` (batch, BY TIME)"; the implementation
- * matched on symbol like everything else and lost it.
+ *   entry_window_closed   the end-of-day cutoff; `evaluateEntryCutoff` refuses
+ *                         the batch so a doomed one costs no broker round-trip.
+ *   live_entries_halted   the live book standing down while paper trades — the
+ *                         day banked, the give-back guard fired, the kill
+ *                         switch, live trading off.
+ *
+ * So both came out as `no_live_row`, the bucket that means "nothing the journal
+ * explains" — the largest untaken class and the one the evening routine
+ * watches. The advisor ranks unexplained flow as something to go and loosen, so
+ * a deliberate refusal filed that way argues for opening a gate that is doing
+ * its job. The second one is worse than a mislabel: banking the day IS the
+ * plan's goal, so every extra +3% day would have added evidence that the
+ * strategy is leaking.
  *
  * Matched on the TICK rather than on a recomputed clock: both books decide in
  * the same tick (paper first, then live), so a batch refusal within
  * PAIR_TOLERANCE_MS of the paper entry IS the refusal that would have taken it.
  * A tick where live had no candidates at all journals nothing and stays
  * `no_live_row`, which is correct — nothing refused that name. A symbol-named
- * skip wins over the batch row when both cover the tick: it says more.
+ * skip wins over a batch row when both cover the tick: it says more.
  */
-function classifyUntaken(paperTrade: LeakTrade, skips: JournalSkip[], entryWindowClosures: number[]): string {
+function classifyUntaken(paperTrade: LeakTrade, skips: JournalSkip[], batchRefusals: BatchRefusal[]): string {
   const near = skips.filter(
     (s) => s.symbol === paperTrade.symbol && Math.abs(s.at - paperTrade.entryAt) <= PAIR_TOLERANCE_MS,
   );
   if (near.length === 0) {
-    const batched = entryWindowClosures.some((at) => Math.abs(at - paperTrade.entryAt) <= PAIR_TOLERANCE_MS);
-    return batched ? 'entry_window_closed' : 'no_live_row';
+    const batched = batchRefusals.find((b) => Math.abs(b.at - paperTrade.entryAt) <= PAIR_TOLERANCE_MS);
+    return batched ? batched.action : 'no_live_row';
   }
   const risk = near.find((s) => s.action === 'live_risk_blocked' && s.failedRule);
   if (risk) return `live_risk_blocked:${risk.failedRule}`;
@@ -794,7 +806,7 @@ export function runEdgeLeakScan(input: EdgeLeakScanInput): EdgeLeakScanResult {
       live,
       paper,
       input.journalSkips,
-      input.entryWindowClosures ?? [],
+      input.batchRefusals ?? [],
       input.entrySlippagePct,
       rng,
     ),

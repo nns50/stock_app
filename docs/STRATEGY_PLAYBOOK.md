@@ -1791,9 +1791,14 @@ If it does not, the scan is wrong, not the record.
   skip class whose left-behind R exceeds 20 trades with a positive interval is the next
   gate to loosen; mean entry slippage above 0.5% is an execution finding.
 
-  One class is matched by **time rather than symbol** (2026-09-12): the end-of-day entry
-  cutoff refuses the whole batch before the per-candidate loop, so its journal row carries
-  a count and no symbol. Until that was wired up, every entry it declined was reported as
+  Two classes are matched by **time rather than symbol** (2026-09-12), because they are
+  decided for the whole tick before any candidate is looked at and so carry a count and no
+  symbol: the end-of-day entry cutoff (`entry_window_closed`) and the live book standing
+  down while paper trades (`live_entries_halted` — the day banked, the give-back guard
+  fired, the kill switch). The second is a bucket and never a lever: banking the day is the
+  goal, so its only honest "fix" would be to stop doing it, and left in the ranking it
+  would get louder exactly as the book got better. Read it as the count of paper entries a
+  successful day declined. Until that was wired up, every entry it declined was reported as
   `no_live_row` — "nothing the journal explains" — which reads as a hole in the record
   rather than a gate working. Its lever is `endOfDayFlattenMinutes`, and the cutoff is
   **derived** from it (`endOfDayFlattenMinutes + max(15, stagnationExitMinutes)`), so

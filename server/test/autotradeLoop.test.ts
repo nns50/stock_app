@@ -1828,6 +1828,49 @@ describe('runAutotradeLoopTick', () => {
       expect(summary.liveEntriesOpened).toBe(1);
     });
 
+    it('journals live_entries_halted when live stands down and paper keeps trading', async () => {
+      // skippedReason only fires when NEITHER book is active. When live alone
+      // stands down, paper trades and the live path used to journal NOTHING —
+      // so the attribution found a paper entry with no live twin and no
+      // journal row and filed it under `no_live_row`, "nothing the journal
+      // explains". Fourteen of the ninety-seven unexplained entries on the
+      // book were this, all on the three days the target banked. Banking the
+      // day is the plan's goal, so it must not read as a leak.
+      setAutotradeConfig({ enabled: true, liveTradingEnabled: false, liveAccountId: 'ACC1' });
+      setTradingConfig({ enabled: true, killSwitch: false });
+      armScreenAndDecide();
+      mockExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
+
+      await runAutotradeLoopTick();
+
+      const rows = vi
+        .mocked(logAutotradeEvent)
+        .mock.calls.map((c) => c[0])
+        .filter((e) => e.action === 'live_entries_halted');
+      expect(rows).toHaveLength(1);
+      expect(rows[0].detail).toMatchObject({ refused: 1, reason: 'live_trading_disabled' });
+    });
+
+    it('journals nothing when live stands down on a tick with no signals to refuse', async () => {
+      // Matched by TIME, so the row has to be per tick — but a row on every
+      // empty tick is 300 a day of noise. It mirrors entry_window_closed:
+      // only when there was something to refuse.
+      setAutotradeConfig({ enabled: true, liveTradingEnabled: false, liveAccountId: 'ACC1' });
+      setTradingConfig({ enabled: true, killSwitch: false });
+      armScreenAndDecide();
+      mockDecide.mockReturnValue({ signals: [], skipped: [] });
+      mockExecute.mockResolvedValue([]);
+
+      await runAutotradeLoopTick();
+
+      expect(
+        vi
+          .mocked(logAutotradeEvent)
+          .mock.calls.map((c) => c[0])
+          .some((e) => e.action === 'live_entries_halted'),
+      ).toBe(false);
+    });
+
     it("does not activate live just because liveTradingEnabled is true — the human Trade page's own enabled must also be true", async () => {
       setAutotradeConfig({ enabled: false, liveTradingEnabled: true, liveAccountId: 'ACC1' });
       setTradingConfig({ enabled: false }); // human page's own master switch is off

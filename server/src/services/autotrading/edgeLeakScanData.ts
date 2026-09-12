@@ -16,6 +16,7 @@ import { maxAffordablePremiumPerShare, riskPctUpperBound } from './optionsAfford
 import { getOptionsProbationStatus } from './liveOptionsExecute';
 import { buildLiveSlippageRows } from './autoTune';
 import {
+  BatchRefusal,
   CollectedLeakBook,
   EdgeLeakScanResult,
   ExecutionOccurrence,
@@ -154,14 +155,13 @@ const SKIP_ACTIONS = [
 // see this one until its own two blind spots were fixed on 2026-09-12. When
 // the cutoff ships, its PR adds the action to both sides at once.
 //
-// NOT here either, but for the OPPOSITE reason: `entry_window_closed`. That one
-// is emitted, constantly — it is the END-OF-DAY cutoff (a different gate from
-// the unbuilt 13:00 one above), and it refuses the whole batch before the
-// per-candidate loop, so its row carries a count and NO SYMBOL. This collector
-// drops symbol-less rows two lines below, and the classifier matches on symbol,
-// so putting it in this list would change nothing. It is read on its own, by
-// time, in collectEntryWindowClosures.
-const ENTRY_WINDOW_CLOSED = ['entry_window_closed'];
+// NOT here either, but for the OPPOSITE reason: the two BATCH refusals below.
+// They are emitted constantly, and they refuse the whole tick before any
+// candidate is looked at, so their rows carry a count and NO SYMBOL. This
+// collector drops symbol-less rows two lines below and the classifier matches
+// on symbol, so putting them in this list would change nothing. They are read
+// on their own, by time, in collectBatchRefusals.
+const BATCH_REFUSAL_ACTIONS = ['entry_window_closed', 'live_entries_halted'];
 
 const isAutotradePosition = (p: Position): boolean => p.tags.includes('autotrade');
 
@@ -522,18 +522,18 @@ export function collectConfigurationFindings(cfg: AutotradeConfig, now: number):
 }
 
 /**
- * Batch-level end-of-day entry refusals within the window, as epoch ms.
+ * The batch-level live refusals within the window — the two that name no
+ * symbol, so the only ones the attribution can match by time alone.
  *
- * The one refusal on the live entry path that names no symbol, so the only one
- * the attribution can match by time alone. Without this, every paper entry the
- * live book declined because the flatten was about to swallow it was reported
- * as `no_live_row` — the bucket that means "nothing the journal explains", the
- * largest one on the book, and the one the evening routine watches. A gate
- * doing exactly its job was reading as an unexplained hole in the record.
+ * Without these, every paper entry the live book declined because the flatten
+ * was about to swallow it, or because the live book had stood down for the day,
+ * was reported as `no_live_row`: the bucket that means "nothing the journal
+ * explains", the largest one on the book, and the one the evening routine
+ * watches. Gates doing exactly their job were reading as holes in the record.
  */
-function collectEntryWindowClosures(since: number): number[] {
-  const { events } = listAutotradeEventsInWindow({ actions: ENTRY_WINDOW_CLOSED, since });
-  return events.map((e) => e.createdAt);
+function collectBatchRefusals(since: number): BatchRefusal[] {
+  const { events } = listAutotradeEventsInWindow({ actions: BATCH_REFUSAL_ACTIONS, since });
+  return events.map((e) => ({ at: e.createdAt, action: e.action }));
 }
 
 /** Live-book skips within the window, for the attribution's untaken classes. */
@@ -720,7 +720,7 @@ export function runEdgeLeakScanFromDb(opts: EdgeLeakScanOptions = {}): EdgeLeakS
     entrySlippagePct,
     journalSkips: skipRead.skips,
     journalSkipsTruncated: skipRead.truncated,
-    entryWindowClosures: collectEntryWindowClosures(windowStart),
+    batchRefusals: collectBatchRefusals(windowStart),
     asOf: now,
   });
 }

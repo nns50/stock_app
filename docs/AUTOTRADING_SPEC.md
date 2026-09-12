@@ -9000,6 +9000,16 @@ before the bell to ~65 — half an hour of session the live book may now enter i
 a side effect of an exit change, not a decision about entries, and this bucket is where it
 becomes visible.
 
+**How big is it today? Zero, and that is worth saying plainly.** The deployed book carries
+263 `entry_window_closed` rows over 8 ET days, spanning 14:25–15:56. But of 108 closed
+paper positions only **13** were opened at or after 14:00 ET, and every one of those
+predates the window it would have to land in (ROIV 09-08 at 14:02 against a 14:25 cutoff;
+the rest are July, before the paper flatten shipped at all). So **none** of the 97
+unexplained entries is an end-of-day refusal. The classifier is correct and the hole it
+closes is real; the hole was simply empty on this book. It will not stay empty — the
+cutoff moved half an hour later this week, and the paper book keeps opening late entries
+by design.
+
 ## 2026-09-12 — three readers of one fact, agreeing on two of its three spellings
 
 "Which resting leg is the stop?" is asked in three places, and until today they did not
@@ -9055,3 +9065,50 @@ only "among 2 exit order(s)", so telling *"this bracket genuinely has no stop"* 
 *"neither marker parsed"* needed a reading of the source rather than of the journal. The
 reason string now carries `comboType/orderType` per resting leg — e.g.
 `[?/LIMIT, NORMAL/?]`.
+
+
+## 2026-09-12 — the same hole, one level up: the live book standing down
+
+`no_live_row` was still 97 after the cutoff class was wired up. Measured against the
+deployed book, **14 of them are the live book standing down on a day the target had
+already banked** — all on the three ET days `daily_target_reached` fired.
+
+`runAutotradeLoopTick` sets `summary.skippedReason` only when NEITHER book is active. When
+**live alone** stands down — the day banked, the give-back guard fired, the kill switch,
+live trading switched off — the tick simply runs `if (paperStillActive) {...}` and skips
+`if (liveStillActive) {...}`. Paper trades. The live path journals nothing at all: not a
+batch row, not a per-symbol row, nothing. The attribution then pairs each paper entry
+against the live book, finds no twin and no journal row, and files it under "nothing the
+journal explains".
+
+**This one gets worse as the strategy gets better.** Banking the day at +3% is the plan's
+goal, and the halt after it is the goal being *met*. Every additional +3% day would have
+added paper entries to the unexplained bucket — and the advisor ranks unexplained flow as
+the next gate to go and loosen. A day the strategy succeeded was accumulating evidence
+that it leaks.
+
+So the loop now journals `live_entries_halted` with the reason (`daily_target_reached`,
+`give_back_halted`, `kill_switch`, `live_trading_disabled`, `live_entries_inactive`), the
+day's gain and target, and the count of signals it refused. Per tick, and only when there
+were signals to refuse — the attribution matches these by time, so a once-a-day row could
+not classify the tick a paper entry landed on, while a row on every empty tick would be
+three hundred a day of noise. It mirrors `entry_window_closed`'s `refused: N` exactly.
+
+**It is a bucket, never a recommendation.** `tuneAdvisor` skips this class outright rather
+than ranking it low. Its only honest lever would be "stop banking the day", which Decision
+2 settled, and a rule that gets louder the better the book performs is worse than no rule.
+It still appears in the attribution, where it explains the paper entries it explains.
+
+**The classifier is now general.** `classifyUntaken` takes a list of `BatchRefusal`
+`{at, action}` rather than one array of cutoff timestamps, and returns whichever batch
+action covers the tick. A symbol-named skip still wins when both cover it — it says more.
+Adding the next symbol-less refusal is now one entry in `BATCH_REFUSAL_ACTIONS`, and
+`journalActionsReachability.test.ts` fails if the emitter and that list ever disagree
+(verified by renaming the emitter: the guard reports
+`live_entries_halted (read in edgeLeakScanData.ts)`).
+
+**What is left in `no_live_row` after both.** 32 of the remaining paper entries are on ET
+days the live book made **no autotrade entry at all** — 22 of those in July, before live
+autotrade was really running, inside a 40-session window that reaches back that far. That
+is a coverage fact about the window, not a leak, and the next thing to measure rather than
+the next thing to fix.

@@ -973,6 +973,52 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       return summary;
     }
 
+    // THE LIVE BOOK STANDING DOWN WHILE PAPER TRADES, SAID OUT LOUD (2026-09-12).
+    //
+    // `skippedReason` above only fires when NEITHER book is active. When live
+    // alone stands down — the day banked, the give-back guard fired, the kill
+    // switch, live trading switched off — paper keeps trading and the live path
+    // journals NOTHING. The attribution then pairs each paper entry against the
+    // live book, finds no twin and no journal row, and files it under
+    // `no_live_row`: "nothing the journal explains".
+    //
+    // It is the same shape as `entry_window_closed` one level up — a batch-level
+    // live refusal with no symbol on it — and on the book today it is 14 of the
+    // 97 unexplained entries, all on the three days the target banked.
+    //
+    // It matters MORE as the book gets better. Banking the day is the plan's
+    // goal; the halt is the goal being met. So every extra +3% day adds paper
+    // entries that read as an unexplained hole in the live record, and the
+    // advisor ranks unexplained flow as something to go and loosen. A day the
+    // strategy SUCCEEDED must not accumulate evidence that it is leaking.
+    //
+    // Per tick and only when there were live signals to refuse, mirroring
+    // `entry_window_closed`'s `refused: candidates.length`: the attribution
+    // matches these by time, so a once-a-day row could not classify the tick a
+    // paper entry landed on, and a row on every empty tick would be noise.
+    if (!liveStillActive && paperStillActive && decision.signals.length > 0) {
+      logAutotradeEvent({
+        stage: 'execution',
+        action: 'live_entries_halted',
+        detail: {
+          refused: decision.signals.length,
+          reason: recheck.killSwitch
+            ? 'kill_switch'
+            : !recheck.liveTradingEnabled
+              ? 'live_trading_disabled'
+              : dailyTarget.reached
+                ? 'daily_target_reached'
+                : dailyTarget.giveBackHalted
+                  ? 'give_back_halted'
+                  : 'live_entries_inactive',
+          gainPct: dailyTarget.gainPct ?? null,
+          targetPct: dailyTarget.targetPct ?? null,
+          note: 'live entries stood down this tick while paper traded — these signals had no live twin by design',
+        },
+        riskProfile: recheck.riskProfile,
+      });
+    }
+
     if (paperStillActive) {
       // Equity runs first, seeded with options' PRE-EXISTING snapshot (this
       // tick's options entries haven't happened yet); options runs second and
