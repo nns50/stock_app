@@ -59,6 +59,17 @@ export interface LiveOrderMeta {
    *  positions.entry_vwap at materialization. Null: exit rows, legacy rows,
    *  or an unmeasurable fetch. */
   entryVwap: number | null;
+  /** Stop-cap forensics (2026-09-11, task #62), capture-only — nothing reads
+   *  either to change a trade. `stopSqueezeRatio` is (stopAtrMultiple × ATR)
+   *  divided by the stop distance actually placed: 1.0 means the ATR stop fit
+   *  under maxStopDistancePct, above 1 means the cap bit, and IRD on 2026-09-09
+   *  read 5.0. `plannedStopDistancePct` is that placed distance as a % of the
+   *  SIGNAL's entry — kept because the bracket carries the signal's stop rather
+   *  than a fill-relative one, so a favourable fill silently compresses
+   *  realized 1R, and after materialization the signal's entry price is gone.
+   *  Null for exit rows, legacy rows, and any signal with no usable ATR. */
+  stopSqueezeRatio: number | null;
+  plannedStopDistancePct: number | null;
   createdAt: number;
 }
 
@@ -82,6 +93,8 @@ interface Row {
   regime_target_factor: number | null;
   market_atr_pct: number | null;
   entry_vwap: number | null;
+  stop_squeeze_ratio: number | null;
+  planned_stop_distance_pct: number | null;
   created_at: number;
 }
 
@@ -114,6 +127,8 @@ function mapRow(r: Row): LiveOrderMeta {
     regimeTargetFactor: r.regime_target_factor ?? null,
     marketAtrPct: r.market_atr_pct ?? null,
     entryVwap: r.entry_vwap ?? null,
+    stopSqueezeRatio: r.stop_squeeze_ratio ?? null,
+    plannedStopDistancePct: r.planned_stop_distance_pct ?? null,
     createdAt: r.created_at,
   };
 }
@@ -143,12 +158,14 @@ export function recordLiveOrder(input: {
   regimeTargetFactor?: number | null;
   marketAtrPct?: number | null;
   entryVwap?: number | null;
+  stopSqueezeRatio?: number | null;
+  plannedStopDistancePct?: number | null;
   clientComboOrderId?: string | null;
 }): LiveOrderMeta {
   const now = Date.now();
   db.prepare(
-    `INSERT INTO autotrade_live_orders (intent_id, symbol, role, stop_price, target_price, risk_amount, risk_profile, position_id, account_id, grade, entry_score, entry_components, market_regime, ml_regime, regime_target_factor, market_atr_pct, entry_vwap, client_combo_order_id, created_at)
-     VALUES (?, ?, 'entry', ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO autotrade_live_orders (intent_id, symbol, role, stop_price, target_price, risk_amount, risk_profile, position_id, account_id, grade, entry_score, entry_components, market_regime, ml_regime, regime_target_factor, market_atr_pct, entry_vwap, stop_squeeze_ratio, planned_stop_distance_pct, client_combo_order_id, created_at)
+     VALUES (?, ?, 'entry', ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     input.intentId,
     input.symbol.toUpperCase(),
@@ -165,6 +182,8 @@ export function recordLiveOrder(input: {
     input.regimeTargetFactor ?? null,
     input.marketAtrPct ?? null,
     input.entryVwap ?? null,
+    input.stopSqueezeRatio ?? null,
+    input.plannedStopDistancePct ?? null,
     input.clientComboOrderId ?? null,
     now,
   );

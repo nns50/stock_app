@@ -521,6 +521,17 @@ bars. `GET /api/journal/short-shadow-record` replays each live-eligible declined
 real 5-minute bars under the book's own exit geometry and reports the sample size, average
 R and win rate — the three numbers the enabling rule reads — free of paper's slots.
 
+"The book's own exit geometry" means every rule the book actually runs, read straight
+from config: the breakeven trigger, the trail, the target, the **scale-out** (67% banked
+at 0.25R) and the **90-minute stagnation scratch**. The last two were added on
+2026-09-11, a day after the shadow record first shipped without them — and the omission
+mattered in one direction, because a scale-out banks gains the earlier version let run
+all the way back to breakeven. A winner peaking at 0.44R and fading books 0.00R without
+it and roughly +0.17R with it, which is most of the distance between a direction that
+reads flat and one that reads slightly positive. What is still not modelled: the
+scale-out's scarcity gate and its cancel/replace mechanics. Those are execution
+questions, and this measures geometry.
+
 Three things it is not, and each matters when quoting it:
 
 - **Not a P&L.** It ignores slots, aggregate-risk room and cooldowns, so it measures
@@ -1261,6 +1272,23 @@ drops a candidate, and the correlated-exposure cap still binds as the backstop),
 book that isn't correlated it changes nothing. Because it's genuinely a selection change,
 it runs in the **backtest** engines too — so you can measure whether de-crowding actually
 improved your historical risk-adjusted return before enabling it live.
+
+**"Was the stop the strategy's, or the cap's?" → the squeeze ratio (2026-09-11).** Worth
+recording before it is worth acting on. A stop capped at `maxStopDistancePct` is not the
+stop the volatility asked for, and on this book 87% of live entries sit at that cap — so
+the stop distance alone describes nearly every trade and distinguishes none of them. The
+squeeze ratio is the ATR stop the strategy wanted over the one actually placed: 1.0 when
+it fit, higher when the cap bit and by how much. IRD on 2026-09-09 read 5.0, wanted 12.4%,
+got 2.5%, and stopped out two minutes later inside its own entry bar's range.
+
+Alongside it, the planned stop distance is stored as a % of the *signal's* entry, because
+the bracket carries the signal's stop rather than a fill-relative one. IRD filled at 6.26
+against a 6.31 signal, and the real risk per share shrank from 2.54% to 1.76% with nothing
+recording it. Both numbers are capture-only, and deliberately so: the honest next step is
+to ask whether entries at a high ratio do systematically worse over 30 of them, not to
+add a guard because one bad trade had a memorable number. The candidate response, once
+measured, is a skip or a size-down above some ratio — and re-anchoring the initial stop to
+the fill, which only ever widens a compressed stop back to plan.
 
 **"Why won't a second position open in the morning?" → Notional caps versus risk-based
 sizing (2026-08-27).** Worth understanding, because the two are measured in different

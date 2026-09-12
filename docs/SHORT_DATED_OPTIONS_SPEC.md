@@ -299,7 +299,8 @@ long option is how a covered close becomes a naked short.
 
 Journal actions: `live_options_stale_exit_cancelled`,
 `live_options_stale_exit_cancel_failed`, `live_options_exit_left_working`,
-`live_options_stale_exit_unjudgeable`, `live_options_exit_reprice_deferred`.
+`live_options_stale_exit_unjudgeable`, `live_options_exit_reprice_deferred`,
+`live_options_stale_exit_kept`.
 `live_options_exit_placed` now carries `priceBasis`, `bid`, `mark`,
 `quoteSource`, `quoteAgeMs`, `clampedToTick`, and — on a replacement —
 `replacedIntentId`, `trigger` and `repriceCount`.
@@ -314,6 +315,51 @@ a prior day's close (that is a different day's price, and could book $0 on a
 contract that finished in the money), and one whose daily bar has not landed yet
 waits quietly instead of raising a review flag — an in-the-money same-day expiry
 still flags at once, because the account may be holding assigned stock tonight.
+
+#### Price the replacement BEFORE cancelling (2026-09-11)
+
+The 2026-09-10 rule cancelled first and placed second, and it guarded only the
+case where the **cancel** fails. It never guarded the case where the cancel
+**succeeds** and the placement then fails — which is what HOOD did the very next
+session. Its stale $0.20 sell was cancelled at 14:00, the replacement could not be
+priced because the mark had fallen to $0.03 (below the $0.05 tick once the sell
+buffer applies), and the position spent the rest of the day with no resting order
+at all. That is the exact invariant the rule's own note claimed to hold.
+
+Nothing was lost on that instance: the cancelled order rested above a market
+decaying to zero and could never have filled, and the contract expired the same
+day. On a contract that is not worthless, cancel-then-failed-place strips real
+protection.
+
+So the order is **price, then cancel, then place** — and it stays that way under
+the every-tick chase above, which only makes the question more frequent. The probe
+runs through the same quote resolution and the same limit helpers
+(`sellableExitLimit` / `sellableSpreadExitLimit`) as the placement, so the two
+cannot disagree about whether a contract can be sold at all, and a quote failure
+answers "no" for the same reason: losing the quote is not the moment to pull the
+only working order. A close that cannot be re-priced is left in place and
+journaled once per position per day as `live_options_stale_exit_kept` — an
+unfillable order still beats no order.
+
+The tick clamp (2026-09-12) narrows when that happens without weakening it: a
+tiny-but-real mark now prices at one tick rather than failing the probe, so
+"cannot be priced" means a contract with no quote at all, a mark of exactly zero,
+or a crossed spread. Those are the cases where keeping the stale order is the
+whole of the protection.
+
+Every exit failure is throttled to once per position per **cause** per ET day,
+with a push on the first claim. An unplaceable mark is not a transient — a
+near-worthless contract stays unplaceable until it expires and the sweep
+re-evaluates every tick, so HOOD wrote 94 identical rows in one afternoon.
+Retrying is still right; saying it 94 times is not, and the streak alert counts
+rows, which is why the first one pushes.
+
+**A reading note that outlives the bug.** Those repeats also inflated the ladder's
+own history: 117 raw `short_dated_options_exit` rows since 2026-08-27 were only
+**22 distinct closed trades**, and 95 of them were one position re-journaling. Read
+raw, `hard_time` looked like 53% of exits and rule L3 would have fired on an
+artefact; deduplicated on position, `hard_time` has never once been the rule that
+closed a trade. **Always dedupe on book + positionId before applying an L-rule.**
 
 ---
 

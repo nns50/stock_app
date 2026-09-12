@@ -1403,6 +1403,101 @@ describe('checkLiveOptionsExits — replacing a STALE working close', () => {
     });
   });
 
+  // REGRESSION, 2026-09-11. #560 cancelled first and placed second, guarding only
+  // the case where the CANCEL fails — never the case where the cancel SUCCEEDS
+  // and the placement then fails. HOOD: the stale $0.20 sell was cancelled at
+  // 14:00, the replacement could not be priced because the mark had fallen to
+  // $0.03 (below the $0.05 tick once the sell buffer applies), and the position
+  // spent the rest of the session with NO resting order — the exact invariant
+  // #560's own comment claimed to hold.
+  /** The sweep's own quote succeeds, then the market goes away before the
+   *  probe's — the narrow window the probe exists to cover now that a
+   *  tiny-but-real mark is placeable rather than unplaceable. */
+  const quoteVanishesBeforeTheProbe = (mark: number) => {
+    let calls = 0;
+    mockGetProvider.mockReturnValue({
+      getOptionsChain: vi.fn(async (symbol: string, expiration: string) => {
+        if (++calls > 1) throw new Error('chain gone');
+        return {
+          underlying: symbol,
+          expiration,
+          underlyingPrice: 100,
+          calls: [{ symbol: 'AAPL-opt-0', underlying: symbol, type: 'call', strike: 100, mark, expiration }],
+          puts: [],
+        };
+      }),
+      getCandles: vi.fn(async () => []),
+      getQuote: vi.fn(async (symbol: string) => ({ symbol, last: 100, timestamp: Date.now() })),
+    } as never);
+    mockAccountState.mockResolvedValue(holdingAccountState(2) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-REPLACED' });
+  };
+
+  it('KEEPS a stale close it cannot re-price, rather than cancelling into nothing', async () => {
+    setAutotradeConfig(clockCfg());
+    positionWithWorkingClose(0.6);
+    quoteVanishesBeforeTheProbe(0.2);
+    cancelSucceeds();
+
+    const outcomes = await checkLiveOptionsExits();
+
+    expect(mockCancelOrder).not.toHaveBeenCalled();
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(outcomes[0]).toMatchObject({ requested: false, reason: expect.stringMatching(/stale close kept/i) });
+    const kept = rows('live_options_stale_exit_kept');
+    expect(kept).toHaveLength(1);
+    expect(JSON.parse(kept[0].detail!)).toMatchObject({ restingLimit: 0.6, clockRule: 'max_hold_days' });
+  });
+
+  it('CHASES a near-worthless mark to one tick instead of keeping the stale close (2026-09-12)', async () => {
+    // The companion to the case above, and the reason its fixture changed. A
+    // 0.03 mark used to be unplaceable — 0.03 x 0.95 rounds off the bottom of
+    // the nickel grid — so the rule kept the stale order because the
+    // alternative was no order at all. With the tick clamp the alternative is
+    // a placeable one, and a 0.05 sell that might fill beats a 0.60 sell that
+    // provably cannot. The keep rule is narrowed by this, not weakened: it
+    // still owns every case where no limit exists.
+    setAutotradeConfig(clockCfg());
+    positionWithWorkingClose(0.6);
+    armBroker(0.03);
+    cancelSucceeds();
+
+    await checkLiveOptionsExits();
+
+    expect(mockCancelOrder).toHaveBeenCalledTimes(1);
+    expect(mockPlaceOrder).toHaveBeenCalledTimes(1);
+    expect(mockPlaceOrder.mock.calls[0][1]).toMatchObject({ limitPrice: 0.05 });
+    expect(detailOf('live_options_exit_placed')).toMatchObject({ clampedToTick: true });
+    expect(rows('live_options_stale_exit_kept')).toHaveLength(0);
+  });
+
+  it('keeps it when the QUOTE fails too — losing the quote is not the moment to pull the order', async () => {
+    setAutotradeConfig(clockCfg());
+    positionWithWorkingClose(0.6);
+    // A chain for a different symbol, so the fetch for AAPL throws.
+    mockGetProvider.mockReturnValue(chainsFor({ MSFT: { side: 'call', strike: 100, mark: 1 } }) as never);
+    mockAccountState.mockResolvedValue(holdingAccountState(2) as Awaited<ReturnType<typeof webullAccountState>>);
+    cancelSucceeds();
+
+    await checkLiveOptionsExits();
+
+    expect(mockCancelOrder).not.toHaveBeenCalled();
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('says so ONCE per position per day — 94 identical rows is what the spam looked like', async () => {
+    setAutotradeConfig(clockCfg());
+    positionWithWorkingClose(0.6);
+    quoteVanishesBeforeTheProbe(0.2);
+    cancelSucceeds();
+
+    await checkLiveOptionsExits();
+    await checkLiveOptionsExits();
+    await checkLiveOptionsExits();
+
+    expect(rows('live_options_stale_exit_kept')).toHaveLength(1);
+  });
+
   it('places NOTHING when the cancel is refused — two working sells is a naked short', async () => {
     setAutotradeConfig(clockCfg());
     positionWithWorkingClose(0.6);

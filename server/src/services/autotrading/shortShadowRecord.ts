@@ -81,15 +81,38 @@ export interface ShortShadowRecord {
  *  which is a written-down operator call, not a tuning knob. */
 export const SHORT_ENABLE_GATE = { minTrades: 30, minAvgR: 0.1, minWinRatePct: 50 } as const;
 
-/** The live book's own exit geometry — the rules a real short would have been
- *  managed under, not a hypothetical set. Read from config so the shadow record
- *  moves when the book does. */
+/**
+ * The live book's own exit geometry — the rules a real short would have been
+ * managed under, not a hypothetical set. Every field is read straight from
+ * config so the two cannot drift: the replay treats 0 as "disabled", which is
+ * the same convention the config itself uses, so a rule the book switches off
+ * switches off here by construction rather than by anyone remembering to.
+ *
+ * The scale-out and the stagnation timer were added on 2026-09-11, the day
+ * after the shadow record shipped. exitReplay learned them in #563 and the live
+ * book has been running both all along (partialExitPct 67 at partialExitRMultiple
+ * 0.25, and a 90-minute stagnation scratch below 0.5R), so a record that omitted
+ * them was not replaying the book's geometry — it was replaying the four-field
+ * subset that existed when it was written, and UNDERSTATING as a result: a
+ * winner that peaks at 0.44R and falls back to breakeven books 0.00R without the
+ * scale-out and roughly +0.17R with it, which is most of the difference between
+ * a direction that looks flat and one that looks slightly positive.
+ *
+ * NOT modelled, and named here so the omission stays a decision: the scale-out's
+ * scarcity gate, its cancel/replace mechanics, and whether the second lot's
+ * bracket actually got placed. Those are execution questions; this measures
+ * geometry.
+ */
 export function liveExitRules(cfg: AutotradeConfig): ExitRules {
   return {
     breakevenTriggerR: cfg.breakevenTriggerRMultiple,
     trailStartR: cfg.trailStartRMultiple,
     trailStopR: cfg.trailStopRMultiple,
     targetR: cfg.targetRMultiple,
+    scaleOutR: cfg.liveScaleOutEnabled ? cfg.partialExitRMultiple : 0,
+    scaleOutFraction: cfg.partialExitPct / 100,
+    stagnationMinutes: cfg.stagnationExitMinutes,
+    stagnationMinR: cfg.stagnationExitMinR,
   };
 }
 

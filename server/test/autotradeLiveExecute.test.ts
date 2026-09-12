@@ -2541,6 +2541,38 @@ describe('reconcileLiveOrders vs a position-sync row for the same fill', () => {
     expect(pos!.entryComponents).toEqual(comps);
     expect(pos!.entryScore).toBe(sig.score); // and the total still travels too
   });
+
+  // Task #62. The squeeze ratio is only worth computing if it survives to the
+  // POSITION, because that is the only row a study can join to a realized
+  // outcome. Signal -> order row -> position is three hops, and decide.ts's own
+  // unit tests stay green if any of the last two drops it — the same shape the
+  // component-breakdown test above exists for.
+  it('carries the stop-cap forensics from signal to the materialized position', async () => {
+    setAutotradeConfig(liveConfig());
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-SQUEEZE' });
+
+    // A signal whose ATR stop was squeezed 4x into the cap — the IRD shape.
+    const sig = signal({ stopSqueezeRatio: 4.2, plannedStopDistancePct: 2.5 });
+    const okResult = evaluateRiskCheck(sig, baseRiskCtx());
+    await attemptLiveEntry(sig, okResult, 'MODERATE', liveConfig());
+
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      filledQty: okResult.sizing.suggestedQuantity,
+      filledPrice: 100,
+      legs: [{ comboType: 'MASTER', status: 'FILLED' }],
+    } as WebullOrderStatus);
+    await reconcileLiveOrders();
+
+    const pos = listPositions({ status: 'open', symbol: 'AAPL' }).find((p) => p.tags.includes('autotrade'));
+    expect(pos, 'the fill should have materialized a position').toBeDefined();
+    expect(pos!.stopSqueezeRatio).toBe(4.2);
+    expect(pos!.plannedStopDistancePct).toBe(2.5);
+  });
 });
 
 describe('reconcileLiveOrders', () => {

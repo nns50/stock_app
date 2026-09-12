@@ -822,6 +822,19 @@ trades.
   ever allowed to cost trade flow. Null when the intraday-bar fetch fails — never a
   guessed number.
 
+  Since 2026-09-11 each live entry also stamps two **stop-cap** figures, in the export
+  too and equally capture-only. **`stopSqueezeRatio`** is the ATR-based stop the strategy
+  wanted divided by the one actually placed: `1.0` means the ATR stop fit, and anything
+  above means the **max stop distance %** cap cut it down, by that factor. It exists
+  because 87% of live entries sit at that cap, so "the stop was 2.5%" describes almost
+  every trade and separates none of them — a name whose ATR wanted five times the room
+  is a different trade from one that wanted a little more, and until now nothing recorded
+  which was which. **`plannedStopDistancePct`** is the placed stop as a % of the signal's
+  own entry price, kept because the bracket carries the signal's stop rather than one
+  measured from the fill, so a better-than-expected fill quietly shrinks the real risk
+  per share and the signal's price is gone once the order fills. Both are null on manual
+  or imported rows and on any signal with no usable ATR.
+
 ### Wash-sale awareness
 
 - Each row in the closed-trades table shows a **⚠ wash sale?** badge (2026-07-19) next

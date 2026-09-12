@@ -34,6 +34,8 @@ function opt(over: Partial<Position>): Position {
     regimeTargetFactor: null,
     marketAtrPct: null,
     entryVwap: null,
+    stopSqueezeRatio: null,
+    plannedStopDistancePct: null,
     initialStopPrice: null,
     bestPriceSinceEntry: null,
     createdAt: 0,

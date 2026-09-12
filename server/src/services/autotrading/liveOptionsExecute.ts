@@ -171,6 +171,25 @@ export interface SellableExitLimit {
 }
 
 /**
+ * A raw sell price snapped onto the option tick grid — the ONE place a closing
+ * limit is rounded, shared by the single-leg and spread helpers below so the
+ * two cannot disagree about what is placeable (optionTick.ts's own source-scan
+ * guard exists to keep it that way).
+ *
+ * Rounded DOWN because this is a sell: snapping to the grid may only make the
+ * close more likely to fill. A price that rounds off the bottom of the grid is
+ * floored at one TICK rather than refused — see sellableExitLimit for why. A
+ * raw price that is not a real quote (zero, negative, non-finite) has nothing
+ * to clamp and returns an unplaceable 0, which the caller refuses.
+ */
+function sellLimitFromRaw(raw: number): { limitPrice: number; clampedToTick: boolean } {
+  if (!validPremium(raw)) return { limitPrice: 0, clampedToTick: false };
+  const rounded = roundOptionPrice(raw, 'down');
+  if (validPremium(rounded)) return { limitPrice: rounded, clampedToTick: false };
+  return { limitPrice: optionTickUsd(raw), clampedToTick: true };
+}
+
+/**
  * The limit price a sell-to-close goes out at.
  *
  * BID FIRST. A resting bid is where the contract can actually be sold; the
@@ -200,10 +219,7 @@ export function sellableExitLimit(q: { bid?: number; mark: number; fromLastTrade
   const useBid = q.bid !== undefined && validPremium(q.bid);
   const raw = useBid ? q.bid! : q.mark * (1 - OPTIONS_MARKETABLE_LIMIT_BUFFER_PCT / 100);
   const basis: ExitPriceBasis = useBid ? 'bid' : q.fromLastTrade ? 'last' : 'mark';
-  if (!validPremium(raw)) return { limitPrice: 0, basis, clampedToTick: false };
-  const rounded = roundOptionPrice(raw, 'down');
-  if (validPremium(rounded)) return { limitPrice: rounded, basis, clampedToTick: false };
-  return { limitPrice: optionTickUsd(raw), basis, clampedToTick: true };
+  return { ...sellLimitFromRaw(raw), basis };
 }
 
 /** The spread twin: sell the long leg into its bid, buy the short leg back at
@@ -224,10 +240,7 @@ export function sellableSpreadExitLimit(q: {
     ? q.longBid! - q.shortAsk!
     : (q.longMark - q.shortMark) * (1 - OPTIONS_MARKETABLE_LIMIT_BUFFER_PCT / 100);
   const basis: ExitPriceBasis = useBid ? 'bid' : q.fromLastTrade ? 'last' : 'mark';
-  if (!validPremium(raw)) return { limitPrice: 0, basis, clampedToTick: false };
-  const rounded = roundOptionPrice(raw, 'down');
-  if (validPremium(rounded)) return { limitPrice: rounded, basis, clampedToTick: false };
-  return { limitPrice: optionTickUsd(raw), basis, clampedToTick: true };
+  return { ...sellLimitFromRaw(raw), basis };
 }
 
 /**
@@ -1362,6 +1375,61 @@ export type OptionsExitFailureKind =
   | 'unplaceable_price'
   | 'account_state';
 
+/**
+ * Can a replacement close actually be PRICED right now? Asked before the stale
+ * close is cancelled, never after.
+ *
+ * #560 cancelled first and placed second, and guarded only the case where the
+ * CANCEL fails. It never guarded the case where the cancel SUCCEEDS and the
+ * placement then fails — which is exactly what HOOD did on 2026-09-11: the
+ * stale $0.20 sell was cancelled at 14:00, the replacement could not be priced
+ * because the mark had fallen to $0.03, and the position spent the rest of the
+ * session with NO resting order at all. That is the precise invariant #560's
+ * own comment claimed to hold and did not.
+ *
+ * Nothing was lost on that instance — the cancelled order rested above a market
+ * decaying to zero and could never have filled — but on a contract that is not
+ * worthless, cancel-then-failed-place strips real protection.
+ *
+ * So: price it first, through the SAME quote resolution and the SAME limit
+ * helpers the placement will use, and cancel only if a limit exists. The
+ * probe's answer has to BIND the placement's, which is why neither side may
+ * have its own copy of "what can this be sold for".
+ *
+ * A quote failure answers "no" for the same reason — losing the quote is not
+ * the moment to pull the only working order. Note the tick clamp (2026-09-12)
+ * narrows this to genuinely unquotable contracts: a tiny-but-real mark now
+ * prices at one tick instead of failing here.
+ */
+async function replacementIsPlaceable(pos: LiveOptionsPosition): Promise<{ ok: boolean; reason: string }> {
+  try {
+    if (pos.kind === 'debit_spread') {
+      const [longQ, shortQ] = await Promise.all([
+        resolveLiveExitQuote(pos.symbol, pos.expiration, pos.strike, pos.side, pos.contractSymbol),
+        resolveLiveExitQuote(pos.symbol, pos.expiration, pos.shortStrike!, pos.side, pos.shortContractSymbol),
+      ]);
+      const net = longQ.mark - shortQ.mark;
+      const sell = sellableSpreadExitLimit({
+        longBid: longQ.bid,
+        shortAsk: shortQ.ask,
+        longMark: longQ.mark,
+        shortMark: shortQ.mark,
+        fromLastTrade: longQ.fromLastTrade || shortQ.fromLastTrade,
+      });
+      return validPremium(sell.limitPrice)
+        ? { ok: true, reason: 'a replacement can be priced' }
+        : { ok: false, reason: `no placeable limit for a net value of ${net}` };
+    }
+    const q = await resolveLiveExitQuote(pos.symbol, pos.expiration, pos.strike, pos.side, pos.contractSymbol);
+    const sell = sellableExitLimit({ bid: q.bid, mark: q.mark, fromLastTrade: q.fromLastTrade });
+    return validPremium(sell.limitPrice)
+      ? { ok: true, reason: 'a replacement can be priced' }
+      : { ok: false, reason: `no placeable limit for a mark of ${q.mark}` };
+  } catch (err) {
+    return { ok: false, reason: `quote fetch failed: ${(err as Error).message}` };
+  }
+}
+
 async function optionsExitFailure(
   pos: LiveOptionsPosition,
   kind: OptionsExitFailureKind,
@@ -2058,6 +2126,32 @@ export async function checkLiveOptionsExits(): Promise<LiveOptionsExitCheckOutco
       let replacedIntentId: number | undefined;
       let repriceCount: number | undefined;
       if (replaceExit) {
+        // Price BEFORE pulling the only working order. See replacementIsPlaceable:
+        // #560 had this the wrong way round and stranded HOOD bare for a session.
+        const placeable = await replacementIsPlaceable(pos);
+        if (!placeable.ok) {
+          if (claimOncePerDay('live_options_stale_exit_kept', String(pos.id))) {
+            logAutotradeEvent({
+              symbol: pos.symbol,
+              stage: 'execution',
+              action: 'live_options_stale_exit_kept',
+              detail: {
+                positionId: pos.id,
+                intentId: replaceExit.intentId,
+                clockRule: clock.rule,
+                restingLimit,
+                mark: currentBasis,
+                reason: `stale close LEFT IN PLACE — ${placeable.reason}. A close that cannot be re-priced is not worth cancelling: an unfillable order still beats no order.`,
+              },
+              riskProfile: pos.riskProfile,
+            });
+          }
+          return {
+            symbol: pos.symbol,
+            requested: false,
+            reason: `stale close kept — ${placeable.reason}`,
+          };
+        }
         const cancelled = await cancelIntent(replaceExit.intentId, acct);
         if (!cancelled.requested) {
           const state = cancelled.reconciled?.intent?.state ?? cancelled.intent?.state ?? null;

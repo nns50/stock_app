@@ -33,6 +33,8 @@ function pos(overrides: Partial<Position> = {}): Position {
     regimeTargetFactor: null,
     marketAtrPct: null,
     entryVwap: null,
+    stopSqueezeRatio: null,
+    plannedStopDistancePct: null,
     initialStopPrice: null,
     bestPriceSinceEntry: null,
     createdAt: 1,
@@ -150,6 +152,8 @@ describe('positionsToCsv', () => {
       'mlRegime',
       'marketAtrPct',
       'entryVwap',
+      'stopSqueezeRatio',
+      'plannedStopDistancePct',
       'lastExitReason',
     ]) {
       expect(header).toContain(col);
