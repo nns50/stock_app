@@ -18,6 +18,7 @@ import { listUniverseSymbols } from '../../db/universe';
 import { isExcluded } from '../../db/autotradeExclusions';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { mapPool } from '../../util/async';
+import { etToday } from '../../util/marketDate';
 import { relVolMedian, relVolPace } from '../../indicators/relVolPace';
 import { classifySector, buildUniverseSectorMap } from './realEstateClassifier';
 import { claimOncePerDay } from './oncePerDayEvents';
@@ -272,12 +273,27 @@ function selectFromSnapshot(
   };
 }
 
-/** Whether `earningsDate` (YYYY-MM-DD) falls within `blackoutDays` calendar
- *  days from now, inclusive of today — a pure calendar-date comparison, not
- *  a fractional-hours one, so the window's meaning doesn't shift with what
- *  time of day the loop happens to run. */
+/**
+ * Whether `earningsDate` (YYYY-MM-DD) falls within `blackoutDays` calendar
+ * days from now, inclusive of today — a pure calendar-date comparison, not a
+ * fractional-hours one, so the window's meaning doesn't shift with what time
+ * of day the loop happens to run.
+ *
+ * "TODAY" IS THE ET DATE, not the UTC one (fixed 2026-09-12). The earnings
+ * date is a US market calendar date, so the comparison has to be made on the
+ * same calendar. Taking `toISOString()` made today's date roll over at 20:00
+ * ET (19:00 under EST) — so on an evening tick the whole window shifted a day
+ * forward, and a symbol reporting THAT DAY came back as diffDays -1 and left
+ * the blackout entirely. Exactly the drift the sentence above promises not to
+ * have.
+ *
+ * Latent rather than live: entries only screen inside the session, and every
+ * ET time before 19:00 shares a UTC date. It is fixed because the guarantee
+ * is supposed to hold for any caller at any hour, not because the loop
+ * happens to avoid the window today.
+ */
 function withinEarningsBlackout(earningsDate: string, blackoutDays: number, now: number = Date.now()): boolean {
-  const todayMs = Date.parse(`${new Date(now).toISOString().slice(0, 10)}T00:00:00Z`);
+  const todayMs = Date.parse(`${etToday(now)}T00:00:00Z`);
   const earningsMs = Date.parse(`${earningsDate}T00:00:00Z`);
   const diffDays = Math.round((earningsMs - todayMs) / (24 * 60 * 60 * 1000));
   return diffDays >= 0 && diffDays <= blackoutDays;

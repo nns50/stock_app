@@ -1593,7 +1593,9 @@ equally-weighted cards in the order they happened to be built:
   floor** — a calmer stock keeps its own tighter ATR stop — and the signal's rationale
   says when the cap bit), **session buffer** (no new entries within this many minutes of the open or close, when prices
   are most distorted), **earnings blackout** (skip an equity candidate whose next
-  known earnings date falls within this many calendar days — an unattended loop can't
+  known earnings date falls within this many calendar days — counted on the **Eastern**
+  calendar, the one the earnings date itself is quoted on, so an evening tick can't
+  shift the window a day forward; an unattended loop can't
   react to an earnings-driven overnight gap the way ATR-based stop sizing assumes;
   options entries are unaffected, since an approaching print already shows up as
   elevated IV rank there instead), and **macro event blackout (hours)** (2026-07-18 —
