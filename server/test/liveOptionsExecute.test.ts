@@ -54,7 +54,7 @@ import { setTradingConfig } from '../src/db/trading';
 import { createPosition } from '../src/db/positions';
 import { addSymbols } from '../src/db/universe';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
-import { listIntents, createIntent, transitionIntent } from '../src/db/orders';
+import { listIntents, createIntent, transitionIntent, advanceMaterialized } from '../src/db/orders';
 import { recordLiveOrder } from '../src/db/autotradeLiveOrders';
 import {
   getLiveOptionsOrder,
@@ -82,6 +82,7 @@ import {
   syncLiveOptionsPositionsFromBroker,
   sellableExitLimit,
   sellableSpreadExitLimit,
+  resetLiveOptionsExitChaseState,
 } from '../src/services/autotrading/liveOptionsExecute';
 import { closeLiveOptionsAutotradePosition } from '../src/services/trading/closePosition';
 
@@ -273,6 +274,8 @@ beforeEach(() => {
   // Default: no OPRA entitlement in play, so pricing falls back to the chain
   // fixtures every pre-existing case was written against.
   mockOptionQuotes.mockResolvedValue({ ok: false, quotes: [] });
+  // Module state: the chase budget outlives the rows this beforeEach clears.
+  resetLiveOptionsExitChaseState();
 });
 afterEach(() => {
   config.trading.placeEnabled = origPlaceEnabled;
@@ -1214,8 +1217,12 @@ describe('checkLiveOptionsExits — replacing a STALE working close', () => {
     return { pos, intent };
   }
 
-  const armBroker = (mark: number) => {
-    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark } }) as never);
+  const armBroker = (mark: number, bid?: number) => {
+    mockGetProvider.mockReturnValue(
+      chainsFor({
+        AAPL: { side: 'call', strike: 100, mark, ...(bid === undefined ? {} : { bid, ask: mark }) },
+      }) as never,
+    );
     mockAccountState.mockResolvedValue(holdingAccountState(2) as Awaited<ReturnType<typeof webullAccountState>>);
     mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-REPLACED' });
   };
@@ -1226,16 +1233,136 @@ describe('checkLiveOptionsExits — replacing a STALE working close', () => {
     mockOrderStatus.mockResolvedValue({ ok: true, found: true, status: 'CANCELLED' } as WebullOrderStatus);
   };
 
-  it('leaves a working close alone while no clock rule forces the position flat', async () => {
-    // The unchanged behaviour, and the reason the replacement is gated on the
-    // clock at all: before then, waiting is free and the order may still fill.
+  it('chases a working close down to the bid with NO clock rule forcing it (HOOD, 2026-09-11)', async () => {
+    // The inverted premise. Replacement used to be gated on a clock rule, so a
+    // close that could no longer fill sat untouched until the hard time exit
+    // hours later: HOOD's take_profit placed 1.40 at 10:18, and nothing
+    // re-examined it until 11:15 — by which time the trade was -43%. Between
+    // the take-profit level and the give-back arm level no rule fires, which
+    // is exactly the band a working close lives in, so the chase cannot depend
+    // on one firing.
     setAutotradeConfig(clockCfg({ maxHoldDays: 0 }));
-    positionWithWorkingClose(0.6);
-    armBroker(0.2);
+    positionWithWorkingClose(1.4);
+    armBroker(1.3, 1.25);
     cancelSucceeds();
 
     await checkLiveOptionsExits();
 
+    expect(mockCancelOrder).toHaveBeenCalledTimes(1);
+    expect(mockPlaceOrder).toHaveBeenCalledTimes(1);
+    expect(mockPlaceOrder.mock.calls[0][1]).toMatchObject({ limitPrice: 1.25 });
+    expect(detailOf('live_options_stale_exit_cancelled')).toMatchObject({
+      trigger: 'chase',
+      clockRule: null,
+      restingLimit: 1.4,
+      sellable: 1.25,
+      postCancelStatus: 'CANCELLED',
+      repriceCount: 1,
+    });
+    // The replacement carries the ORIGINAL decision's reason, read off the
+    // order row — the ladder is not re-run for a position already in exit.
+    expect(detailOf('live_options_exit_placed')).toMatchObject({
+      exitReason: 'stop_loss',
+      trigger: 'chase',
+      repriceCount: 1,
+      priceBasis: 'bid',
+    });
+  });
+
+  it('leaves a close at or below the bid working, clock or no clock', async () => {
+    // The profit half of the rule, unchanged: a sell with a buyer within reach
+    // is never re-priced downward.
+    setAutotradeConfig(clockCfg({ maxHoldDays: 0 }));
+    positionWithWorkingClose(1.2);
+    armBroker(1.3, 1.25);
+    cancelSucceeds();
+
+    await checkLiveOptionsExits();
+
+    expect(mockCancelOrder).not.toHaveBeenCalled();
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(detailOf('live_options_exit_left_working')).toMatchObject({ restingLimit: 1.2, sellable: 1.25 });
+  });
+
+  it('does not re-price a close that is mid-fill', async () => {
+    setAutotradeConfig(clockCfg({ maxHoldDays: 0 }));
+    const { pos } = positionWithWorkingClose(1.4);
+    const intentId = listPendingLiveOptionsOrders()[0].intentId;
+    transitionIntent(intentId, 'partially_filled', { detail: 'one of two' });
+    advanceMaterialized(intentId, 1, 1.4);
+    armBroker(1.3, 1.25);
+    cancelSucceeds();
+
+    await checkLiveOptionsExits();
+
+    expect(mockCancelOrder).not.toHaveBeenCalled();
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(detailOf('live_options_exit_reprice_deferred')).toMatchObject({ reason: 'mid_fill', positionId: pos.id });
+  });
+
+  it('does not re-place when the cancel raced a full fill', async () => {
+    setAutotradeConfig(clockCfg({ maxHoldDays: 0 }));
+    positionWithWorkingClose(1.4);
+    armBroker(1.3, 1.25);
+    mockCancelOrder.mockResolvedValue({ ok: true });
+    mockOrderStatus.mockResolvedValue({ ok: true, found: true, status: 'FILLED', filledQty: 2 } as WebullOrderStatus);
+
+    const outcomes = await checkLiveOptionsExits();
+
+    expect(mockCancelOrder).toHaveBeenCalledTimes(1);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(outcomes[0]).toMatchObject({ requested: false, reason: expect.stringMatching(/filled before the cancel/) });
+    expect(detailOf('live_options_stale_exit_cancelled')).toMatchObject({ postCancelStatus: 'FILLED' });
+  });
+
+  it('re-places only the unfilled remainder after a partial raced the cancel', async () => {
+    setAutotradeConfig(clockCfg({ maxHoldDays: 0 }));
+    positionWithWorkingClose(1.4);
+    armBroker(1.3, 1.25);
+    mockCancelOrder.mockResolvedValue({ ok: true });
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'CANCELLED',
+      filledQty: 1,
+    } as WebullOrderStatus);
+
+    await checkLiveOptionsExits();
+
+    expect(mockPlaceOrder).toHaveBeenCalledTimes(1);
+    expect(mockPlaceOrder.mock.calls[0][1]).toMatchObject({ quantity: 1 });
+  });
+
+  it('caps the chase at 20 re-prices per position per day', async () => {
+    setAutotradeConfig(clockCfg({ maxHoldDays: 0 }));
+    positionWithWorkingClose(1.4);
+    armBroker(1.3, 1.25);
+    cancelSucceeds();
+
+    for (let i = 0; i < 21; i++) {
+      // Each tick re-arms the working order the previous one replaced, so the
+      // position is always looking at a stale close — the worst case for the
+      // budget.
+      db.prepare(
+        "UPDATE order_intents SET state = 'acknowledged', limit_price = 1.4 WHERE id IN (SELECT intent_id FROM autotrade_live_options_orders WHERE role = 'exit')",
+      ).run();
+      await checkLiveOptionsExits();
+    }
+
+    expect(mockCancelOrder).toHaveBeenCalledTimes(20);
+    expect(detailOf('live_options_exit_reprice_deferred')).toMatchObject({ reason: 'daily_cap', count: 20 });
+  });
+
+  it('never cancels a working close while the kill switch is engaged', async () => {
+    setAutotradeConfig(clockCfg({ maxHoldDays: 0, killSwitch: true }));
+    positionWithWorkingClose(1.4);
+    armBroker(1.3, 1.25);
+    cancelSucceeds();
+
+    await checkLiveOptionsExits();
+
+    // A cancel with no replacement would leave the position with no working
+    // order at all — worse than a stale one.
     expect(mockCancelOrder).not.toHaveBeenCalled();
     expect(mockPlaceOrder).not.toHaveBeenCalled();
   });
