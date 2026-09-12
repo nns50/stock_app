@@ -138,7 +138,7 @@ export function tunerDisabledAt(now: number): number | null {
 }
 
 /** Live-book skips that explain why a paper entry had no live twin. */
-const SKIP_ACTIONS = [
+export const SKIP_ACTIONS = [
   'live_symbol_held_skipped',
   'live_score_floor_skipped',
   'symbol_reentry_cooldown_skipped',
@@ -146,6 +146,22 @@ const SKIP_ACTIONS = [
   'live_risk_blocked',
   'live_short_skipped',
   'finish_line_skipped',
+  // THREE THAT JOURNALLED AND WERE NEVER CLASSIFIED (2026-09-12). Each is a
+  // per-symbol live-entry refusal written through the same
+  // `journalEntrySkipOncePerDay` writer as the ones above, with a symbol on the
+  // row — so the only thing keeping them out of the attribution was their
+  // absence from this list, and every paper entry they refused read as
+  // `no_live_row`, "nothing the journal explains".
+  //
+  // The score-gate one is the clearest miss: `liveEntryScoreGate` returns ONE
+  // of THREE actions from one code path, and two of the three were here.
+  'regime_score_floor_skipped',
+  // The stop is wider than the name moves in a day. Live-only on purpose — its
+  // own comment says the paper book keeps taking these "so the experiment has a
+  // control group", which is exactly what this attribution is.
+  'risk_atr_unreachable_skipped',
+  // The broker has already refused to parse this symbol.
+  'symbol_unplaceable_skipped',
 ];
 // NOT here: `live_entry_cutoff_skipped`. It sat in this list from the day the
 // list was written and nothing has ever emitted it — the equity entry cutoff

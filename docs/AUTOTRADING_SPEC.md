@@ -9363,3 +9363,44 @@ percentages. The 26th is the manual day. So today `meanDayPct` is `null` and the
 revert cannot fire at all; it is not a defect (`reviewSessions` correctly counts zero
 sessions under the trial's sizing, and rows from 2026-09-15 carry both figures), but it is
 worth knowing that the criterion has never yet had an input.
+
+## 2026-09-12 — the reachability guard had a third direction, and it found four more
+
+`journalActionsReachability.test.ts` asks one question: *is every action a reader filters on
+actually written by some emitter?* That catches a dead filter. It does not catch the
+reverse, and for one family the reverse matters just as much.
+
+An **entry skip** that is written and that the attribution cannot classify sends its paper
+twin into `no_live_row` — the bucket meaning "nothing the journal explains". The refusal is
+recorded, correctly, per symbol, through the same throttled writer as every classified one,
+and it still reads as a hole in the record. This document has now spent three sections on
+that bucket; this is the largest remaining piece of it.
+
+**Three equity refusals were journalling and going nowhere:**
+
+| action | why it was missed |
+| --- | --- |
+| `regime_score_floor_skipped` | `liveEntryScoreGate` returns **one of three** actions from one code path; the other two were in `SKIP_ACTIONS` |
+| `risk_atr_unreachable_skipped` | 1R wider than the name's daily range — its own comment says paper keeps taking these *"so the experiment has a control group"*, which is exactly what the attribution is |
+| `symbol_unplaceable_skipped` | the broker refuses to parse the symbol |
+
+Two now carry a lever (`mlRegimeHighVolMinSignalScore`, `maxRiskAtrFraction`, both
+exposure-direction so they are reported and wait); the third has none, and says so — no
+setting makes a symbol the broker cannot parse tradeable, and taking it out of the universe
+is a decision about the universe rather than about risk.
+
+**The guard is the finding, not the three fixes.** It asserts that every action written
+through `journalEntrySkipOncePerDay` is either in `SKIP_ACTIONS` or on a short allowlist
+where each entry carries a written reason — the same shape `configReachability` uses for
+paper-only settings, so the list is the decision rather than the oversight.
+
+It earned its place immediately: run for the first time, it failed on a **fourth** action,
+`live_options_risk_blocked`, which the hand enumeration that found the other three had
+walked straight past because its call site spans several lines. That one is a deliberate
+non-class — the attribution pairs paper *equity* entries against live *equity* entries, and
+the options sleeve is measured by `collectOptionsFlowFindings` instead — so it went on the
+allowlist with that reason, which is the outcome the guard exists to force.
+
+The scan also has a floor assertion (`entrySkips.size > 4`), because a guard whose regex
+stops matching passes vacuously, and this file already carries two other floors for the
+same reason.

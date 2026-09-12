@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { SKIP_ACTIONS } from '../src/services/autotrading/edgeLeakScanData';
 import { join } from 'node:path';
 
 // ---------------------------------------------------------------------------
@@ -150,6 +151,54 @@ describe('journal action reachability', () => {
       .filter(([a]) => !emitted.has(a))
       .map(([a, fs]) => `${a} (read in ${[...fs].map((f) => f.split('/').pop()).join(', ')})`);
     expect(dead).toEqual([]);
+  });
+
+  // -------------------------------------------------------------------------
+  // THE THIRD DIRECTION (2026-09-12).
+  //
+  // The two guards above ask "is every action a reader waits for actually
+  // written". Neither asks the reverse for the one family where the reverse
+  // matters: an ENTRY SKIP that is written and that the attribution cannot
+  // classify. Every one of those sends a paper entry into `no_live_row`, the
+  // bucket meaning "nothing the journal explains" — so the refusal is recorded,
+  // correctly, and still reads as a hole in the record.
+  //
+  // It found three. `liveEntryScoreGate` returns ONE of THREE actions from one
+  // code path and only two of them were in SKIP_ACTIONS; the other two were an
+  // equity entry refused for an unreachable stop, and one the broker cannot
+  // trade. All three carry a symbol, all three go through the same throttled
+  // writer as the classified ones, and the only thing keeping them out of the
+  // attribution was a list nobody re-read when the emitters were added.
+  // -------------------------------------------------------------------------
+  it('classifies every throttled entry skip, or says out loud why not', () => {
+    const entrySkips = new Set<string>();
+    for (const f of files) {
+      for (const m of code(f).matchAll(/journalEntrySkipOncePerDay\(\s*[^,]+,\s*'([a-z0-9_]+)'/g)) {
+        entrySkips.add(m[1]);
+      }
+    }
+    // The scan has to actually find the writer, or this passes vacuously.
+    expect(entrySkips.size).toBeGreaterThan(4);
+
+    // Written, and deliberately NOT an attribution class. Each needs a reason
+    // here, which is the point: the list is the decision, not the oversight.
+    const NOT_ATTRIBUTED: Record<string, string> = {
+      // The attribution pairs paper EQUITY entries against live EQUITY entries.
+      // The options sleeve is measured by collectOptionsFlowFindings instead,
+      // which reads the refusal counts directly.
+      live_options_entry_refused: 'options sleeve — measured by collectOptionsFlowFindings',
+      options_probation_at_minimum: 'options sleeve — measured by collectOptionsFlowFindings',
+      // Found BY this guard on the day it was written, which is the argument
+      // for the guard rather than for the three fixes beside it: its call site
+      // spans several lines, so the hand enumeration that found the other three
+      // walked straight past it. Options sleeve, same reason as the two above.
+      live_options_risk_blocked: 'options sleeve — measured by collectOptionsFlowFindings',
+    };
+
+    const unclassified = [...entrySkips]
+      .filter((a) => !(SKIP_ACTIONS as readonly string[]).includes(a) && !(a in NOT_ATTRIBUTED))
+      .sort();
+    expect(unclassified).toEqual([]);
   });
 
   it('knows the specific action that started this — order_placed is not an emitter', () => {
