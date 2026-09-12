@@ -15,6 +15,8 @@ import { marketOpenContext } from '../trading/marketHours';
 import { evaluateEndOfDayFlatten, minutesUntilClose } from './endOfDayFlatten';
 import { evaluateShortDatedExit } from './shortDatedOptionsExit';
 import { webullAccountState, webullAccountType } from '../../providers/webull/accountState';
+import { webullConfigured } from '../../providers/webull/account';
+import { webullOptionQuotes } from '../../providers/webull/optionQuotes';
 import {
   newClientOrderId,
   webullPlaceOrder,
@@ -135,6 +137,141 @@ import { bumpMissStreak, clearMissStreak, MISS_CONFIRM_THRESHOLD } from '../../d
  *  for BOTH entries (price above the mark to guarantee a buy) and exits
  *  (price below the mark to guarantee a sell). */
 const OPTIONS_MARKETABLE_LIMIT_BUFFER_PCT = 5;
+
+/** How old an OPRA snapshot may be and still price a close. The chain this
+ *  file has always priced from is Yahoo-sourced and ~15 MINUTES delayed
+ *  (providers/webull/optionQuotes.ts, docs/USER_GUIDE.md); on a 0DTE contract
+ *  that is the difference between a sell limit that fills and one that rests
+ *  above a market which has already left. Two minutes is generous for a
+ *  snapshot that refreshes on a 4-second cache and strict enough that a frozen
+ *  feed falls back to the chain rather than pricing off a stale bid. */
+const EXIT_QUOTE_MAX_AGE_MS = 120_000;
+
+/** What a close can be sold at right now, and where the number came from.
+ *  `mark` keeps the midpoint the exit LADDER evaluates (its rule levels are
+ *  defined on the mark and must not move), while `bid` is what the ORDER is
+ *  priced at — the two are deliberately separate. */
+export interface ResolvedExitQuote {
+  bid?: number;
+  ask?: number;
+  mark: number;
+  fromLastTrade: boolean;
+  source: 'opra' | 'chain';
+  quoteAgeMs?: number;
+}
+
+export type ExitPriceBasis = 'bid' | 'mark' | 'last';
+
+export interface SellableExitLimit {
+  limitPrice: number;
+  basis: ExitPriceBasis;
+  /** True when the raw price rounded off the bottom of the tick grid and was
+   *  clamped UP to one tick rather than refused. */
+  clampedToTick: boolean;
+}
+
+/**
+ * The limit price a sell-to-close goes out at.
+ *
+ * BID FIRST. A resting bid is where the contract can actually be sold; the
+ * midpoint is an average of a price nobody is offering and one nobody is
+ * bidding. Pricing 5% under a midpoint fails in exactly the case that matters:
+ * on 2026-09-11 a HOOD 0DTE call was up 64%, the ladder said take the profit,
+ * the close went out at 1.40 (5% under a 1.47 mark), and it never filled. The
+ * contract expired worthless. The bid is the fix.
+ *
+ * THE TICK CLAMP. `roundOptionPrice` rounds a sell DOWN, so any price under
+ * half a tick rounds to zero — and a zero limit was refused outright, every
+ * tick, for hours ("No usable exit quote (mark 0.03) — below the $0.05 option
+ * tick"). A contract worth three cents still has a nickel bid often enough to
+ * matter, and an order at one tick either fills or is refused by the broker
+ * once. Both are better than never trying. So a price that rounds off the
+ * bottom of the grid is floored at one tick.
+ *
+ * The clamp needs a REAL price to clamp. A contract that marks at exactly 0,
+ * or has no quote at all, is not worth one tick — it is unquoted, and there is
+ * nothing to price off. Those return an invalid limit and the caller refuses,
+ * leaving the position to the expiry sweep. That distinction is the whole
+ * difference between the two neighbouring cases in the tests.
+ *
+ * Pure, and exported for its own tests.
+ */
+export function sellableExitLimit(q: { bid?: number; mark: number; fromLastTrade: boolean }): SellableExitLimit {
+  const useBid = q.bid !== undefined && validPremium(q.bid);
+  const raw = useBid ? q.bid! : q.mark * (1 - OPTIONS_MARKETABLE_LIMIT_BUFFER_PCT / 100);
+  const basis: ExitPriceBasis = useBid ? 'bid' : q.fromLastTrade ? 'last' : 'mark';
+  if (!validPremium(raw)) return { limitPrice: 0, basis, clampedToTick: false };
+  const rounded = roundOptionPrice(raw, 'down');
+  if (validPremium(rounded)) return { limitPrice: rounded, basis, clampedToTick: false };
+  return { limitPrice: optionTickUsd(raw), basis, clampedToTick: true };
+}
+
+/** The spread twin: sell the long leg into its bid, buy the short leg back at
+ *  its ask — the net a spread can actually be closed at. Falls back to the
+ *  buffered net mark, and clamps a tiny-but-real net to one tick the same way.
+ *  A CROSSED quote (short leg at or above the long) is a broken quote rather
+ *  than a spread worth one tick, so it returns an invalid limit and the caller
+ *  refuses, exactly as before. */
+export function sellableSpreadExitLimit(q: {
+  longBid?: number;
+  shortAsk?: number;
+  longMark: number;
+  shortMark: number;
+  fromLastTrade: boolean;
+}): SellableExitLimit {
+  const useBid = q.longBid !== undefined && q.shortAsk !== undefined && validPremium(q.longBid - q.shortAsk);
+  const raw = useBid
+    ? q.longBid! - q.shortAsk!
+    : (q.longMark - q.shortMark) * (1 - OPTIONS_MARKETABLE_LIMIT_BUFFER_PCT / 100);
+  const basis: ExitPriceBasis = useBid ? 'bid' : q.fromLastTrade ? 'last' : 'mark';
+  if (!validPremium(raw)) return { limitPrice: 0, basis, clampedToTick: false };
+  const rounded = roundOptionPrice(raw, 'down');
+  if (validPremium(rounded)) return { limitPrice: rounded, basis, clampedToTick: false };
+  return { limitPrice: optionTickUsd(raw), basis, clampedToTick: true };
+}
+
+/**
+ * The freshest quote available for one contract: the real-time OPRA snapshot
+ * when this account carries the entitlement and the print is recent, else the
+ * delayed chain.
+ *
+ * Never throws on the OPRA leg (webullOptionQuotes is read-only and returns
+ * `ok: false` rather than raising); the chain leg keeps its existing throw so
+ * a total quote failure still journals through the caller's catch.
+ */
+export async function resolveLiveExitQuote(
+  symbol: string,
+  expiration: string,
+  strike: number,
+  side: 'call' | 'put',
+  contractSymbol: string | null,
+  now: number = Date.now(),
+): Promise<ResolvedExitQuote> {
+  if (contractSymbol && webullConfigured()) {
+    const snap = await webullOptionQuotes([contractSymbol]);
+    const q = snap.ok ? snap.quotes[0] : undefined;
+    const ageMs = q?.quoteTime === undefined ? undefined : Math.max(0, now - q.quoteTime);
+    const fresh = ageMs === undefined || ageMs <= EXIT_QUOTE_MAX_AGE_MS;
+    if (q && fresh && q.bid !== undefined && q.ask !== undefined && Number.isFinite(q.bid) && Number.isFinite(q.ask)) {
+      return {
+        bid: q.bid,
+        ask: q.ask,
+        mark: (q.bid + q.ask) / 2,
+        fromLastTrade: false,
+        source: 'opra',
+        quoteAgeMs: ageMs,
+      };
+    }
+  }
+  const chain = await fetchContractQuote(symbol, expiration, strike, side);
+  return {
+    bid: chain.bid,
+    ask: chain.ask,
+    mark: chain.price,
+    fromLastTrade: chain.fromLastTrade,
+    source: 'chain',
+  };
+}
 
 /** For the intraday maxHoldDays check in checkLiveOptionsExits — same constant
  *  liveExecute.ts uses for equity's own. */
@@ -339,16 +476,23 @@ async function placeLiveOptionsOrder(
   blockedAction: string,
   failedAction: string,
   riskProfile: string,
+  /** When set, the blocked/rejected journal rows are written once per key per
+   *  ET day instead of every tick. Exits pass a position key (a refusal that
+   *  repeats is one finding); entries pass nothing and journal every time. */
+  onceKey?: string,
 ): Promise<BrokerPlacementResult> {
   const clientOrderId = newClientOrderId();
   const intentRec = createIntent(intent, clientOrderId);
+  const journalOnce = (action: string) => onceKey === undefined || claimOncePerDay(action, onceKey);
 
   if (!guardrails.ok) {
     const reasons = blockingFailures(guardrails)
       .map((c) => `${c.rule}: ${c.detail}`)
       .join('; ');
     transitionIntent(intentRec.id, 'rejected', { detail: `blocked: ${reasons}` });
-    logAutotradeEvent({ symbol, stage: 'execution', action: blockedAction, detail: { reasons }, riskProfile });
+    if (journalOnce(blockedAction)) {
+      logAutotradeEvent({ symbol, stage: 'execution', action: blockedAction, detail: { reasons }, riskProfile });
+    }
     return { intentId: intentRec.id, ok: false, reason: `Guardrails blocked: ${reasons}` };
   }
 
@@ -380,13 +524,15 @@ async function placeLiveOptionsOrder(
   }
   if (!broker.ok) {
     transitionIntent(intentRec.id, 'rejected', { detail: `broker rejected: ${broker.error}` });
-    logAutotradeEvent({
-      symbol,
-      stage: 'execution',
-      action: failedAction,
-      detail: { reason: broker.error },
-      riskProfile,
-    });
+    if (journalOnce(failedAction)) {
+      logAutotradeEvent({
+        symbol,
+        stage: 'execution',
+        action: failedAction,
+        detail: { reason: broker.error, ...(onceKey === undefined ? {} : { throttled: 'once per position per day' }) },
+        riskProfile,
+      });
+    }
     return { intentId: intentRec.id, ok: false, reason: `Broker rejected: ${broker.error}` };
   }
 
@@ -1200,18 +1346,40 @@ export interface LiveOptionsExitCheckOutcome {
  *  expiration, the outcome this exit exists to prevent. Reuses the same
  *  'live_options_exit_failed' action the broker-rejection path already
  *  journals, which FAILURE_ACTIONS already covers. */
-function optionsExitFailure(
+/** Why a close could not be placed, as a stable key. The JOURNAL is throttled
+ *  per position per CAUSE per ET day on this value (2026-09-12): the same
+ *  unplaceable condition recurring every 60s tick for seven hours buried the
+ *  one occurrence that mattered under 122 identical rows, and a reader cannot
+ *  tell a persistent condition from a new one. The outcome still returns every
+ *  tick — only the row is deduped — and the first occurrence of each cause also
+ *  pushes a notification, because liveFailureAlert counts ROWS and would
+ *  otherwise never reach its threshold once they are one a day. */
+export type OptionsExitFailureKind =
+  | 'positions_unavailable'
+  | 'positions_fetch_failed'
+  | 'nothing_held'
+  | 'quote_failed'
+  | 'unplaceable_price'
+  | 'account_state';
+
+async function optionsExitFailure(
   pos: LiveOptionsPosition,
+  kind: OptionsExitFailureKind,
   reason: string,
   extra: Record<string, unknown> = {},
-): LiveOptionsExitCheckOutcome {
-  logAutotradeEvent({
-    symbol: pos.symbol,
-    stage: 'execution',
-    action: 'live_options_exit_failed',
-    detail: { reason, positionId: pos.id, ...extra },
-    riskProfile: pos.riskProfile,
-  });
+): Promise<LiveOptionsExitCheckOutcome> {
+  if (claimOncePerDay('live_options_exit_failed', `${pos.id}|${kind}`)) {
+    logAutotradeEvent({
+      symbol: pos.symbol,
+      stage: 'execution',
+      action: 'live_options_exit_failed',
+      detail: { reason, kind, positionId: pos.id, ...extra },
+      riskProfile: pos.riskProfile,
+    });
+    await dispatchAutotradeNotification('live options', [
+      { title: pos.symbol, message: `Autotrade LIVE OPTIONS could not place the close: ${reason}` },
+    ]);
+  }
   return { symbol: pos.symbol, requested: false, reason };
 }
 
@@ -1223,11 +1391,12 @@ async function placeLiveOptionsExit(
    *  position's exit_reason at materialization) and named in the
    *  notification, so a stop-loss close is never journaled as a time-exit. */
   exitReason: LiveOptionsExitReason,
+  /** Set when this close REPLACES a working one that was cancelled because it
+   *  could no longer be sold at its resting price (the chase). `maxQty` caps
+   *  the replacement at what the cancelled order left unfilled. */
+  opts: { maxQty?: number; replacedIntentId?: number; trigger?: 'chase' | 'clock'; repriceCount?: number } = {},
 ): Promise<LiveOptionsExitCheckOutcome> {
   const symbol = pos.symbol;
-  // Selling to close -- price BELOW the mark to guarantee a fill (the mirror
-  // image of an entry's "pay slightly more to guarantee a buy").
-  const buffer = 1 - OPTIONS_MARKETABLE_LIMIT_BUFFER_PCT / 100;
   const liveCfg = buildLiveOptionsTradingConfig(cfg);
 
   // Naked-short guard: the exit quantity MUST NOT exceed what's actually held at
@@ -1242,7 +1411,8 @@ async function placeLiveOptionsExit(
   let heldQty: number;
   try {
     const preview = await previewWebullPositions(accountId);
-    if (!preview.ok) return optionsExitFailure(pos, `Broker positions unavailable: ${preview.error}`);
+    if (!preview.ok)
+      return optionsExitFailure(pos, 'positions_unavailable', `Broker positions unavailable: ${preview.error}`);
     const wantKey = contractKey({
       symbol,
       assetType: 'option',
@@ -1264,12 +1434,23 @@ async function placeLiveOptionsExit(
       )
       .reduce((s, p) => s + (p.quantity ?? 0), 0);
   } catch (err) {
-    return optionsExitFailure(pos, `Broker positions fetch failed: ${(err as Error).message}`);
+    return optionsExitFailure(
+      pos,
+      'positions_fetch_failed',
+      `Broker positions fetch failed: ${(err as Error).message}`,
+    );
   }
   if (heldQty <= 0) {
-    return optionsExitFailure(pos, 'Broker shows 0 contracts held — nothing to close (sync reconciles)');
+    return optionsExitFailure(
+      pos,
+      'nothing_held',
+      'Broker shows 0 contracts held — nothing to close (sync reconciles)',
+    );
   }
-  const exitQty = Math.min(pos.quantity, heldQty);
+  const exitQty = Math.min(pos.quantity, heldQty, opts.maxQty ?? Number.MAX_SAFE_INTEGER);
+  if (exitQty <= 0) {
+    return optionsExitFailure(pos, 'nothing_held', 'Nothing left to close after the replaced order filled');
+  }
 
   // Unlike an ENTRY (which refuses a last-trade-only price outright — see
   // attemptLiveOptionsEntry), an exit priced off a stale print still goes
@@ -1289,13 +1470,23 @@ async function placeLiveOptionsExit(
     });
 
   let intent: OrderIntent;
+  /** Journal fields describing WHERE the price came from — so a close that
+   *  rests unfilled can be read back against the quote it was priced off. */
+  let priced: {
+    basis: ExitPriceBasis;
+    clampedToTick: boolean;
+    bid: number | null;
+    mark: number;
+    quoteSource: 'opra' | 'chain';
+    quoteAgeMs: number | null;
+  };
   if (pos.kind === 'debit_spread') {
-    let longMark: number;
-    let shortMark: number;
+    let longQ: ResolvedExitQuote;
+    let shortQ: ResolvedExitQuote;
     try {
-      const [longQ, shortQ] = await Promise.all([
-        fetchContractQuote(symbol, pos.expiration, pos.strike, pos.side),
-        fetchContractQuote(symbol, pos.expiration, pos.shortStrike!, pos.side),
+      [longQ, shortQ] = await Promise.all([
+        resolveLiveExitQuote(symbol, pos.expiration, pos.strike, pos.side, pos.contractSymbol),
+        resolveLiveExitQuote(symbol, pos.expiration, pos.shortStrike!, pos.side, pos.shortContractSymbol),
       ]);
       if (longQ.fromLastTrade || shortQ.fromLastTrade) {
         noteStaleQuote({
@@ -1304,30 +1495,32 @@ async function placeLiveOptionsExit(
           shortFromLastTrade: shortQ.fromLastTrade,
         });
       }
-      [longMark, shortMark] = [longQ.price, shortQ.price];
     } catch (err) {
-      return optionsExitFailure(pos, `Quote fetch failed: ${(err as Error).message}`);
+      return optionsExitFailure(pos, 'quote_failed', `Quote fetch failed: ${(err as Error).message}`);
     }
-    const netValue = longMark - shortMark;
-    // DOWN, because this is a sell limit: snapping to the grid may only make
-    // the close more likely to fill (optionTick.ts). Ahead of the validPremium
-    // guard on purpose — a net value that rounds off the bottom of the grid is
-    // unplaceable, and the guard is what says so instead of the broker.
-    const limitPrice = roundOptionPrice(netValue * buffer, 'down');
-    // Same guard as the single-leg branch below: a crossed/stale spread quote
-    // (short mark >= long mark), or a net value tiny enough that the sell-side
-    // buffer rounds it to 0, makes limitPrice <= 0. The limit_price>0 guardrail
-    // then rejects the close EVERY cycle, so the spread never auto-closes and
-    // drifts to expiration -- the exact outcome the time-exit exists to prevent.
-    // Skip this cycle with a precise, journaled reason instead of spinning on an
-    // unplaceable order (mirrors attemptLiveOptionsEntry's premium guard).
-    if (!validPremium(limitPrice)) {
+    const netValue = longQ.mark - shortQ.mark;
+    const sell = sellableSpreadExitLimit({
+      longBid: longQ.bid,
+      shortAsk: shortQ.ask,
+      longMark: longQ.mark,
+      shortMark: shortQ.mark,
+      fromLastTrade: longQ.fromLastTrade || shortQ.fromLastTrade,
+    });
+    if (!validPremium(sell.limitPrice)) {
       return optionsExitFailure(
         pos,
-        `No usable exit quote (net ${netValue}: long ${longMark}, short ${shortMark}) — ` +
-          `below the $${optionTickUsd(netValue)} option tick`,
+        'unplaceable_price',
+        `No usable exit quote (net ${netValue}: long ${longQ.mark}, short ${shortQ.mark})`,
       );
     }
+    priced = {
+      basis: sell.basis,
+      clampedToTick: sell.clampedToTick,
+      bid: longQ.bid ?? null,
+      mark: netValue,
+      quoteSource: longQ.source,
+      quoteAgeMs: longQ.quoteAgeMs ?? null,
+    };
     intent = {
       symbol,
       assetKind: 'option',
@@ -1335,8 +1528,12 @@ async function placeLiveOptionsExit(
       openClose: 'close',
       quantity: exitQty,
       orderType: 'limit',
-      limitPrice,
-      referencePrice: netValue,
+      limitPrice: sell.limitPrice,
+      // The reference the fat-finger guardrail judges the limit against must be
+      // the SAME price the limit was derived from. A bid-priced close against a
+      // delayed midpoint reference reads as a 40% deviation on a fast-falling
+      // contract and is blocked exactly when it is most needed.
+      referencePrice: sell.basis === 'bid' ? sell.limitPrice : netValue,
       optionStrategy: 'VERTICAL',
       optionLegs: [
         { side: 'sell', optionType: pos.side, strike: pos.strike, expiration: pos.expiration }, // was bought — now sold
@@ -1344,34 +1541,52 @@ async function placeLiveOptionsExit(
       ],
     };
   } else {
-    let mark: number;
+    let q: ResolvedExitQuote;
     try {
-      const q = await fetchContractQuote(symbol, pos.expiration, pos.strike, pos.side);
+      q = await resolveLiveExitQuote(symbol, pos.expiration, pos.strike, pos.side, pos.contractSymbol);
       if (q.fromLastTrade) {
         noteStaleQuote({
           reason: 'exit priced off a last-trade price, not a two-sided mark — the close may rest unfilled',
-          mark: q.price,
+          mark: q.mark,
         });
       }
-      mark = q.price;
     } catch (err) {
-      return optionsExitFailure(pos, `Quote fetch failed: ${(err as Error).message}`);
+      return optionsExitFailure(pos, 'quote_failed', `Quote fetch failed: ${(err as Error).message}`);
     }
-    // DOWN, because this is a sell limit — see the spread branch above.
-    const limitPrice = roundOptionPrice(mark * buffer, 'down');
-    // Mirror the entry-side premium guard (attemptLiveOptionsEntry). A
-    // near-worthless or unquoted contract marks at 0 -- or a value tiny enough
-    // that the sell-side marketable buffer rounds it to 0 -- so limitPrice
-    // would be <= 0 and the limit_price>0 guardrail would reject the close
-    // every cycle. The position then never auto-closes and drifts to
-    // expiration, the exact outcome the time-exit exists to prevent. Skip with
-    // a precise, journaled reason instead of spinning on an unplaceable order.
-    if (!validPremium(limitPrice)) {
-      return optionsExitFailure(
-        pos,
-        `No usable exit quote (mark ${mark}) — below the $${optionTickUsd(mark)} option tick`,
-      );
+    // A CORRUPT bid is the one way bid-first pricing can sell cheap: a stale or
+    // malformed 0.05 against a real 1.40 mark would dump the contract. The
+    // fat-finger percentage is the account's own tolerance for a limit away
+    // from the reference, so reuse it here rather than inventing a second
+    // number — a bid further below the mark than that falls back to the mark.
+    const tick = optionTickUsd(q.mark);
+    const bidFloor = q.mark * (1 - liveCfg.fatFingerPct / 100) - tick;
+    const bidUsable = q.bid !== undefined && validPremium(q.bid) && q.bid >= bidFloor;
+    if (q.bid !== undefined && validPremium(q.bid) && !bidUsable) {
+      noteStaleQuote({
+        reason: `bid ${q.bid} sits more than ${liveCfg.fatFingerPct}% under the ${q.mark} mark — priced off the mark instead`,
+        bid: q.bid,
+        mark: q.mark,
+      });
     }
+    const sell = sellableExitLimit({
+      bid: bidUsable ? q.bid : undefined,
+      mark: q.mark,
+      fromLastTrade: q.fromLastTrade,
+    });
+    // The tick clamp means this can now only fail on a non-finite price (no
+    // quote at all). A worthless-but-quoted contract places at one tick — the
+    // 2026-09-11 HOOD case, where refusing left the position open to expiry.
+    if (!validPremium(sell.limitPrice)) {
+      return optionsExitFailure(pos, 'unplaceable_price', `No usable exit quote (mark ${q.mark})`);
+    }
+    priced = {
+      basis: sell.basis,
+      clampedToTick: sell.clampedToTick,
+      bid: q.bid ?? null,
+      mark: q.mark,
+      quoteSource: q.source,
+      quoteAgeMs: q.quoteAgeMs ?? null,
+    };
     intent = {
       symbol,
       assetKind: 'option',
@@ -1379,8 +1594,8 @@ async function placeLiveOptionsExit(
       openClose: 'close',
       quantity: exitQty,
       orderType: 'limit',
-      limitPrice,
-      referencePrice: mark,
+      limitPrice: sell.limitPrice,
+      referencePrice: sell.basis === 'bid' ? sell.limitPrice : q.mark,
       optionType: pos.side,
       strike: pos.strike,
       expiration: pos.expiration,
@@ -1401,7 +1616,7 @@ async function placeLiveOptionsExit(
   );
   // Account-state failure only — a guardrail BLOCK comes back ok:true and is
   // journaled by placeLiveOptionsOrder's own blocked path below.
-  if (!loaded.ok) return optionsExitFailure(pos, loaded.reason);
+  if (!loaded.ok) return optionsExitFailure(pos, 'account_state', loaded.reason);
 
   const placed = await placeLiveOptionsOrder(
     intent,
@@ -1411,6 +1626,10 @@ async function placeLiveOptionsExit(
     'live_options_exit_blocked',
     'live_options_exit_failed',
     pos.riskProfile,
+    // Same throttle reasoning as optionsExitFailure: a broker refusal that
+    // repeats every tick (a tick-size rejection, say) is one finding, not one
+    // per minute. Entries pass no key and journal every time.
+    `${pos.id}|broker`,
   );
   // Record the order row even when the outcome is UNKNOWN: that is what keeps
   // it pollable by reconcileLiveOptionsOrders and what stops the next cycle
@@ -1440,6 +1659,15 @@ async function placeLiveOptionsExit(
       orderId: placed.brokerOrderId,
       positionId: pos.id,
       exitReason,
+      priceBasis: priced.basis,
+      bid: priced.bid,
+      mark: priced.mark,
+      quoteSource: priced.quoteSource,
+      quoteAgeMs: priced.quoteAgeMs,
+      clampedToTick: priced.clampedToTick,
+      ...(opts.replacedIntentId === undefined ? {} : { replacedIntentId: opts.replacedIntentId }),
+      ...(opts.trigger === undefined ? {} : { trigger: opts.trigger }),
+      ...(opts.repriceCount === undefined ? {} : { repriceCount: opts.repriceCount }),
     },
     riskProfile: pos.riskProfile,
   });
