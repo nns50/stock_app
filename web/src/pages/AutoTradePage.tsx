@@ -28,6 +28,7 @@ import type {
   AutotradeConfig,
   AutotradeCapCoherence,
   AutotradeEdgeLeakSummary,
+  AutotradeGatedSwitch,
   AutotradeDashboard,
   AutotradeDecideResponse,
   AutotradeLivePosition,
@@ -1191,6 +1192,63 @@ const CAP_COHERENCE_LABELS: Record<AutotradeCapCoherence['key'], string> = {
  * derived value hands it back to the re-anchor.
  */
 /**
+ * The criteria-gated switches and how far each is from being allowed to act
+ * (2026-09-12).
+ *
+ * Every rule that REDUCES exposure starts in shadow: it evaluates each session
+ * after the close, journals what it would apply, and writes nothing until it
+ * has been evaluated on enough sessions, fired at least once, and never
+ * contradicted itself. A rule that ADDS exposure never graduates at all.
+ *
+ * Shown even while every rule is quiet, unlike the leak line: "the app will
+ * revert the overlay by itself if it misbehaves" is a claim the operator is
+ * relying on, and a claim you cannot see is one you have to take on trust.
+ */
+function GatedSwitchesCard({ rules }: { rules: AutotradeGatedSwitch[] }) {
+  if (!rules || rules.length === 0) return null;
+  return (
+    <div className="rounded-lg border border-ink-600/60 p-3" data-testid="gated-switches">
+      <h4 className="text-xs uppercase tracking-wide text-slate-400 mb-2">Automatic switches</h4>
+      <div className="space-y-1.5">
+        {rules.map((r) => (
+          <div key={r.id} className="text-[11px]">
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="text-slate-300">{r.label}</span>
+              <span
+                className={cx(
+                  'shrink-0',
+                  r.direction === 'exposure' ? 'text-slate-500' : r.graduated ? 'text-bull' : 'text-amber-300',
+                )}
+              >
+                {r.direction === 'exposure' ? 'your call' : r.graduated ? 'applies itself' : 'shadow'}
+                {r.direction === 'safe' && !r.graduated && (
+                  <span className="text-slate-500">
+                    {' '}
+                    {r.evaluations}/{r.shadowEvaluationsRequired}
+                  </span>
+                )}
+              </span>
+            </div>
+            <div className="text-slate-500">
+              {r.criterion}
+              {r.lastMet && <span className="text-amber-300"> — met now</span>}
+              {r.contradictions > 0 && (
+                <span className="text-bear"> — contradicted itself {r.contradictions}×, will not graduate</span>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+      <p className="text-[10px] text-slate-500 mt-2">
+        A rule that reduces exposure applies itself once it has been evaluated on{' '}
+        {rules[0]?.shadowEvaluationsRequired ?? 5} sessions, fired at least once, and never contradicted itself. One
+        that adds exposure is reported and waits for you, always.
+      </p>
+    </div>
+  );
+}
+
+/**
  * The last six weeks of daily results, under the goal card (2026-09-12).
  *
  * The same calendar the Results page renders, in its compact form: the goal
@@ -2031,6 +2089,7 @@ function MonitoringDashboard({
         </p>
       )}
       <DailyResultsStrip goalPct={dash.dailyTarget.configuredTargetPct ?? null} />
+      <GatedSwitchesCard rules={dash.gatedSwitches} />
       <EdgeLeakLine s={dash.edgeLeakSummary} />
       <RegimeReadinessLine r={dash.mlRegimeReadiness} />
       {dash.symbolCooldowns.length > 0 && (

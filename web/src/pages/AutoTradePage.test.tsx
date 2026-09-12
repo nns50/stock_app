@@ -9,6 +9,7 @@ import type {
   AutotradeCapCoherence,
   AutotradeConfig,
   AutotradeDashboard,
+  AutotradeGatedSwitch,
   MlRegimeReadiness,
   AutotradeDecideResponse,
   AutotradeLivePosition,
@@ -297,6 +298,45 @@ function capsCoherenceFixture(overrides: Partial<AutotradeCapCoherence>[] = []):
   return base.map((row, i) => ({ ...row, ...(overrides[i] ?? {}) }));
 }
 
+/** Every rule, all still in shadow — the day-one state, which is what most
+ *  tests should see. Given every field: a fixture that omits one drifts from
+ *  the API shape unnoticed (CLAUDE.md). */
+function gatedSwitchesFixture(overrides: Partial<AutotradeGatedSwitch>[] = []): AutotradeGatedSwitch[] {
+  const base: AutotradeGatedSwitch[] = [
+    {
+      id: 'overlay_revert',
+      label: 'Revert the ML regime overlay to OFF',
+      direction: 'safe',
+      criterion: 'the overlay is on AND any of: a parity disagreement, a drift day, an inert streak of 5',
+      graduated: false,
+      blockers: ['evaluated on 0 of 5 sessions', 'has never fired — a rule that has not proposed has proved nothing'],
+      evaluations: 0,
+      shadowEvaluationsRequired: 5,
+      proposals: 0,
+      contradictions: 0,
+      lastMet: false,
+      lastEvaluatedEtDate: null,
+      graduatedAt: null,
+    },
+    {
+      id: 'shorts',
+      label: 'Enable live shorts',
+      direction: 'exposure',
+      criterion: '30 shadow short trades with average R ≥ +0.1 and a win rate ≥ 50%',
+      graduated: false,
+      blockers: ['adds exposure — only the operator applies this, by standing decision'],
+      evaluations: 0,
+      shadowEvaluationsRequired: 5,
+      proposals: 0,
+      contradictions: 0,
+      lastMet: false,
+      lastEvaluatedEtDate: null,
+      graduatedAt: null,
+    },
+  ];
+  return base.map((row, i) => ({ ...row, ...(overrides[i] ?? {}) }));
+}
+
 function dashboardFixture(overrides: Partial<AutotradeDashboard> = {}): AutotradeDashboard {
   return {
     enabled: false,
@@ -370,6 +410,7 @@ function dashboardFixture(overrides: Partial<AutotradeDashboard> = {}): Autotrad
     liveOptionsProbation: { active: false, multiplier: 1, tradesPlaced: 0, tradesRemaining: 20 },
     capsCoherence: capsCoherenceFixture(),
     edgeLeakSummary: null,
+    gatedSwitches: gatedSwitchesFixture(),
     ...overrides,
   };
 }
@@ -3587,6 +3628,38 @@ describe('AutoTradePage', () => {
       renderDashboard();
       await screen.findByTestId('daily-goal-evidence');
       expect(screen.queryByTestId('edge-leak-summary')).toBeNull();
+    });
+
+    // -----------------------------------------------------------------------
+    // The gated switches. "The app will revert the overlay by itself if it
+    // misbehaves" is a claim the operator relies on, so it is shown even when
+    // every rule is quiet — unlike the leak line, which goes silent when clean.
+    // -----------------------------------------------------------------------
+    it('shows each rule’s shadow progress, and who applies it', async () => {
+      renderDashboard();
+      const card = await screen.findByTestId('gated-switches');
+      expect(card).toHaveTextContent('Revert the ML regime overlay to OFF');
+      expect(card).toHaveTextContent(/shadow 0\/5/);
+      // An exposure rule never graduates — it says whose call it is instead of
+      // a progress count that would never complete.
+      expect(card).toHaveTextContent('Enable live shorts');
+      expect(card).toHaveTextContent('your call');
+    });
+
+    it('says when a rule has graduated, and when one has disqualified itself', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({
+          gatedSwitches: gatedSwitchesFixture([
+            { graduated: true, blockers: [], evaluations: 6, proposals: 2, lastMet: true },
+            { contradictions: 3 },
+          ]),
+        }),
+      );
+      renderDashboard();
+      const card = await screen.findByTestId('gated-switches');
+      expect(card).toHaveTextContent('applies itself');
+      expect(card).toHaveTextContent('met now');
+      expect(card).toHaveTextContent(/contradicted itself 3×, will not graduate/);
     });
 
     it('points at the regime-tighten ledger once ten tightened trades have closed', async () => {

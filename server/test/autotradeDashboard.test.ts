@@ -39,7 +39,7 @@ beforeEach(() => {
       // The live OPTIONS book feeds dailyGoalEvidence (the daily goal gates
       // both live books), and every file that writes it cleans it before its
       // own tests, not after — so in a full run its last rows can outlive it.
-      'DELETE FROM autotrade_live_options_positions; DELETE FROM autotrade_last_tick; DELETE FROM edge_leak_scans;',
+      'DELETE FROM autotrade_live_options_positions; DELETE FROM autotrade_last_tick; DELETE FROM edge_leak_scans; DELETE FROM gated_switch_state;',
   );
 });
 
@@ -562,6 +562,35 @@ describe('dailyGoalEvidence', () => {
     expect(e.storedTargetR).toBeNull();
     expect(e.goalRatePct).toBeNull();
     expect(e.goalReachedSessions).toBe(0);
+  });
+});
+
+describe('gatedSwitches — the shadow is visible while it runs', () => {
+  it('reports every rule on day one, with nothing graduated and the blockers named', () => {
+    const rules = getAutotradeDashboard().gatedSwitches;
+    expect(rules.length).toBeGreaterThanOrEqual(5);
+    for (const r of rules) {
+      expect(r.graduated).toBe(false);
+      expect(r.evaluations).toBe(0);
+      expect(r.criterion.length).toBeGreaterThan(20);
+    }
+    const overlay = rules.find((r) => r.id === 'overlay_revert');
+    expect(overlay?.blockers.join(' ')).toMatch(/evaluated on 0 of 5 sessions/);
+    // An exposure rule says WHY it will never graduate, rather than showing a
+    // progress count that can never complete.
+    const shorts = rules.find((r) => r.id === 'shorts');
+    expect(shorts?.direction).toBe('exposure');
+    expect(shorts?.blockers.join(' ')).toMatch(/only the operator applies this/);
+  });
+
+  it('carries a rule’s persisted record, so the card and the engine agree', () => {
+    db.prepare(
+      'INSERT INTO gated_switch_state (rule_id, evaluations, proposals, contradictions, last_met, last_evaluated_et_date, graduated_at)' +
+        " VALUES ('frozen_cap', 7, 2, 0, 1, '2026-09-11', 1234)",
+    ).run();
+    const rule = getAutotradeDashboard().gatedSwitches.find((r) => r.id === 'frozen_cap');
+    expect(rule).toMatchObject({ graduated: true, evaluations: 7, proposals: 2, lastMet: true, graduatedAt: 1234 });
+    expect(rule?.blockers).toEqual([]);
   });
 });
 

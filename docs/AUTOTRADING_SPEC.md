@@ -8328,3 +8328,108 @@ that row existed, which is this very day), it falls back to **today only**: the 
 window that still has teeth, since the tuner runs once per ET day at 00:00 and a real
 violation therefore surfaces on the next day's scan rather than never. The two transition
 actions are excluded from the count, or switching the tuner off would report itself.
+
+## 2026-09-12 — the criteria apply themselves, after they have shadowed
+
+Every gated item in the 3%-goal plan has a written criterion, and until now the criteria
+were checked by a human reading a daily routine's output. That is a single point of
+failure sitting underneath a risk increase: the routine has to fire, and someone has to
+read it correctly, on each of the ten sessions the pre-committed review runs over. The
+gated-switch engine (`services/autotrading/gatedSwitches.ts`) evaluates them itself, on
+the first loop tick after each session's close.
+
+**The operator's division, encoded.** A rule that REDUCES exposure — a revert, a size
+cut, a cooldown, a score floor — may be applied by the app. A rule that ADDS exposure is
+reported and waits for the operator, always, with no graduation path at all. That
+asymmetry is the whole safety model, so `direction` is a required field on every rule and
+`exposure` is checked in three separate places rather than one.
+
+**Every safe rule shadows before it acts.** This codebase's own convention is to ship a
+mechanism as a measurement first — the entry-extension gate, the short shadow record and
+the regime-tighten ledger all did — and a mechanism whose output is a config write on
+live money has a stronger claim to that than any of them. So a rule starts in SHADOW: it
+evaluates, journals what it WOULD have applied (`config_change_proposed`, with the
+blockers that stopped it), and changes nothing.
+
+The shadow costs nothing that is not already being paid. During it the routine reports
+each proposal exactly as it does today, so a genuine revert is still one line away from
+being applied by hand.
+
+**A rule graduates by its own written criterion**, checked by the engine — nobody has to
+come back and flip a flag:
+
+- it reduces exposure, **and**
+- it has been EVALUATED on at least `SHADOW_MIN_EVALUATIONS` (5) sessions, **and**
+- it has actually FIRED at least once — a rule that has never proposed has demonstrated
+  nothing, however long it has sat there, **and**
+- it has never CONTRADICTED itself: proposed, then read not-met on the very next
+  evaluation without its patch having been applied in between. A rule that flaps is a
+  rule reading noise.
+
+The state is read BEFORE the session is folded in, so a rule that meets the bar and is
+met today graduates and applies *today* rather than a session later.
+
+The contradiction test has one subtlety worth stating: when the patch WAS applied, the
+criterion ceasing to hold is the patch **working** — the opposite of a contradiction —
+which is why "was it applied" is a parameter rather than something inferred from the
+sequence.
+
+**What stops a write, and what does not.** The master `gatedSwitchesEnabled` flag and the
+kill switch suppress APPLICATION only, never evaluation: a shadow record that froze while
+the engine was off would hand a rule a graduation it never lived through the moment it
+came back on. A rule already evaluated on today's ET date is skipped, so a restart loop
+cannot graduate anything in an afternoon. And the shadow record is a TABLE
+(`gated_switch_state`), not memory, for the same reason.
+
+**The blast radius is explicit.** `SWITCH_WRITABLE_KEYS` lists every field a rule may
+write, and `assertWritable` enforces it at runtime as well as in the type — because a
+patch assembled from a leak scan's `lever` is *data read out of a scan result*, not
+literal code, so "the rule only writes what its source says" is not something the type
+system can promise. A rule that wanted a new field has to come to that list and justify
+it.
+
+### The rules, v1
+
+| rule | direction | criterion |
+| --- | --- | --- |
+| `overlay_revert` | safe | the overlay is on AND any of: a parity disagreement, a drift day, an inert streak of 5, more than 2 regime switches in any 5 sessions |
+| `sizing_revert` | safe | at 10+ active sessions since the sizing change: the mean day is negative, OR the drawdown halt tripped twice in any 5 sessions |
+| `leak_lever` | safe | the last edge-leak scan reports a LEAK (not a watch, not unconfirmed) whose lever is a config field in the safe direction |
+| `frozen_cap` | safe | a stored dollar cap no longer equals its anchor-derived value, so every automatic re-anchor skips it |
+| `shorts` | exposure | 30 shadow short trades, average R ≥ +0.1, win rate ≥ 50% — reported, never applied |
+
+Three of them refuse to fire when the change would be a no-op — `sizing_revert` when the
+risk % is already pre-trial, `leak_lever` when the config already carries the lever's
+value, `frozen_cap` when every cap is anchor-owned — because a rule that proposes the
+same thing every session forever is a rule nobody reads.
+
+**Not implemented, and why:** the plan's shock-nowcast rule (`regimeShockRangeRatio` once
+the nowcast has anticipated the model's High-Vol reads on a majority of ≥3 shock days).
+Its evidence is not computable from what is journaled today, and a rule that guesses at
+its own criterion is worse than one that says it cannot read it yet. `shorts` is in the
+table but evaluates to null for the same reason — its three numbers are not in one place
+— which costs nothing, because an exposure rule can never act regardless.
+
+### Two dates that had to be journaled
+
+Both the review rule and the tuner finding need to know WHEN a setting changed, and the
+config row cannot say: its `updated_at` moves on every loop tick, because the equity sync
+writes `accountEquityUsd` every minute. So the config route journals the transitions —
+`sizing_changed` when `riskPerTradePct` moves, `auto_tune_disabled` / `auto_tune_enabled`
+when the tuner's flag flips — beside the handful of flag transitions it already recorded.
+
+Where the journal cannot say (a change that predates the row, which the 2026-09-12 trial
+itself is), the review window falls back to the sessions the loop actually RECORDED,
+identified by their having an account baseline. A backfilled historical row has null
+account columns by construction, so the fallback cannot over-count the window with
+sessions from before the change — and over-counting is the only direction that would let
+the rule fire early.
+
+**Pre-committed check.** After this deploys, every rule must appear on the Auto page's
+"Automatic switches" card with `0/5` progress and nothing graduated, and the first
+post-close tick must journal `config_change_proposed` for `frozen_cap` — the options cap
+was hand-set to its derived value on 2026-09-12, so if any cap reads frozen again the
+re-anchor and the derivation have diverged. No `config_auto_applied` row may appear
+before a rule has five evaluations behind it; if one does, the graduation gate is not
+doing its job and the engine should be switched off at `gatedSwitchesEnabled` while it is
+worked out.

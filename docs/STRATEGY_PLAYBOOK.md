@@ -28,8 +28,9 @@ app's tools, not a "buy signal."
 10. [Reducing slippage with execution quality](#reducing-slippage-with-execution-quality)
 11. [Guardrails: risk of ruin & the benchmark](#guardrails-risk-of-ruin--the-benchmark)
 12. [The edge-leak scan](#the-edge-leak-scan)
-13. [The weekly review checklist](#the-weekly-review-checklist)
-14. [Anti-patterns to avoid](#anti-patterns-to-avoid)
+13. [Rules that apply themselves](#rules-that-apply-themselves)
+14. [The weekly review checklist](#the-weekly-review-checklist)
+15. [Anti-patterns to avoid](#anti-patterns-to-avoid)
 
 ---
 
@@ -1794,6 +1795,34 @@ If it does not, the scan is wrong, not the record.
   is BUILT only when the after-13:00 bucket reads ≥ 20 trades with its interval below
   zero on the live book **and** the paper control agrees in sign. Until then the bucket is
   a measurement, not a gate.
+
+---
+
+## Rules that apply themselves
+
+A written criterion that only a human checks is a criterion that gets checked when
+someone remembers. Since 2026-09-12 the app evaluates its own written rules once per
+session after the close, and applies the ones that **reduce** exposure.
+
+The asymmetry is the safety model, and it is one-way: **a rule that adds exposure is
+never applied by the app** — more risk, more slots, a wider halt, shorts all get reported
+and wait. Nothing the app does on its own can widen your risk.
+
+**Nothing acts until it has shadowed.** A rule evaluates, journals what it would have
+done, and changes nothing until it has been evaluated on five sessions, fired at least
+once, and never contradicted itself (proposed, then "not met" the next session without
+its change having been applied). That last test is the important one: a rule that
+flip-flops is reading noise, not signal, and no amount of waiting fixes it — it simply
+never graduates.
+
+The shadow costs nothing, which is why it is worth having. Each proposal is reported to
+you exactly as it would be anyway, so a genuine revert is still one line from being
+applied by hand while the rule earns its way out of shadow.
+
+This is the same posture the book already takes everywhere else — the entry-extension
+gate, the short shadow record, and the regime-tighten ledger all shipped as measurements
+before anything acted on them. A mechanism whose output is a config change on live money
+has a stronger claim to that treatment than any of them, not a weaker one.
 
 ---
 

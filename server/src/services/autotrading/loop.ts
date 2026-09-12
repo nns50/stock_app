@@ -44,6 +44,7 @@ import {
 import { maybeAlertLiveOrderFailures, maybeAlertLiveAmbiguity } from './liveFailureAlert';
 import { reanchorLiveCapsIfDrifted } from './liveCapsReanchor';
 import { recordTodayAfterClose } from './dailyResults';
+import { runGatedSwitchesAfterClose } from './gatedSwitchesData';
 import { DailyTargetStatus, updateDailyGoalScale, updateDailyTarget } from './dailyTarget';
 import { hasExpiredLiveOptions, sweepExpiredLiveOptions } from './liveOptionsExpiry';
 import { maybeAlertDailyDrawdownHalt } from './dailyHaltAlert';
@@ -545,6 +546,17 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       recordTodayAfterClose();
     } catch (e) {
       journalStageFailure('daily result record', e);
+    }
+    // …and once it exists, evaluate the criteria-gated switches against it
+    // (2026-09-12). Every SAFE rule starts in shadow — it journals what it
+    // would apply and writes nothing — and graduates to acting by its own
+    // written criterion; an exposure rule never graduates at all. Runs after
+    // the results recorder so the review rule reads today's row, not
+    // yesterday's. DB-only, and caught so it can never take down the tick.
+    try {
+      runGatedSwitchesAfterClose();
+    } catch (e) {
+      journalStageFailure('gated switches', e);
     }
     // The ML market-regime reading (services/mlRegime.ts): once per tick, in
     // or out of session, cached per ET day inside the service (a day's first

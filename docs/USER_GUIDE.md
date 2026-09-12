@@ -27,10 +27,11 @@ places trades.
 9. [Journal & analytics](#journal--analytics)
 10. [Alerts](#alerts)
 11. [Auto-Trade](#auto-trade)
-12. [Results (the daily calendar)](#results-the-daily-calendar)
-13. [Settings](#settings)
-14. [A recommended daily workflow](#a-recommended-daily-workflow)
-15. [Data, privacy & providers](#data-privacy--providers)
+12. [Automatic switches](#automatic-switches-what-the-app-changes-by-itself)
+13. [Results (the daily calendar)](#results-the-daily-calendar)
+14. [Settings](#settings)
+15. [A recommended daily workflow](#a-recommended-daily-workflow)
+16. [Data, privacy & providers](#data-privacy--providers)
 
 ---
 
@@ -2552,6 +2553,45 @@ because the loop is the only caller that is always flat by the bell, so it is
 This is decision-support and tracking, not financial advice — check the spec doc for the
 full design, current status, and the roadmap for the options-trading addition still to
 come.
+
+---
+
+## Automatic switches (what the app changes by itself)
+
+Several of the app's own rules are written down with a criterion attached — "revert the
+regime overlay if it disagrees with itself", "go back to the old sizing if ten sessions
+read negative", "close the leak the scan found". Since 2026-09-12 the app checks those
+criteria itself, once per session after the close, and the **Automatic switches** card on
+the Auto-Trade page shows every rule and where it stands.
+
+**The division is fixed and one-way.** A rule that **reduces** exposure — a revert, a size
+cut, a cooldown, a score floor — can be applied by the app. A rule that **adds** exposure
+— more risk, more slots, a wider halt, shorts — is reported to you and waits, always.
+There is no path by which the app widens your risk on its own.
+
+**Nothing acts on its first day.** Every rule starts in **shadow**: it evaluates each
+session, writes into Recent Activity what it *would* have changed (`config_change_proposed`,
+with the reason it was held), and changes nothing. A rule leaves shadow only when all of
+this is true:
+
+- it reduces exposure, and
+- it has been evaluated on at least **5 sessions**, and
+- it has actually **fired at least once** — a rule that has never proposed has proved
+  nothing, however long it has been sitting there, and
+- it has never **contradicted itself**: proposed one session, then read "not met" the
+  next without its change having been applied. A rule that flip-flops is reading noise,
+  and it never graduates.
+
+The card shows each rule's progress (`shadow 2/5`), whether its criterion is **met now**,
+and whether it has disqualified itself. When a rule does graduate and act, it writes
+`config_auto_applied` to Recent Activity with the before/after values and the numbers
+that met the criterion, and sends a notification — a config change on live money is not
+something to discover later.
+
+**Two brakes.** The **kill switch** stops every application, and the `gatedSwitchesEnabled`
+setting turns the engine off entirely. Neither stops the *evaluation*: a shadow record
+that froze while the engine was off would hand a rule a graduation it never lived through
+the moment it came back on.
 
 ---
 
