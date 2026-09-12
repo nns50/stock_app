@@ -7,6 +7,7 @@ import {
 } from '../../db/autotradeLiveOptionsPositions';
 import { ExpiredOptionDisposition, ExpiringOption, classifyExpiredOptions, optionLabel } from '../expiredOptions';
 import { etToday, resolveExpiryCloses } from '../expiredOptionsSweep';
+import { isAfterSessionClose } from '../trading/marketHours';
 import { dispatchAutotradeNotification } from './notify';
 
 // ---------------------------------------------------------------------------
@@ -111,14 +112,31 @@ export interface LiveOptionsExpirySweepResult {
  */
 export async function sweepExpiredLiveOptions(opts: { now?: number } = {}): Promise<LiveOptionsExpirySweepResult> {
   const today = etToday(opts.now);
-  // Strictly BEFORE today, matching findExpiredOpenOptions: a contract is
-  // tradeable all through its own expiration day, and checkLiveOptionsExits may
-  // still place a real close for it.
-  const expired = listOpenLiveOptionsPositions().filter((p) => p.expiration < today);
+  // Before today, OR today once its own session has ended (2026-09-12). A
+  // contract is tradeable all through its expiration day and
+  // checkLiveOptionsExits may still place a real close for it, so during the
+  // session this must stay hands-off. After the close there is nothing left to
+  // trade and the contract has settled — waiting until tomorrow leaves a 0DTE
+  // sitting open all evening reading as a live position, which is what happened
+  // to HOOD on 2026-09-11 and is exactly what the options plan's rule A1 ("any
+  // options position open after the close") is meant to catch.
+  const sessionOver = isAfterSessionClose(opts.now ?? Date.now());
+  const expired = listOpenLiveOptionsPositions().filter(
+    (p) => p.expiration < today || (sessionOver && p.expiration === today),
+  );
   if (expired.length === 0) return { examined: 0, closed: [], needsReview: [] };
 
   const legs = expired.flatMap(legsOf);
-  const findings = classifyExpiredOptions(legs, await resolveExpiryCloses(legs));
+  const findings = classifyExpiredOptions(
+    legs,
+    // A contract settling on its OWN expiration day gets no walk-back: only
+    // today's bar is its settlement price. Yesterday's close would be a
+    // different day's price and could book $0 on a contract that finished in
+    // the money.
+    await resolveExpiryCloses(legs, {
+      maxWalkBackDays: (leg) => (leg.expiration === today ? 0 : 5),
+    }),
+  );
 
   // Re-associate each leg's finding with its position. A position is only
   // worthless when EVERY leg is: for a debit spread, one leg finishing in the
@@ -152,6 +170,13 @@ export async function sweepExpiredLiveOptions(opts: { now?: number } = {}): Prom
       legFindings.find((f) => f.disposition === 'in_the_money') ?? legFindings.find((f) => f.disposition === 'unknown');
 
     if (blocking) {
+      // A contract that expired TODAY and whose daily bar has not landed yet is
+      // not a finding — the settlement price simply is not published for a few
+      // minutes after the close. Wait quietly; tomorrow's `< today` pass picks
+      // it up with the full walk-back and flags it then if it is still unclear.
+      // An IN-THE-MONEY same-day expiry is flagged at once, because the account
+      // may be holding assigned stock tonight.
+      if (blocking.disposition === 'unknown' && pos.expiration === today) continue;
       const outcome: LiveOptionsExpiryOutcome = {
         positionId: pos.id,
         symbol: pos.symbol,
@@ -293,5 +318,8 @@ function alreadyFlaggedToday(positionId: number): boolean {
 export function hasExpiredLiveOptions(now: number = Date.now()): boolean {
   if (!getAutotradeConfig().liveAccountId) return false;
   const today = etToday(now);
-  return listOpenLiveOptionsPositions().some((p) => p.expiration < today);
+  const sessionOver = isAfterSessionClose(now);
+  // Same window the sweep itself uses — if these two disagree, the sweep never
+  // runs on exactly the positions it was widened to catch.
+  return listOpenLiveOptionsPositions().some((p) => p.expiration < today || (sessionOver && p.expiration === today));
 }

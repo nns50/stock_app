@@ -125,10 +125,85 @@ describe('sweepExpiredLiveOptions', () => {
     expect(r.needsReview[0]).toMatchObject({ disposition: 'unknown' });
   });
 
-  it('ignores a position expiring TODAY — it is still tradeable', async () => {
+  it('ignores a position expiring TODAY while the session is still open — it is still tradeable', async () => {
     openPosition();
-    const onExpiry = Date.parse(`${EXPIRY}T15:00:00Z`);
-    expect(await sweepExpiredLiveOptions({ now: onExpiry })).toMatchObject({ examined: 0 });
+    const duringSession = Date.parse(`${EXPIRY}T15:00:00Z`); // 11:00 ET
+    expect(await sweepExpiredLiveOptions({ now: duringSession })).toMatchObject({ examined: 0 });
+    expect(listOpenLiveOptionsPositions()).toHaveLength(1);
+  });
+
+  it('closes a 0DTE still open AFTER its own session closed, the same evening', async () => {
+    // HOOD, 2026-09-11: the contract expired worthless at 16:00 and the row sat
+    // open all evening reading as a live position, holding a concurrency slot
+    // and aggregate-risk headroom from BOTH books. Waiting for tomorrow's
+    // `< today` pass is a night too late.
+    openPosition({ strike: 100 });
+    mockGetProvider.mockReturnValue(candlesClosing(50) as ReturnType<typeof getProvider>);
+
+    const afterClose = Date.parse(`${EXPIRY}T20:05:00Z`); // 16:05 ET
+    const r = await sweepExpiredLiveOptions({ now: afterClose });
+
+    expect(r.closed).toHaveLength(1);
+    expect(listOpenLiveOptionsPositions()).toHaveLength(0);
+    expect(listAutotradeEvents({}).map((e) => e.action)).toContain('live_options_expired_worthless');
+  });
+
+  it('waits quietly when the same-day settlement bar has not landed yet', async () => {
+    // The daily bar is published minutes after the close. An absent bar is not
+    // a finding — tomorrow's pass picks it up with the full walk-back.
+    openPosition({ strike: 100 });
+    mockGetProvider.mockReturnValue({
+      getCandles: vi.fn(async () => [
+        {
+          time: Date.parse(`${EXPIRY}T00:00:00Z`) - 86_400_000,
+          open: 50,
+          high: 50,
+          low: 50,
+          close: 50,
+          volume: 1,
+        },
+      ]),
+    } as unknown as ReturnType<typeof getProvider>);
+
+    const r = await sweepExpiredLiveOptions({ now: Date.parse(`${EXPIRY}T20:05:00Z`) });
+
+    expect(r).toMatchObject({ examined: 1, closed: [], needsReview: [] });
+    expect(listOpenLiveOptionsPositions()).toHaveLength(1);
+    expect(listAutotradeEvents({}).map((e) => e.action)).not.toContain('live_options_expired_needs_review');
+    expect(mockDispatch).not.toHaveBeenCalled();
+  });
+
+  it('flags a same-day IN-THE-MONEY expiry at once — the account may hold stock tonight', async () => {
+    openPosition({ strike: 100 });
+    mockGetProvider.mockReturnValue(candlesClosing(130) as ReturnType<typeof getProvider>);
+
+    const r = await sweepExpiredLiveOptions({ now: Date.parse(`${EXPIRY}T20:05:00Z`) });
+
+    expect(r.needsReview).toHaveLength(1);
+    expect(r.closed).toHaveLength(0);
+    expect(listAutotradeEvents({}).map((e) => e.action)).toContain('live_options_expired_needs_review');
+  });
+
+  it('does not walk back to a PRIOR day to settle a same-day expiry', async () => {
+    // Yesterday's close is a different day's price. Substituting it could book
+    // $0 on a contract that finished in the money.
+    openPosition({ strike: 100 });
+    mockGetProvider.mockReturnValue({
+      getCandles: vi.fn(async () => [
+        {
+          time: Date.parse(`${EXPIRY}T00:00:00Z`) - 86_400_000,
+          open: 20,
+          high: 20,
+          low: 20,
+          close: 20, // far out of the money YESTERDAY
+          volume: 1,
+        },
+      ]),
+    } as unknown as ReturnType<typeof getProvider>);
+
+    const r = await sweepExpiredLiveOptions({ now: Date.parse(`${EXPIRY}T20:05:00Z`) });
+
+    expect(r.closed).toHaveLength(0);
     expect(listOpenLiveOptionsPositions()).toHaveLength(1);
   });
 
@@ -211,6 +286,15 @@ describe('hasExpiredLiveOptions', () => {
     openPosition();
     setAutotradeConfig({ liveAccountId: null });
     expect(hasExpiredLiveOptions(AFTER_EXPIRY)).toBe(false);
+  });
+
+  it('turns true on the expiration day once the session has closed', () => {
+    // This cheap pre-check gates whether the sweep runs at all, so it has to
+    // use the same window the sweep does — otherwise the sweep never sees the
+    // positions it was widened to catch.
+    openPosition();
+    expect(hasExpiredLiveOptions(Date.parse(`${EXPIRY}T15:00:00Z`))).toBe(false); // 11:00 ET
+    expect(hasExpiredLiveOptions(Date.parse(`${EXPIRY}T20:05:00Z`))).toBe(true); // 16:05 ET
   });
 });
 
