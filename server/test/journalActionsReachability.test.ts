@@ -58,10 +58,13 @@ function constants(src: string): Map<string, string | string[]> {
   const out = new Map<string, string | string[]>();
   for (const m of src.matchAll(/const\s+([A-Za-z0-9_]+)\s*(?::[^=]*)?=\s*'([a-z0-9_]+)'/g)) out.set(m[1], m[2]);
   for (const m of src.matchAll(/const\s+([A-Za-z0-9_]+)\s*(?::[^=]*)?=\s*\[([^\]]*)\]/g)) {
-    out.set(
-      m[1],
-      [...m[2].matchAll(ACTION)].map((x) => x[1]),
-    );
+    const body = m[2];
+    // An array of OBJECTS keyed by `action:` — EXECUTION_ACTIONS — must yield
+    // only its action values. Taking every quoted string pulls in labels,
+    // `splitOn` keys and split values, which then read as dead filters: the
+    // first run of this rule reported `reason` as an unwritten action.
+    const objects = [...body.matchAll(/\baction:\s*'([a-z0-9_]+)'/g)].map((x) => x[1]);
+    out.set(m[1], objects.length ? objects : [...body.matchAll(ACTION)].map((x) => x[1]));
   }
   return out;
 }
@@ -99,6 +102,16 @@ function scan(): { emitted: Set<string>; consumed: Map<string, Set<string>> } {
       }
     }
 
+    // EMIT side, second form: helpers that take the action as a POSITIONAL
+    // argument rather than an `action:` property. `journalEntrySkipOncePerDay`
+    // is the throttled entry-skip writer, and on 2026-09-12 it wrote FOUR
+    // actions this scan could not see — so a filter on any of them read as
+    // dead, and this guard reported a live emitter as missing. The mirror of
+    // that blind spot is the dangerous one: a genuinely dead filter on a
+    // throttled action would have been vouched for by nothing and caught by
+    // nothing.
+    for (const m of src.matchAll(/journalEntrySkipOncePerDay\(\s*[^,]+,\s*'([a-z0-9_]+)'/g)) emitted.add(m[1]);
+
     // CONSUME side: `actions: [...]` filters and `e.action === '...'` compares.
     for (const m of src.matchAll(/actions:\s*\[([^\]]*)\]/g)) {
       const body = m[1];
@@ -107,6 +120,14 @@ function scan(): { emitted: Set<string>; consumed: Map<string, Set<string>> } {
         const v = consts.get(id[1]);
         for (const a of typeof v === 'string' ? [v] : (v ?? [])) note(a, f);
       }
+    }
+    // …and `actions: SOME_CONST`, with no brackets for the pattern above to
+    // find. `SKIP_ACTIONS` is passed exactly that way, so every skip action the
+    // attribution filters on was invisible to the CONSUME side — meaning a dead
+    // one among them could never have been reported.
+    for (const m of src.matchAll(/actions:\s*([A-Z][A-Z0-9_]{2,})\b\.?/g)) {
+      const v = consts.get(m[1]);
+      for (const a of typeof v === 'string' ? [v] : (v ?? [])) note(a, f);
     }
     for (const m of src.matchAll(/\.action\s*===\s*'([a-z0-9_]+)'/g)) note(m[1], f);
   }

@@ -12,6 +12,8 @@ import { buildSectorOf } from './riskCheck';
 import { collectBook, CollectedBook, DEFAULT_LOOKBACK_SESSIONS } from './dailyTargetSweepData';
 import { goalInR } from './dailyTargetSweep';
 import { deriveDollarCaps, DOLLAR_CAP_KEYS, handEditedDollarCaps } from './targetTune';
+import { maxAffordablePremiumPerShare, riskPctUpperBound } from './optionsAffordability';
+import { getOptionsProbationStatus } from './liveOptionsExecute';
 import { buildLiveSlippageRows } from './autoTune';
 import {
   CollectedLeakBook,
@@ -130,9 +132,15 @@ const SKIP_ACTIONS = [
   'symbol_cooldown_skipped',
   'live_risk_blocked',
   'live_short_skipped',
-  'live_entry_cutoff_skipped',
   'finish_line_skipped',
 ];
+// NOT here: `live_entry_cutoff_skipped`. It sat in this list from the day the
+// list was written and nothing has ever emitted it — the equity entry cutoff
+// is gated on a measurement and was never built (the plan says so explicitly).
+// A filter on an action no emitter writes reads as coverage while providing
+// none, which is why `journalActionsReachability.test.ts` exists; it could not
+// see this one until its own two blind spots were fixed on 2026-09-12. When
+// the cutoff ships, its PR adds the action to both sides at once.
 
 const isAutotradePosition = (p: Position): boolean => p.tags.includes('autotrade');
 
@@ -517,6 +525,101 @@ function collectJournalSkips(since: number): { skips: JournalSkip[]; truncated: 
   return { skips, truncated };
 }
 
+/**
+ * THE OPTIONS SLEEVE, which nothing else in this scan can see (2026-09-12).
+ *
+ * The plan counts the short-dated options sleeve as part of the 3% — its paper
+ * book averaged +17% of premium over 20 trades. But every instrument here is
+ * equity-shaped: the paired attribution matches paper EQUITY entries to live
+ * EQUITY entries, `EXECUTION_ACTIONS` lists no options entry class, and the
+ * word "options" does not appear in the tune advisor at all. So the sleeve
+ * could stop trading entirely and no report would say so.
+ *
+ * It had very nearly stopped. Over 2026-09-08..09 the live options book
+ * refused 29 of 31 candidates with `failedRules[0] === 'quantity'`, the check
+ * whose own message reads "risk budget is too small to size even one contract
+ * at $2.93 premium (risking 70% of it)". Two orders got through. Nothing
+ * reported the other twenty-nine.
+ *
+ * This is NOT an execution defect — no code is misbehaving. It is arithmetic
+ * on a small account: one contract of a $2.93 option risks $205 at a 70%
+ * disaster stop, and the sleeve's per-trade budget is a fraction of that. So
+ * it is reported as a `configuration` finding, with the binding number said
+ * out loud rather than left for the reader to derive.
+ */
+export function collectOptionsFlowFindings(cfg: AutotradeConfig, now: number): ScanFinding[] {
+  let date = etToday(now);
+  for (let i = 0; i < EXECUTION_LOOKBACK_SESSIONS; i++) date = previousTradingSession(date);
+  const since = etDateTimeToMs(date, '00:00') ?? now - EXECUTION_LOOKBACK_SESSIONS * 24 * 60 * 60 * 1000;
+
+  const { events } = listAutotradeEventsInWindow({ actions: ['live_options_risk_blocked'], since });
+  let sized = 0;
+  let lastSeen: string | null = null;
+  // `failedRules` is an ARRAY, so detailValue (which returns a string) cannot
+  // read it. Parsed directly rather than widening that helper for one caller.
+  for (const e of events) {
+    if (e.detail === null) continue;
+    let rule: string | null = null;
+    try {
+      const parsed: unknown = JSON.parse(e.detail);
+      const rules = (parsed as { failedRules?: unknown }).failedRules;
+      if (Array.isArray(rules) && typeof rules[0] === 'string') rule = rules[0];
+    } catch {
+      rule = null;
+    }
+    if (rule !== 'quantity') continue;
+    sized += 1;
+    const d = etToday(e.createdAt);
+    if (lastSeen === null || d > lastSeen) lastSeen = d;
+  }
+  if (sized === 0) return [];
+
+  const placed = listAutotradeEventsInWindow({ actions: ['live_options_order_placed'], since }).events.length;
+  const probation = getOptionsProbationStatus(cfg);
+  // The ceiling the sizer is actually working to: the risk-% upper bound the
+  // order cap is derived from, scaled by probation — the same halving the
+  // sizer applies, so this number is what a candidate must come in under.
+  const ceiling =
+    maxAffordablePremiumPerShare({
+      equityUsd: cfg.accountEquityUsd ?? 0,
+      riskPctUpperBound: riskPctUpperBound(cfg),
+      disasterStopPct: cfg.optionsDisasterStopPct,
+    }) * (probation.active ? probation.multiplier : 1);
+
+  const pct = placed + sized > 0 ? Math.round((sized / (placed + sized)) * 100) : 0;
+  return [
+    {
+      id: 'configuration:options_unsizable',
+      kind: 'configuration',
+      label: 'The options sleeve cannot size a contract',
+      count: sized,
+      lastSeenEtDate: lastSeen,
+      detail:
+        `${sized} of ${placed + sized} live options candidates (${pct}%) were refused because the risk budget ` +
+        `could not size one contract, in the last ${EXECUTION_LOOKBACK_SESSIONS} sessions` +
+        `${lastSeen === null ? '' : `, most recently ${lastSeen}`}. At $${(cfg.accountEquityUsd ?? 0).toFixed(0)} ` +
+        `equity and a ${cfg.optionsDisasterStopPct}% disaster stop the largest affordable premium is ` +
+        `$${ceiling.toFixed(2)}/share` +
+        (probation.active
+          ? ` — HALVED by probation (${probation.multiplier}x, ${probation.tradesRemaining} trades left), which lifts to ` +
+            `$${(ceiling / probation.multiplier).toFixed(2)} when it ends`
+          : '') +
+        '.',
+      lever: {
+        kind: 'code',
+        field: null,
+        value: null,
+        direction: 'research',
+        detail:
+          'Not a defect and not a knob: one contract of a $2.93 option risks $205 at a 70% disaster stop, against a ' +
+          'per-trade budget a fraction of that. The honest options are to wait for probation to end, to trade the ' +
+          'sleeve only on names whose premium fits the ceiling, or to decide the sleeve does not suit an account ' +
+          'this size. Decide deliberately rather than letting it refuse quietly.',
+      },
+    },
+  ];
+}
+
 /** The stored daily goal expressed in R at the stored risk % — the level the
  *  goal-rate is counted at. Null when no goal is armed or risk is 0, because
  *  "how often did we reach nothing" is not a question. */
@@ -577,7 +680,7 @@ export function runEdgeLeakScanFromDb(opts: EdgeLeakScanOptions = {}): EdgeLeakS
     lookbackSessions,
     storedTargetR: storedTargetRFor(cfg),
     execution: collectExecutionFindings(now),
-    configuration: collectConfigurationFindings(cfg, now),
+    configuration: [...collectConfigurationFindings(cfg, now), ...collectOptionsFlowFindings(cfg, now)],
     entrySlippagePct,
     journalSkips: skipRead.skips,
     journalSkipsTruncated: skipRead.truncated,
