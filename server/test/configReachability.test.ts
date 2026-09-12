@@ -173,6 +173,19 @@ describe('every autotrade config field is actually read by something', () => {
       'maxHoldDays',
       'liveTrailingEnabled',
       'liveScaleOutEnabled',
+      // …and the 3%-goal trial's own settings (2026-09-12). The August list
+      // above exists because four settings groups shipped inert — configurable,
+      // validated, stored and displayed, while the execution path they
+      // described never read them. These five are what the trial is BETTING
+      // ON, and nothing was locking them: a refactor that left any of them
+      // reaching only a paper path would leave the live book running the old
+      // exits while every report said otherwise, which is precisely the
+      // failure the August entries were added to prevent.
+      'targetRMultiple', // decide.ts, liveExecute.ts, perLotBrackets.ts
+      'stagnationExitMinutes', // stagnationExit.ts, liveExecute.ts
+      'symbolReentryCooldownMinutes', // liveExecute.ts — Decision 8's whole mechanism
+      'expectancyMaxMultiplier', // riskCheck.ts, and the options premium ceiling
+      'maxStopDistancePct', // the sizer floor every dollar cap is derived from
     ]) {
       expect(readBy(liveSrc, field), `${field} must be read by a live execution path`).toBe(true);
     }
