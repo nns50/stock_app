@@ -1760,11 +1760,27 @@ execution occurrences and configuration mismatches, where any occurrence is one.
 | **watch** | n ≥ 10 and the interval within 0.05R of clearing the bar |
 | **ok** | everything else |
 
-The control arm is load-bearing. Both books consume the same signals in the same tick,
-so a bucket that loses in **both** is a property of the decision (fix it with a setting),
-while one that loses only in the live book is a property of **execution** (fix it in
-code). Those are different findings with different fixes, and the scan will not hand the
-decision's lever to an execution problem.
+The control arm is load-bearing. A bucket that loses in **both** books is a property of the
+decision (fix it with a setting), while one that loses only in the live book is a property of
+**execution** (fix it in code). Those are different findings with different fixes, and the
+scan will not hand the decision's lever to an execution problem.
+
+**Two things about the control are worth knowing before you believe a verdict** (both
+measured 2026-09-12).
+
+_The books do not act in the same tick._ That was the original premise and it is wrong: of
+39 paper entries with a live entry on the same symbol and date, only 7 were within a minute
+and the median gap was **27 minutes**. Paper waits for no buying power, the live floor is 72
+against paper's 60, and live's cooldowns defer what paper takes at once. Pairing is on the
+session now, and `medianPairGapMinutes` says how far apart the two books are reading.
+
+_The control changed behaviour inside its own window._ Paper gained the end-of-day flatten on
+2026-09-05, and over one 40-session window its own mean R read **+0.262 before and +0.013
+after**, with 37 of 71 earlier trades being overnight holds against 0 of 37 later ones. That
+drift is larger than most of the effects the control is used to confirm, so "the control
+agrees" can be a fact about *when* a bucket's trades happened. `coverage.paperControl.driftR`
+is the gap between the control's two halves; when it is large, discount every control-backed
+verdict in that run.
 
 **Severity is R left on the table** over the window — a leak that has cost nothing yet is
 still a leak, just not urgent — and every leak carries its lever: the config field with
