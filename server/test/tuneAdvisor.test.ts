@@ -99,6 +99,20 @@ describe('the gap is the frame', () => {
     });
   });
 
+  it('carries the review clock as a FIELD, distinct from the lookback window', () => {
+    // The daily routine reports this number every evening. Before it was a
+    // field it existed only inside a blocked recommendation's statusReason,
+    // so on a day with nothing blocked the routine had nothing to read --
+    // a consumer written against a value the producer never emitted.
+    const { gap } = advise({
+      evidence: evidence({ activeSessionsCounted: 20 }),
+      review: { activeSessionsSinceChange: 3, meanDayPct: 0.4, goalRatePct: 20, haltsMaxIn5: 0 },
+    });
+    expect(gap.activeSessions).toBe(20);
+    expect(gap.activeSessionsSinceChange).toBe(3);
+    expect(gap.reviewSessionsRequired).toBe(REVIEW_SESSIONS);
+  });
+
   it('says so plainly when no scan has run', () => {
     expect(advise({ scan: null }).headline).toMatch(/No edge-leak scan has run yet/);
   });

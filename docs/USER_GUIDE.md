@@ -2583,7 +2583,10 @@ just the knobs.
 over 10 active sessions with no mid-course knob turning, so a recommendation that would
 loosen a gate before then is marked *blocked by review* with the session count that
 unblocks it. A recommendation that CLOSES a leak is not held — the review guards against
-widening, not against plugging a hole.
+widening, not against plugging a hole. The clock itself is on every response, blocked
+recommendations or not: `gap.activeSessionsSinceChange` against `gap.reviewSessionsRequired`.
+Do not confuse it with `gap.activeSessions`, which counts the whole lookback window —
+most of which predates the trial.
 
 **The headline is allowed to say this will not get you there.** On a book whose implied
 day is well under its goal, the sum of everything measurable is usually a fraction of the

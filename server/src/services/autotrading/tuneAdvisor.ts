@@ -93,6 +93,19 @@ export interface GoalGap {
    *  the goal from what this book produces". */
   oneRSessions: number;
   activeSessions: number;
+  /**
+   * The review clock: active sessions since the sizing change, against the
+   * `REVIEW_SESSIONS` that Decision 7 pre-committed to.
+   *
+   * This is NOT `activeSessions` above — that one counts the whole lookback
+   * window, most of which predates the trial. It is here as a field rather
+   * than only inside a blocked recommendation's `statusReason` because it is
+   * the number the daily routine reports every evening, and a reader who has
+   * to find it inside a prose string only finds it on the days something
+   * happens to be blocked.
+   */
+  activeSessionsSinceChange: number;
+  reviewSessionsRequired: number;
 }
 
 export interface TuneAdvisorInput {
@@ -410,6 +423,8 @@ export function buildTuneAdvice(input: TuneAdvisorInput): TuneAdvice {
     oneRSessions: scan?.dayLevel.oneRSessions ?? 0,
     activeSessions: ev.activeSessionsCounted,
     goalReachedSessions: ev.goalReachedSessions,
+    activeSessionsSinceChange: input.review.activeSessionsSinceChange,
+    reviewSessionsRequired: REVIEW_SESSIONS,
   };
 
   const recommendations = [

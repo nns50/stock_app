@@ -742,7 +742,14 @@ describe('GET /journal/tune-advice (integration)', () => {
     });
 
     const advice = (await getJson('/api/journal/tune-advice')) as {
-      gap: { targetDailyGainPct: number; riskPerTradePct: number; storedTargetR: number; activeSessions: number };
+      gap: {
+        targetDailyGainPct: number;
+        riskPerTradePct: number;
+        storedTargetR: number;
+        activeSessions: number;
+        activeSessionsSinceChange: number;
+        reviewSessionsRequired: number;
+      };
       recommendations: unknown[];
       headline: string;
     };
@@ -751,6 +758,11 @@ describe('GET /journal/tune-advice (integration)', () => {
     // 3% / 2.5% — the same conversion the dashboard's goal-rate line makes.
     expect(advice.gap.storedTargetR).toBe(1.2);
     expect(advice.gap.activeSessions).toBeGreaterThan(0);
+    // The review clock reaches the wire. The daily routine reports it every
+    // evening, so it has to be on the response whether or not anything is
+    // currently blocked by the review.
+    expect(advice.gap.reviewSessionsRequired).toBe(10);
+    expect(typeof advice.gap.activeSessionsSinceChange).toBe('number');
     // No scan has been persisted, so it says so rather than ranking nothing.
     expect(advice.headline).toMatch(/No edge-leak scan has run yet/);
     expect(advice.recommendations).toEqual([]);

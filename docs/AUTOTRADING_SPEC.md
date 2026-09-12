@@ -8484,6 +8484,14 @@ it — so when execution defects are open and the measurable findings total unde
 points, the headline leads with **"fix what is broken before tuning what is merely
 small"** instead of ranking the small thing first.
 
+**The review clock is a field, not prose.** `gap.activeSessionsSinceChange` and
+`gap.reviewSessionsRequired` are on every response. They were briefly available only
+inside a blocked recommendation's `statusReason`, which is the same mistake this spec
+keeps recording one layer up: the routine that reports the clock every evening would have
+found it only on the days something happened to be blocked. It is distinct from
+`gap.activeSessions`, which counts the whole lookback window — most of which predates the
+trial — and the route integration test asserts both reach the wire.
+
 **Where it does not go.** There is no Auto-page card. The advice is a daily *read*, not a
 glance, and the page already carries four cards the operator scans; this one is delivered
 by the post-close routine and available at `GET /api/journal/tune-advice`. It collects
