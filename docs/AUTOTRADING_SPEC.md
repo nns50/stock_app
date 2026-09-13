@@ -10078,3 +10078,52 @@ hold their slots until the end-of-day flatten, which is the slot starvation the
 module exists to end. **The exposure cap, not `maxConcurrentPositions`, is what
 "a slot" now means.** Recorded beside the rule so the flip is made with this in
 hand rather than against a number from a different account size.
+
+## 2026-09-13 — the give-back guard, armed by its first winner
+
+Doubling `riskPerTradePct` halved every absolute day-level threshold in R, and
+the give-back guard is where that bites.
+
+The guard arms when the day's gain reaches `giveBackArmPct` and halts new
+entries when an armed, unbanked day falls back to `giveBackFloorPct`. Both are
+**thresholds, not windows** (`rawGainPct <= levels.floorPct`), so a move that
+jumps the band still fires it — the guard works exactly as coded, at any
+sizing. Verified before anything else, because "the guard is being skipped"
+would have been the obvious wrong diagnosis.
+
+What the sizing changes is *when it becomes live*:
+
+| | old sizing (1.25%) | trial sizing (2.5%) |
+| --- | --- | --- |
+| goal 3% | 2.40R | **1.20R** |
+| arm 2% | 1.60R | **0.80R** |
+| floor 1% | 0.80R | **0.40R** |
+| one 1R winner moves the day | 1.00R | 1.00R |
+
+At 1.25% a single winner did not arm the guard. At 2.5% it does, without
+banking (1.00R < 1.20R) — and the next 1R loser takes the day to 0.00R, past
+the 0.40R floor. **Win one, lose one, and the session ends at roughly flat**,
+while the guard is documented as protecting +1%.
+
+**The band is deliberately not the trigger.** Arm-to-floor was 0.80R against a
+1.00R step at the old sizing too, where the guard was doing its job, so a check
+that fired on the band would have said nothing about the change. The regression
+is the arm, and `giveBackArmedByOneTrade` triggers on `arm <= riskPerTradePct ×
+targetRMultiple` — silent at 1.25% risk, which its test asserts explicitly.
+
+**Reported, never applied, and with no proposed value.** Widening the band lets
+the book keep trading on a fading day, which adds exposure and is the
+operator's call. And there may be no coherent band to propose: inside a 1.20R
+goal, any arm below the goal is cleared by one winner and any floor is jumped
+by one loser. The real choices are to accept the guard as "stop once a winner
+is given back", to switch it off and rely on the daily halt and the step-down
+(neither of which depends on step size), or to move the goal — so the finding
+states the arithmetic and stops.
+
+`dailyGainStepPct` lives in `targetTune.ts` beside `concentrationCapFloorPct`,
+which is the same disease one level down: a threshold chosen against one sizing
+and left alone when the sizing moved.
+
+**Timing.** No session has run at the trial sizing — Step 1 landed before
+Monday's open and 2026-09-12 was a Saturday, so 09-14 is the first. This is a
+finding made before it cost a day rather than after.

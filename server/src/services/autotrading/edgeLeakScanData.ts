@@ -11,7 +11,13 @@ import { previousTradingSession } from '../trading/marketCalendar';
 import { buildSectorOf } from './riskCheck';
 import { collectBook, CollectedBook, DEFAULT_LOOKBACK_SESSIONS } from './dailyTargetSweepData';
 import { DropReasons, dropTotal, goalInR } from './dailyTargetSweep';
-import { concentrationCapFloorPct, deriveDollarCaps, DOLLAR_CAP_KEYS, handEditedDollarCaps } from './targetTune';
+import {
+  concentrationCapFloorPct,
+  deriveDollarCaps,
+  DOLLAR_CAP_KEYS,
+  giveBackArmedByOneTrade,
+  handEditedDollarCaps,
+} from './targetTune';
 import { maxAffordablePremiumPerShare, riskPctUpperBound } from './optionsAffordability';
 import { getOptionsProbationStatus } from './liveOptionsExecute';
 import { buildLiveSlippageRows } from './autoTune';
@@ -538,6 +544,55 @@ export function collectConfigurationFindings(cfg: AutotradeConfig, now: number):
           `${capFloorPct} is the floor at which the cap stops contradicting the sizer, not a recommendation — at or ` +
           'above it the number is a diversification choice someone made. Raising a cap adds exposure, so this ' +
           'waits for the operator.',
+      },
+    });
+  }
+
+  // A GIVE-BACK GUARD ARMED BY ITS FIRST WINNER (2026-09-13).
+  //
+  // The concentration-cap disease one level up: an absolute percentage chosen
+  // when a trade moved the day 1.25%, left alone when riskPerTradePct doubled.
+  // The guard still FIRES correctly — arm and floor are thresholds, not a
+  // window a move can jump. What the sizing changed is when it becomes live:
+  // the 2% arm was 1.60R and is now 0.80R, so one 1R winner arms it and the
+  // next loser lands the day at 0%, and a guard named for protecting +1%
+  // settles at roughly flat after two trades.
+  //
+  // The band being thinner than one step is NOT the trigger — it was 0.80R
+  // against a 1.00R step at the old sizing too, where the guard was doing its
+  // job, and a check that also fired there would say nothing about the change.
+  //
+  // Reported, never applied, and deliberately with NO recommended value:
+  // widening the band lets the book keep trading on a fading day, which adds
+  // exposure. Inside a 1.2R goal there may be no coherent band at all, and
+  // that is the operator's call to make with the arithmetic in hand rather
+  // than the app's to guess.
+  const armed = giveBackArmedByOneTrade(cfg);
+  if (armed) {
+    out.push({
+      id: 'configuration:give_back_armed_by_one_trade',
+      kind: 'configuration',
+      label: 'One winner arms the give-back guard',
+      count: 1,
+      detail:
+        `The guard arms at ${cfg.giveBackArmPct}% while one ${cfg.targetRMultiple}R winner moves the day ` +
+        `${armed.stepPct}% (riskPerTradePct ${cfg.riskPerTradePct}) — an arm at ${armed.armR}R and a floor at ` +
+        `${armed.floorR}R against a 1.00R step. So a single winner arms it without banking, the next loser crosses ` +
+        `the ${armed.bandPct}% band in one move, and the day halts at roughly flat rather than at the ` +
+        `${cfg.giveBackFloorPct}% the guard is named for.`,
+      lever: {
+        kind: 'config',
+        field: 'giveBackArmPct',
+        value: null,
+        direction: 'exposure',
+        detail:
+          'No value is proposed. Widening the band keeps the book trading on a fading day, which adds exposure; ' +
+          (cfg.targetDailyGainPct !== null && cfg.targetDailyGainPct > 0
+            ? `inside a goal only ${Math.round((cfg.targetDailyGainPct / cfg.riskPerTradePct) * 100) / 100}R wide `
+            : 'inside this goal ') +
+          'there may be no band a 1.00R step cannot cross, in which case the choice is between accepting the guard ' +
+          'as "stop once a winner is given back", switching it off and relying on the daily halt and the step-down, ' +
+          'or moving the goal.',
       },
     });
   }

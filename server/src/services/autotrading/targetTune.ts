@@ -357,6 +357,66 @@ export function concentrationCapFloorPct(cfg: Pick<AutotradeConfig, 'riskPerTrad
   return Math.round(fraction * ORDER_CAP_SIZER_HEADROOM * 100);
 }
 
+/**
+ * How much of equity ONE target-sized winner moves the day by (2026-09-13).
+ *
+ * The day's resolution, and the number every day-level threshold has to be
+ * coarser than to mean anything. `riskPerTradePct x targetRMultiple` is the
+ * whole of it: the book risks that much and takes the target at that multiple
+ * of it, so a 2.5% risk with a 1R target steps the day 2.5% at a time.
+ *
+ * It exists because the give-back guard's arm and floor are absolute
+ * percentages that were chosen against a 1.25% step and left alone when the
+ * step doubled — the same disease as a concentration cap smaller than one
+ * position, one level up. See `giveBackArmedByOneTrade`.
+ */
+export function dailyGainStepPct(cfg: Pick<AutotradeConfig, 'riskPerTradePct' | 'targetRMultiple'>): number {
+  const risk = cfg.riskPerTradePct;
+  const target = cfg.targetRMultiple;
+  if (!(risk > 0) || !(target > 0)) return 0;
+  return Math.round(risk * target * 10000) / 10000;
+}
+
+/**
+ * Does a SINGLE target-sized winner arm the give-back guard?
+ *
+ * The guard arms when the day's gain reaches `giveBackArmPct` and halts new
+ * entries when an armed, unbanked day falls back to `giveBackFloorPct`. Both
+ * are thresholds, not windows, so a big move never slips past — the guard
+ * fires correctly whatever the sizing.
+ *
+ * What the sizing decides is WHEN it becomes live. The arm is an absolute
+ * percentage, so doubling `riskPerTradePct` halves it in R: at 1.25% risk the
+ * 2% arm was 1.60R and needed a genuinely good run to reach, and at 2.5% it is
+ * 0.80R — cleared by the first 1R winner. From there one losing trade takes
+ * the day past the floor in a single step, so a guard named for protecting
+ * +1% settles the session at roughly flat after two trades.
+ *
+ * The BAND being thinner than one step is deliberately NOT the trigger: it was
+ * 0.80R against a 1.00R step at the old sizing too, where the guard was doing
+ * its job. The regression is the arm, and a check that also fired on the
+ * sizing the levels were chosen for would say nothing about the change.
+ *
+ * Null when the guard is unconfigured, the step is unknown, or the arm still
+ * takes more than one winner. Never a verdict about what the levels SHOULD be:
+ * widening them lets the book keep trading on a fading day, which adds
+ * exposure and is not this code's call.
+ */
+export function giveBackArmedByOneTrade(
+  cfg: Pick<AutotradeConfig, 'riskPerTradePct' | 'targetRMultiple' | 'giveBackArmPct' | 'giveBackFloorPct'>,
+): { bandPct: number; stepPct: number; armR: number; floorR: number } | null {
+  const { giveBackArmPct: arm, giveBackFloorPct: floor } = cfg;
+  if (arm === null || floor === null || !(arm > 0) || !(floor >= 0) || !(floor < arm)) return null;
+  const stepPct = dailyGainStepPct(cfg);
+  if (!(stepPct > 0) || arm > stepPct) return null;
+  return {
+    bandPct: Math.round((arm - floor) * 10000) / 10000,
+    stepPct,
+    armR: Math.round((arm / cfg.riskPerTradePct) * 100) / 100,
+    floorR: Math.round((floor / cfg.riskPerTradePct) * 100) / 100,
+  };
+}
+
 /** Everything the two order caps are derived from. Both halves are config
  *  percentages applied to equity, so every cap here scales with the account
  *  the moment the anchor moves. */

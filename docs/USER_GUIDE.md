@@ -1736,6 +1736,17 @@ equally-weighted cards in the order they happened to be built:
   derived from the flatten rather than set separately, so the two can never
   disagree, and it disables itself along with the flatten.
 
+  **How much it can actually hold depends on your risk setting (2026-09-13).** Arm and
+  floor are percentages of equity, so what they mean in R moves when `riskPerTradePct`
+  does: at 1.25% risk a 2% arm was 1.60R and took a genuinely good run to reach, and at
+  2.5% it is 0.80R — cleared by a single 1R winner. From there one losing trade crosses
+  the whole arm-to-floor band in one move, so the day halts nearer flat than at the floor
+  the guard is named for. Nothing is skipped (both levels are thresholds, not windows),
+  and the guard still stops the bleeding; it just cannot lock in the floor when one trade
+  moves the day further than the band is wide. The edge-leak scan raises **"One winner
+  arms the give-back guard"** when the arm sits at or below one trade's move, so this
+  shows up as a finding rather than as a surprising session.
+
 - **Daily goal** (2026-09-07, collapsed by default, right below the tune card) — the
   three fields the tune stamps, editable on their own: **Daily gain goal %**,
   **Give-back arm %**, **Give-back floor %**. Until now they could only be written by
