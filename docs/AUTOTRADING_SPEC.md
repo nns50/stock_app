@@ -9496,3 +9496,137 @@ The scan does not have the standing to throw away two thirds of its own control,
 silently reweighting it would be a second undocumented change on top of the first. A number
 the operator and the routine can both see is the honest move: when `driftR` is large, every
 "the control agrees" verdict in that run is worth less than it reads.
+
+## 2026-09-12 — a percent of premium is not a multiple of R
+
+**The defect.** `computeFinishLineFactor` (finishLine.ts) decides whether the next live entry
+should be trimmed near the daily bank line by comparing the gap still to go against what a
+full-size winner pays:
+
+```
+fullRiskUsd = equity x riskPerTradePct/100     // DOLLARS OF RISK
+fullWinUsd  = fullRiskUsd x rewardMultiple
+```
+
+The first factor is the per-trade risk budget — what the equity book calls 1R. So
+`rewardMultiple` has to be a multiple of R, and on the equity path it is: `targetRMultiple`
+places the target that many stop-distances away while the sizer spends exactly one
+stop-distance of budget, so a 1R target really does pay 1R.
+
+The options path handed it `optionsTakeProfitPct / 100`. That is a percent of **premium**, and
+only `optionsDisasterStopPct` of the premium is the risk the budget bought. The sizer makes
+this explicit: it sizes contracts so that a `disasterStopPct` loss of premium equals the risk
+budget, so a take-profit fill pays `takeProfitPct / disasterStopPct` of that budget. At the
+live 60 / 70 the trim read every options winner as paying **0.6R when it pays 0.857R** — a 30%
+understatement, in the same direction every time.
+
+**What it cost.** The trim is inactive while the gap to the bank line is at or above a full-size
+win. Understating the win shrinks that band: at the live $3,522.81 equity and 2.5% risk it
+engaged only inside $52.84 of the line instead of $75.49, and inside the band it trimmed to
+`gap / fullWin`, a factor about 43% too generous. So a full-size options loser taken close to an
+almost-banked day gave back more of that day than Decision 9's "red days stay small" allows —
+the give-back the finish line exists to prevent.
+
+**The fix.** One shared conversion, in `optionsAffordability.ts` (the module that already owns
+the risk-budget-to-premium inversion, for the affordability ceiling):
+
+- `optionsMaxLossFraction(disasterStopPct)` — the share of premium actually at risk, with the
+  fails-safe branch (absent, 0, or >= 100 all mean "the whole premium"). It replaces the two
+  hand-kept copies in `optionsRiskCheck.ts` and `maxAffordablePremiumPerShare`, each of which
+  carried a comment saying the other must not diverge.
+- `optionsRewardMultiple(takeProfitPct, disasterStopPct)` — the take-profit expressed in R.
+  `liveOptionsExecute.ts` now passes the regime-tightened take-profit through it. The disaster
+  stop is not tightened by the overlay, so the ratio falls with the tighten, which is the intent.
+
+**Guarded at the consumer.** `optionsAffordability.test.ts` asserts the number the trim computes
+against what the REAL sizer plus the REAL take-profit actually pay, over four equity / stop /
+take-profit combinations — not against a copy of the ratio. The old basis fails that assertion
+by the whole disaster-stop fraction. `finishLineWiring.test.ts` additionally scans the two
+executors: the options one must go through `optionsRewardMultiple` and pass the disaster stop;
+the equity one must keep `targetRMultiple`, which needs no conversion.
+
+**Named, not fixed: the probation cut.** `liveOptionsProbationSizeMultiplier` multiplies the
+risk-checked CONTRACT COUNT (with a one-contract floor) after the trim has run, so it is not a
+sizing factor and cannot be folded into the basis as a risk %. At an equity that affords a
+single contract the floor makes it a no-op — a flat 0.5 there would make the trim reason about
+half a payoff the trade really produces. Where it does bind, the trim overstates the payoff and
+trims slightly deeper than needed, which errs toward protecting the day. The call site says so.
+
+## 2026-09-12 — a pre-committed rule that could never fire
+
+**The defect.** The edge-leak scan's attribution reports `meanEntrySlippagePct`, and the
+playbook's pre-committed rule beside it read: *"mean entry slippage above 0.5% is an execution
+finding."* The quantity is `services/slippage.ts`'s `pct` — the fill measured against the order's
+own LIMIT price. Every live equity entry is a **marketable limit**, priced
+`MARKETABLE_LIMIT_BUFFER_PCT` (0.5%) through the quote so it behaves like a market order, and a
+limit order fills at or inside its own price. So `pct <= 0` for every fill that has ever been
+recorded or ever could be, on either side: a buy fills at most at its limit, a short at least at
+its. **The rule could not fire on any book, in any market, ever** — and it read on the page like a
+live check on execution quality. The same shape appeared in the scan's own fixture, which passed
+`[0.3, 0.5]`, a pair of numbers no fill can produce.
+
+**Why it matters.** The rule is the only pre-committed check on whether the entry PRICE is costing
+edge, as opposed to the entry decision. With it unfireable, a book that had started crossing the
+whole spread would have read the same as one filling at the quote: a comfortably negative number.
+
+**The fix.** `marketableLimit.ts` now owns the buffer constant (`liveExecute.ts` imports it
+instead of keeping a private copy — the scan needs the same number to read its own rows, and two
+copies of a value that decides what a fill is measured against is the divergence CLAUDE.md's
+"agree by construction" rule exists to stop). The attribution reports two more fields beside the
+raw slippage:
+
+- `entryLimitBufferPct` — what the limits were priced through, so the reading is self-explaining.
+- `meanEntryBufferConsumedPct` — `buffer + slippage`, the share of the concession the fills
+  actually paid away. **0** means every fill landed at the quote; **`buffer`** means every fill
+  landed at the limit. (It under-states very slightly: `pct` divides by the limit rather than by
+  the quote it came from — a quarter of a basis point at a 0.5% buffer. The quote at placement is
+  not persisted, so a correction would be a guess; it is named instead.)
+
+The scan raises `execution:entry_slippage` itself once 20 or more fills average past **half** the
+buffer, so the check lives in the app rather than only in a document (Decision 11). Its lever says
+to read the per-symbol rows first: one illiquid name usually carries such a figure, and excluding
+that name is the cheap fix; a book-wide figure means the buffer or the order type is the thing to
+change.
+
+**The first reading.** 40 sessions to 2026-09-12: `meanEntrySlippagePct` **−0.45%** against a
+**0.50%** buffer, i.e. **0.05% consumed** — well inside the bar, no finding. Execution is not
+where this book's edge is going, and now that is a measured statement rather than an unreachable
+one.
+
+## 2026-09-12 — the review's red-day yardstick was only available in the wrong unit
+
+**The gap.** Decision 7's pre-committed review is counted over *the active sessions since the
+sizing changed*, and `SizingReview` is the object that holds those numbers:
+`activeSessionsSinceChange`, `meanDayPct`, `goalRatePct`, `haltsMaxIn5`. Decision 9's yardsticks
+travel with it — *mean red day ≤ −1.5%, worst day inside the halt* — and neither was there.
+
+A reader therefore reached for the nearest red-day figures the app does produce, which are the
+leak scan's `dayLevel.meanRedSessionR` and `worstSessionR`, in **R** over the scan's 40-session
+window. Read beside a bar written in **percent** they invite a wrong answer, and the size of it
+is not small: the deployed scan reads **−1.274R**, which looks like it clears −1.5% and is
+**−1.59%** at the 1.25% risk those sessions ran and would be **−3.19%** at the trial's 2.5%. The
+conversion between the two units is the risk % in force on each session — the one thing the trial
+is in the middle of changing.
+
+**The fix.** `SizingReview` gains `meanRedDayPct` and `worstDayPct`, off the same
+`strategyGainPct` series `meanDayPct` already uses and through the same helper, so "the mean day"
+and "the mean red day" cannot disagree about which sessions or which percentage they mean. A red
+day is one with a negative strategy figure; `meanRedDayPct` is null (never 0) when none was red.
+
+**Three windows now carry a red-day number, on purpose.** They answer different questions and
+must not be swapped:
+
+| where | unit | window |
+|---|---|---|
+| `ResultsAggregate.meanRedDayPct` (the calendar) | % | the calendar month/week being viewed |
+| `SizingReview.meanRedDayPct` (the review) | % | active sessions since the sizing changed |
+| `dayLevel.meanRedSessionR` (the leak scan) | R | the scan's 40-session lookback |
+
+Decision 9's bar is written in percent over the trial, so the review's is the one it is applied
+to.
+
+**And one stale comment removed, on the field the revert turns on.** `meanDayPct`'s doc comment
+still read "manual-trading days excluded" after the 2026-09-12 change that deliberately keeps them
+(the manual exclusion belongs to `goalRatePct` alone, whose flag is the account-derived one). The
+code was right and the sentence one line above it was wrong — the cheapest possible way to talk a
+reader out of a correct number.

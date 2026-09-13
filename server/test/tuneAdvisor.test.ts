@@ -80,7 +80,14 @@ const advise = (over: Partial<TuneAdvisorInput> = {}) =>
     config: CONFIG,
     evidence: evidence(),
     scan: scan(),
-    review: { activeSessionsSinceChange: 20, meanDayPct: 0.4, goalRatePct: 20, haltsMaxIn5: 0 },
+    review: {
+      activeSessionsSinceChange: 20,
+      meanDayPct: 0.4,
+      goalRatePct: 20,
+      meanRedDayPct: null,
+      worstDayPct: null,
+      haltsMaxIn5: 0,
+    },
     asOf: 1,
     ...over,
   });
@@ -106,7 +113,14 @@ describe('the gap is the frame', () => {
     // a consumer written against a value the producer never emitted.
     const { gap } = advise({
       evidence: evidence({ activeSessionsCounted: 20 }),
-      review: { activeSessionsSinceChange: 3, meanDayPct: 0.4, goalRatePct: 20, haltsMaxIn5: 0 },
+      review: {
+        activeSessionsSinceChange: 3,
+        meanDayPct: 0.4,
+        goalRatePct: 20,
+        meanRedDayPct: null,
+        worstDayPct: null,
+        haltsMaxIn5: 0,
+      },
     });
     expect(gap.activeSessions).toBe(20);
     expect(gap.activeSessionsSinceChange).toBe(3);
@@ -396,7 +410,14 @@ describe('the review rule holds the exposure recommendations', () => {
   it('blocks a widening mid-trial and names the session count that unblocks it', () => {
     const a = advise({
       ...withFlow,
-      review: { activeSessionsSinceChange: 3, meanDayPct: 0.2, goalRatePct: 10, haltsMaxIn5: 0 },
+      review: {
+        activeSessionsSinceChange: 3,
+        meanDayPct: 0.2,
+        goalRatePct: 10,
+        meanRedDayPct: null,
+        worstDayPct: null,
+        haltsMaxIn5: 0,
+      },
     });
     const rec = a.recommendations[0];
     expect(rec.status).toBe('blocked_by_review');
@@ -406,14 +427,28 @@ describe('the review rule holds the exposure recommendations', () => {
   it('lets it through once the review window is complete', () => {
     const a = advise({
       ...withFlow,
-      review: { activeSessionsSinceChange: REVIEW_SESSIONS, meanDayPct: 0.2, goalRatePct: 10, haltsMaxIn5: 0 },
+      review: {
+        activeSessionsSinceChange: REVIEW_SESSIONS,
+        meanDayPct: 0.2,
+        goalRatePct: 10,
+        meanRedDayPct: null,
+        worstDayPct: null,
+        haltsMaxIn5: 0,
+      },
     });
     expect(a.recommendations[0].status).toBe('actionable');
   });
 
   it('does NOT hold a leak that cuts — the review guards widening, not plugging a hole', () => {
     const a = advise({
-      review: { activeSessionsSinceChange: 1, meanDayPct: 0.2, goalRatePct: 10, haltsMaxIn5: 0 },
+      review: {
+        activeSessionsSinceChange: 1,
+        meanDayPct: 0.2,
+        goalRatePct: 10,
+        meanRedDayPct: null,
+        worstDayPct: null,
+        haltsMaxIn5: 0,
+      },
       scan: scan({
         leaks: [
           {
@@ -572,7 +607,14 @@ describe('the headline can say "this will not get you there"', () => {
     const a = advise({
       evidence: evidence({ storedTargetR: 2.4, goalReachedSessions: 1, goalRatePct: 5 }),
       scan: scan({ dayLevel: { ...scan().dayLevel, storedTargetR: 2.4, oneRSessions: 8 } }),
-      review: { activeSessionsSinceChange: 20, meanDayPct: 0.4, goalRatePct: 5, haltsMaxIn5: 0 },
+      review: {
+        activeSessionsSinceChange: 20,
+        meanDayPct: 0.4,
+        goalRatePct: 5,
+        meanRedDayPct: null,
+        worstDayPct: null,
+        haltsMaxIn5: 0,
+      },
     });
     const rec = a.recommendations.find((r) => r.id === 'goal:height_in_r');
     expect(rec).toBeTruthy();

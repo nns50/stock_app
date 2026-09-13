@@ -34,7 +34,14 @@ function snapshot(over: Partial<GatedSwitchSnapshot> = {}): GatedSwitchSnapshot 
     config: defaultAutotradeConfig(),
     readiness: null,
     leakScan: null,
-    review: { activeSessionsSinceChange: 0, meanDayPct: null, goalRatePct: null, haltsMaxIn5: 0 },
+    review: {
+      activeSessionsSinceChange: 0,
+      meanDayPct: null,
+      goalRatePct: null,
+      meanRedDayPct: null,
+      worstDayPct: null,
+      haltsMaxIn5: 0,
+    },
     capsCoherence: [],
     ...over,
   };
@@ -373,13 +380,27 @@ describe('the shipped rules', () => {
     it('waits for 10 active sessions, then fires on a negative mean day', () => {
       const early = snapshot({
         config: trial,
-        review: { activeSessionsSinceChange: 9, meanDayPct: -1, goalRatePct: 0, haltsMaxIn5: 0 },
+        review: {
+          activeSessionsSinceChange: 9,
+          meanDayPct: -1,
+          goalRatePct: 0,
+          meanRedDayPct: null,
+          worstDayPct: null,
+          haltsMaxIn5: 0,
+        },
       });
       expect(fire('sizing_revert', early)).toBeNull();
 
       const due = snapshot({
         config: trial,
-        review: { activeSessionsSinceChange: 10, meanDayPct: -0.4, goalRatePct: 10, haltsMaxIn5: 0 },
+        review: {
+          activeSessionsSinceChange: 10,
+          meanDayPct: -0.4,
+          goalRatePct: 10,
+          meanRedDayPct: null,
+          worstDayPct: null,
+          haltsMaxIn5: 0,
+        },
       });
       const f = fire('sizing_revert', due);
       expect(f?.patch).toEqual(PRE_TRIAL_SIZING);
@@ -391,14 +412,28 @@ describe('the shipped rules', () => {
         'sizing_revert',
         snapshot({
           config: trial,
-          review: { activeSessionsSinceChange: 12, meanDayPct: 0.5, goalRatePct: 20, haltsMaxIn5: 2 },
+          review: {
+            activeSessionsSinceChange: 12,
+            meanDayPct: 0.5,
+            goalRatePct: 20,
+            meanRedDayPct: null,
+            worstDayPct: null,
+            haltsMaxIn5: 2,
+          },
         }),
       );
       expect(f?.evidence).toMatch(/2 drawdown halts in 5 sessions/);
     });
 
     it('does not fire when the numbers are good, nor once already reverted', () => {
-      const good = { activeSessionsSinceChange: 12, meanDayPct: 0.8, goalRatePct: 25, haltsMaxIn5: 1 };
+      const good = {
+        activeSessionsSinceChange: 12,
+        meanDayPct: 0.8,
+        goalRatePct: 25,
+        meanRedDayPct: null,
+        worstDayPct: null,
+        haltsMaxIn5: 1,
+      };
       expect(fire('sizing_revert', snapshot({ config: trial, review: good }))).toBeNull();
       // Already at the pre-trial risk: a revert that changes nothing must not
       // propose every session forever.
@@ -407,7 +442,14 @@ describe('the shipped rules', () => {
           'sizing_revert',
           snapshot({
             config: { ...defaultAutotradeConfig(), riskPerTradePct: 1.25 },
-            review: { activeSessionsSinceChange: 12, meanDayPct: -1, goalRatePct: 0, haltsMaxIn5: 0 },
+            review: {
+              activeSessionsSinceChange: 12,
+              meanDayPct: -1,
+              goalRatePct: 0,
+              meanRedDayPct: null,
+              worstDayPct: null,
+              haltsMaxIn5: 0,
+            },
           }),
         ),
       ).toBeNull();

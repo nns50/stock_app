@@ -42,8 +42,15 @@ export interface FinishLineFactorResult {
 
 /**
  * The sizing trim for the next live entry, from the day's remaining gap to
- * the bank line. `rewardMultiple` is what a winner pays per $1 risked — the
- * equity path's targetRMultiple, the options path's takeProfitPct/100.
+ * the bank line. `rewardMultiple` is what a winner pays per $1 RISKED, and
+ * the unit is load-bearing: `fullRiskUsd` below is the per-trade risk budget,
+ * so a reward quoted in anything else is not comparable to it. The equity
+ * path's targetRMultiple already is (the target sits that many stop-distances
+ * away while the sizer spends exactly one of them). The options path's
+ * take-profit is a percent of PREMIUM and must be divided by the disaster-stop
+ * share first — optionsAffordability.ts's optionsRewardMultiple owns that
+ * conversion. This comment said "takeProfitPct/100" until 2026-09-12, and so
+ * did the caller: at 60/70 the trim read a 0.857R winner as paying 0.6R.
  * Degrades to 1 (no trim) whenever the goal isn't measurable, the day is
  * behind, or a full-size win wouldn't overshoot.
  *
@@ -56,8 +63,9 @@ export interface FinishLineFactorResult {
  * same-day re-entry cut, the equity-curve cut and the two edge multipliers. Handed the raw config %, it reasons
  * about a payoff bigger than the trade will produce, so it fires when it
  * should not and cuts deeper when it does — and then its factor multiplies
- * with the very cut it ignored. At the live config (1.25% risk, 2R target, a
- * 50% step-down after 2 losses) an $80 gap against a real $64.51 payoff should
+ * with the very cut it ignored. At the config live WHEN THIS WAS FOUND (1.25%
+ * risk, 2R target, a 50% step-down after 2 losses — the 2026-09-12 sizing
+ * change has since moved the first two) an $80 gap against a real $64.51 payoff should
  * leave the trim INACTIVE; on the raw % it trimmed to 62%, sizing the closing
  * trade down to a ~$40 win it could no longer reach the line with. Always the
  * same direction: under-sizing near the goal, right after a couple of losses.

@@ -246,10 +246,28 @@ export interface GatedSwitchSnapshot {
 export interface SizingReview {
   /** Active sessions since `riskPerTradePct` was raised. 0 until it was. */
   activeSessionsSinceChange: number;
-  /** Mean day over those sessions, in % — manual-trading days excluded. */
+  /** Mean day over those sessions, in % of the day's opening equity, from the
+   *  STRATEGY series — every session counted, manual ones included, because a
+   *  manual day's strategy percentage is still exactly what the loop did. (The
+   *  manual exclusion belongs to `goalRatePct` alone, and this comment said the
+   *  opposite until 2026-09-12, one line away from the number Decision 7's
+   *  revert turns on.) */
   meanDayPct: number | null;
-  /** Goal-hit rate over those sessions, in %. */
+  /** Goal-hit rate over those sessions, in % — manual-trading days excluded,
+   *  because the flag they are excluded for is account-derived. */
   goalRatePct: number | null;
+  /** Decision 9's two "red days stay small" numbers, in the SAME unit as its
+   *  bar (% of equity, not R).
+   *
+   *  They were only available in R, from the leak scan's `meanRedSessionR` /
+   *  `worstSessionR`, while the pre-committed bar reads "mean red day <= -1.5%".
+   *  Those are not the same kind of number and the conversion between them is
+   *  the risk % in force on each session — which the trial is in the middle of
+   *  changing. Read side by side, -1.274R looked like it cleared -1.5% when at
+   *  1.25% risk it was -1.59% and at 2.5% it would be -3.19%. The R figures
+   *  stay where they are, for the R questions; these are the review's. */
+  meanRedDayPct: number | null;
+  worstDayPct: number | null;
   /** The most drawdown halts in any 5 consecutive sessions of the window. */
   haltsMaxIn5: number;
 }

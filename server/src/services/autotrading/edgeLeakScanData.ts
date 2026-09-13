@@ -15,6 +15,7 @@ import { deriveDollarCaps, DOLLAR_CAP_KEYS, handEditedDollarCaps } from './targe
 import { maxAffordablePremiumPerShare, riskPctUpperBound } from './optionsAffordability';
 import { getOptionsProbationStatus } from './liveOptionsExecute';
 import { buildLiveSlippageRows } from './autoTune';
+import { MARKETABLE_LIMIT_BUFFER_PCT } from './marketableLimit';
 import {
   BatchRefusal,
   CollectedLeakBook,
@@ -739,6 +740,7 @@ export function runEdgeLeakScanFromDb(opts: EdgeLeakScanOptions = {}): EdgeLeakS
     execution: collectExecutionFindings(now),
     configuration: [...collectConfigurationFindings(cfg, now), ...collectOptionsFlowFindings(cfg, now)],
     entrySlippagePct,
+    entryLimitBufferPct: MARKETABLE_LIMIT_BUFFER_PCT,
     journalSkips: skipRead.skips,
     journalSkipsTruncated: skipRead.truncated,
     batchRefusals: collectBatchRefusals(windowStart),

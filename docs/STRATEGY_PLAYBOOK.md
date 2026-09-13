@@ -1134,6 +1134,18 @@ entirely; instead it trimmed to 62%, sizing the closing trade down to a ~$40 win
 could no longer reach the line with. Always the same direction — under-sizing near
 the goal, right after the losses that make a day worth rescuing.
 
+**And a payoff must be quoted in the same unit as the budget it is compared against.**
+The other half of the same rule, found on 2026-09-12. The trim's first factor is dollars of
+RISK — `equity x riskPerTradePct/100`, what the equity book calls 1R — so the reward it
+multiplies by has to be a multiple of R. The equity book's `targetRMultiple` already is. The
+options book's take-profit is a percent of **premium**, and only `optionsDisasterStopPct` of the
+premium is the risk the budget bought: a 60% take-profit under a 70% disaster stop pays
+**0.857R, not 0.6R**. Handed the raw percentage the trim understated every options winner by
+30%, engaged only in the last two thirds of its band, and trimmed about 43% too little inside
+it — so a full-size options loser near an almost-banked day gave back more of it than the rule
+allows. The conversion now lives in one function (`optionsRewardMultiple`), tested against what
+the real sizer and the real take-profit actually pay rather than against a copy of the ratio.
+
 The general rule: **a factor that composes with others cannot be computed as if it
 were alone.** When a rule's output multiplies into a product, its input has to be the
 rest of that product, not the starting value.
@@ -1812,7 +1824,20 @@ If it does not, the scan is wrong, not the record.
   difference: if it climbs, the pairing is drifting toward matching two different decisions. Unpaired paper
   entries are classified by the live journal's own word for the skip. **The rule:** a
   skip class whose left-behind R exceeds 20 trades with a positive interval is the next
-  gate to loosen; mean entry slippage above 0.5% is an execution finding.
+  gate to loosen; and the entry fills are an execution finding once they consume **more
+  than half the marketable-limit buffer**.
+
+  That second rule used to read "mean entry slippage above 0.5% is an execution finding",
+  and it could never have fired. Every live equity entry is a marketable LIMIT priced
+  `MARKETABLE_LIMIT_BUFFER_PCT` through the quote, and a limit fills at or INSIDE its own
+  price — so `meanEntrySlippagePct`, which measures the fill against that limit, is at most
+  0 and at best about −0.5%. A bar of "+0.5%" sat on the page for two weeks looking like a
+  live check on a number with no way to reach it. The scan now reports
+  `meanEntryBufferConsumedPct` — `buffer + slippage`, so 0 means every fill landed at the
+  quote and 0.5 means every fill paid the whole concession — and raises
+  `execution:entry_slippage` itself once 20+ fills average past half the buffer. The live
+  book read **−0.45% against a 0.50% buffer on 2026-09-12**: 0.05% paid, execution is not
+  where the edge is going.
 
   Two classes are matched by **time rather than symbol** (2026-09-12), because they are
   decided for the whole tick before any candidate is looked at and so carry a count and no

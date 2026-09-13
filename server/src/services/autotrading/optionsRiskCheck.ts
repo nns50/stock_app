@@ -3,6 +3,7 @@ import { getAutotradeConfig } from '../../db/autotradeConfig';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { getMarketAtrPct, getMarketRangePct } from './executionGuards';
 import { OptionsTradeSignal } from './optionsDecide';
+import { optionsMaxLossFraction } from './optionsAffordability';
 import {
   correlatedNotional,
   sectorNotional,
@@ -378,8 +379,10 @@ export function evaluateOptionsRiskCheck(signal: OptionsTradeSignal, ctx: RiskCh
   } else {
     // Fails SAFE to the old full-premium basis: an absent, zero, or >=100
     // disaster stop all mean "no enforced floor", so assume the whole premium.
-    const disasterPct = ctx.optionsDisasterStopPct;
-    const maxLossFraction = disasterPct !== undefined && disasterPct > 0 && disasterPct < 100 ? disasterPct / 100 : 1;
+    // One shared derivation (optionsAffordability.ts) rather than a copy here
+    // and a copy there — the premium ceiling and the finish-line trim divide by
+    // the same fraction this sizer multiplies by.
+    const maxLossFraction = optionsMaxLossFraction(ctx.optionsDisasterStopPct);
     const legSizing = computeRiskSizing({
       accountSize: ctx.equity,
       riskPct: effectiveRiskPct,

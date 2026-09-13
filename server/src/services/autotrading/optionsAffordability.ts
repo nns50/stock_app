@@ -38,13 +38,16 @@ import type { ScreenCandidate } from './screen';
 // conservative choices, both deliberate:
 //
 //  1. The risk % it reasons about is an UPPER BOUND, not the effective one.
-//     effectiveRisk.ts multiplies riskPerTradePct by seven factors. Six of
-//     them only ever cut (cutFactor clamps to [0,1]), but `method` does not:
-//     methodSizing computes clamp(1 + avgR, min, max) and with
-//     methodWeightingEnabled the live book runs expectancyMaxMultiplier 1.5 —
-//     so the configured 1.25% is NOT a bound, and treating it as one would
-//     drop candidates the sizer would have afforded. riskPctUpperBound()
-//     applies the same 1.5x, from the same config field.
+//     effectiveRisk.ts multiplies riskPerTradePct by seven factors. Five of
+//     them only ever cut (cutFactor clamps to [0,1]) and `expectancy` is
+//     NEUTRAL on this book by written opt-out, but `method` does not cut:
+//     methodSizing computes clamp(1 + avgR, min, max), bounded above by
+//     expectancyMaxMultiplier, so with methodWeightingEnabled the configured
+//     risk % is NOT a bound and treating it as one would drop candidates the
+//     sizer would have afforded. riskPctUpperBound() applies the same lean,
+//     READ FROM THE CONFIG FIELD rather than restated here — this comment used
+//     to quote "1.5", which the 2026-09-12 sizing change moved to 1.25 without
+//     anyone touching the sentence.
 //  2. The premium is ESTIMATED from the underlying's price, and the estimate
 //     is deliberately low. Real ATM premium/underlying on 2026-09-09 ran
 //     1.42%-1.73% for the single names (SMCI 0.60/39.08, RIOT 0.38/21.91,
@@ -80,23 +83,82 @@ export interface AffordabilityInputs {
   disasterStopPct: number;
 }
 
+// ---------------------------------------------------------------------------
+// THE ONE CONVERSION BETWEEN "DOLLARS OF RISK" AND "PERCENT OF PREMIUM"
+// (2026-09-12).
+//
+// An options position has two different units and it is easy to compare one
+// against the other by accident:
+//
+//   risk dollars   what the sizer spends from the per-trade budget —
+//                  `equity x effectiveRiskPct/100`, the SAME number the equity
+//                  book calls 1R, and what every risk cap in riskCheck.ts and
+//                  optionsRiskCheck.ts is denominated in.
+//   premium        what the contract costs. Only optionsDisasterStopPct of it
+//                  is at risk, so premium = risk dollars / maxLossFraction.
+//
+// So a rule quoted in PERCENT OF PREMIUM — the take-profit, the stop, the
+// give-back arm — is NOT a multiple of R until it is divided by the loss
+// fraction. At the live 60% take-profit and 70% disaster stop, a winner pays
+// 0.857R, not 0.6R: a 43% understatement of the payoff if the two are
+// compared directly.
+//
+// Both directions of the conversion live here, on top of one loss fraction,
+// because the failure mode is silent. Nothing throws when a percent of premium
+// is multiplied by a risk budget; the number is just wrong, always in the same
+// direction, and only in the branch of code that happens to need it.
+// ---------------------------------------------------------------------------
+
+/** The share of premium the exit ladder actually puts at risk.
+ *
+ *  Fails SAFE: an absent, zero, or >= 100 disaster stop all mean "no enforced
+ *  floor", so the whole premium is at risk (fraction 1). optionsRiskCheck.ts's
+ *  single-leg sizing and the premium ceiling above both read THIS function
+ *  rather than each keeping a copy of the branch — they used to keep two, with
+ *  a comment on each saying the other must not diverge. */
+export function optionsMaxLossFraction(disasterStopPct: number | undefined): number {
+  return Number.isFinite(disasterStopPct) && disasterStopPct! > 0 && disasterStopPct! < 100
+    ? disasterStopPct! / 100
+    : 1;
+}
+
+/**
+ * What an options winner pays per $1 of RISK — the R-multiple of a rule
+ * written as a percent of premium.
+ *
+ * The equity book's reward multiple is already in R (`targetRMultiple`: the
+ * target sits that many stop-distances away, and the sizer spends exactly one
+ * stop-distance of budget). The options book's is not, and the finish-line
+ * trim — which compares a payoff against dollars left to the daily bank line —
+ * was handed `optionsTakeProfitPct / 100` straight, a percent of premium
+ * measured against a budget denominated in risk. At 60/70 it read every
+ * options winner as paying 0.6R when it pays 0.857R, so the trim stayed
+ * inactive through the last third of its band and cut too little inside it:
+ * a full-size options loser near the line gave back more of an almost-banked
+ * day than the rule was written to allow.
+ *
+ * Give it the EFFECTIVE take-profit (regimeAdjustedTargets', tightened under a
+ * High-Vol reading). The disaster stop is not tightened by the overlay, so the
+ * ratio falls with the tighten, which is the intent.
+ */
+export function optionsRewardMultiple(takeProfitPct: number, disasterStopPct: number | undefined): number {
+  if (!Number.isFinite(takeProfitPct) || takeProfitPct <= 0) return 0;
+  return takeProfitPct / (optionsMaxLossFraction(disasterStopPct) * 100);
+}
+
 /** The largest premium PER SHARE at which optionsRiskCheck's `quantity` rule
  *  can still size one contract. Returns 0 when no premium is affordable.
  *
- *  Fails SAFE exactly as optionsRiskCheck.ts does: an absent, zero, or >=100
- *  disaster stop all mean "no enforced floor", so the whole premium is at
- *  risk (fraction 1). Keeping that branch identical in both places is the
- *  point — a divergence here would silently move the ceiling. */
+ *  Fails SAFE exactly as optionsRiskCheck.ts does, through the one shared
+ *  optionsMaxLossFraction() below. */
 export function maxAffordablePremiumPerShare(input: AffordabilityInputs): number {
   const { equityUsd, riskPctUpperBound, disasterStopPct } = input;
   if (!Number.isFinite(equityUsd) || !Number.isFinite(riskPctUpperBound)) return 0;
   if (equityUsd <= 0 || riskPctUpperBound <= 0) return 0;
-  const maxLossFraction =
-    Number.isFinite(disasterStopPct) && disasterStopPct > 0 && disasterStopPct < 100 ? disasterStopPct / 100 : 1;
   const maxRiskDollars = (equityUsd * riskPctUpperBound) / 100;
   // * 100: an option contract is 100 shares, matching computeRiskSizing's
   // `multiplier` for assetType 'option'.
-  return maxRiskDollars / (maxLossFraction * 100);
+  return maxRiskDollars / (optionsMaxLossFraction(disasterStopPct) * 100);
 }
 
 /** The highest underlying price whose estimated ATM premium still fits the
