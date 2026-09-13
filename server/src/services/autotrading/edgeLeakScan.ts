@@ -910,6 +910,67 @@ export function paperControlDrift(paper: LeakTrade[]): {
 // costing edge. A minimum sample, because two bad fills are not a regime.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// TRANSLATING THE FLOOR (2026-09-12).
+//
+// "Re-fit liveMinSignalScore against the pace-scored distribution" is a
+// distribution question, and the screen's ladder answers it directly: at each
+// rung, how many of the same scored symbols reach it under each scoring. The
+// floor that preserves today's SELECTIVITY is the pace rung admitting as many
+// symbols as the live floor admits under raw scoring.
+//
+// Deliberately not derived from `meanTotalDelta`. A mean shift says nothing
+// about the density at the floor, and the shift here is not uniform — it is
+// concentrated in the symbols that scored ZERO on the component under raw
+// scoring (365 of 482 a tick, falling to 244). Adding +2.2 to 72 would be a
+// number with no basis, which is the sort of thing this scan exists to catch.
+// ---------------------------------------------------------------------------
+
+/** Linear interpolation on a non-increasing count-vs-rung curve, both
+ *  directions. Null outside the ladder — an answer off the end of the
+ *  measured range is an extrapolation, and saying nothing beats inventing it. */
+function interpCountAt(ladder: readonly number[], counts: readonly number[], score: number): number | null {
+  if (ladder.length !== counts.length || ladder.length < 2) return null;
+  if (score < ladder[0] || score > ladder[ladder.length - 1]) return null;
+  for (let i = 0; i < ladder.length - 1; i++) {
+    if (score >= ladder[i] && score <= ladder[i + 1]) {
+      const span = ladder[i + 1] - ladder[i];
+      if (span <= 0) return counts[i];
+      return counts[i] + ((score - ladder[i]) / span) * (counts[i + 1] - counts[i]);
+    }
+  }
+  return null;
+}
+
+function interpScoreAt(ladder: readonly number[], counts: readonly number[], target: number): number | null {
+  if (ladder.length !== counts.length || ladder.length < 2) return null;
+  for (let i = 0; i < ladder.length - 1; i++) {
+    const hi = counts[i];
+    const lo = counts[i + 1];
+    if (hi >= target && target >= lo) {
+      const span = hi - lo;
+      if (span <= 0) return ladder[i];
+      return Math.round((ladder[i] + ((hi - target) / span) * (ladder[i + 1] - ladder[i])) * 10) / 10;
+    }
+  }
+  return null;
+}
+
+/**
+ * The pace-scored floor that admits as many symbols as `liveFloor` admits
+ * under raw scoring. Null when either end falls outside the measured ladder.
+ */
+export function equivalentPaceFloor(
+  ladder: readonly number[],
+  rawAtOrAbove: readonly number[],
+  paceAtOrAbove: readonly number[],
+  liveFloor: number,
+): number | null {
+  const admitted = interpCountAt(ladder, rawAtOrAbove, liveFloor);
+  if (admitted === null) return null;
+  return interpScoreAt(ladder, paceAtOrAbove, admitted);
+}
+
 /** Entry fills needed before the concession is worth judging. */
 export const SLIPPAGE_MIN_TRADES = 20;
 

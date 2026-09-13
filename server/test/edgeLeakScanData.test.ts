@@ -3,7 +3,7 @@ import { initDb, db } from '../src/db';
 import { defaultAutotradeConfig, getAutotradeConfig, setAutotradeConfig } from '../src/db/autotradeConfig';
 import { logAutotradeEvent } from '../src/db/autotradeEvents';
 import { closePaperPosition, openPaperPosition } from '../src/db/autotradePaperPositions';
-import { deriveDollarCaps } from '../src/services/autotrading/targetTune';
+import { concentrationCapFloorPct, deriveDollarCaps } from '../src/services/autotrading/targetTune';
 import { collectBook } from '../src/services/autotrading/dailyTargetSweepData';
 import {
   collectConfigurationFindings,
@@ -251,6 +251,13 @@ describe('the scoring shadow', () => {
         meanTotalDelta: 2.2,
         wouldNewlyPass: 15,
         wouldNewlyFail: 0.3,
+        // The ladder the screen writes: how many of `ladderScored` reach each
+        // rung under each scoring. Pace lifts the distribution, so it admits
+        // more at every rung — raw admits 100 at 72, pace admits 100 at 76.
+        scoreLadder: [60, 64, 68, 72, 76, 80],
+        ladderScored: 480,
+        ladderRawAtOrAbove: [300, 200, 140, 100, 60, 30],
+        ladderPaceAtOrAbove: [400, 300, 200, 140, 100, 60],
         ...over,
       }),
       at,
@@ -261,7 +268,7 @@ describe('the scoring shadow', () => {
 
   it('reports the deployed reading: a one-sided turnover, as research', () => {
     for (let i = 0; i < 10; i++) shadowRow(at + i);
-    const [f] = collectScoringShadowFinding(now);
+    const [f] = collectScoringShadowFinding(getAutotradeConfig(), now);
     expect(f).toBeTruthy();
     expect(f.kind).toBe('configuration');
     expect(f.count).toBe(10);
@@ -277,19 +284,110 @@ describe('the scoring shadow', () => {
     expect(f.lever?.detail).toMatch(/re-fit that floor/);
   });
 
+  it('states the re-fitted floor, measured off the ladder rather than the mean shift', () => {
+    setAutotradeConfig({ ...defaultAutotradeConfig(), liveMinSignalScore: 72 });
+    for (let i = 0; i < 10; i++) shadowRow(at + i);
+    const [f] = collectScoringShadowFinding(getAutotradeConfig(), now);
+    expect(f.detail).toMatch(/THE RE-FIT: pace scoring admits as many symbols at a floor of 76/);
+    expect(f.detail).toMatch(/liveMinSignalScore of 72/);
+    expect(f.detail).toMatch(/over 10 ticks of the score ladder/);
+    // Emphatically NOT 72 + the 2.2-point mean move: that number has no basis,
+    // because the lift is concentrated in the symbols that scored zero.
+    expect(f.detail).not.toMatch(/floor of 74\.2/);
+  });
+
+  it('says the floor is not measurable rather than inventing one', () => {
+    setAutotradeConfig({ ...defaultAutotradeConfig(), liveMinSignalScore: 72 });
+    // Rows from before the ladder shipped carry none of its fields.
+    for (let i = 0; i < 10; i++)
+      shadowRow(at + i, { scoreLadder: undefined, ladderRawAtOrAbove: undefined, ladderPaceAtOrAbove: undefined });
+    const [f] = collectScoringShadowFinding(getAutotradeConfig(), now);
+    expect(f.detail).toMatch(/equivalent floor is not yet measurable/);
+  });
+
   it('stays silent when the change really is cosmetic', () => {
     for (let i = 0; i < 10; i++) shadowRow(at + i, { wouldNewlyPass: 2, wouldNewlyFail: 1 });
     // 3 of 480 = 0.6%, under the 1% bar.
-    expect(collectScoringShadowFinding(now)).toEqual([]);
+    expect(collectScoringShadowFinding(getAutotradeConfig(), now)).toEqual([]);
   });
 
   it('stops nagging once the flag is on — the decision has been taken', () => {
     for (let i = 0; i < 10; i++) shadowRow(at + i, { enabled: true });
-    expect(collectScoringShadowFinding(now)).toEqual([]);
+    expect(collectScoringShadowFinding(getAutotradeConfig(), now)).toEqual([]);
   });
 
   it('says nothing at all when the shadow has not run', () => {
-    expect(collectScoringShadowFinding(now)).toEqual([]);
+    expect(collectScoringShadowFinding(getAutotradeConfig(), now)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A CONCENTRATION CAP BELOW WHAT ONE POSITION COSTS (2026-09-12).
+//
+// The sector and correlated caps gate ALREADY-held notional and exclude the
+// candidate's own size, so trimming an order cannot satisfy them. Below the
+// per-order cap's own fraction of equity, one ordinary position fills the
+// sector's whole budget and closes it with its own first trade.
+// ---------------------------------------------------------------------------
+describe('concentration caps against what one position actually costs', () => {
+  const trial = () => ({
+    ...defaultAutotradeConfig(),
+    accountEquityUsd: 3522.81,
+    riskPerTradePct: 2.5,
+    maxStopDistancePct: 2.5,
+  });
+  const now = etDateTimeToMs('2026-09-10', '17:00') as number;
+  const findings = () =>
+    collectConfigurationFindings(getAutotradeConfig(), now).filter((f) =>
+      f.id.startsWith('configuration:concentration_cap:'),
+    );
+
+  it('the floor is the per-order cap, not a number of its own', () => {
+    // risk 2.5 over a 2.5% widest stop = 100% of equity, times the order cap's
+    // 1.5 headroom = 150. Same two terms deriveDollarCaps uses, so the two
+    // cannot drift: liveMaxOrderUsd is 150% of equity at this config.
+    const cfg = trial();
+    expect(concentrationCapFloorPct(cfg)).toBe(150);
+    expect(deriveDollarCaps(cfg, cfg.accountEquityUsd).liveMaxOrderUsd).toBe(
+      Math.round((cfg.accountEquityUsd * concentrationCapFloorPct(cfg)) / 100),
+    );
+  });
+
+  it('names the live case: 80% caps against a position that costs more', () => {
+    setAutotradeConfig({ ...trial(), maxSectorExposurePct: 80, maxCorrelatedExposurePct: 80 });
+    const f = findings();
+    expect(f.map((x) => x.id).sort()).toEqual([
+      'configuration:concentration_cap:maxCorrelatedExposurePct',
+      'configuration:concentration_cap:maxSectorExposurePct',
+    ]);
+    expect(f[0].detail).toMatch(/80% of equity while the per-order cap permits a single position of 150%/);
+    // Raising a cap adds exposure — the app must never apply this itself.
+    expect(f[0].lever?.direction).toBe('exposure');
+    expect(f[0].lever?.value).toBe(150);
+  });
+
+  it('goes quiet at the floor and above — there the number is a real choice', () => {
+    setAutotradeConfig({ ...trial(), maxSectorExposurePct: 150, maxCorrelatedExposurePct: 150 });
+    expect(findings()).toEqual([]);
+    setAutotradeConfig({ ...trial(), maxSectorExposurePct: 190, maxCorrelatedExposurePct: 200 });
+    expect(findings()).toEqual([]);
+  });
+
+  it('tracks the sizing rather than a stored constant — it moves when risk does', () => {
+    // The pre-trial sizing: 1.25 over 2.5 = 50% x 1.5 = 75, so the SAME 80%
+    // caps were coherent before 2026-09-12 and stopped being so when risk
+    // doubled. That is the whole finding: nothing was edited, the ground moved.
+    const pre = { ...trial(), riskPerTradePct: 1.25 };
+    expect(concentrationCapFloorPct(pre)).toBe(75);
+    setAutotradeConfig({ ...pre, maxSectorExposurePct: 80, maxCorrelatedExposurePct: 80 });
+    expect(findings()).toEqual([]);
+  });
+
+  it('says nothing when the sizing cannot produce a fraction at all', () => {
+    expect(concentrationCapFloorPct({ riskPerTradePct: 0, maxStopDistancePct: 2.5 })).toBe(0);
+    expect(concentrationCapFloorPct({ riskPerTradePct: 2.5, maxStopDistancePct: 0 })).toBe(0);
+    setAutotradeConfig({ ...trial(), maxStopDistancePct: 0, maxSectorExposurePct: 1 });
+    expect(findings()).toEqual([]);
   });
 });
 
@@ -403,7 +501,17 @@ describe('the configuration findings', () => {
   });
 
   it('says nothing at all about a config that is entirely anchor-owned', () => {
-    const cfg = { ...defaultAutotradeConfig(), riskPerTradePct: 1.25, maxStopDistancePct: 2.5 };
+    // The concentration caps have to clear concentrationCapFloorPct (75 at this
+    // sizing) or they are a finding of their own — the SHIPPED defaults, 20 and
+    // 6, do not. That is a real thing about the defaults, recorded in its own
+    // case above; here it would just be noise in a test about frozen caps.
+    const cfg = {
+      ...defaultAutotradeConfig(),
+      riskPerTradePct: 1.25,
+      maxStopDistancePct: 2.5,
+      maxSectorExposurePct: 100,
+      maxCorrelatedExposurePct: 100,
+    };
     setAutotradeConfig({ ...cfg, ...deriveDollarCaps(cfg, 10_000), liveCapsAnchorEquityUsd: 10_000 });
     expect(collectConfigurationFindings(getAutotradeConfig(), Date.now())).toEqual([]);
   });

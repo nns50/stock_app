@@ -187,8 +187,16 @@ const configBody = z.object({
   stepDownAfterLosses: z.number().int().nonnegative().optional(),
   stepDownSizeCutPct: z.number().min(0).max(100).optional(),
   maxAggregateOpenRiskPct: z.number().min(0).max(100).optional(),
-  maxCorrelatedExposurePct: z.number().min(0).max(100).optional(),
-  maxSectorExposurePct: z.number().min(0).max(100).optional(),
+  // NOT capped at 100, unlike maxAggregateOpenRiskPct above (2026-09-12).
+  // These two gate NOTIONAL already held in correlated names or in a sector,
+  // and notional-to-equity legitimately exceeds 1 on margin — the account runs
+  // liveMaxExposurePct 190, and that sibling has always been `nonnegative()`
+  // for exactly this reason. A .max(100) here made the coherent value
+  // unstorable: at riskPerTradePct 2.5 over a 2% stop one position is 119% of
+  // equity, so no legal value of either field could leave room for a second
+  // name. Risk percentages stay capped; exposure ratios do not.
+  maxCorrelatedExposurePct: z.number().nonnegative().optional(),
+  maxSectorExposurePct: z.number().nonnegative().optional(),
   maxTradesPerDay: z.number().int().nonnegative().optional(),
   // --- Regime-aware sizing (live + paper only; 0 disables) -------------------
   regimeAtrThresholdPct: z.number().min(0).max(100).optional(),

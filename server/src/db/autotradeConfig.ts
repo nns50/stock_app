@@ -1506,8 +1506,12 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     stepDownAfterLosses: posInt(input.stepDownAfterLosses, d.stepDownAfterLosses),
     stepDownSizeCutPct: pct(input.stepDownSizeCutPct, d.stepDownSizeCutPct),
     maxAggregateOpenRiskPct: pct(input.maxAggregateOpenRiskPct, d.maxAggregateOpenRiskPct),
-    maxCorrelatedExposurePct: pct(input.maxCorrelatedExposurePct, d.maxCorrelatedExposurePct),
-    maxSectorExposurePct: pct(input.maxSectorExposurePct, d.maxSectorExposurePct),
+    // nonNeg, not pct: these two are NOTIONAL-to-equity ratios like
+    // liveMaxExposurePct (190 in production), not fractions of equity like the
+    // risk and drawdown percentages around them. pct()'s Math.min(100, ...)
+    // silently clamped any coherent value away — see routes/autotrade.ts.
+    maxCorrelatedExposurePct: nonNeg(input.maxCorrelatedExposurePct, d.maxCorrelatedExposurePct),
+    maxSectorExposurePct: nonNeg(input.maxSectorExposurePct, d.maxSectorExposurePct),
     maxTradesPerDay: posInt(input.maxTradesPerDay, d.maxTradesPerDay),
     regimeAtrThresholdPct: pct(input.regimeAtrThresholdPct, d.regimeAtrThresholdPct),
     regimeSizeCutPct: pct(input.regimeSizeCutPct, d.regimeSizeCutPct),
