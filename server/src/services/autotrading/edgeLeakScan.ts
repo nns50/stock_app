@@ -316,6 +316,16 @@ export interface EdgeLeakScanInput {
    *  (marketableLimit.ts). Without it the rows cannot be read — see
    *  AttributionReport.meanEntrySlippagePct. */
   entryLimitBufferPct: number;
+  /** Signed entry DRIFT for each live entry in the window, in percent of the
+   *  price the sizer used: how far the placement quote had moved from
+   *  `signal.entry` by the time the order was built, positive when adverse.
+   *
+   *  Distinct from `entrySlippagePct`, which measures the FILL against the
+   *  LIMIT and so can only be <= 0. This measures the LIMIT against the price
+   *  the risk budget was computed from, and it has no sign restriction at all.
+   *  Two different questions that both get called slippage: "did we fill
+   *  inside our own order" and "was the order priced where we decided". */
+  entryDriftPct: number[];
   journalSkips: JournalSkip[];
   /** Whether `journalSkips` is the complete window or was cut short. */
   journalSkipsTruncated?: boolean;
@@ -1003,6 +1013,55 @@ function slippageFinding(entrySlippagePct: number[], bufferPct: number): ScanFin
   ];
 }
 
+/** Live entries needed before the drift between decision and placement is
+ *  worth judging. Lower than SLIPPAGE_MIN_TRADES because this is a
+ *  mechanical property of the loop's own cadence, not a market statistic:
+ *  the same gap applies to every entry, so it converges fast. */
+export const ENTRY_DRIFT_MIN_TRADES = 10;
+
+/**
+ * Has the price moved away from the screen's decision by more than the buffer
+ * deliberately concedes?
+ *
+ * The bar is the marketable-limit buffer itself. Below it, the drift is
+ * smaller than the concession the loop already makes on purpose and there is
+ * nothing to say. Above it, the loop is systematically placing at a worse
+ * price than it decided at, which costs SIZE now that the entry re-sizes
+ * against its own limit (entryRisk.ts) — and cost unbudgeted RISK before that,
+ * up to 1.46x the configured amount on the seven measured rows.
+ */
+function entryDriftFinding(entryDriftPct: number[], bufferPct: number): ScanFinding[] {
+  if (entryDriftPct.length < ENTRY_DRIFT_MIN_TRADES || !(bufferPct > 0)) return [];
+  const mean = round2(entryDriftPct.reduce((a, b) => a + b, 0) / entryDriftPct.length);
+  if (mean <= bufferPct) return [];
+  const worst = round2(Math.max(...entryDriftPct));
+  return [
+    {
+      id: 'execution:entry_drift',
+      kind: 'execution',
+      label: 'Entries are placed at a worse price than they were decided at',
+      count: entryDriftPct.length,
+      lastSeenEtDate: null,
+      sessionsSinceLastSeen: null,
+      detail:
+        `${entryDriftPct.length} live entries were priced ${mean}% adverse to the quote the sizer used ` +
+        `(worst ${worst}%), past the ${bufferPct}% the marketable-limit buffer concedes on purpose. ` +
+        "The stop is placed at the signal's level either way, so the drift is risk the budget did not " +
+        'approve; since 2026-09-13 the entry re-sizes against its own limit, which converts it into ' +
+        'fewer shares instead.',
+      lever: {
+        kind: 'code',
+        field: null,
+        value: null,
+        direction: 'safe',
+        detail:
+          'Shorten the gap between the screen tick and placement, or re-quote inside the batch: a batch ' +
+          'awaits a broker round-trip per candidate, so the last candidate is priced on the oldest read.',
+      },
+    },
+  ];
+}
+
 export function runEdgeLeakScan(input: EdgeLeakScanInput): EdgeLeakScanResult {
   const rng = input.rng ?? mulberry32(SCAN_RNG_SEED);
   const live = input.live.trades;
@@ -1034,6 +1093,7 @@ export function runEdgeLeakScan(input: EdgeLeakScanInput): EdgeLeakScanResult {
       },
     })),
     ...slippageFinding(input.entrySlippagePct, input.entryLimitBufferPct),
+    ...entryDriftFinding(input.entryDriftPct, input.entryLimitBufferPct),
     ...input.configuration,
   ];
 

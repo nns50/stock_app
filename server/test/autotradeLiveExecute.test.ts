@@ -1186,6 +1186,124 @@ describe('runLiveExecution — sizing to every dollar bound the guardrail applie
   });
 });
 
+// The gap between the price the loop DECIDED at and the price it PLACES at.
+//
+// riskCheck sizes from signal.entry — what the screen saw — and placement then
+// fetches a fresh quote several seconds later, after the batch has awaited a
+// broker round-trip for every candidate before this one. The bracket's stop
+// goes in at signal.stop regardless, so the drift lands on the position as
+// risk nobody budgeted. On the seven live rows carrying plannedStopDistancePct
+// the realized risk ran 1.00x-1.46x the planned figure, mean 1.09x, and not
+// one below 1.00x.
+describe('runLiveExecution — the entry is sized against the price it will pay', () => {
+  const cfgFields = {
+    accountEquityUsd: 100_000,
+    riskProfile: 'MODERATE' as const,
+    liveAccountId: 'ACC1',
+    liveTradingEnabled: true,
+    liveEnabledAt: Date.now(),
+    liveMaxDailyLossUsd: 5_000,
+    liveMaxOrdersPerDay: 20,
+    killSwitch: false,
+    // Out of the way: this block is about the risk bound, not the dollar caps.
+    liveMaxOrderUsd: 10_000_000,
+    liveMaxExposurePct: 100_000,
+    maxAggregateOpenRiskPct: 100,
+  };
+
+  const placedIntent = () => mockPlaceOrder.mock.calls[0][1] as { quantity: number; limitPrice: number };
+  const journaledDetail = () =>
+    JSON.parse(listAutotradeEvents({ actions: ['live_entry_risk_resized'] })[0]?.detail ?? '{}') as Record<
+      string,
+      number
+    >;
+
+  beforeEach(() => {
+    setAutotradeConfig(cfgFields);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-DRIFT' });
+  });
+
+  it('cuts the order so an adverse drift cannot risk more than the check approved', async () => {
+    // The SWKS shape, exaggerated so the arithmetic is unambiguous: the screen
+    // decided at 100 with a stop at 95 (5.00/share of risk), and by placement
+    // the quote is 104 — 9.00/share against the same stop. Unfixed, the sized
+    // quantity goes in at nearly double the risk it was approved for.
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 104 }));
+
+    const outcomes = await runLiveExecution([{ signal: signal() }]);
+
+    expect(outcomes[0].ok, `expected an entry, got: ${outcomes[0].reason}`).toBe(true);
+    const intent = placedIntent();
+    // The budget the row itself names, so the assertion does not re-derive the
+    // risk profile or the probation cut — both live in production code and a
+    // test that recomputes them passes when they drift.
+    const approved = journaledDetail().approvedRiskUsd;
+    // THE assertion, at the consumer: what the order really risks against the
+    // stop it is really sending, measured at the quote risk is realized at.
+    expect(Math.abs(104 - 95) * intent.quantity).toBeLessThanOrEqual(approved);
+    // And it genuinely had to shrink — a test that passes because nothing was
+    // placed would assert nothing.
+    expect(intent.quantity).toBeGreaterThan(0);
+    expect(intent.quantity).toBeLessThan(journaledDetail().fromQuantity);
+  });
+
+  it('journals the re-size with both prices, so the drift is readable', async () => {
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 104 }));
+
+    await runLiveExecution([{ signal: signal() }]);
+
+    const rows = listAutotradeEvents({ actions: ['live_entry_risk_resized'] });
+    expect(rows).toHaveLength(1);
+    const detail = JSON.parse(rows[0].detail ?? '{}') as Record<string, number>;
+    expect(detail.signalEntry).toBe(100);
+    expect(detail.riskBasisPrice).toBe(104);
+    expect(detail.limitPrice).toBeCloseTo(104.52, 2);
+    expect(detail.driftPct).toBeCloseTo(4, 2);
+    expect(detail.toQuantity).toBeLessThan(detail.fromQuantity);
+    // The number the budget was never asked about: what the UNRESIZED order
+    // would have risked. Without it the row says a size changed but not why it
+    // mattered.
+    expect(detail.riskAtBasisUsd).toBeGreaterThan(detail.approvedRiskUsd);
+  });
+
+  it('does NOT size up when the drift is favourable', async () => {
+    // A limit that came back cheaper would fund more shares at the same risk,
+    // but those shares never passed the guardrails and were never counted
+    // against the aggregate budget. Drifting our way simply risks less.
+    // Two favourable quotes, one much more favourable than the other. If the
+    // cap were applied as a max rather than a min, the cheaper one would fund
+    // a far bigger order; under the min they are identical, because both are
+    // held at the quantity the risk check approved. A single absolute number
+    // here would only re-derive the risk profile and the probation cut.
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 96 }));
+    const near = await runLiveExecution([{ signal: signal() }]);
+    expect(near[0].ok, `expected an entry, got: ${near[0].reason}`).toBe(true);
+    const nearQty = placedIntent().quantity;
+
+    mockPlaceOrder.mockClear();
+    mockGetProvider.mockReturnValue(quoteReturning({ BBB: 95.5 }));
+    const far = await runLiveExecution([{ signal: signal({ symbol: 'BBB' }) }]);
+    expect(far[0].ok, `expected an entry, got: ${far[0].reason}`).toBe(true);
+
+    expect(placedIntent().quantity).toBe(nearQty);
+    expect(listAutotradeEvents({ actions: ['live_entry_risk_resized'] })).toHaveLength(0);
+  });
+
+  it('records the risk the ORDER carries, not the risk the check approved', async () => {
+    // pendingLiveOrdersRisk() sums this column into the aggregate open-risk
+    // budget, and the position inherits it at materialization. Handing either
+    // the pre-drift figure understates a book that is already fuller than it
+    // looks.
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 104 }));
+
+    await runLiveExecution([{ signal: signal() }]);
+
+    const order = listPendingLiveOrders()[0];
+    expect(order.riskAmount).toBeCloseTo(Math.abs(104 - 95) * placedIntent().quantity, 6);
+  });
+});
+
 // Webull's market-data side and its trading side disagree about which symbols
 // exist. BF.B and BRK.B quote fine — verified live, BRK.B at 506.03 with a full
 // book — so they screen, score, pass every filter and reach placement, where

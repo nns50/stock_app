@@ -94,6 +94,7 @@ import { etToday } from '../../util/marketDate';
 import { atr } from '../../indicators/indicators';
 import { planAroundLevels } from './levelPlan';
 import { MARKETABLE_LIMIT_BUFFER_PCT } from './marketableLimit';
+import { entryDriftPct, orderRiskAmount, riskBasisPrice, riskCappedQuantity } from './entryRisk';
 import { applyExternalCashFlow, evaluateDailyTarget } from './dailyTarget';
 import { evaluateEquitySync, freshEquityGuardState, EquityGuardState } from './equitySyncGuard';
 import { getDailyBaseline } from '../../db/dailyBaseline';
@@ -726,6 +727,19 @@ export interface LiveExecutionOutcome {
    *  measured in a test, $14,600 deducted for a $7,336 order, which then
    *  refused the next candidate for having only $392 left. */
   placedNotionalUsd?: number;
+  /** What the placed order really RISKS: its final quantity against the stop
+   *  the bracket carries, priced at the QUOTE risk is realized at — not the
+   *  limit the notional field above is valued at. See entryRisk.ts's
+   *  riskBasisPrice for why those are two different prices.
+   *
+   *  The exact twin of the notional field above, one bound over and fixed for
+   *  the same reason (2026-09-13). The batch's aggregate open-risk running
+   *  total was decremented by `approvedRiskAmount`, which prices the risk at
+   *  `signal.entry` — so a batch whose first entry drifted 1.2% before
+   *  placement (SWKS, 2026-09-11) charged the budget 1.46x less than the
+   *  position it had just opened, and the next candidate was sized against
+   *  headroom that did not exist. Set only on a successful placement. */
+  placedRiskUsd?: number;
 }
 
 /**
@@ -782,7 +796,7 @@ export async function attemptLiveEntry(
   }
 
   const probation = getProbationStatus(autotradeCfg);
-  const quantity = Math.floor(riskResult.sizing.suggestedQuantity * probation.multiplier);
+  let quantity = Math.floor(riskResult.sizing.suggestedQuantity * probation.multiplier);
   if (quantity <= 0) {
     return {
       symbol,
@@ -801,6 +815,72 @@ export async function attemptLiveEntry(
 
   const buffer = 1 + (signal.side === 'buy' ? 1 : -1) * (MARKETABLE_LIMIT_BUFFER_PCT / 100);
   const limitPrice = Math.round(last * buffer * 100) / 100;
+
+  // RE-SIZE AGAINST THE PRICE WE ARE ABOUT TO SEND (2026-09-13).
+  //
+  // `quantity` above came from riskCheck, which sized against `signal.entry` —
+  // the price the screen saw when it decided. `last` is a quote taken just
+  // now, after this batch has awaited a broker round-trip for every candidate
+  // ahead of this one, and the bracket's stop goes in at `signal.stop`
+  // regardless. So every cent between those two prices is risk the budget
+  // never approved. On the seven live rows carrying
+  // plannedStopDistancePct the realized risk ran 1.00x-1.46x the planned
+  // figure, mean 1.09x, and not one below 1.00x: a marketable buy limit fills
+  // at or inside itself, so a long's drift is one-sided against us.
+  //
+  // MIN, never max. A quote that came back BETTER than the signal's entry
+  // would fund more shares, but those shares were never put to the guardrails
+  // and never counted against the aggregate risk budget, so sizing up here
+  // would spend headroom nobody checked. Drifting favourably simply risks
+  // less, which needs no correction.
+  //
+  // The basis is the fresh QUOTE, not the limit: the guardrail values notional
+  // at the limit because the broker reserves there, but risk is realized at
+  // the FILL, and this book's fills consume 0.05% of the 0.5% buffer. See
+  // riskBasisPrice.
+  //
+  // `undefined` means the inputs could not produce a sane number (a zero-width
+  // stop), and leaves `quantity` exactly as it was.
+  //
+  // The budget takes the probation cut too. `approvedRiskAmount` is
+  // `riskPerUnit x suggestedQuantity` BEFORE the multiplier above is applied,
+  // so at 0.5x it describes an order twice the size of the one being sent —
+  // and a bound derived from it would have been loose enough to pass a
+  // doubled risk. The same overstatement is written down one sleeve over
+  // (liveOptionsExecute.ts, where the options path scales it explicitly) and
+  // one field over (placedNotionalUsd, fixed for the same reason).
+  const probationRiskBudget = riskResult.approvedRiskAmount * probation.multiplier;
+  const riskBasis = riskBasisPrice(last);
+  const riskSizedQuantity = riskCappedQuantity(riskBasis, signal.stop, probationRiskBudget);
+  if (riskSizedQuantity !== undefined && riskSizedQuantity < quantity) {
+    const drift = entryDriftPct(signal.entry, riskBasis, signal.side);
+    logAutotradeEvent({
+      symbol,
+      stage: 'execution',
+      action: 'live_entry_risk_resized',
+      detail: {
+        signalEntry: signal.entry,
+        // The price risk is measured at (the quote), then the price the order
+        // is sent at. Naming only one of them would leave a later reader
+        // unable to tell which question the drift answers.
+        riskBasisPrice: riskBasis,
+        limitPrice,
+        stop: signal.stop,
+        driftPct: drift,
+        fromQuantity: quantity,
+        toQuantity: riskSizedQuantity,
+        approvedRiskUsd: Math.round(probationRiskBudget * 100) / 100,
+        // What the unresized order would have risked against the stop it is
+        // actually sending — the number the budget was never asked about.
+        riskAtBasisUsd: Math.round(orderRiskAmount(riskBasis, signal.stop, quantity) * 100) / 100,
+      },
+      riskProfile,
+    });
+    quantity = riskSizedQuantity;
+  }
+  if (quantity <= 0) {
+    return { symbol, ok: false, reason: `Re-sizing against the placement quote ${riskBasis} left 0 shares` };
+  }
 
   // PER-LOT BRACKETS (#26, off by default): spend the sized quantity across TWO
   // bracketed entries rather than one, so a partial is just the smaller group's
@@ -930,7 +1010,13 @@ export async function attemptLiveEntry(
     symbol,
     stopPrice: signal.stop,
     targetPrice: signal.target,
-    riskAmount: riskResult.approvedRiskAmount,
+    // The risk this ORDER carries, not the risk the check approved. Three
+    // things read it — the aggregate open-risk budget via
+    // pendingLiveOrdersRisk(), the position it materializes into, and the leak
+    // scan — and all three were being handed the pre-drift figure. On a
+    // per-lot entry it is also the FIRST lot's risk rather than the whole
+    // sized position's; lot 2 records its own when it goes in.
+    riskAmount: orderRiskAmount(riskBasis, signal.stop, quantityToOrder),
     riskProfile,
     accountId,
     grade: convictionGrade(signal.score, {
@@ -1013,6 +1099,13 @@ export async function attemptLiveEntry(
       side: signal.side,
       quantity: quantityToOrder,
       limitPrice,
+      // The price the SIZER used, beside the price the order was sent at. The
+      // gap between them is what the risk budget never saw (entryRisk.ts), and
+      // it is only readable from a journal row if both are on it — the
+      // signal's entry is gone the moment the fill lands, which is the same
+      // reason plannedStopDistancePct is stamped rather than re-derived.
+      signalEntry: signal.entry,
+      riskBasisPrice: riskBasis,
       stop: signal.stop,
       target: targetToBracket,
       orderId: broker.orderId,
@@ -1071,7 +1164,13 @@ export async function attemptLiveEntry(
       message: `Autotrade LIVE ${signal.side === 'buy' ? 'BUY' : 'SELL'}: ${quantity} ${symbol} @ ~$${limitPrice.toFixed(2)} (stop ${signal.stop.toFixed(2)}, target ${signal.target.toFixed(2)})`,
     },
   ]);
-  return { symbol, ok: true, intentId: intentRec.id, placedNotionalUsd: quantity * limitPrice };
+  return {
+    symbol,
+    ok: true,
+    intentId: intentRec.id,
+    placedNotionalUsd: quantityToOrder * limitPrice,
+    placedRiskUsd: orderRiskAmount(riskBasis, signal.stop, quantityToOrder),
+  };
 }
 
 /**
@@ -1734,7 +1833,12 @@ export async function runLiveExecution(
     }
     outcomes.push(outcome);
     if (outcome.ok) {
-      runningRisk += result.approvedRiskAmount;
+      // The risk the order really carries, not the risk the check approved —
+      // they differ by whatever the quote drifted between the screen's tick
+      // and placement, and it is the placed figure the aggregate budget has to
+      // account for. Falls back to the approved amount for any path that
+      // reports no placed figure, rather than charging the budget nothing.
+      runningRisk += outcome.placedRiskUsd ?? result.approvedRiskAmount;
       runningCount += 1;
       // What the order really costs, straight from the placement. The
       // fallback keeps the old estimate for any path that somehow reports no
@@ -4356,7 +4460,7 @@ async function placeLiveScaleInAddOn(
   // mirrors evaluateRiskCheck (snapshot.equity ?? 0): with equity unconfigured
   // the cap is 0, so any add is blocked — same as a fresh entry.
   const equity = cfg.accountEquityUsd ?? 0;
-  const addRisk = Math.abs(limitPrice - add.newStopPrice) * add.addQty;
+  const addRisk = orderRiskAmount(limitPrice, add.newStopPrice, add.addQty);
   const dailyPnl = getLivePortfolioSnapshot().dailyPnl;
   const dailyHaltLevel = -(cfg.maxDailyDrawdownPct / 100) * equity;
   if (!(dailyPnl > dailyHaltLevel)) {
@@ -4438,7 +4542,7 @@ async function placeLiveScaleInAddOn(
     symbol,
     stopPrice: add.newStopPrice,
     targetPrice,
-    riskAmount: Math.abs(limitPrice - add.newStopPrice) * add.addQty,
+    riskAmount: orderRiskAmount(limitPrice, add.newStopPrice, add.addQty),
     riskProfile,
     addonOfPositionId: pos.id,
     accountId,
@@ -4943,7 +5047,7 @@ export async function checkLivePerLotSecondLots(): Promise<LivePerLotOutcome[]> 
         symbol,
         stopPrice,
         targetPrice: plan.targetPrice,
-        riskAmount: Math.abs(limitPrice - stopPrice) * plan.quantity,
+        riskAmount: orderRiskAmount(limitPrice, stopPrice, plan.quantity),
         riskProfile: cfg.riskProfile,
         addonOfPositionId: pos.id,
         accountId,

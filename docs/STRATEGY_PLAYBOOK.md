@@ -1445,6 +1445,51 @@ orders keep bumping it — which is what happened to the exposure cap on 2026-08
 two correctly-sized positions were refused by 39 cents — treats the symptom, because the
 sizer is still aiming wherever it likes and the guardrail is still judging after the fact.
 
+**The third derivation, and the one that cost money (2026-09-13).** Those two fixes were
+about *funding* — whether the order fits. The same disagreement was live one layer over, on
+*risk*, and it was worse because it had no guardrail to catch it. The sizer works out share
+count from `signal.entry`, the price the screener saw when it picked the name. Placement
+then fetches a **fresh quote** — after the batch has awaited a broker round-trip for every
+candidate ahead of this one — and prices the limit through it. The stop goes in at the
+signal's level either way. So every cent of drift between deciding and placing became extra
+distance from the fill to the stop, on a share count sized for the old distance.
+
+The drift is one-sided. A marketable buy limit sits above the quote and fills at or inside
+it, so a long's fill is never meaningfully *below* the price the stop was hung from.
+Drifting our way costs nothing; drifting theirs is unbudgeted. Every live row carrying
+`plannedStopDistancePct` showed it: realized stop distance over planned ran 1.000, 1.003,
+1.011, 1.049, 1.054, 1.083 and **1.456** — mean 1.094, and not one below 1.000. SWKS filled
+1.19% above the price its stop was anchored to, so a trade sized for 2.5% of equity risked
+**3.64%** of it. Three like it carry 8.2% against a 7.5% aggregate cap that believes it is
+holding the line.
+
+The entry now re-derives its quantity against the placement price and takes the **smaller**
+of that and the risk-checked size. Never the larger: a favourable drift would fund more
+shares, but those shares never passed the guardrails and were never counted against the
+aggregate budget.
+
+**Which price, and why it is not the limit.** The guardrail values *notional* at the limit
+because that is what the broker reserves — a limit order can consume every cent of its own
+limit. *Risk* is realized at the **fill**, and this book's fills consume 0.05% of the 0.5%
+buffer, so the fill lands essentially at the quote. Sizing risk at the limit would have
+over-stated it by most of the buffer: at a 2.5% stop, a fifth of every position given away
+for a fill that does not happen. Two prices, two questions — and they look interchangeable
+until you write down which unit each is in.
+
+**What this does to the dial.** Positions come out roughly 9% smaller on average than they
+did, because that 9% was never yours to size with. It costs no edge — the R the book
+reports is measured from the fill and always was, so the recorded expectancy never included
+this — it makes `riskPerTradePct` mean what it says. If you want the old size, raise the
+dial on purpose rather than receiving it from a stale quote.
+
+**How you will know if it comes back.** The leak scan carries an `execution:entry_drift`
+finding, and its bar is the marketable-limit buffer itself: below 0.5% the drift is smaller
+than the concession the loop already makes deliberately. The drift is **signed**, positive
+for adverse on both sides, because a book that pays up 3% half the time and saves 3% the
+other half is not a calm book and an unsigned mean would read as one. Its lever is the gap
+between the screen's tick and placement — a batch awaits a broker round-trip per candidate,
+so the *last* candidate is priced on the oldest read.
+
 **"What happens when the app isn't sure?"** Worth knowing, because it shapes what you'll
 see: every live-order decision made under an unknown resolves toward **doing less**, not
 toward assuming the convenient answer. A fill the app can't fully account for is booked

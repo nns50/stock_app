@@ -723,6 +723,20 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
         });
 
   const bpBound = bp.maxQuantity !== undefined && sizing.suggestedQuantity < intended.suggestedQuantity;
+  // NAME THE BOUND THAT ACTUALLY BOUND (2026-09-13). `fundableMaxQuantity`
+  // returns `boundBy` precisely so a shrunk order says which of the three
+  // ceilings shrank it — and until now nothing read it, so all four messages
+  // below said "buying power" whatever the answer was. The three have
+  // different levers: buying power is the broker's, `order_notional` is
+  // liveMaxOrderUsd, `account_exposure` is liveMaxExposurePct. At the trial
+  // sizing the first two are the ones within reach of a config change, so
+  // naming the wrong one sends the operator at a dial that cannot move.
+  const boundLabel =
+    bp.boundBy === 'order_notional'
+      ? 'the per-order notional cap'
+      : bp.boundBy === 'account_exposure'
+        ? 'the account exposure headroom'
+        : 'buying power';
   // A token position still costs a concurrency slot and one of the day's
   // trades; below MIN_FUNDED_SIZE_FRACTION, waiting for a candidate that fits
   // is worth more than being nominally in the market.
@@ -731,12 +745,12 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
     'buying_power_sizing',
     !tooSmall,
     bp.maxQuantity === undefined
-      ? 'inactive — no buying-power figure supplied (paper, or the broker read failed)'
+      ? 'inactive — no dollar bound supplied (paper, or the broker read failed)'
       : tooSmall
-        ? `only ${sizing.suggestedQuantity} of ${intended.suggestedQuantity} shares fundable from ${usd(bp.usableUsd ?? 0)} — below the ${Math.round(MIN_FUNDED_SIZE_FRACTION * 100)}% floor, skipping rather than taking a token position`
+        ? `only ${sizing.suggestedQuantity} of ${intended.suggestedQuantity} shares fundable from ${usd(bp.usableUsd ?? 0)} of ${boundLabel} — below the ${Math.round(MIN_FUNDED_SIZE_FRACTION * 100)}% floor, skipping rather than taking a token position`
         : bpBound
-          ? `sized down to ${sizing.suggestedQuantity} of ${intended.suggestedQuantity} shares to fit ${usd(bp.usableUsd ?? 0)} of buying power — risking ${usd(sizing.riskOfPosition ?? 0)} instead of the intended ${usd(intended.riskOfPosition ?? 0)}`
-          : `fits — ${intended.suggestedQuantity} shares inside ${usd(bp.usableUsd ?? 0)} of buying power`,
+          ? `sized down to ${sizing.suggestedQuantity} of ${intended.suggestedQuantity} shares to fit ${usd(bp.usableUsd ?? 0)} of ${boundLabel} — risking ${usd(sizing.riskOfPosition ?? 0)} instead of the intended ${usd(intended.riskOfPosition ?? 0)}`
+          : `fits — ${intended.suggestedQuantity} shares inside ${usd(bp.usableUsd ?? 0)} of ${boundLabel}`,
   );
 
   const qtyOk = sizing.suggestedQuantity > 0;
@@ -746,7 +760,7 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
     qtyOk
       ? `${sizing.suggestedQuantity} shares`
       : bp.maxQuantity === 0
-        ? `buying power ${usd(bp.usableUsd ?? 0)} will not fund a single share at ${usd(signal.entry)}`
+        ? `${boundLabel} ${usd(bp.usableUsd ?? 0)} will not fund a single share at ${usd(signal.entry)}`
         : 'risk budget is too small to size even one share at this stop distance',
   );
   check(
