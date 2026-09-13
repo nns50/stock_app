@@ -249,6 +249,11 @@ const okResult = (signal: SingleLegOptionsSignal | DebitSpreadOptionsSignal): Op
     regimeShockRangeRatio: 0,
     priorSameDayExits: 0,
     repeatEntrySizeCutPct: 0,
+    // Every real ctx builder passes this (liveOptionsExecute, optionsExecute,
+    // optionsRiskCheck's own). Omitting it here made the SIZER fail safe to a
+    // 100% max-loss fraction while everything reading the config used 70% —
+    // two derivations of one quantity, disagreeing only in the fixture.
+    optionsDisasterStopPct: defaultAutotradeConfig().optionsDisasterStopPct,
   });
 
 const origPlaceEnabled = config.trading.placeEnabled;
@@ -450,6 +455,122 @@ describe('attemptLiveOptionsEntry', () => {
     expect(listAutotradeEvents({}).some((e) => e.action === 'options_probation_at_minimum')).toBe(true);
   });
 
+  // THE EQUITY TWIN, ONE SLEEVE OVER (2026-09-13). optionsRiskCheck sizes
+  // contracts from `signal.premium` — the price the screener saw — and both
+  // entry branches then re-fetch the contract quote before building the limit.
+  // Premium IS the risk here, so a premium that rose in between is risk the
+  // budget never approved, and it moves faster on a 0DTE than any stock does.
+  describe('the contract count is re-checked against the premium actually paid', () => {
+    it('cuts contracts when the premium rose between the signal and placement', async () => {
+      // Signal premium 3, chain mark 4 at placement: a third more per contract
+      // against the same budget.
+      const sig = optionSignal({ premium: 3 });
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
+      mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+      mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-DRIFT' });
+
+      const r = await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', liveConfig());
+
+      expect(r.ok, `expected an entry, got: ${r.reason}`).toBe(true);
+      const rows = listAutotradeEvents({ actions: ['live_options_entry_risk_resized'] });
+      expect(rows).toHaveLength(1);
+      const detail = JSON.parse(rows[0].detail ?? '{}') as Record<string, number>;
+      expect(detail.signalPremium).toBe(3);
+      expect(detail.fillPremium).toBe(4);
+      expect(detail.toContracts).toBeLessThan(detail.fromContracts);
+      // THE assertion, at the consumer: what the order really risks at the
+      // premium really paid, inside the budget the row itself names.
+      expect(detail.placedRiskUsd).toBeLessThanOrEqual(detail.approvedRiskUsd);
+      expect((mockPlaceOrder.mock.calls[0][1] as { quantity: number }).quantity).toBe(detail.toContracts);
+    });
+
+    it('records the risk at the premium paid, not the premium quoted', async () => {
+      // This figure is STORED on the position and read for its whole life by
+      // getLiveOptionsPortfolioSnapshot and combinedLiveOpenRisk, so the
+      // pre-drift number understates a shared budget for days.
+      const sig = optionSignal({ premium: 3 });
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
+      mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+      mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-RISKREC' });
+
+      await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', liveConfig());
+
+      const detail = JSON.parse(
+        listAutotradeEvents({ actions: ['live_options_entry_risk_resized'] })[0]?.detail ?? '{}',
+      ) as Record<string, number>;
+      const order = listPendingLiveOptionsOrders().find((o) => o.role === 'entry');
+      expect(order?.riskAmount).toBeCloseTo(detail.placedRiskUsd, 2);
+    });
+
+    it('does NOT add contracts when the premium fell', async () => {
+      // A cheaper premium would fund more contracts on the same budget, but
+      // those contracts never passed the guardrails and were never counted
+      // against the aggregate budget. Drifting our way simply risks less.
+      const sig = optionSignal({ premium: 3 });
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 2 } }) as never);
+      mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+      mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-CHEAP' });
+
+      const sized = await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', liveConfig());
+      expect(sized.ok, `expected an entry, got: ${sized.reason}`).toBe(true);
+      const cheapQty = (mockPlaceOrder.mock.calls[0][1] as { quantity: number }).quantity;
+
+      // The same signal at the premium it was sized against. If the cap were
+      // applied as a max rather than a min, the cheaper quote would fund a
+      // bigger order; under the min the two are identical, because both are
+      // held at the count the risk check approved. An absolute number here
+      // would only re-derive the risk profile and the probation cut.
+      mockPlaceOrder.mockClear();
+      mockGetProvider.mockReturnValue(chainsFor({ BBB: { side: 'call', strike: 100, mark: 3 } }) as never);
+      const flat = await attemptLiveOptionsEntry(
+        optionSignal({ symbol: 'BBB', premium: 3 }),
+        okResult(optionSignal({ symbol: 'BBB', premium: 3 })),
+        'MODERATE',
+        liveConfig(),
+      );
+      expect(flat.ok, `expected an entry, got: ${flat.reason}`).toBe(true);
+      expect(cheapQty).toBe((mockPlaceOrder.mock.calls[0][1] as { quantity: number }).quantity);
+      expect(listAutotradeEvents({ actions: ['live_options_entry_risk_resized'] })).toHaveLength(0);
+    });
+
+    it('holds the one-contract floor and says the order is over budget', async () => {
+      // A contract is indivisible and the floor is the same one probation
+      // lives under. Taking this to zero would turn a risk OVERSHOOT into a
+      // refused trade, removing flow the plan is trying to add — so the
+      // overshoot is journaled instead of absorbed.
+      const sig = optionSignal({ premium: 3 });
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 40 } }) as never);
+      mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+      mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-FLOOR' });
+
+      const r = await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', liveConfig());
+
+      expect(r.ok, `expected an entry, got: ${r.reason}`).toBe(true);
+      expect((mockPlaceOrder.mock.calls[0][1] as { quantity: number }).quantity).toBe(1);
+      const detail = JSON.parse(
+        listAutotradeEvents({ actions: ['live_options_entry_risk_resized'] })[0]?.detail ?? '{}',
+      ) as Record<string, number | boolean>;
+      expect(detail.overBudgetAtFloor).toBe(true);
+      expect(detail.placedRiskUsd as number).toBeGreaterThan(detail.approvedRiskUsd as number);
+    });
+
+    it('journals the premium the check sized against beside the one it paid', async () => {
+      // The pair that makes the drift measurable at all — the equity path's
+      // signalEntry / riskBasisPrice, in premium units.
+      const sig = optionSignal({ premium: 3 });
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
+      mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+      mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-JOURNAL' });
+
+      await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', liveConfig());
+
+      const placedRow = listAutotradeEvents({ actions: ['live_options_order_placed'] })[0];
+      const detail = JSON.parse(placedRow?.detail ?? '{}') as Record<string, number>;
+      expect(detail.signalPremium).toBe(3);
+      expect(detail.referencePrice).toBe(4);
+    });
+  });
+
   // guardrails values an OPENING order against buyingPowerUsd, and acct.state's
   // is the EQUITY/day pool. Options are bought from a separate, far smaller one
   // — $471.41 against a day BP of $8,644.72 on 2026-08-27. Passing the equity
@@ -634,8 +755,16 @@ describe('attemptLiveOptionsEntry', () => {
       // Scaled in proportion to the contracts actually ordered, rather than
       // recording the full pre-probation budget.
       expect(orderedQty).toBeLessThan(rawQty);
-      expect(recorded.riskAmount).toBeCloseTo((approved.approvedRiskAmount * orderedQty) / rawQty, 6);
       expect(recorded.riskAmount).toBeLessThan(approved.approvedRiskAmount);
+      // Priced at the premium PAID (the chain's 4), not the premium the check
+      // sized against (the signal's 3). This assertion used to read
+      // `approvedRiskAmount * orderedQty / rawQty`, which pinned both facts at
+      // once only because the two premiums were the same number until
+      // 2026-09-13 — the formula, not the intent, encoded the signal's price.
+      // The probation guard this test exists for is the line above and the
+      // per-contract scaling below; both still hold.
+      const perContractAtFill = 4 * (defaultAutotradeConfig().optionsDisasterStopPct / 100) * 100;
+      expect(recorded.riskAmount).toBeCloseTo(perContractAtFill * orderedQty, 6);
     });
 
     it('sizes the entry down by the probation multiplier when active', async () => {

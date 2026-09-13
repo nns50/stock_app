@@ -256,3 +256,38 @@ export function riskPctUpperBound(cfg: {
     Number.isFinite(cfg.expectancyMaxMultiplier) && cfg.expectancyMaxMultiplier > 1 ? cfg.expectancyMaxMultiplier : 1;
   return base * lean;
 }
+
+/**
+ * How many contracts a risk budget buys at a given premium — the twin of
+ * equity's `riskCappedQuantity`, in the units options actually risk (2026-09-13).
+ *
+ * `maxLossFraction` says how much of the premium is genuinely at stake: the
+ * disaster stop's fraction for a single leg (`optionsMaxLossFraction`), and a
+ * flat 1 for a debit spread, whose max loss IS the net debit. Named by the
+ * caller rather than derived here, because those are two different facts about
+ * two different instruments and folding them together is how a spread would
+ * quietly get sized as though a 70% stop protected it.
+ *
+ * `undefined` means "no opinion" — an unusable premium, fraction or budget —
+ * so a caller taking the MINIMUM of this and its own count degrades to exactly
+ * its previous behaviour rather than to zero contracts.
+ */
+export function contractsWithinRiskBudget(
+  premiumPerShare: number,
+  maxLossFraction: number,
+  budgetUsd: number,
+): number | undefined {
+  if (!(premiumPerShare > 0) || !(maxLossFraction > 0) || !(budgetUsd > 0)) return undefined;
+  const perContract = premiumPerShare * maxLossFraction * 100;
+  if (!(perContract > 0)) return undefined;
+  return Math.floor(budgetUsd / perContract);
+}
+
+/** What a live options order of this size at this premium really risks. The
+ *  single derivation the entry's budget check and its recorded `riskAmount`
+ *  both use, so the number stored on the position cannot drift from the number
+ *  the size was judged against. */
+export function optionsOrderRiskAmount(premiumPerShare: number, maxLossFraction: number, contracts: number): number {
+  if (!(premiumPerShare > 0) || !(maxLossFraction > 0) || !(contracts > 0)) return 0;
+  return premiumPerShare * maxLossFraction * 100 * contracts;
+}

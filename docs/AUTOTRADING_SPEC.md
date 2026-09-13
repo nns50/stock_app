@@ -9986,3 +9986,95 @@ produces at least one `live_entry_risk_resized` whose `riskAtBasisUsd`
 exceeds its `approvedRiskUsd`; and
 `GET /api/journal/edge-leaks?sessions=40&book=live` reports
 `execution:entry_drift` only if the mean adverse drift exceeds 0.5%.
+
+## 2026-09-13 — the options entry, sized at a premium it had stopped paying
+
+The equity fix above, one sleeve over, and the arithmetic is harsher here
+because **premium is the risk**.
+
+`optionsRiskCheck` sizes contracts from `signal.premium` — what the screener
+saw — and both entry branches then re-fetch the contract quote before building
+the limit (`fetchContractQuote` for a leg, two of them for a vertical). Nothing
+revisited the contract count. A premium that rose in between is risk the budget
+never approved, and premium moves faster on a 0DTE than any stock price does.
+
+Worse than the equity case in one respect: `orderedRiskAmount` is not just a
+transient. Its own comment says so — it "is STORED on the position and read for
+its whole life by `getLiveOptionsPortfolioSnapshot` and `combinedLiveOpenRisk`"
+— so a pre-drift figure understates the shared aggregate-risk budget for as
+long as the position is open, blocking or admitting other entries on a number
+that was never true.
+
+**What changed.** `contractsWithinRiskBudget` and `optionsOrderRiskAmount` join
+`optionsAffordability.ts`, which already owned the risk↔premium conversion, so
+the size and the bound cannot disagree about how much of the premium is at
+stake. Both branches call `resizeToFillPremium` once their fill premium is
+known; it re-derives the contract count against that premium and takes the
+**minimum**, then replaces `orderedRiskAmount` with the risk really carried.
+
+**The max-loss fraction is named at the call site, not derived inside.** A
+single leg risks `optionsDisasterStopPct` of its premium; a vertical's max loss
+IS its net debit, so its fraction is a flat 1. Folding those together inside
+the helper is how a spread would quietly get sized as though a 70% stop
+protected it.
+
+**Never below one contract when the check approved at least one.** A contract
+is indivisible, and the floor is the same one probation already lives under.
+Taking this to zero would convert a risk *overshoot* into a refused trade,
+removing flow the plan is trying to add (Decision 3 widens this sleeve). The
+overshoot is journaled instead — `live_options_entry_risk_resized` carries
+`overBudgetAtFloor` — so an entry paying more than its budget is visible rather
+than absorbed.
+
+**It was not measurable, and now is.** `live_options_order_placed` recorded
+`limitPrice` and `referencePrice` (the fill premium) but never the premium the
+check sized against, so no journal read could compute the drift; the production
+window holds exactly three placements and none of them can answer it. The row
+now carries `signalPremium` beside `referencePrice`, the premium twin of the
+equity path's `signalEntry` / `riskBasisPrice`.
+
+**A fixture gap found on the way.** `liveOptionsExecute.test.ts`'s risk-check
+context omitted `optionsDisasterStopPct`, which every real ctx builder passes
+(`liveOptionsExecute`, `optionsExecute`, `optionsRiskCheck`'s own). The sizer
+therefore failed safe to a 100% max-loss fraction inside the tests while
+everything reading the config used 70% — two derivations of one quantity,
+disagreeing only in the fixture. CLAUDE.md's rule is that a fixture gets every
+field; this is why.
+
+**Pre-committed check:** the next `live_options_order_placed` carries
+`signalPremium`; an entry whose premium rose past its budget produces a
+`live_options_entry_risk_resized` row, and one that rose past a single
+contract's worth carries `overBudgetAtFloor: true`.
+
+## 2026-09-13 — the scarcity gate the trial sizing put out of reach
+
+`stagnationExitRequiresScarcity` is off, and its own comment pre-commits to
+flipping it on "once ~2 weeks of paper closes are in". Before that happens, the
+arithmetic underneath it has changed, and the switch would not do what the
+evidence for it says.
+
+That evidence — the stagnation exit's justification held in only **7 of 31**
+firings — was measured at `riskPerTradePct` 1.25 and `liveMaxExposurePct` 155,
+where three positions comfortably fit. At 2.5% and 190 they do not.
+
+Notional per position is `riskPerTradePct ÷ stopDistance` of equity, the
+sizer's own identity. At 2.5% risk over the recent median stop of 2.53%, one
+position is **99% of equity**, so a 190% exposure cap funds **1.9** of them.
+Three would need every stop at or beyond ~3.95%; 4 of the last 64 live entries
+had a stop past 3.8%. So `slotScarcity`'s first branch — at
+`maxConcurrentPositions` — is effectively unreachable.
+
+Its second branch needs open risk above two full sizes. Two base-size positions
+land exactly on its boundary, where the strict `>` correctly reports not scarce
+(it is the exact complement of `riskCheck`'s `aggregateAfter <= aggregateCap`,
+so the two agree by construction — verified). Position 2 is itself trimmed by
+exposure headroom to ~90%, pushing further from the bar. It fires only when the
+expectancy multiplier lifts them.
+
+The rule is not wrong. What is wrong is the inference from its evidence:
+flipping it on now would suppress the live book's **dominant exit** — 30 of 52
+closes, 58% — far harder than 7-of-31 implies, leaving stagnant positions to
+hold their slots until the end-of-day flatten, which is the slot starvation the
+module exists to end. **The exposure cap, not `maxConcurrentPositions`, is what
+"a slot" now means.** Recorded beside the rule so the flip is made with this in
+hand rather than against a number from a different account size.

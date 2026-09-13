@@ -1325,7 +1325,10 @@ equally-weighted cards in the order they happened to be built:
   stock entry re-checks this against the **placement quote** just before it sends, so a
   stock that moved between the screener's tick and the order gets fewer shares rather
   than more risk; it only ever sizes DOWN, and `live_entry_risk_resized` in the
-  journal shows both prices when it does), **max daily drawdown** (%
+  journal shows both prices when it does; the options sleeve re-checks its
+  contract count the same way against the premium actually paid, though it never goes
+  below one contract — an order that still exceeds its budget at one contract is
+  journaled rather than refused), **max daily drawdown** (%
   realized loss for the day that halts new entries until tomorrow — existing
   positions' stops/targets keep working regardless), **step-down after (consecutive
   losses)** and **step-down size cut** (once your losing streak reaches the trigger

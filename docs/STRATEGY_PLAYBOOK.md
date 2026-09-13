@@ -1492,6 +1492,17 @@ way: the R the book reports is measured from the fill and always was, so the rec
 expectancy never included this. It makes `riskPerTradePct` mean what it says. If you want
 the old size, raise the dial on purpose rather than receiving it from a stale quote.
 
+**The options sleeve has the same gap, and premium makes it sharper (2026-09-13).** The
+options risk check sizes contracts from the signal's premium; both entry branches then
+re-fetch the contract quote before pricing the limit. Premium *is* the risk there, so a
+premium that rose in between is risk the budget never approved — and on a 0DTE it moves
+faster than any stock price. The contract count is now re-derived against the premium
+actually paid, taking the smaller, and the stored risk figure follows it. One thing it
+deliberately does **not** do: refuse. A contract is indivisible, so when even one exceeds
+the budget the order still goes out at one and the overshoot is journaled
+(`overBudgetAtFloor`) rather than absorbed — turning an overshoot into a refused trade
+would remove flow this plan is trying to add.
+
 **How you will know if it comes back.** The leak scan carries an `execution:entry_drift`
 finding, and its bar is the marketable-limit buffer itself: below 0.5% the drift is smaller
 than the concession the loop already makes deliberately. The drift is **signed**, positive
