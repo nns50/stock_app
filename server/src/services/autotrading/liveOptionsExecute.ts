@@ -70,7 +70,12 @@ import { journalMethodMultipliers, methodOfOptionsSignal } from './methodSizing'
 import { activeSymbolCooldowns, journalEntrySkipOncePerDay } from './symbolCooldown';
 import { claimOncePerDay } from './oncePerDayEvents';
 import { computeFinishLineFactor, finishLineScoreGate } from './finishLine';
-import { optionsRewardMultiple } from './optionsAffordability';
+import {
+  contractsWithinRiskBudget,
+  optionsMaxLossFraction,
+  optionsOrderRiskAmount,
+  optionsRewardMultiple,
+} from './optionsAffordability';
 import { regimeAdjustedTargets, withRegimeAdjustedTargets } from './regimeTargets';
 import {
   NO_TICK_REGIME,
@@ -696,7 +701,7 @@ export async function attemptLiveOptionsEntry(
   // clamp binds, so "probation is not actually cutting anything" is visible
   // rather than inferred. Genuinely zero-sized signals still return 0.
   const probationClamped = rawQuantity > 0 && Math.floor(rawQuantity * probation.multiplier) < 1;
-  const quantity = rawQuantity > 0 ? Math.max(1, Math.floor(rawQuantity * probation.multiplier)) : 0;
+  let quantity = rawQuantity > 0 ? Math.max(1, Math.floor(rawQuantity * probation.multiplier)) : 0;
   // Scale the recorded risk to the contracts actually ORDERED — an unscaled
   // approvedRiskAmount overstates it by the full probation cut — and unlike equity, whose position risk is re-derived
   // from the real fill by initialRiskOf, this figure is STORED on the position
@@ -704,8 +709,13 @@ export async function attemptLiveOptionsEntry(
   // combinedLiveOpenRisk. At the default 0.5x probation every live options
   // position claimed 2x its true risk against the shared aggregate-risk budget,
   // blocking equity and options entries that were actually within it.
-  const orderedRiskAmount =
+  let orderedRiskAmount =
     rawQuantity > 0 ? (riskResult.approvedRiskAmount * quantity) / rawQuantity : riskResult.approvedRiskAmount;
+  // The budget the re-size below judges against: the risk the check approved
+  // for exactly the contracts about to be ordered, priced at the SIGNAL's
+  // premium. Captured before `orderedRiskAmount` is re-derived at the fill
+  // premium, because the two are the before and after of the same question.
+  const approvedRiskForOrder = orderedRiskAmount;
   if (probationClamped) {
     journalEntrySkipOncePerDay(symbol, 'options_probation_at_minimum', {
       multiplier: probation.multiplier,
@@ -724,6 +734,60 @@ export async function attemptLiveOptionsEntry(
 
   const liveCfg = buildLiveOptionsTradingConfig(autotradeCfg);
   const buffer = 1 + OPTIONS_MARKETABLE_LIMIT_BUFFER_PCT / 100;
+
+  /**
+   * RE-SIZE AGAINST THE PREMIUM WE ARE ABOUT TO PAY (2026-09-13).
+   *
+   * The equity twin, one sleeve over: `optionsRiskCheck` sized these contracts
+   * from `signal.premium` — the price the screener saw — and both branches
+   * below re-fetch the contract quote before building the limit. Premium is
+   * the risk here, so a premium that rose in between is risk the budget never
+   * approved, and it moves faster on a 0DTE than any stock does.
+   *
+   * NEVER BELOW ONE CONTRACT when the check approved at least one. A contract
+   * is indivisible and the floor is the same one probation lives under; taking
+   * this to zero would turn a risk *overshoot* into a refused trade, which
+   * removes flow the plan is trying to add. The overshoot is journaled
+   * instead, so an entry that pays more than its budget is visible rather than
+   * absorbed.
+   *
+   * Returns the risk the ORDER really carries, at the premium really paid —
+   * which then replaces `orderedRiskAmount`, the figure stored on the position
+   * and read for its whole life by getLiveOptionsPortfolioSnapshot and
+   * combinedLiveOpenRisk.
+   */
+  const resizeToFillPremium = (
+    fillPremiumPerShare: number,
+    maxLossFraction: number,
+    kind: LiveOptionsOrderKind,
+  ): void => {
+    const capped = contractsWithinRiskBudget(fillPremiumPerShare, maxLossFraction, approvedRiskForOrder);
+    const floored = capped === undefined ? quantity : Math.max(1, Math.min(quantity, capped));
+    const placedRisk = optionsOrderRiskAmount(fillPremiumPerShare, maxLossFraction, floored);
+    if (floored !== quantity || placedRisk > approvedRiskForOrder + 0.005) {
+      logAutotradeEvent({
+        symbol,
+        stage: 'execution',
+        action: 'live_options_entry_risk_resized',
+        detail: {
+          kind,
+          signalPremium: signal.kind === 'debit_spread' ? signal.netDebit : signal.premium,
+          fillPremium: Math.round(fillPremiumPerShare * 10000) / 10000,
+          maxLossFraction,
+          fromContracts: quantity,
+          toContracts: floored,
+          approvedRiskUsd: Math.round(approvedRiskForOrder * 100) / 100,
+          placedRiskUsd: Math.round(placedRisk * 100) / 100,
+          // True when the one-contract floor is holding an order ABOVE its
+          // budget — the residual this rule deliberately does not refuse.
+          overBudgetAtFloor: floored === 1 && placedRisk > approvedRiskForOrder + 0.005,
+        },
+        riskProfile,
+      });
+    }
+    quantity = floored;
+    orderedRiskAmount = placedRisk > 0 ? placedRisk : orderedRiskAmount;
+  };
 
   // At-entry context recorded on the order row (either kind) and carried to
   // the position at materialization — mirrors equity's orderRow fields.
@@ -779,6 +843,10 @@ export async function attemptLiveOptionsEntry(
     // order-notional and buying-power caps are checked against the price that
     // will actually be sent.
     const limitPrice = roundOptionPrice(netDebit * buffer, 'up');
+    // A vertical's max loss IS its net debit — no disaster-stop fraction
+    // applies, which is why the fraction is named at the call site rather than
+    // derived inside the helper.
+    resizeToFillPremium(netDebit, 1, 'debit_spread');
 
     const intent: OrderIntent = {
       symbol,
@@ -831,7 +899,7 @@ export async function attemptLiveOptionsEntry(
     });
 
     if (!placed.ok) return { symbol, ok: false, reason: placed.reason, intentId: placed.intentId, journaled: true };
-    return finishEntryPlacement(symbol, intent, 'debit_spread', placed, riskProfile);
+    return finishEntryPlacement(symbol, intent, 'debit_spread', placed, riskProfile, signal.netDebit);
   }
 
   let fillPremium: number;
@@ -856,6 +924,10 @@ export async function attemptLiveOptionsEntry(
   // Onto the broker's tick grid, UP because this is a buy limit — see
   // optionTick.ts. Before the guardrails, so the caps see the sent price.
   const limitPrice = roundOptionPrice(fillPremium * buffer, 'up');
+  // The same fraction the sizer multiplied by, from the same shared
+  // derivation — so the size and the bound cannot disagree about how much of
+  // the premium the disaster stop leaves at risk.
+  resizeToFillPremium(fillPremium, optionsMaxLossFraction(autotradeCfg.optionsDisasterStopPct), 'single_leg');
 
   const intent: OrderIntent = {
     symbol,
@@ -904,7 +976,7 @@ export async function attemptLiveOptionsEntry(
   });
 
   if (!placed.ok) return { symbol, ok: false, reason: placed.reason, intentId: placed.intentId, journaled: true };
-  return finishEntryPlacement(symbol, intent, 'single_leg', placed, riskProfile);
+  return finishEntryPlacement(symbol, intent, 'single_leg', placed, riskProfile, signal.premium);
 }
 
 /** Journal + notify once an entry order has been placed AND recorded — shared
@@ -915,6 +987,13 @@ async function finishEntryPlacement(
   kind: LiveOptionsOrderKind,
   placed: { intentId: number; brokerOrderId?: string },
   riskProfile: string,
+  /** The premium the RISK CHECK sized these contracts against, beside the
+   *  `referencePrice` below, which is the premium the order was actually
+   *  priced from. The drift between them is risk the budget never approved
+   *  (see resizeToFillPremium), and it is only readable from a journal row if
+   *  BOTH are on it — the signal's premium is gone once the fill lands. The
+   *  equity path carries the same pair as signalEntry / riskBasisPrice. */
+  signalPremium: number,
 ): Promise<LiveOptionsExecutionOutcome> {
   logAutotradeEvent({
     symbol,
@@ -940,6 +1019,7 @@ async function finishEntryPlacement(
       // Paper cannot answer this; only real fills can.
       intentId: placed.intentId,
       referencePrice: intent.referencePrice ?? null,
+      signalPremium,
     },
     riskProfile,
   });

@@ -92,6 +92,28 @@ export type StagnationConfig = Pick<
 // rule's purpose — the slot is genuinely blocking entries and does not get
 // recycled. Named here rather than left to be discovered; the caller has the
 // buying-power number and can be extended to pass it.
+//
+// NOR IS THE EXPOSURE CAP, and at the 2026-09-13 sizing that is the one that
+// decides. Read this before flipping the switch: the 7-of-31 rate above was
+// measured at riskPerTradePct 1.25 and liveMaxExposurePct 155, where three
+// positions comfortably fit. They no longer do.
+//
+// Notional per position is `riskPerTradePct / stopDistance` of equity — the
+// sizer's own identity — so at 2.5% risk over the recent median stop of 2.53%
+// a position IS 99% of equity, and a 190% exposure cap funds 1.9 of them.
+// Three needs every stop at or beyond ~3.95%, and 4 of the last 64 live
+// entries had a stop past 3.8%. So branch 1 is effectively out of reach.
+// Branch 2 needs open risk above two full sizes; two base-size positions land
+// exactly on its boundary (where the strict `>` correctly says not scarce,
+// matching riskCheck's `aggregateAfter <= aggregateCap`), and position 2 is
+// itself trimmed by exposure headroom — so it fires only when the expectancy
+// multiplier lifts them.
+//
+// The consequence is not that this rule is wrong; it is that turning it ON
+// now would suppress the live book's DOMINANT exit far harder than 7-of-31
+// suggests, leaving stagnant positions to hold their slots until the
+// end-of-day flatten — the slot starvation this module exists to end. The
+// exposure cap, not maxConcurrentPositions, is what "a slot" now means.
 // ---------------------------------------------------------------------------
 
 /** The room a fresh entry would need, measured the way the entry gate measures
