@@ -1476,11 +1476,21 @@ over-stated it by most of the buffer: at a 2.5% stop, a fifth of every position 
 for a fill that does not happen. Two prices, two questions — and they look interchangeable
 until you write down which unit each is in.
 
-**What this does to the dial.** Positions come out roughly 9% smaller on average than they
-did, because that 9% was never yours to size with. It costs no edge — the R the book
-reports is measured from the fill and always was, so the recorded expectancy never included
-this — it makes `riskPerTradePct` mean what it says. If you want the old size, raise the
-dial on purpose rather than receiving it from a stale quote.
+**What this does to the dial, measured rather than estimated.** Replaying the seven live
+entries that carry both prices through the new rule: **three are untouched** (the quote had
+drifted our way, or not at all, and the rule only ever sizes down), the median trade keeps
+**99.4%** of its shares, and SWKS — the one that risked 1.46x its budget — is cut to **66%**.
+That is the shape to expect: nearly free on an ordinary entry, surgical on the one that ran
+away. The *mean* is 94%, but the mean is one trade; quoting it alone would describe a
+book-wide haircut that is not happening.
+
+Do not confuse this with the risk inflation above. Inflation is measured at the **fill** and
+includes the ~0.05% of price the buffer costs on every fill, which no amount of sizing can
+remove — the stop is simply that much further from a fill than from a quote. The rule
+removes the **drift** only, which is the part that was avoidable. It costs no edge either
+way: the R the book reports is measured from the fill and always was, so the recorded
+expectancy never included this. It makes `riskPerTradePct` mean what it says. If you want
+the old size, raise the dial on purpose rather than receiving it from a stale quote.
 
 **How you will know if it comes back.** The leak scan carries an `execution:entry_drift`
 finding, and its bar is the marketable-limit buffer itself: below 0.5% the drift is smaller

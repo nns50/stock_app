@@ -9966,6 +9966,20 @@ said "buying power" whatever the answer was — buying power is the broker's,
 `liveMaxExposurePct`, and only the last two are within reach of a config
 change. Naming the wrong one sent the operator at a dial that cannot move.
 
+**What it costs, replayed on the seven rows that carry both prices.** Three are untouched
+(the quote had drifted favourably or not at all, and the rule only sizes down); the median
+keeps 99.4% of its shares; DELL 95%, MRNA 97%, HPQ 99%; and SWKS is cut to **66%**. Mean
+94%, but the mean is one trade. The measured drift itself is mean **+0.19%**, median
+**+0.014%**, worst **+1.26%** — so `execution:entry_drift` would NOT fire on this window
+(the bar is the 0.5% buffer, and n=7 is under its minimum of 10 anyway), which is the
+correct answer: the drift is a tail problem, not a book-wide one, and the rule is built to
+cap the tail rather than to shave every entry.
+
+This also separates two numbers that look alike. The 1.094 mean *inflation* above is
+measured at the FILL and includes the ~0.05% of price the marketable buffer costs on every
+fill — structural, and not something sizing can remove, since the stop is simply that much
+further from a fill than from a quote. The rule removes the DRIFT component only.
+
 **Pre-committed check on the next session:** the first `live_order_placed` row
 carries `signalEntry` and `riskBasisPrice`; a session with any adverse drift
 produces at least one `live_entry_risk_resized` whose `riskAtBasisUsd`
