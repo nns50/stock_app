@@ -1750,11 +1750,14 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     optionsIvRankMin: pct(input.optionsIvRankMin, d.optionsIvRankMin),
     optionsMaxIvRvRatio: nonNeg(input.optionsMaxIvRvRatio, d.optionsMaxIvRvRatio),
     optionsStopLossPct: pct(input.optionsStopLossPct, d.optionsStopLossPct),
-    optionsTakeProfitPct: pct(input.optionsTakeProfitPct, d.optionsTakeProfitPct),
-    optionsBreakevenTriggerPct: pct(input.optionsBreakevenTriggerPct, d.optionsBreakevenTriggerPct),
-    optionsTrailStartPct: pct(input.optionsTrailStartPct, d.optionsTrailStartPct),
-    optionsTrailStopPct: pct(input.optionsTrailStopPct, d.optionsTrailStopPct),
-    optionsPartialExitTriggerPct: pct(input.optionsPartialExitTriggerPct, d.optionsPartialExitTriggerPct),
+    // nonNeg on the GAIN side (see routes/autotrade.ts): % of premium gained
+    // is unbounded above, and optionsGiveBackArmPct — the same quantity — was
+    // always nonNeg. The loss side and the share-of-position stay pct().
+    optionsTakeProfitPct: nonNeg(input.optionsTakeProfitPct, d.optionsTakeProfitPct),
+    optionsBreakevenTriggerPct: nonNeg(input.optionsBreakevenTriggerPct, d.optionsBreakevenTriggerPct),
+    optionsTrailStartPct: nonNeg(input.optionsTrailStartPct, d.optionsTrailStartPct),
+    optionsTrailStopPct: nonNeg(input.optionsTrailStopPct, d.optionsTrailStopPct),
+    optionsPartialExitTriggerPct: nonNeg(input.optionsPartialExitTriggerPct, d.optionsPartialExitTriggerPct),
     optionsPartialExitPct: pct(input.optionsPartialExitPct, d.optionsPartialExitPct),
     autoPromoteMoversEnabled:
       typeof input.autoPromoteMoversEnabled === 'boolean' ? input.autoPromoteMoversEnabled : d.autoPromoteMoversEnabled,

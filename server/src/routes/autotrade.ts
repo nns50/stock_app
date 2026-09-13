@@ -380,13 +380,23 @@ const configBody = z.object({
   // --- Options IV/RV cheapness gate (0 disables) ------------------------------
   optionsMaxIvRvRatio: z.number().min(0).optional(),
   // --- Options stop-loss / take-profit (paper + backtest only; 0 disables) ----
+  //
+  // THE GAIN SIDE IS NOT CAPPED AT 100, THE LOSS SIDE IS (2026-09-12). Every
+  // field below whose unit is "% of premium GAINED" is unbounded above — an
+  // option can be worth three times what you paid, and optionsGiveBackArmPct,
+  // which measures that exact quantity, has always been `nonnegative()`. A
+  // .max(100) on its siblings meant a take-profit could not be set above
+  // "double your money", or a trail started above it, on the one instrument
+  // where those are ordinary settings. optionsStopLossPct stays capped because
+  // you cannot lose more than the premium, and optionsPartialExitPct because
+  // you cannot close more than the position.
   optionsStopLossPct: z.number().min(0).max(100).optional(),
-  optionsTakeProfitPct: z.number().min(0).max(100).optional(),
+  optionsTakeProfitPct: z.number().nonnegative().optional(),
   // --- Options trailing stop / breakeven / partial profit-taking (0 disables each) --
-  optionsBreakevenTriggerPct: z.number().min(0).max(100).optional(),
-  optionsTrailStartPct: z.number().min(0).max(100).optional(),
-  optionsTrailStopPct: z.number().min(0).max(100).optional(),
-  optionsPartialExitTriggerPct: z.number().min(0).max(100).optional(),
+  optionsBreakevenTriggerPct: z.number().nonnegative().optional(),
+  optionsTrailStartPct: z.number().nonnegative().optional(),
+  optionsTrailStopPct: z.number().nonnegative().optional(),
+  optionsPartialExitTriggerPct: z.number().nonnegative().optional(),
   optionsPartialExitPct: z.number().min(0).max(100).optional(),
   // --- Movers auto-promotion --------------------------------------------------
   autoPromoteMoversEnabled: z.boolean().optional(),
@@ -1598,12 +1608,12 @@ const optionsBacktestBodyBase = z.object({
   directionMode: z.enum(['long', 'short', 'both']).optional(),
   // --- Options stop-loss / take-profit (own value, not read from live config) -
   optionsStopLossPct: z.number().min(0).max(100).optional(),
-  optionsTakeProfitPct: z.number().min(0).max(100).optional(),
+  optionsTakeProfitPct: z.number().nonnegative().optional(),
   // --- Options trailing stop / breakeven / partial profit-taking (own value) -
-  optionsBreakevenTriggerPct: z.number().min(0).max(100).optional(),
-  optionsTrailStartPct: z.number().min(0).max(100).optional(),
-  optionsTrailStopPct: z.number().min(0).max(100).optional(),
-  optionsPartialExitTriggerPct: z.number().min(0).max(100).optional(),
+  optionsBreakevenTriggerPct: z.number().nonnegative().optional(),
+  optionsTrailStartPct: z.number().nonnegative().optional(),
+  optionsTrailStopPct: z.number().nonnegative().optional(),
+  optionsPartialExitTriggerPct: z.number().nonnegative().optional(),
   optionsPartialExitPct: z.number().min(0).max(100).optional(),
 });
 const optionsBacktestBody = optionsBacktestBodyBase
@@ -1743,12 +1753,12 @@ const combinedBacktestBodyBase = z.object({
   directionMode: z.enum(['long', 'short', 'both']).optional(),
   // --- Options stop-loss / take-profit (own value; options leg only) ----------
   optionsStopLossPct: z.number().min(0).max(100).optional(),
-  optionsTakeProfitPct: z.number().min(0).max(100).optional(),
+  optionsTakeProfitPct: z.number().nonnegative().optional(),
   // --- Options trailing stop / breakeven / partial profit-taking (options leg only) -
-  optionsBreakevenTriggerPct: z.number().min(0).max(100).optional(),
-  optionsTrailStartPct: z.number().min(0).max(100).optional(),
-  optionsTrailStopPct: z.number().min(0).max(100).optional(),
-  optionsPartialExitTriggerPct: z.number().min(0).max(100).optional(),
+  optionsBreakevenTriggerPct: z.number().nonnegative().optional(),
+  optionsTrailStartPct: z.number().nonnegative().optional(),
+  optionsTrailStopPct: z.number().nonnegative().optional(),
+  optionsPartialExitTriggerPct: z.number().nonnegative().optional(),
   optionsPartialExitPct: z.number().min(0).max(100).optional(),
 });
 const combinedBacktestBody = combinedBacktestBodyBase
