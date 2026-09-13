@@ -9,6 +9,7 @@ import {
   GatedSwitchSnapshot,
   graduationVerdict,
   nextSwitchState,
+  patchInForce,
   coherenceGuard,
   exposureGuard,
   PRE_TRIAL_SIZING,
@@ -121,6 +122,56 @@ describe('the shadow record', () => {
     const gone = nextSwitchState(applied, false, '2026-09-15', true);
     expect(gone.contradictions).toBe(0);
   });
+
+  // The same principle, for the hand that actually applies these during the
+  // five-session shadow: the OPERATOR's. Until 2026-09-13 only the app's own
+  // write counted, so a rule that proposed, was listened to, and correctly
+  // went quiet was recorded as flapping and barred for good.
+  it('does NOT count it when the patch is in force by someone else’s hand', () => {
+    const proposed = nextSwitchState(freshSwitchState('stub'), true, '2026-09-14', false);
+    const gone = nextSwitchState(proposed, false, '2026-09-15', false, true);
+    expect(gone.contradictions).toBe(0);
+  });
+
+  it('still counts a proposal that evaporated with its patch nowhere in force', () => {
+    // The behaviour the gate exists for — a rule reading noise — must survive
+    // the fix above, or the fix has simply removed the gate.
+    const proposed = nextSwitchState(freshSwitchState('stub'), true, '2026-09-14', false);
+    expect(nextSwitchState(proposed, false, '2026-09-15', false, false).contradictions).toBe(1);
+  });
+
+  it('remembers the proposed patch, and a quiet session does not erase it', () => {
+    const proposed = nextSwitchState(freshSwitchState('stub'), true, '2026-09-14', false, false, {
+      mlRegimeEnabled: false,
+    });
+    expect(proposed.lastProposedPatch).toEqual({ mlRegimeEnabled: false });
+    // A quiet session passes null; the next contradiction test still needs it.
+    expect(nextSwitchState(proposed, false, '2026-09-15', false, true).lastProposedPatch).toEqual({
+      mlRegimeEnabled: false,
+    });
+  });
+});
+
+describe('patchInForce', () => {
+  const cfg = { ...defaultAutotradeConfig(), mlRegimeEnabled: false, riskPerTradePct: 1.25 };
+
+  it('is true only when every key already matches', () => {
+    expect(patchInForce({ mlRegimeEnabled: false }, cfg)).toBe(true);
+    expect(patchInForce({ mlRegimeEnabled: false, riskPerTradePct: 1.25 }, cfg)).toBe(true);
+    expect(patchInForce({ mlRegimeEnabled: false, riskPerTradePct: 2.5 }, cfg)).toBe(false);
+  });
+
+  it('matches a false and a 0 rather than reading them as absent', () => {
+    // The reason it compares with Object.is: `patch[k] || config[k]` would
+    // make every boolean-false patch look unapplied forever.
+    expect(patchInForce({ mlRegimeEnabled: false }, { ...cfg, mlRegimeEnabled: false })).toBe(true);
+    expect(patchInForce({ stagnationExitMinutes: 0 }, { ...cfg, stagnationExitMinutes: 0 })).toBe(true);
+    expect(patchInForce({ liveScaleOutEnabled: false }, { ...cfg, liveScaleOutEnabled: false })).toBe(true);
+  });
+
+  it('is false for an empty patch — nothing is not in force', () => {
+    expect(patchInForce({}, cfg)).toBe(false);
+  });
 });
 
 describe('evaluateGatedSwitches', () => {
@@ -133,6 +184,78 @@ describe('evaluateGatedSwitches', () => {
       rules: [stubRule(() => true)],
       ...over,
     });
+
+  // -------------------------------------------------------------------------
+  // THE OPERATOR'S HAND COUNTS AS THE FIX WORKING (2026-09-13).
+  //
+  // Workstream 5 says the operator applies safe-direction rules by hand while
+  // a rule is still shadowed. Doing exactly that used to read as the rule
+  // flapping: it proposed, was listened to, correctly went quiet, and the
+  // engine recorded a contradiction — which `graduationVerdict` blocks on,
+  // which never decays, and which is persisted. The rule was barred forever
+  // for being right.
+  //
+  // Driven through the real engine over two sessions rather than through
+  // nextSwitchState alone, because the operator only ever enters here: the
+  // patch's in-force check reads the SNAPSHOT's config, and that is the part
+  // a unit test on the fold cannot reach.
+  // -------------------------------------------------------------------------
+  it('does not punish a rule whose proposal the operator applied between sessions', () => {
+    // Session 1: shadowed, so the engine only proposes. mlRegimeEnabled starts
+    // true, so the patch {mlRegimeEnabled: false} is NOT yet in force.
+    const before = { ...defaultAutotradeConfig(), mlRegimeEnabled: true };
+    let on = true;
+    const rule = stubRule(() => on);
+    const first = evaluateGatedSwitches({
+      snapshot: snapshot({ config: before }),
+      states: new Map(),
+      enabled: true,
+      now: 1_000,
+      rules: [rule],
+    });
+    expect(first.decisions[0].outcome).toBe('proposed');
+    expect(first.applied).toEqual([]);
+    const afterOne = first.decisions[0].nextState;
+    expect(afterOne.lastProposedPatch).toEqual({ mlRegimeEnabled: false });
+
+    // The operator applies it, and the criterion stops holding BECAUSE of that.
+    on = false;
+    const second = evaluateGatedSwitches({
+      snapshot: snapshot({ etDate: '2026-09-15', config: { ...before, mlRegimeEnabled: false } }),
+      states: new Map([['stub', afterOne]]),
+      enabled: true,
+      now: 2_000,
+      rules: [rule],
+    });
+    expect(second.decisions[0].nextState.contradictions).toBe(0);
+  });
+
+  it('still records a contradiction when the patch is nowhere in force', () => {
+    // The gate exists to catch a rule reading noise, and must survive the fix
+    // above: same sequence, except nobody applied anything.
+    const before = { ...defaultAutotradeConfig(), mlRegimeEnabled: true };
+    let on = true;
+    const rule = stubRule(() => on);
+    const first = evaluateGatedSwitches({
+      snapshot: snapshot({ config: before }),
+      states: new Map(),
+      enabled: true,
+      now: 1_000,
+      rules: [rule],
+    });
+    on = false;
+    const second = evaluateGatedSwitches({
+      snapshot: snapshot({ etDate: '2026-09-15', config: before }),
+      states: new Map([['stub', first.decisions[0].nextState]]),
+      enabled: true,
+      now: 2_000,
+      rules: [rule],
+    });
+    expect(second.decisions[0].nextState.contradictions).toBe(1);
+    // And that is terminal, which is the whole reason the case above matters.
+    const verdict = graduationVerdict(rule, second.decisions[0].nextState);
+    expect(verdict.graduated).toBe(false);
+  });
 
   // -------------------------------------------------------------------------
   // A DATA-SOURCED PATCH IS CHECKED BY ARITHMETIC, NOT BY ITS LABEL.
