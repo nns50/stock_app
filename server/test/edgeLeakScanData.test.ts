@@ -3,7 +3,12 @@ import { initDb, db } from '../src/db';
 import { defaultAutotradeConfig, getAutotradeConfig, setAutotradeConfig } from '../src/db/autotradeConfig';
 import { logAutotradeEvent } from '../src/db/autotradeEvents';
 import { closePaperPosition, openPaperPosition } from '../src/db/autotradePaperPositions';
-import { concentrationCapFloorPct, deriveDollarCaps } from '../src/services/autotrading/targetTune';
+import {
+  concentrationCapFloorPct,
+  dailyGainStepPct,
+  deriveDollarCaps,
+  giveBackArmedByOneTrade,
+} from '../src/services/autotrading/targetTune';
 import { collectBook } from '../src/services/autotrading/dailyTargetSweepData';
 import {
   collectConfigurationFindings,
@@ -318,6 +323,74 @@ describe('the scoring shadow', () => {
 
   it('says nothing at all when the shadow has not run', () => {
     expect(collectScoringShadowFinding(getAutotradeConfig(), now)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A GIVE-BACK GUARD ARMED BY ITS FIRST WINNER (2026-09-13).
+//
+// The concentration-cap disease one level up: an absolute percentage chosen
+// when a trade moved the day 1.25%, left alone when riskPerTradePct doubled.
+// The guard still fires correctly — arm and floor are thresholds, not a window
+// a move can jump. What the sizing changed is WHEN it becomes live.
+// ---------------------------------------------------------------------------
+describe('the give-back arm against what one trade moves', () => {
+  const trial = () => ({
+    ...defaultAutotradeConfig(),
+    accountEquityUsd: 3522.81,
+    riskPerTradePct: 2.5,
+    targetRMultiple: 1,
+    targetDailyGainPct: 3,
+    giveBackArmPct: 2,
+    giveBackFloorPct: 1,
+  });
+  const now = etDateTimeToMs('2026-09-10', '17:00') as number;
+  const findings = () =>
+    collectConfigurationFindings(getAutotradeConfig(), now).filter(
+      (f) => f.id === 'configuration:give_back_armed_by_one_trade',
+    );
+
+  it('the step is the two terms that make it, not a number of its own', () => {
+    // riskPerTradePct x targetRMultiple, and nothing else: the book risks that
+    // much and takes the target at that multiple of it.
+    expect(dailyGainStepPct(trial())).toBe(2.5);
+    expect(dailyGainStepPct({ ...trial(), targetRMultiple: 2 })).toBe(5);
+    expect(dailyGainStepPct({ ...trial(), riskPerTradePct: 0 })).toBe(0);
+  });
+
+  it('names the trial sizing: a 0.8R arm one 1R winner clears', () => {
+    setAutotradeConfig(trial());
+    const f = findings();
+    expect(f).toHaveLength(1);
+    expect(f[0].detail).toMatch(/arms at 2% while one 1R winner moves the day 2.5%/);
+    expect(f[0].detail).toMatch(/an arm at 0.8R and a floor at 0.4R/);
+    expect(f[0].detail).toMatch(/halts at roughly flat rather than at the 1%/);
+    // Widening the band keeps the book trading on a fading day.
+    expect(f[0].lever?.direction).toBe('exposure');
+    // And it proposes NO value: inside a 1.2R goal there may be no coherent
+    // band at all, which is the operator's call rather than the app's guess.
+    expect(f[0].lever?.value).toBeNull();
+  });
+
+  it('is SILENT at the sizing the levels were chosen for', () => {
+    // 1.25% risk puts the arm at 1.6R, so one winner does not reach it. This
+    // is the assertion that keeps the check about the CHANGE: the band was
+    // already thinner than one step here (0.8R against 1.0R), and triggering
+    // on the band would have fired on a guard that was doing its job.
+    setAutotradeConfig({ ...trial(), riskPerTradePct: 1.25 });
+    expect(findings()).toEqual([]);
+    expect(giveBackArmedByOneTrade({ ...trial(), riskPerTradePct: 1.25 })).toBeNull();
+  });
+
+  it('follows the target multiple too, not just the risk', () => {
+    // The step is risk x target. At 1.25% risk with a 2R target a winner moves
+    // the day 2.5% again, so the same 2% arm is cleared by one of them.
+    expect(giveBackArmedByOneTrade({ ...trial(), riskPerTradePct: 1.25, targetRMultiple: 2 })).not.toBeNull();
+  });
+
+  it('says nothing when the guard is unconfigured', () => {
+    setAutotradeConfig({ ...trial(), giveBackArmPct: null, giveBackFloorPct: null });
+    expect(findings()).toEqual([]);
   });
 });
 
