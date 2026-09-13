@@ -1512,7 +1512,12 @@ equally-weighted cards in the order they happened to be built:
   doesn't — so you can read the shift *before* enabling it. That matters because
   turning it on rescales the whole score distribution, and **live min signal
   score** was fitted to the raw distribution against realized P&L, so enabling it
-  without re-fitting that floor moves the live entry gate silently),
+  without re-fitting that floor moves the live entry gate silently. Since
+  2026-09-12 you do not have to remember to read that row: the edge-leak scan
+  reads it for you and raises a finding when the set turns over materially,
+  which on the deployed book it does — about fifteen symbols a tick newly pass
+  against a third of one newly failing, so the floor needs re-fitting before the
+  flag goes on),
   **min move today (%)** (2026-08-25 — a candidate must have moved at least this far
   in the trade's own direction *today*: a long needs +this, a short −this. 0 = off. The
   rest of the screener is largely positional — momentum averages today's change with the
