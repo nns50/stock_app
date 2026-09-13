@@ -320,6 +320,43 @@ export function sizerFloorFraction(cfg: Pick<AutotradeConfig, 'riskPerTradePct' 
   return cfg.riskPerTradePct / stop;
 }
 
+/**
+ * The smallest a NOTIONAL concentration cap can be without contradicting the
+ * sizer — as a percentage of equity (2026-09-12).
+ *
+ * `maxSectorExposurePct` and `maxCorrelatedExposurePct` are gates on capital
+ * ALREADY held in names like this one, measured in NOTIONAL. They deliberately
+ * exclude the candidate's own size (see riskCheck.ts), so they cannot be
+ * satisfied by trimming an order — they are answered entirely by what is
+ * already open.
+ *
+ * Which makes them the same contradiction sizerFloorFraction was written for,
+ * one layer up. A position's notional is risk spread over its stop, so the
+ * SMALLEST one the sizer can legitimately produce is sizerFloorFraction of
+ * equity and the largest the per-order cap permits is that times
+ * ORDER_CAP_SIZER_HEADROOM. Set a concentration cap below the latter and a
+ * single ordinary position exceeds the whole budget for its own sector or
+ * correlation cluster — so that sector is closed by its own first trade, and no
+ * size, stop or equity makes room for a second.
+ *
+ * Live on 2026-09-12, and it arrived by omission rather than decision: the
+ * trial raised riskPerTradePct 1.25 -> 2.5 (and exposure 155 -> 190, the
+ * aggregate 6 -> 7.5) while both concentration caps stayed at 80, fitted to the
+ * old sizing. At 2.5% risk over a 2% stop one position is 119% of equity
+ * against an 80% cap: under the OLD sizing a sector held two positions, under
+ * the new one it holds exactly one. Probed on the deployed box — AAPL approved
+ * at $4,200 notional, MSFT then refused with "$4,200.00 already in Information
+ * Technology vs cap $2,818.25".
+ *
+ * This is the floor, not a recommendation: a cap at or above it is a real
+ * diversification choice, one below it is arithmetic nobody chose.
+ */
+export function concentrationCapFloorPct(cfg: Pick<AutotradeConfig, 'riskPerTradePct' | 'maxStopDistancePct'>): number {
+  const fraction = sizerFloorFraction(cfg);
+  if (!(fraction > 0)) return 0;
+  return Math.round(fraction * ORDER_CAP_SIZER_HEADROOM * 100);
+}
+
 /** Everything the two order caps are derived from. Both halves are config
  *  percentages applied to equity, so every cap here scales with the account
  *  the moment the anchor moves. */

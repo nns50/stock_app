@@ -6,6 +6,7 @@ import {
   buildDayLevel,
   CONTROL_MIN_TRADES,
   DIMENSIONS,
+  equivalentPaceFloor,
   LeakTrade,
   LEAK_MIN_TRADES,
   mulberry32,
@@ -573,5 +574,57 @@ describe('entry slippage — the buffer is the thing that gets consumed', () => 
     expect(a.meanEntrySlippagePct).toBeNull();
     expect(a.entryLimitBufferPct).toBeNull();
     expect(a.meanEntryBufferConsumedPct).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Translating the floor (2026-09-12). "Re-fit liveMinSignalScore against the
+// pace-scored distribution" is a distribution question, and the screen's score
+// ladder answers it: the floor that preserves today's SELECTIVITY is the pace
+// rung admitting as many symbols as the live floor admits under raw scoring.
+// ---------------------------------------------------------------------------
+describe('equivalentPaceFloor — the re-fit, not a mean shift', () => {
+  // Counts are non-increasing in the rung, as a "how many reach at least this"
+  // curve must be. Pace scoring lifts the distribution, so at every rung it
+  // admits more — the shape the deployed shadow actually shows.
+  const LADDER = [60, 64, 68, 72, 76, 80];
+  const RAW = [300, 200, 140, 100, 60, 30];
+  const PACE = [400, 300, 200, 140, 100, 60];
+
+  it('lands on the rung where pace admits what the live floor admits under raw', () => {
+    // raw at 72 admits 100; pace admits 100 at 76.
+    expect(equivalentPaceFloor(LADDER, RAW, PACE, 72)).toBe(76);
+  });
+
+  it('interpolates between rungs at both ends of the translation', () => {
+    // raw at 70 = halfway between 140 and 100 = 120; pace reaches 120 between
+    // 72 (140) and 76 (100), half a span up = 74.
+    expect(equivalentPaceFloor(LADDER, RAW, PACE, 70)).toBe(74);
+  });
+
+  it('is always ABOVE the live floor when pace scoring lifts the distribution', () => {
+    for (const floor of [64, 66, 68, 70, 72]) {
+      const f = equivalentPaceFloor(LADDER, RAW, PACE, floor);
+      expect(f, `floor ${floor}`).not.toBeNull();
+      expect(f!, `floor ${floor}`).toBeGreaterThan(floor);
+    }
+  });
+
+  it('says nothing rather than extrapolating off either end of the measured ladder', () => {
+    expect(equivalentPaceFloor(LADDER, RAW, PACE, 50)).toBeNull();
+    expect(equivalentPaceFloor(LADDER, RAW, PACE, 95)).toBeNull();
+    // A live floor inside the ladder whose admitted count is below everything
+    // the PACE curve reaches: no rung is that selective, so there is no answer.
+    expect(equivalentPaceFloor(LADDER, RAW, [90, 80, 75, 72, 71, 70], 80)).toBeNull();
+  });
+
+  it('refuses a malformed ladder instead of guessing at it', () => {
+    expect(equivalentPaceFloor([72], [100], [140], 72)).toBeNull();
+    expect(equivalentPaceFloor(LADDER, RAW.slice(1), PACE, 72)).toBeNull();
+    expect(equivalentPaceFloor(LADDER, RAW, PACE.slice(1), 72)).toBeNull();
+  });
+
+  it('returns the floor unchanged when the two scorings agree', () => {
+    expect(equivalentPaceFloor(LADDER, RAW, RAW, 72)).toBe(72);
   });
 });

@@ -275,6 +275,12 @@ function selectFromSnapshot(
 
 /** Per-symbol fan-out for the screen. Gentle on the provider's rate limit;
  *  named so the retry below can be deliberately gentler still. */
+/** Score rungs the shadow counts the two scorings at, so the live floor can be
+ *  translated into its pace-scored equivalent instead of estimated from a mean
+ *  shift. Spans the band any sane floor sits in (the live one is 72, paper's is
+ *  60) at a 2-point resolution around it. */
+export const SCORE_LADDER = [55, 60, 64, 66, 68, 70, 72, 74, 76, 78, 80, 85] as const;
+
 const SCREEN_CONCURRENCY = 6;
 
 /** The retry's own, lower, concurrency and the pause before it. A retry at the
@@ -695,7 +701,26 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
   const withPace = (ind: IndicatorSnapshot | null): IndicatorSnapshot | null =>
     ind === null ? null : { ...ind, relVolPace: relVolPace(ind.relVolume, median) };
 
+  // THE LADDER, so the floor can be RE-FITTED rather than guessed (2026-09-12).
+  //
+  // The spec's rule beside this shadow says liveMinSignalScore "has to be
+  // re-fitted against the pace-scored distribution BEFORE the flag goes on".
+  // Nothing collected what a re-fit needs. The counts above answer "does the
+  // set turn over" (it does: ~15 symbols a tick newly pass against 0.3 newly
+  // failing) but not "at what floor does pace scoring admit the same set as 72
+  // does today", which is the question the flag actually waits on.
+  //
+  // A faithful re-score after the fact is impossible: the pace component needs
+  // the tick's universe median and the symbol's intraday relVolume, and neither
+  // is persisted per symbol — only the aggregate row below. But BOTH totals are
+  // already in hand right here, for every scored symbol, so the distribution
+  // costs a pair of counters rather than a re-run.
+  //
+  // Counted on `best`, not on `picked`: reading only the survivors would
+  // restrict the distribution to the very scoring under examination, which is
+  // the mistake selectFromSnapshot's own `best` was added to prevent.
   const shadow = { n: 0, rawZero: 0, paceZero: 0, totalDelta: 0, wouldPass: 0, wouldFail: 0 };
+  const ladder = { n: 0, raw: SCORE_LADDER.map(() => 0), pace: SCORE_LADDER.map(() => 0) };
   for (const { symbol, ind, fallbackPrice } of scoredSnapshots) {
     const paced = withPace(ind);
     const rawPick = selectFromSnapshot(symbol, ind, fallbackPrice, rawCfg, directionMode);
@@ -719,6 +744,12 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
         },
       });
     }
+    ladder.n += 1;
+    for (let i = 0; i < SCORE_LADDER.length; i++) {
+      if (rawPick.best.total >= SCORE_LADDER[i]) ladder.raw[i] += 1;
+      if (pacePick.best.total >= SCORE_LADDER[i]) ladder.pace[i] += 1;
+    }
+
     // Symbols that fail the score filters (not RE) are just omitted — logging
     // every routine non-match would flood the journal every cycle.
 
@@ -764,6 +795,13 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
       wouldNewlyPass: shadow.wouldPass,
       wouldNewlyFail: shadow.wouldFail,
       relVolPaceTarget: cfg.relVolPaceTarget,
+      // How many of `ladderScored` symbols reach each rung under each scoring —
+      // the pace-scored distribution, which is what the floor is re-fitted
+      // against. Parallel arrays over SCORE_LADDER.
+      scoreLadder: SCORE_LADDER,
+      ladderScored: ladder.n,
+      ladderRawAtOrAbove: ladder.raw,
+      ladderPaceAtOrAbove: ladder.pace,
       note: cfg.relVolUsePaceScoring
         ? 'pace scoring is ACTIVE — the counts describe what raw scoring would have done instead'
         : 'pace scoring is OFF — the counts describe what it would do if enabled',

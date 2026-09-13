@@ -345,8 +345,27 @@ describe('autotrade config persistence', () => {
     });
 
     it('clamps a pct field above 100 down to 100', () => {
-      const cfg = setAutotradeConfig({ maxCorrelatedExposurePct: 500 });
-      expect(cfg.maxCorrelatedExposurePct).toBe(100);
+      // maxAggregateOpenRiskPct, not maxCorrelatedExposurePct: this case used
+      // the latter until 2026-09-12, when it stopped being a pct() field. Risk
+      // above all of your equity is an arithmetic error and stays clamped.
+      const cfg = setAutotradeConfig({ maxAggregateOpenRiskPct: 500 });
+      expect(cfg.maxAggregateOpenRiskPct).toBe(100);
+    });
+
+    it('does NOT clamp the two NOTIONAL concentration caps — those are exposure ratios', () => {
+      // They measure position value against equity, which exceeds 1 on margin
+      // (liveMaxExposurePct runs 190). pct()'s clamp made the coherent value
+      // unstorable: one position at 2.5% risk over a 2% stop is 119% of equity,
+      // so no value <= 100 could leave room for a second name in the sector.
+      const cfg = setAutotradeConfig({ maxCorrelatedExposurePct: 150, maxSectorExposurePct: 150 });
+      expect(cfg.maxCorrelatedExposurePct).toBe(150);
+      expect(cfg.maxSectorExposurePct).toBe(150);
+      // …and they still fail closed on nonsense — to the DEFAULT, which is
+      // nonNeg()'s convention and the same one liveAccountId follows above:
+      // invalid input resets to the safe value rather than silently keeping
+      // whatever was there, which the caller may be actively trying to change.
+      const negative = setAutotradeConfig({ maxCorrelatedExposurePct: -1 });
+      expect(negative.maxCorrelatedExposurePct).toBe(defaultAutotradeConfig().maxCorrelatedExposurePct);
     });
 
     it('allows stepDownAfterLosses/maxTradesPerDay of exactly 0 (always-on step-down / no trades today)', () => {

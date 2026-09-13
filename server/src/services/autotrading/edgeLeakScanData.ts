@@ -11,7 +11,7 @@ import { previousTradingSession } from '../trading/marketCalendar';
 import { buildSectorOf } from './riskCheck';
 import { collectBook, CollectedBook, DEFAULT_LOOKBACK_SESSIONS } from './dailyTargetSweepData';
 import { DropReasons, dropTotal, goalInR } from './dailyTargetSweep';
-import { deriveDollarCaps, DOLLAR_CAP_KEYS, handEditedDollarCaps } from './targetTune';
+import { concentrationCapFloorPct, deriveDollarCaps, DOLLAR_CAP_KEYS, handEditedDollarCaps } from './targetTune';
 import { maxAffordablePremiumPerShare, riskPctUpperBound } from './optionsAffordability';
 import { getOptionsProbationStatus } from './liveOptionsExecute';
 import { buildLiveSlippageRows } from './autoTune';
@@ -20,6 +20,7 @@ import {
   BatchRefusal,
   CollectedLeakBook,
   EdgeLeakScanResult,
+  equivalentPaceFloor,
   ExecutionOccurrence,
   JournalSkip,
   LeakBook,
@@ -499,6 +500,47 @@ export function collectConfigurationFindings(cfg: AutotradeConfig, now: number):
     }
   }
 
+  // A CONCENTRATION CAP BELOW WHAT ONE POSITION COSTS (2026-09-12).
+  //
+  // maxSectorExposurePct and maxCorrelatedExposurePct gate capital ALREADY held
+  // in names like the candidate, in NOTIONAL, excluding the candidate's own
+  // size — so no amount of trimming satisfies them. Below
+  // concentrationCapFloorPct a single ordinary position exceeds the entire
+  // budget for its own sector or cluster, which closes that sector with its own
+  // first trade at any equity and any stop. See targetTune.ts for the
+  // arithmetic and the live case that found it.
+  //
+  // Reported, never applied: raising a cap ADDS exposure, and the standing rule
+  // is that the app only ever applies the direction that reduces it.
+  const capFloorPct = concentrationCapFloorPct(cfg);
+  for (const [field, stored] of [
+    ['maxSectorExposurePct', cfg.maxSectorExposurePct],
+    ['maxCorrelatedExposurePct', cfg.maxCorrelatedExposurePct],
+  ] as const) {
+    if (capFloorPct <= 0 || stored <= 0 || stored >= capFloorPct) continue;
+    out.push({
+      id: `configuration:concentration_cap:${field}`,
+      kind: 'configuration',
+      label: `${field} is smaller than one position`,
+      count: 1,
+      detail:
+        `${field} is ${stored}% of equity while the per-order cap permits a single position of ` +
+        `${capFloorPct}% (riskPerTradePct ${cfg.riskPerTradePct} over a ${cfg.maxStopDistancePct}% widest stop, ` +
+        'times the order cap’s headroom). One ordinary position therefore fills this budget on its own, so the ' +
+        'sector or cluster is closed by its own first trade — no size, stop or equity makes room for a second.',
+      lever: {
+        kind: 'config',
+        field,
+        value: capFloorPct,
+        direction: 'exposure',
+        detail:
+          `${capFloorPct} is the floor at which the cap stops contradicting the sizer, not a recommendation — at or ` +
+          'above it the number is a diversification choice someone made. Raising a cap adds exposure, so this ' +
+          'waits for the operator.',
+      },
+    });
+  }
+
   const since = now - 7 * 24 * 60 * 60 * 1000;
   const tuner = listAutotradeEvents({ stage: 'config', since, limit: 200 }).filter(
     (e) => e.action.startsWith('auto_tune_') && !TUNER_TRANSITION_ACTIONS.includes(e.action),
@@ -730,7 +772,7 @@ export function collectOptionsFlowFindings(cfg: AutotradeConfig, now: number): S
  *  catch a real turnover, large enough that noise does not report itself. */
 export const SCORING_SHADOW_TURNOVER_PCT = 1;
 
-export function collectScoringShadowFinding(now: number): ScanFinding[] {
+export function collectScoringShadowFinding(cfg: AutotradeConfig, now: number): ScanFinding[] {
   let date = etToday(now);
   for (let i = 0; i < EXECUTION_LOOKBACK_SESSIONS; i++) date = previousTradingSession(date);
   const since = etDateTimeToMs(date, '00:00') ?? now - EXECUTION_LOOKBACK_SESSIONS * 24 * 60 * 60 * 1000;
@@ -745,6 +787,13 @@ export function collectScoringShadowFinding(now: number): ScanFinding[] {
   let zeroPace = 0;
   let enabled = false;
   let lastSeen: string | null = null;
+  // The ladder, summed rung-by-rung across ticks. Shape is taken from the
+  // rows themselves so an older row written before SCORE_LADDER existed (or a
+  // future row with a different ladder) is skipped rather than mis-summed.
+  let ladder: number[] | null = null;
+  let ladderRaw: number[] = [];
+  let ladderPace: number[] = [];
+  let ladderTicks = 0;
   for (const e of events) {
     if (e.detail === null) continue;
     let d: Record<string, unknown>;
@@ -765,12 +814,41 @@ export function collectScoringShadowFinding(now: number): ScanFinding[] {
     delta += num('meanTotalDelta');
     zeroRaw += num('relVolComponentZeroRaw');
     zeroPace += num('relVolComponentZeroPace');
+    const rungs = d.scoreLadder;
+    const raw = d.ladderRawAtOrAbove;
+    const pace = d.ladderPaceAtOrAbove;
+    if (
+      Array.isArray(rungs) &&
+      Array.isArray(raw) &&
+      Array.isArray(pace) &&
+      rungs.length > 1 &&
+      raw.length === rungs.length &&
+      pace.length === rungs.length &&
+      (ladder === null || ladder.length === rungs.length)
+    ) {
+      if (ladder === null) {
+        ladder = rungs as number[];
+        ladderRaw = rungs.map(() => 0);
+        ladderPace = rungs.map(() => 0);
+      }
+      for (let i = 0; i < rungs.length; i++) {
+        ladderRaw[i] += Number(raw[i]) || 0;
+        ladderPace[i] += Number(pace[i]) || 0;
+      }
+      ladderTicks += 1;
+    }
     const day = etToday(e.createdAt);
     if (lastSeen === null || day > lastSeen) lastSeen = day;
   }
   if (enabled || ticks === 0 || compared === 0) return [];
 
   const perTick = (n: number): number => Math.round((n / ticks) * 10) / 10;
+  // The floor that preserves today's selectivity under the other scoring —
+  // the number the spec's "re-fit before the flag goes on" rule asks for.
+  const equivalentFloor =
+    ladder !== null && ladderTicks > 0
+      ? equivalentPaceFloor(ladder, ladderRaw, ladderPace, cfg.liveMinSignalScore)
+      : null;
   const turnoverPct = ((pass + fail) / compared) * 100;
   if (turnoverPct < SCORING_SHADOW_TURNOVER_PCT) return [];
 
@@ -786,7 +864,12 @@ export function collectScoringShadowFinding(now: number): ScanFinding[] {
         `${perTick(fail)}, out of ${perTick(compared)} scored — ${turnoverPct.toFixed(1)}% of the universe changing ` +
         `sides, against a ${SCORING_SHADOW_TURNOVER_PCT}% "cosmetic" bar. Mean total score moves ` +
         `${perTick(delta) >= 0 ? '+' : ''}${perTick(delta)} points, and symbols scoring ZERO on the ` +
-        `relative-volume component fall from ${perTick(zeroRaw)} to ${perTick(zeroPace)} a tick.`,
+        `relative-volume component fall from ${perTick(zeroRaw)} to ${perTick(zeroPace)} a tick.` +
+        (equivalentFloor === null
+          ? ' The equivalent floor is not yet measurable — the ladder has not run, or the live floor sits outside it.'
+          : ` THE RE-FIT: pace scoring admits as many symbols at a floor of ${equivalentFloor} as the live ` +
+            `liveMinSignalScore of ${cfg.liveMinSignalScore} admits under raw scoring, measured over ${ladderTicks} ` +
+            'ticks of the score ladder rather than inferred from the mean shift.'),
       lever: {
         kind: 'code',
         field: null,
@@ -865,7 +948,7 @@ export function runEdgeLeakScanFromDb(opts: EdgeLeakScanOptions = {}): EdgeLeakS
     configuration: [
       ...collectConfigurationFindings(cfg, now),
       ...collectOptionsFlowFindings(cfg, now),
-      ...collectScoringShadowFinding(now),
+      ...collectScoringShadowFinding(cfg, now),
     ],
     entrySlippagePct,
     entryLimitBufferPct: MARKETABLE_LIMIT_BUFFER_PCT,
