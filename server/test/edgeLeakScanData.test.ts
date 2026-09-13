@@ -17,6 +17,10 @@ import { ROW_CAP } from '../src/db/autotradeEvents';
 import { recencySuffix } from '../src/services/autotrading/edgeLeakScan';
 import { seedClosedAutotradeSessions, weekdaysEndingAt } from './helpers/autotradeSessions';
 import { etDateTimeToMs } from '../src/util/marketDate';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { computeRiskSizing } from '../src/services/riskSizing';
+import { maxAffordablePremiumPerShare, riskPctUpperBound } from '../src/services/autotrading/optionsAffordability';
 
 // ---------------------------------------------------------------------------
 // The DB half. What matters here is not the arithmetic (edgeLeakScan.test.ts
@@ -127,7 +131,16 @@ describe('the options sleeve, which nothing else in the scan can see', () => {
     expect(f.lever?.direction).toBe('research');
   });
 
-  it('says when probation is the thing halving it, and what it lifts to', () => {
+  // PROBATION IS NOT THE CONSTRAINT (2026-09-12). This case used to assert the
+  // opposite — a ceiling multiplied by the probation factor, and a lever saying
+  // to wait it out. The sizer decides affordability BEFORE probation is
+  // consulted (`optionsRiskCheck`'s `quantity` rule, which is what every
+  // refusal counted here failed), and the executor then scales the contract
+  // COUNT with a one-contract floor. So probation changes how many contracts
+  // are bought, never the largest premium one may cost — at any account size,
+  // and at this one, where the sizer reaches exactly one contract, it changes
+  // nothing at all.
+  it('does not attribute the ceiling to probation, which cannot move it', () => {
     setAutotradeConfig({
       ...defaultAutotradeConfig(),
       accountEquityUsd: 3522.81,
@@ -151,10 +164,61 @@ describe('the options sleeve, which nothing else in the scan can see', () => {
     ).run(JSON.stringify({ failedRules: ['quantity'] }), at);
 
     const [f] = collectOptionsFlowFindings(getAutotradeConfig(), now);
-    expect(f.detail).toMatch(/HALVED by probation \(0\.5x/);
-    // Halved to 0.79, lifting back to 1.57 when probation ends.
-    expect(f.detail).toMatch(/\$0\.79\/share/);
-    expect(f.detail).toMatch(/lifts to \$1\.57/);
+    // The SAME ceiling the case above reports with probation off.
+    expect(f.detail).toMatch(/largest affordable premium is \$1\.57\/share/);
+    expect(f.detail).toMatch(/unchanged by probation \(0\.5x, 10 trades left\)/);
+    expect(f.detail).not.toMatch(/HALVED/);
+    expect(f.detail).not.toMatch(/\$0\.79/);
+    // …and the lever no longer offers waiting it out as a remedy.
+    expect(f.lever?.detail).toMatch(/Probation is NOT the constraint/);
+    expect(f.lever?.detail).not.toMatch(/wait for probation to end/);
+  });
+
+  // ASSERTED AT THE CONSUMER, against the real sizer: a premium at the reported
+  // ceiling really does size, and the probation factor is nowhere in that
+  // arithmetic. If optionsRiskCheck ever starts consulting probation, this
+  // fails here rather than making the finding quietly wrong again.
+  it('a premium at the ceiling sizes one contract, with or without probation', () => {
+    const cfg = {
+      ...defaultAutotradeConfig(),
+      accountEquityUsd: 3522.81,
+      riskPerTradePct: 2.5,
+      methodWeightingEnabled: true,
+      expectancyMaxMultiplier: 1.25,
+      optionsDisasterStopPct: 70,
+    };
+    const ceiling = maxAffordablePremiumPerShare({
+      equityUsd: cfg.accountEquityUsd,
+      riskPctUpperBound: riskPctUpperBound(cfg),
+      disasterStopPct: cfg.optionsDisasterStopPct,
+    });
+    const sized = (premium: number, riskPct: number) =>
+      computeRiskSizing({
+        accountSize: cfg.accountEquityUsd,
+        riskPct,
+        entryPrice: premium,
+        stopPrice: Math.round(premium * (1 - cfg.optionsDisasterStopPct / 100) * 10000) / 10000,
+        assetType: 'option',
+        side: 'long',
+      }).suggestedQuantity;
+
+    // At the upper-bound risk % the ceiling is exactly the boundary…
+    expect(sized(ceiling - 0.01, riskPctUpperBound(cfg))).toBeGreaterThanOrEqual(1);
+    expect(sized(ceiling + 0.01, riskPctUpperBound(cfg))).toBe(0);
+    // …and the executor's clamp means a probation factor cannot take that 1 to
+    // 0, which is the whole reason the ceiling must not carry the factor.
+    for (const multiplier of [0.5, 0.25, 1]) {
+      expect(Math.max(1, Math.floor(1 * multiplier))).toBe(1);
+    }
+  });
+
+  it('the executor really does clamp probation at one contract', () => {
+    // A source scan, because the executor cannot be imported here (it pulls the
+    // broker). Weaker than a behavioural test and worth saying so: it catches
+    // the clamp being removed, which is the change that would make the ceiling
+    // above wrong.
+    const src = readFileSync(join(__dirname, '..', 'src', 'services', 'autotrading', 'liveOptionsExecute.ts'), 'utf8');
+    expect(src).toMatch(/Math\.max\(1, Math\.floor\(rawQuantity \* probation\.multiplier\)\)/);
   });
 
   it('stays silent when the sleeve is sizing fine', () => {

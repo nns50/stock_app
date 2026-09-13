@@ -634,15 +634,31 @@ export function collectOptionsFlowFindings(cfg: AutotradeConfig, now: number): S
 
   const placed = listAutotradeEventsInWindow({ actions: ['live_options_order_placed'], since }).events.length;
   const probation = getOptionsProbationStatus(cfg);
-  // The ceiling the sizer is actually working to: the risk-% upper bound the
-  // order cap is derived from, scaled by probation — the same halving the
-  // sizer applies, so this number is what a candidate must come in under.
-  const ceiling =
-    maxAffordablePremiumPerShare({
-      equityUsd: cfg.accountEquityUsd ?? 0,
-      riskPctUpperBound: riskPctUpperBound(cfg),
-      disasterStopPct: cfg.optionsDisasterStopPct,
-    }) * (probation.active ? probation.multiplier : 1);
+  // PROBATION DOES NOT MOVE THIS CEILING, at any account size (2026-09-12).
+  //
+  // This used to multiply the ceiling by the probation factor, with a comment
+  // calling it "the same halving the sizer applies". The sizer does not halve
+  // here. `optionsRiskCheck` decides affordability FIRST — a candidate is
+  // sizeable when `floor(riskDollars / (premium x lossFraction x 100)) >= 1`,
+  // which never mentions probation — and `liveOptionsExecute` then scales the
+  // CONTRACT COUNT it was handed, clamped to a minimum of one
+  // (`Math.max(1, Math.floor(rawQuantity * multiplier))`, whose own comment
+  // says "at one contract there is nothing left to cut"). So probation changes
+  // how many contracts are bought, never the largest premium one contract may
+  // cost, and it cannot turn an affordable candidate into a refused one.
+  //
+  // The halved figure was therefore wrong in the one direction that matters:
+  // it named probation as the binding constraint, and the lever told the
+  // operator to wait it out. At this account the sizer reaches exactly one
+  // contract, so waiting for probation to end would change nothing at all —
+  // advice to do nothing about a sleeve that is refusing 94% of its
+  // candidates. Every refusal counted above is a `quantity` refusal, decided
+  // before probation is consulted.
+  const ceiling = maxAffordablePremiumPerShare({
+    equityUsd: cfg.accountEquityUsd ?? 0,
+    riskPctUpperBound: riskPctUpperBound(cfg),
+    disasterStopPct: cfg.optionsDisasterStopPct,
+  });
 
   const pct = placed + sized > 0 ? Math.round((sized / (placed + sized)) * 100) : 0;
   return [
@@ -659,8 +675,8 @@ export function collectOptionsFlowFindings(cfg: AutotradeConfig, now: number): S
         `equity and a ${cfg.optionsDisasterStopPct}% disaster stop the largest affordable premium is ` +
         `$${ceiling.toFixed(2)}/share` +
         (probation.active
-          ? ` — HALVED by probation (${probation.multiplier}x, ${probation.tradesRemaining} trades left), which lifts to ` +
-            `$${(ceiling / probation.multiplier).toFixed(2)} when it ends`
+          ? ` — unchanged by probation (${probation.multiplier}x, ${probation.tradesRemaining} trades left), which ` +
+            'scales the contract COUNT with a one-contract floor and so cannot lower what a contract may cost'
           : '') +
         '.',
       lever: {
@@ -670,9 +686,11 @@ export function collectOptionsFlowFindings(cfg: AutotradeConfig, now: number): S
         direction: 'research',
         detail:
           'Not a defect and not a knob: one contract of a $2.93 option risks $205 at a 70% disaster stop, against a ' +
-          'per-trade budget a fraction of that. The honest options are to wait for probation to end, to trade the ' +
-          'sleeve only on names whose premium fits the ceiling, or to decide the sleeve does not suit an account ' +
-          'this size. Decide deliberately rather than letting it refuse quietly.',
+          'per-trade budget a fraction of that. Probation is NOT the constraint — it scales the contract count, ' +
+          'not the premium a contract may cost, and at one contract it is inert — so waiting it out changes ' +
+          'nothing. The honest options are to trade the sleeve only on names whose premium fits the ceiling, to ' +
+          'raise the equity behind it, or to decide the sleeve does not suit an account this size. Decide ' +
+          'deliberately rather than letting it refuse quietly.',
       },
     },
   ];

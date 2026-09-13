@@ -8540,13 +8540,20 @@ on a small account, so it is reported as a `configuration` finding with the
 binding number said out loud rather than left to be derived:
 
 ```
-largest affordable premium is $1.57/share — HALVED by probation
-(0.5x, 8 trades left), which lifts to $3.14 when it ends
+largest affordable premium is $1.57/share — unchanged by probation
+(0.5x, 8 trades left), which scales the contract COUNT with a
+one-contract floor and so cannot lower what a contract may cost
 ```
 
 The ceiling reconciles the deployed order cap exactly: equity $3,522.81 ×
 (2.5% × 1.25 expectancy lean, which applies because `methodWeightingEnabled`
 is on) ÷ 70% ÷ 100 = $1.57/share, and `ceil($1.57 × 100 × 1.5) = $236`.
+
+(That sentence originally read "HALVED by probation … lifts to $3.14", and the
+code behind it multiplied the ceiling by the probation factor. Both were wrong
+— see the 2026-09-12 section below. The reconciliation immediately above was
+always computed from the UNHALVED figure, so the section contradicted itself
+within four lines.)
 
 **And the advisor read ONLY execution findings**, so the entire `configuration`
 class — frozen caps, tuner rows that should not exist, suspect equity reads,
@@ -9630,3 +9637,39 @@ still read "manual-trading days excluded" after the 2026-09-12 change that delib
 (the manual exclusion belongs to `goalRatePct` alone, whose flag is the account-derived one). The
 code was right and the sentence one line above it was wrong — the cheapest possible way to talk a
 reader out of a correct number.
+
+## 2026-09-12 — probation was named as the options sleeve's binding constraint, and it is not one
+
+**The claim.** The leak scan's `configuration:options_unsizable` finding — the options
+sleeve's only diagnostic, and it fires on 94% of that sleeve's candidates — multiplied the
+premium ceiling by the probation size factor and said so: *"the largest affordable premium is
+$0.79/share — HALVED by probation (0.5x, 8 trades left), which lifts to $1.57 when it ends."*
+Its lever then offered, first among three remedies, *"wait for probation to end"*. The comment
+in the code called the multiplication "the same halving the sizer applies".
+
+**The sizer does not halve there.** Affordability and probation happen in that order and are
+independent:
+
+1. `optionsRiskCheck`'s `quantity` rule decides whether a candidate can be sized at all:
+   `floor(riskDollars / (premium × lossFraction × 100)) >= 1`. Probation appears nowhere in it,
+   and every refusal the finding counts is a `quantity` refusal.
+2. `liveOptionsExecute` then scales the contract COUNT it was handed —
+   `Math.max(1, Math.floor(rawQuantity × probation.multiplier))`. The floor is deliberate and
+   its own comment says why: *"at one contract there is nothing left to cut."*
+
+So probation changes how many contracts are bought, never the largest premium one contract may
+cost. It cannot turn an affordable candidate into a refused one **at any account size** — and at
+this one, where the sizer reaches exactly one contract, it changes nothing whatsoever.
+
+**Why it mattered.** The finding pointed at the wrong cause and then recommended waiting it out:
+advice to do nothing, about a sleeve refusing 94% of its candidates, with the reported ceiling
+understated by half. The real constraint is the one the arithmetic in the same finding already
+shows — equity. The lever now says that, and drops "wait for probation" entirely.
+
+**Guarded at the consumer.** `edgeLeakScanData.test.ts` asserts the reported ceiling is
+identical with probation active and inactive, drives a premium at the ceiling through the REAL
+`computeRiskSizing` to show it sizes without probation in the arithmetic, and scans
+`liveOptionsExecute.ts` for the one-contract clamp — the change that would make the ceiling wrong
+again. The case it replaces asserted the halving, so the old behaviour was pinned by a test: a
+reminder that a test only proves the code does what someone believed, and the belief is the part
+worth re-deriving.
