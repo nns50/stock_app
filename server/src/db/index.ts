@@ -489,7 +489,12 @@ CREATE TABLE IF NOT EXISTS gated_switch_state (
   contradictions          INTEGER NOT NULL,
   last_met                INTEGER NOT NULL,
   last_evaluated_et_date  TEXT,
-  graduated_at            INTEGER
+  graduated_at            INTEGER,
+  -- The patch the rule last PROPOSED, as JSON. Kept so the next session can
+  -- ask whether it is now in force -- by anyone's hand, not just the app's.
+  -- Without it, the operator applying a proposal while the rule was still
+  -- shadowed read as the rule contradicting itself and barred it for good.
+  last_proposed_patch     TEXT
 );
 
 -- One row per trading session: what the day actually did (2026-09-12).
@@ -1585,6 +1590,16 @@ function migrate(): void {
   ] as const) {
     const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
     if (!cols.some((c) => c.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} REAL`);
+  }
+
+  // 2026-09-13: the shadow record remembers the patch it proposed, so a
+  // proposal the OPERATOR acted on is not counted against the rule. TEXT, so
+  // it gets its own loop rather than joining the REAL list above.
+  {
+    const cols = db.prepare(`PRAGMA table_info(gated_switch_state)`).all() as { name: string }[];
+    if (!cols.some((c) => c.name === 'last_proposed_patch')) {
+      db.exec(`ALTER TABLE gated_switch_state ADD COLUMN last_proposed_patch TEXT`);
+    }
   }
 
   // 2026-08-26: the live stop ratchet's two columns (see the positions DDL

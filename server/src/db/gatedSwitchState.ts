@@ -1,5 +1,5 @@
 import { db } from './index';
-import type { SwitchState } from '../services/autotrading/gatedSwitches';
+import type { SwitchPatch, SwitchState } from '../services/autotrading/gatedSwitches';
 
 // ---------------------------------------------------------------------------
 // The gated-switch engine's shadow record — see the DDL comment in db/index.ts
@@ -14,6 +14,20 @@ interface Row {
   last_met: number;
   last_evaluated_et_date: string | null;
   graduated_at: number | null;
+  last_proposed_patch: string | null;
+}
+
+/** A stored patch that no longer parses is treated as ABSENT, not as an empty
+ *  patch: `patchInForce({})` is false by design, and silently returning `{}`
+ *  here would make a corrupt row look like a settled one. */
+function parsePatch(raw: string | null): SwitchPatch | null {
+  if (!raw) return null;
+  try {
+    const v: unknown = JSON.parse(raw);
+    return v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as SwitchPatch) : null;
+  } catch {
+    return null;
+  }
 }
 
 const map = (r: Row): SwitchState => ({
@@ -24,6 +38,7 @@ const map = (r: Row): SwitchState => ({
   lastMet: r.last_met === 1,
   lastEvaluatedEtDate: r.last_evaluated_et_date,
   graduatedAt: r.graduated_at,
+  lastProposedPatch: parsePatch(r.last_proposed_patch),
 });
 
 export function listSwitchStates(): Map<string, SwitchState> {
@@ -34,8 +49,9 @@ export function listSwitchStates(): Map<string, SwitchState> {
 export function saveSwitchState(s: SwitchState): void {
   db.prepare(
     `INSERT INTO gated_switch_state
-       (rule_id, evaluations, proposals, contradictions, last_met, last_evaluated_et_date, graduated_at)
-     VALUES (?,?,?,?,?,?,?)
+       (rule_id, evaluations, proposals, contradictions, last_met, last_evaluated_et_date, graduated_at,
+        last_proposed_patch)
+     VALUES (?,?,?,?,?,?,?,?)
      ON CONFLICT(rule_id) DO UPDATE SET
        evaluations = excluded.evaluations,
        proposals = excluded.proposals,
@@ -44,7 +60,11 @@ export function saveSwitchState(s: SwitchState): void {
        last_evaluated_et_date = excluded.last_evaluated_et_date,
        -- A graduation is one-way: once a rule has earned it, a later write
        -- that happens to carry null must not silently un-graduate it.
-       graduated_at = COALESCE(excluded.graduated_at, gated_switch_state.graduated_at)`,
+       graduated_at = COALESCE(excluded.graduated_at, gated_switch_state.graduated_at),
+       -- Same one-way reasoning as the graduation above: a quiet session
+       -- carries null and must not erase the patch the next contradiction
+       -- test is about to ask after.
+       last_proposed_patch = COALESCE(excluded.last_proposed_patch, gated_switch_state.last_proposed_patch)`,
   ).run(
     s.ruleId,
     s.evaluations,
@@ -53,5 +73,6 @@ export function saveSwitchState(s: SwitchState): void {
     s.lastMet ? 1 : 0,
     s.lastEvaluatedEtDate,
     s.graduatedAt,
+    s.lastProposedPatch ? JSON.stringify(s.lastProposedPatch) : null,
   );
 }

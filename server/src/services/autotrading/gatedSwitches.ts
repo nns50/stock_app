@@ -79,6 +79,27 @@ export const SWITCH_WRITABLE_KEYS: readonly SwitchWritableKey[] = [
 
 export type SwitchPatch = Partial<Pick<AutotradeConfig, SwitchWritableKey>>;
 
+/**
+ * Is every value in `patch` already what the config says?
+ *
+ * "The criterion lapsing is the fix working" is the rule the shadow record has
+ * always meant to apply — but until 2026-09-13 it only credited the APP's own
+ * write, and during the five-session shadow the operator is the one applying
+ * these patches by hand (the plan's Workstream 5 says so in as many words).
+ * So a rule that proposed, was acted on, and correctly went quiet recorded a
+ * CONTRADICTION and was barred from ever acting again. It was punished for
+ * being right and being listened to.
+ *
+ * Asking the config settles it without caring whose hand did it. Compared with
+ * Object.is so a 0 or an explicit false counts as a match rather than reading
+ * as absent.
+ */
+export function patchInForce(patch: SwitchPatch, config: AutotradeConfig): boolean {
+  const keys = Object.keys(patch) as (keyof SwitchPatch)[];
+  if (keys.length === 0) return false;
+  return keys.every((k) => Object.is(patch[k], config[k as keyof AutotradeConfig]));
+}
+
 /** Throws rather than writing a key no rule is allowed to touch. The leak
  *  scan's levers are data read out of a scan result, so "the rule only writes
  *  what its literal says" is not something the type system can promise here. */
@@ -293,10 +314,17 @@ export interface SwitchState {
   lastEvaluatedEtDate: string | null;
   /** Epoch ms the rule graduated from shadow to applying; null while shadowed. */
   graduatedAt: number | null;
+  /** The patch this rule last PROPOSED, kept so the next session can ask
+   *  whether it is now in force — see `patchInForce`. Two of the four safe
+   *  rules build their patch from data (the leak scan's lever, the derived
+   *  dollar caps), so a comparison against the rule's literal would not
+   *  answer it. Null when the rule has never fired. */
+  lastProposedPatch: SwitchPatch | null;
 }
 
 export const freshSwitchState = (ruleId: string): SwitchState => ({
   ruleId,
+  lastProposedPatch: null,
   evaluations: 0,
   proposals: 0,
   contradictions: 0,
@@ -369,13 +397,27 @@ export interface GatedSwitchResult {
   proposed: { ruleId: string; patch: SwitchPatch; evidence: string; direction: SwitchDirection }[];
 }
 
-/** Fold this session's reading into a rule's shadow record. */
-export function nextSwitchState(state: SwitchState, met: boolean, etDate: string, applied: boolean): SwitchState {
-  // A rule that proposed and now reads not-met, with nothing having been
-  // applied in between, contradicted itself. If its patch WAS applied, the
-  // criterion ceasing to hold is the patch working — the opposite of a
-  // contradiction — which is why `applied` is a parameter rather than inferred.
-  const contradicted = state.lastMet && !met && !applied;
+/**
+ * Fold this session's reading into a rule's shadow record.
+ *
+ * `applied` is whether the APP wrote the patch this session. `settled` is the
+ * wider question the contradiction test actually wants answered: is the patch
+ * the rule last proposed now in force, by anyone's hand? Without it the
+ * operator applying a proposal — the designed behaviour while a rule is still
+ * shadowed — reads as the rule flapping, and bars it permanently.
+ */
+export function nextSwitchState(
+  state: SwitchState,
+  met: boolean,
+  etDate: string,
+  applied: boolean,
+  settled = false,
+  proposedPatch: SwitchPatch | null = null,
+): SwitchState {
+  // A rule that proposed and now reads not-met, with its patch nowhere in
+  // force, contradicted itself. If the patch IS in force, the criterion
+  // ceasing to hold is the fix working — the opposite of a contradiction.
+  const contradicted = state.lastMet && !met && !applied && !settled;
   return {
     ruleId: state.ruleId,
     evaluations: state.evaluations + 1,
@@ -384,6 +426,9 @@ export function nextSwitchState(state: SwitchState, met: boolean, etDate: string
     lastMet: met,
     lastEvaluatedEtDate: etDate,
     graduatedAt: state.graduatedAt,
+    // Only a firing replaces it: a quiet session must not erase the patch the
+    // next contradiction test is about to ask after.
+    lastProposedPatch: proposedPatch ?? state.lastProposedPatch,
   };
 }
 
@@ -452,7 +497,18 @@ export function evaluateGatedSwitches(input: EvaluateInput): GatedSwitchResult {
       proposed.push({ ruleId: rule.id, patch: firing.patch, evidence: firing.evidence, direction: rule.direction });
     }
 
-    const folded = nextSwitchState(state, met, snapshot.etDate, outcome === 'applied');
+    // Was the patch this rule last proposed acted on by ANYONE since? The
+    // operator is who applies these while a rule is shadowed, and until this
+    // was asked their doing so counted against the rule.
+    const settled = state.lastProposedPatch !== null && patchInForce(state.lastProposedPatch, snapshot.config);
+    const folded = nextSwitchState(
+      state,
+      met,
+      snapshot.etDate,
+      outcome === 'applied',
+      settled,
+      firing ? firing.patch : null,
+    );
     decisions.push({
       rule,
       met,

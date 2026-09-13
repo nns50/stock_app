@@ -10127,3 +10127,66 @@ and left alone when the sizing moved.
 **Timing.** No session has run at the trial sizing — Step 1 landed before
 Monday's open and 2026-09-12 was a Saturday, so 09-14 is the first. This is a
 finding made before it cost a day rather than after.
+
+## 2026-09-13 — the gated-switch engine punished the operator for doing what it asked
+
+A safe rule that proposed, was acted on, and correctly went quiet was recorded
+as having contradicted itself — and barred from ever acting again.
+
+The shadow record's contradiction test is `lastMet && !met && !applied`, and
+`applied` means *the app* wrote the patch (`outcome === 'applied'`). During the
+five-session shadow the app writes nothing by design, so the hand that applies
+a proposal is the operator's — the plan's Workstream 5 says exactly that: "the
+routine applies the safe-direction rules by hand on the operator's standing
+authorization". The sequence that follows is:
+
+1. The rule is met, is still shadowed, and journals `config_change_proposed`.
+2. The operator applies the patch.
+3. Next session the criterion no longer holds, and nothing was applied *by the
+   app* — so `contradictions += 1`.
+4. `graduationVerdict` blocks on `contradictions > 0`, the counter never decays
+   (`nextSwitchState` only ever increments it), and the state is persisted in
+   `gated_switch_state`.
+
+The rule can never act on its own again, silently, for having been right.
+
+**The code already had the principle.** Its own test is named "does NOT count
+it when the patch was applied — the criterion lapsing is the fix working". It
+simply asked the narrower question. `patchInForce(patch, config)` asks the
+wider one: is every value in the patch already what the config says, by
+anyone's hand? Compared with `Object.is`, so a `false` or a `0` counts as a
+match rather than reading as absent — the whole of `overlay_revert`'s patch is
+`{ mlRegimeEnabled: false }`.
+
+Two of the four safe rules build their patch from data (the leak scan's lever,
+the derived dollar caps), so the question cannot be answered against a rule's
+literal. The shadow record now carries `lastProposedPatch`, persisted as JSON,
+and a quiet session does not erase it — the next contradiction test is exactly
+what it is being kept for. A stored patch that no longer parses is treated as
+ABSENT rather than as `{}`, because `patchInForce({})` is false by design and a
+corrupt row must not read as a settled one.
+
+**What did not change:** a rule that proposes and then goes quiet with its patch
+nowhere in force still records a contradiction and is still barred. That is the
+gate's purpose — a rule reading noise — and a test asserts it survives, because
+a fix that removed the gate instead of narrowing it would be worse than the bug.
+
+**Exposure:** `overlay_revert`, `leak_lever` and `frozen_cap` can all propose
+from session 1, inside the shadow window. `sizing_revert` was never exposed: it
+cannot propose until 10 active sessions, by which point `evaluations` is past
+the bar, so it graduates and applies on its first firing.
+
+**Status when found:** latent. The engine had journaled nothing — no proposal,
+no application, no graduation — and every rule was correctly quiet (the scan
+reports 0 leaks, the caps are anchor-owned, the overlay's tripwires are
+untripped, and the review has no sessions yet). Nothing had been lost; the trap
+was simply waiting for the first safe rule to fire.
+
+**Still open, and deliberately not decided here:** the single `contradictions >
+0` test is applied to two different kinds of criteria — a statistical reading
+that genuinely flaps (a mean day sitting near zero) and an event or state that
+legitimately clears (a cap re-anchored, a leak falling under the bar, a windowed
+count ageing out). Treating them identically is the "comparison whose two sides
+are not the same kind of thing" class. Whether the gate should also forgive the
+second kind is a judgement about how much autonomy the engine gets, and belongs
+to the operator rather than to this fix.
