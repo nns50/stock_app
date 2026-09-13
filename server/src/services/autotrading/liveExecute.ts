@@ -93,6 +93,7 @@ import { reentryCooldownFor, sameDaySymbolExits } from './reentryCooldown';
 import { etToday } from '../../util/marketDate';
 import { atr } from '../../indicators/indicators';
 import { planAroundLevels } from './levelPlan';
+import { MARKETABLE_LIMIT_BUFFER_PCT } from './marketableLimit';
 import { applyExternalCashFlow, evaluateDailyTarget } from './dailyTarget';
 import { evaluateEquitySync, freshEquityGuardState, EquityGuardState } from './equitySyncGuard';
 import { getDailyBaseline } from '../../db/dailyBaseline';
@@ -168,7 +169,10 @@ import { dispatchAutotradeNotification } from './notify';
  *  a LIMIT order priced this far beyond the last quote all but guarantees a
  *  fill without being a de facto unpriced market order (options don't support
  *  MARKET at all; guardrails.ts blocks it). */
-const MARKETABLE_LIMIT_BUFFER_PCT = 0.5;
+// The constant itself now lives in marketableLimit.ts — the edge-leak scan
+// needs it to read its own slippage rows, and two copies of a number that
+// decides what a fill is measured against is the divergence CLAUDE.md's
+// "agree by construction" rule exists to stop.
 
 /**
  * Let an intraday entry use the account's DAY-trading buying power.

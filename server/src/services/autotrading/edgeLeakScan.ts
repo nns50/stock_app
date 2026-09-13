@@ -1,4 +1,5 @@
 import { computeSignificanceStats } from './significance';
+import { meanBufferConsumedPct } from './marketableLimit';
 import {
   buildSessionPaths,
   DropReasons,
@@ -250,8 +251,21 @@ export interface AttributionReport {
   ciLow: number | null;
   ciHigh: number | null;
   pValue: number | null;
-  /** Mean live ENTRY slippage over the window, in % of the limit price. */
+  /** Mean live ENTRY slippage over the window, in % of the limit price.
+   *
+   *  STRUCTURALLY <= 0, and that is the whole reason the next two fields
+   *  exist: every live equity entry is a marketable LIMIT, and a limit fills at
+   *  or inside its own price. Read alone it invites "negative, so we are fine",
+   *  and it made a pre-committed playbook rule ("above 0.5% is an execution
+   *  finding") unfireable on any book. */
   meanEntrySlippagePct: number | null;
+  /** The buffer those limits were priced through (marketableLimit.ts). */
+  entryLimitBufferPct: number | null;
+  /** How much of that buffer the fills actually PAID AWAY: 0 = every fill
+   *  landed at the quote, `entryLimitBufferPct` = every fill landed at the
+   *  limit. This is the number the execution question is about, and the one
+   *  the finding below is raised on. */
+  meanEntryBufferConsumedPct: number | null;
   /** Paper entries with no live twin, by why the live book did not take it. */
   untaken: UntakenClass[];
 }
@@ -298,6 +312,10 @@ export interface EdgeLeakScanInput {
   configuration: ScanFinding[];
   /** Live ENTRY slippage rows over the window, in % of the limit price. */
   entrySlippagePct: number[];
+  /** The marketable-limit buffer those rows were priced through, in percent
+   *  (marketableLimit.ts). Without it the rows cannot be read — see
+   *  AttributionReport.meanEntrySlippagePct. */
+  entryLimitBufferPct: number;
   journalSkips: JournalSkip[];
   /** Whether `journalSkips` is the complete window or was cut short. */
   journalSkipsTruncated?: boolean;
@@ -692,6 +710,7 @@ export function buildAttribution(
    *  symbol. See classifyUntaken. */
   batchRefusals: BatchRefusal[],
   entrySlippagePct: number[],
+  entryLimitBufferPct: number,
   rng: () => number,
 ): AttributionReport {
   const liveByKey = new Map<string, LeakTrade[]>();
@@ -743,6 +762,8 @@ export function buildAttribution(
     meanEntrySlippagePct: entrySlippagePct.length
       ? round2(entrySlippagePct.reduce((s, p) => s + p, 0) / entrySlippagePct.length)
       : null,
+    entryLimitBufferPct: entrySlippagePct.length ? entryLimitBufferPct : null,
+    meanEntryBufferConsumedPct: meanBufferConsumedPct(entrySlippagePct, entryLimitBufferPct),
     untaken: [...byReason.entries()]
       .map(([reason, rows]) => ({
         reason,
@@ -871,6 +892,56 @@ export function paperControlDrift(paper: LeakTrade[]): {
   return { earlyMeanR: early, lateMeanR: late, driftR: round4(Math.abs(early - late)) };
 }
 
+// ---------------------------------------------------------------------------
+// THE SLIPPAGE RULE, MADE FIREABLE (2026-09-12).
+//
+// The playbook's pre-committed rule read "mean entry slippage above 0.5% is an
+// execution finding". The quantity it names — services/slippage.ts's `pct`,
+// the fill measured against its own LIMIT — cannot be positive: every live
+// equity entry is a marketable limit, and a limit fills at or inside its price.
+// So the rule was unfireable on any book, in any market, forever, while reading
+// on the page like a live check. Exactly the disease this scan exists to end,
+// inside the scan's own documentation.
+//
+// The fireable version asks how much of the marketable-limit CONCESSION the
+// fills actually paid away (marketableLimit.ts). Half the buffer is the bar:
+// below it the limits are buying marketability nearly free, above it the book is
+// systematically crossing further than it needs to and the entry price itself is
+// costing edge. A minimum sample, because two bad fills are not a regime.
+// ---------------------------------------------------------------------------
+
+/** Entry fills needed before the concession is worth judging. */
+export const SLIPPAGE_MIN_TRADES = 20;
+
+function slippageFinding(entrySlippagePct: number[], bufferPct: number): ScanFinding[] {
+  const consumed = meanBufferConsumedPct(entrySlippagePct, bufferPct);
+  if (consumed === null || entrySlippagePct.length < SLIPPAGE_MIN_TRADES) return [];
+  if (!(bufferPct > 0) || consumed <= bufferPct / 2) return [];
+  return [
+    {
+      id: 'execution:entry_slippage',
+      kind: 'execution',
+      label: 'Entry fills are paying away the marketable-limit buffer',
+      count: entrySlippagePct.length,
+      lastSeenEtDate: null,
+      sessionsSinceLastSeen: null,
+      detail:
+        `${entrySlippagePct.length} live entries consumed ${consumed}% of the ${bufferPct}% marketable-limit ` +
+        `buffer on average, past the ${round2(bufferPct / 2)}% half-buffer bar — the entry price itself is ` +
+        'costing edge, not just the decision.',
+      lever: {
+        kind: 'code',
+        field: null,
+        value: null,
+        direction: 'safe',
+        detail:
+          'Read the per-symbol rows: a single illiquid name usually carries it, and excluding that name is the ' +
+          'cheap fix. A book-wide figure means the buffer or the order type is the thing to change.',
+      },
+    },
+  ];
+}
+
 export function runEdgeLeakScan(input: EdgeLeakScanInput): EdgeLeakScanResult {
   const rng = input.rng ?? mulberry32(SCAN_RNG_SEED);
   const live = input.live.trades;
@@ -901,6 +972,7 @@ export function runEdgeLeakScan(input: EdgeLeakScanInput): EdgeLeakScanResult {
         detail: 'An execution failure is a defect to fix, not a setting to change.',
       },
     })),
+    ...slippageFinding(input.entrySlippagePct, input.entryLimitBufferPct),
     ...input.configuration,
   ];
 
@@ -919,6 +991,7 @@ export function runEdgeLeakScan(input: EdgeLeakScanInput): EdgeLeakScanResult {
       input.journalSkips,
       input.batchRefusals ?? [],
       input.entrySlippagePct,
+      input.entryLimitBufferPct,
       rng,
     ),
     coverage: {

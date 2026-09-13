@@ -337,6 +337,13 @@ describe('liveExecute hands the finish line the risk the trade will really take'
 describe('neither live executor feeds the trim the raw config risk %', () => {
   const EXECUTORS = ['liveExecute.ts', 'liveOptionsExecute.ts'] as const;
 
+  /** The argument object of an executor's computeFinishLineFactor call. */
+  const finishLineArgs = (name: string): string => {
+    const src = readFileSync(join(__dirname, '..', 'src', 'services', 'autotrading', name), 'utf8');
+    const call = src.slice(src.indexOf('computeFinishLineFactor({'));
+    return call.slice(0, call.indexOf('});') + 3);
+  };
+
   it.each(EXECUTORS)('%s derives the basis through preFinishLineRiskPct', (name) => {
     const src = readFileSync(join(__dirname, '..', 'src', 'services', 'autotrading', name), 'utf8');
     const call = src.slice(src.indexOf('computeFinishLineFactor({'));
@@ -352,12 +359,35 @@ describe('neither live executor feeds the trim the raw config risk %', () => {
   // the tightened trade can never produce and trim too deep, the defect above
   // in a new coat.
   it.each(EXECUTORS)('%s hands the trim the regime-tightened reward multiple, never the raw config target', (name) => {
-    const src = readFileSync(join(__dirname, '..', 'src', 'services', 'autotrading', name), 'utf8');
-    const call = src.slice(src.indexOf('computeFinishLineFactor({'));
-    const args = call.slice(0, call.indexOf('});') + 3);
-    expect(args).toMatch(/rewardMultiple:\s*regimeAdjustedTargets\(cfg, regime\.effectiveRegime\)/);
+    const args = finishLineArgs(name);
+    expect(args).toMatch(/regimeAdjustedTargets\(cfg, regime\.effectiveRegime\)/);
     expect(args).not.toMatch(/rewardMultiple:\s*cfg\.targetRMultiple/);
     expect(args).not.toMatch(/rewardMultiple:\s*cfg\.optionsTakeProfitPct/);
+  });
+
+  // A PERCENT OF PREMIUM IS NOT A MULTIPLE OF R (2026-09-12).
+  //
+  // computeFinishLineFactor's payoff is `equity x riskPct/100 x rewardMultiple`
+  // — its first factor is DOLLARS OF RISK. The equity book's targetRMultiple is
+  // already in those units; the options book's take-profit is a percent of
+  // PREMIUM, and only optionsDisasterStopPct of the premium is the risk that
+  // budget bought. Handed `optionsTakeProfitPct / 100` straight, the trim read
+  // a 60/70 winner as paying 0.6R when it pays 0.857R.
+  //
+  // The conversion is one shared function (optionsAffordability's
+  // optionsRewardMultiple, asserted there against the REAL sizer's output), so
+  // what is guarded here is only that the options executor goes through it and
+  // passes the disaster stop it must divide by.
+  it('liveOptionsExecute.ts converts the take-profit into R before the trim sees it', () => {
+    const args = finishLineArgs('liveOptionsExecute.ts');
+    expect(args).toMatch(/rewardMultiple:\s*optionsRewardMultiple\(/);
+    expect(args).toMatch(/cfg\.optionsDisasterStopPct/);
+    expect(args).not.toMatch(/optionsTakeProfitPct\s*\/\s*100/);
+  });
+
+  it('liveExecute.ts needs no conversion — targetRMultiple is already in R', () => {
+    const args = finishLineArgs('liveExecute.ts');
+    expect(args).toMatch(/rewardMultiple:\s*regimeAdjustedTargets\(cfg, regime\.effectiveRegime\)\.targetRMultiple/);
   });
 
   // The ML regime overlay (2026-09-08) is a second and third trigger of the

@@ -1368,7 +1368,9 @@ equally-weighted cards in the order they happened to be built:
   same switch also **tightens the profit target** in that regime by the **ML regime
   target tighten (%)** (default 30): the target R-multiple and the options take-profit
   % are both multiplied by (1 − tighten/100) at entry — a 2R target becomes 1.4R and a
-  60% take-profit 42% — the finish-line trim reasons about the tightened payoff, and the
+  60% take-profit 42% — the finish-line trim reasons about the tightened payoff (converted into
+  R for options, since a take-profit is a percent of premium while only the disaster-stop share
+  of that premium is the risk being sized), and the
   options exit rules read the regime stamped on the position at entry, so a High-Vol
   entry keeps its tighter target through a calm afternoon and a calm-tape entry is never
   tightened by a later switch. The **daily gain goal** follows the size cut, not the
@@ -2718,7 +2720,11 @@ rate, because a day is marked "goal reached" off the account equity crossing the
 
 **Why the mean red day is there.** "Red days as small as possible" is one of the two
 stated objectives, and the worst day cannot measure it: one −3% day among small ones and
-a run of −3% days show the same worst day. The yardstick is **mean red day ≤ −1.5%**.
+a run of −3% days show the same worst day. The yardstick is **mean red day ≤ −1.5%**, and
+the pre-committed sizing review carries its own copy of that number over *its* window (the
+active sessions since the sizing changed) so the bar is always compared against a percentage
+— the edge-leak scan's red-day figures are in R over a different window and are not the same
+number.
 Note the unit — this is a mean of *percentages* over the calendar's window, while the
 edge-leak scan's red-day decomposition reports a mean in *R* over its own window. The two
 are not meant to agree; quote whichever the rule you are applying is written in.

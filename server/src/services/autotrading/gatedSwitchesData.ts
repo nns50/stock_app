@@ -133,7 +133,7 @@ export function buildSizingReview(
   }
   return {
     activeSessionsSinceChange: sessions.length,
-    meanDayPct: pcts.length ? Math.round((pcts.reduce((a, b) => a + b, 0) / pcts.length) * 100) / 100 : null,
+    meanDayPct: meanOf(pcts),
     // The goal rate is where the manual exclusion BELONGS, and it was the half
     // that did not have it. `goalReached` is stamped when the ACCOUNT equity
     // crosses the target (dailyTarget.ts reads the synced net liquidation), so
@@ -144,8 +144,18 @@ export function buildSizingReview(
     goalRatePct: judged.length
       ? Math.round((judged.filter((r) => r.goalReached).length / judged.length) * 1000) / 10
       : null,
+    // Decision 9's numbers, in Decision 9's unit. Same series as the mean, so
+    // "the mean day" and "the mean red day" cannot disagree about which
+    // sessions or which percentage they are talking about.
+    meanRedDayPct: meanOf(pcts.filter((p) => p < 0)),
+    worstDayPct: pcts.length ? Math.min(...pcts) : null,
     haltsMaxIn5,
   };
+}
+
+/** Mean of a percentage series, rounded to 2dp; null when it is empty. */
+function meanOf(xs: number[]): number | null {
+  return xs.length ? Math.round((xs.reduce((a, b) => a + b, 0) / xs.length) * 100) / 100 : null;
 }
 
 export function buildGatedSwitchSnapshot(now: number): GatedSwitchSnapshot {

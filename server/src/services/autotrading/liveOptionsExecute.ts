@@ -70,6 +70,7 @@ import { journalMethodMultipliers, methodOfOptionsSignal } from './methodSizing'
 import { activeSymbolCooldowns, journalEntrySkipOncePerDay } from './symbolCooldown';
 import { claimOncePerDay } from './oncePerDayEvents';
 import { computeFinishLineFactor, finishLineScoreGate } from './finishLine';
+import { optionsRewardMultiple } from './optionsAffordability';
 import { regimeAdjustedTargets, withRegimeAdjustedTargets } from './regimeTargets';
 import {
   NO_TICK_REGIME,
@@ -1189,10 +1190,29 @@ export async function runLiveOptionsExecution(
           method: methodMultiplier,
         }),
       ),
-      // What an options winner pays per $1 of premium risked: the take-profit
-      // % of premium, in R terms — the EFFECTIVE take-profit, tightened by the
-      // ML regime overlay under this tick's effective regime (regimeTargets.ts).
-      rewardMultiple: regimeAdjustedTargets(cfg, regime.effectiveRegime).optionsTakeProfitPct / 100,
+      // What an options winner pays per $1 of RISK. NOT the take-profit % on
+      // its own: that is a percent of PREMIUM, and only optionsDisasterStopPct
+      // of the premium is the risk the budget was spent on — see
+      // optionsRewardMultiple, which owns the conversion. The take-profit it
+      // converts is the EFFECTIVE one, tightened by the ML regime overlay under
+      // this tick's effective regime (regimeTargets.ts).
+      //
+      // NOT IN THIS BASIS, and deliberately: the options PROBATION cut. It is
+      // not a sizing factor — it multiplies the risk-checked CONTRACT COUNT
+      // (with a one-contract floor) after this trim has already run, so it
+      // cannot be expressed as a risk % the way step-down and the regime cut
+      // can, and it does not always bind. At an equity that affords a single
+      // contract the floor makes it a no-op, and folding a flat 0.5 in there
+      // would make the trim reason about half a payoff the trade really does
+      // produce — trading one wrong number for another. Where it DOES bind (an
+      // account that affords two or more contracts) the trim overstates the
+      // payoff and therefore trims a little deeper than it needs to near the
+      // bank line, which errs toward protecting the day. Written down rather
+      // than left to be rediscovered.
+      rewardMultiple: optionsRewardMultiple(
+        regimeAdjustedTargets(cfg, regime.effectiveRegime).optionsTakeProfitPct,
+        cfg.optionsDisasterStopPct,
+      ),
     });
     const ctx: RiskCheckContext = {
       // Options opt out — the finding was measured on 89 closed EQUITY trades.

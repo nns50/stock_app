@@ -6,6 +6,8 @@ import {
   filterAffordableUnderlyings,
   maxAffordablePremiumPerShare,
   maxAffordableUnderlyingPrice,
+  optionsMaxLossFraction,
+  optionsRewardMultiple,
   riskPctUpperBound,
 } from '../src/services/autotrading/optionsAffordability';
 
@@ -197,5 +199,78 @@ describe('filterAffordableUnderlyings — the consumer-visible verdict', () => {
     expect(
       filterAffordableUnderlyings(candidates, { ...LIVE, equityUsd: 25000 }, 1).kept.map((c) => c.symbol),
     ).toContain('COIN');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// optionsRewardMultiple — the finish-line trim's payoff, in the trim's units
+//
+// ASSERTED AT THE CONSUMER, not at the formula. computeFinishLineFactor takes
+// `equity x riskPerTradePct/100` as one full unit of risk and multiplies it by
+// `rewardMultiple` to get what a winner pays. So the test that matters is not
+// "does the ratio equal 60/70" — it is "does the number the trim computes
+// equal the dollars the real sizer and the real take-profit actually produce".
+// That is the assertion the old line (`optionsTakeProfitPct / 100`) fails, and
+// it fails by the whole disaster-stop fraction: 0.6R where the trade pays
+// 0.857R.
+// ---------------------------------------------------------------------------
+describe('optionsRewardMultiple — a percent of PREMIUM is not a multiple of R', () => {
+  /** What a take-profit fill really pays, in dollars, sized by the real sizer. */
+  function realWinUsd(premium: number, input: AffordabilityInputs, takeProfitPct: number): number {
+    const contracts = contractsFor(premium, input);
+    return contracts * 100 * premium * (takeProfitPct / 100);
+  }
+  /** What computeFinishLineFactor believes a full-size win pays. */
+  function trimWinUsd(input: AffordabilityInputs, takeProfitPct: number): number {
+    const fullRiskUsd = input.equityUsd * (input.riskPctUpperBound / 100);
+    return fullRiskUsd * optionsRewardMultiple(takeProfitPct, input.disasterStopPct);
+  }
+
+  it('is the take-profit over the disaster stop, not the take-profit over 100', () => {
+    expect(optionsRewardMultiple(60, 70)).toBeCloseTo(0.857, 3);
+    expect(optionsRewardMultiple(60, 70)).not.toBeCloseTo(0.6, 3);
+  });
+
+  it('matches what the REAL sizer plus the REAL take-profit pay, across equities and stops', () => {
+    const cases: { input: AffordabilityInputs; premium: number; tp: number }[] = [
+      { input: { equityUsd: 5137.44, riskPctUpperBound: 2.5, disasterStopPct: 70 }, premium: 0.9, tp: 60 },
+      { input: { equityUsd: 25_000, riskPctUpperBound: 2.5, disasterStopPct: 70 }, premium: 1.47, tp: 60 },
+      { input: { equityUsd: 25_000, riskPctUpperBound: 1.25, disasterStopPct: 50 }, premium: 0.5, tp: 80 },
+      { input: { equityUsd: 100_000, riskPctUpperBound: 2, disasterStopPct: 40 }, premium: 2.35, tp: 100 },
+    ];
+    for (const { input, premium, tp } of cases) {
+      const real = realWinUsd(premium, input, tp);
+      // Integer contracts round the sized position DOWN, so the real payoff sits
+      // at or just under the trim's continuous figure — never above it, and
+      // never by more than one contract's worth of take-profit.
+      const oneContract = 100 * premium * (tp / 100);
+      expect(real).toBeLessThanOrEqual(trimWinUsd(input, tp) + 1e-6);
+      expect(real).toBeGreaterThan(trimWinUsd(input, tp) - oneContract);
+      // …and the old basis (a percent of premium, taken straight) under-states
+      // the real payoff every time, by exactly the disaster-stop fraction. It
+      // is not a rounding difference: it is the missing unit conversion.
+      const oldBasis = input.equityUsd * (input.riskPctUpperBound / 100) * (tp / 100);
+      expect(oldBasis).toBeLessThan(real);
+      expect(oldBasis).toBeCloseTo(trimWinUsd(input, tp) * optionsMaxLossFraction(input.disasterStopPct), 6);
+    }
+  });
+
+  it('falls back to a percent of premium exactly when the disaster stop is off', () => {
+    for (const off of [undefined, 0, 100, 150, Number.NaN]) {
+      expect(optionsRewardMultiple(60, off)).toBeCloseTo(0.6, 10);
+      expect(optionsMaxLossFraction(off)).toBe(1);
+    }
+  });
+
+  it('falls with the regime tighten, because the disaster stop does not tighten with it', () => {
+    // regimeAdjustedTargets multiplies the take-profit by (1 - tighten/100).
+    expect(optionsRewardMultiple(60 * 0.85, 70)).toBeCloseTo(0.729, 3);
+    expect(optionsRewardMultiple(60 * 0.85, 70)).toBeLessThan(optionsRewardMultiple(60, 70));
+  });
+
+  it('is 0, never Infinity or NaN, for a take-profit that is unset or nonsense', () => {
+    for (const tp of [0, -5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(optionsRewardMultiple(tp, 70)).toBe(0);
+    }
   });
 });

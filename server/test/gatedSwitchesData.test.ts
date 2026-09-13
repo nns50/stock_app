@@ -134,6 +134,34 @@ describe('the review window', () => {
     expect(review.goalRatePct).toBe(0); // …but its banked day is not counted
   });
 
+  // DECISION 9'S NUMBERS, IN DECISION 9'S UNIT (2026-09-12).
+  //
+  // "Mean red day <= -1.5%" is the pre-committed bar, and until now the only
+  // red-day figures the app produced were the leak scan's meanRedSessionR /
+  // worstSessionR — in R. Read side by side, -1.274R looked like it cleared
+  // -1.5% when at 1.25% risk it is -1.59% and at 2.5% it would be -3.19%. Same
+  // series as meanDayPct, so the two cannot disagree about which sessions or
+  // which percentage they mean.
+  it('reports the mean red day and the worst day in PERCENT, off the strategy series', () => {
+    const rows = [
+      result('2026-09-08', { strategyGainPct: 2.4 }),
+      result('2026-09-09', { strategyGainPct: -1.2 }),
+      result('2026-09-10', { strategyGainPct: -2.6 }),
+      result('2026-09-11', { strategyGainPct: 0.4, manualTrading: true }),
+    ];
+    const review = buildSizingReview(rows, null);
+    expect(review.meanRedDayPct).toBe(-1.9); // (-1.2 + -2.6) / 2 — greens excluded
+    expect(review.worstDayPct).toBe(-2.6);
+    expect(review.meanDayPct).toBe(-0.25); // every session, manual included
+  });
+
+  it('says null rather than 0 when no session was red', () => {
+    const rows = [result('2026-09-08', { strategyGainPct: 1 }), result('2026-09-09', { strategyGainPct: 0.2 })];
+    const review = buildSizingReview(rows, null);
+    expect(review.meanRedDayPct).toBeNull();
+    expect(review.worstDayPct).toBe(0.2);
+  });
+
   it('finds the worst run of halts in any five consecutive sessions', () => {
     const rows = [
       result('2026-09-01', { drawdownHalted: true }),

@@ -322,23 +322,25 @@ export default function AboutPage() {
           switch <strong className="text-slate-200">tightens the profit target</strong> in that regime by the ML regime
           target tighten % (default 30): the equity target R-multiple and the options take-profit % are both multiplied
           by <span className="tabular-nums">1 − tighten/100</span> at entry (a 2R target becomes 1.4R, a 60% take-profit
-          42%), the finish-line trim reasons about that same tightened payoff, and the options exit rules read the
-          regime stamped on the position rather than today’s — so a High-Vol entry keeps its tighter target through a
-          calm afternoon and a calm-tape entry is never tightened later. The applied factor is stamped on every
-          position, and that stamp feeds the <strong className="text-slate-200">regime-tighten ledger</strong> (Journal
-          › Analytics): each closed stock trade’s MFE says whether the full, untightened target would have been reached,
-          and a counterfactual R takes the most optimistic case for the full target — reached means banked there with no
-          reversal, not reached means the untightened trade did as well as this one — read against realized R with a
-          bootstrap CI by a rule written before the first trade (30 trades; a counterfactual that beats realized R with
-          a CI excluding zero retires the tighten, one that cannot keeps it). With a{' '}
-          <strong className="text-slate-200">High-Vol conviction bar</strong> set (0 = off), a new live equity entry
-          must also clear that signal score while the effective regime is High Volatility/Bearish — the bar rises where
-          the size falls, a third source in the one live score gate beside the live conviction floor and the armed-day
-          bar, the strictest binding; paper keeps screening at the screen minimum. Nothing else acts on the reading,
-          except the backtest: it can replay the overlay from the walk-forward regime history — each simulated day reads
-          the previous session’s regime, never its own — so the cut, the tighten and the bar are measured out of sample
-          before any is trusted live, by a rule written before the run. The model card (docs/MARKET_REGIME_MODEL.md) has
-          the data, the validation, the enabling rules and what it does not do.
+          42%), the finish-line trim reasons about that same tightened payoff — converted into R for options, because a
+          take-profit is a percent of premium while only the disaster-stop share of that premium is the risk the
+          position was sized against — and the options exit rules read the regime stamped on the position rather than
+          today’s — so a High-Vol entry keeps its tighter target through a calm afternoon and a calm-tape entry is never
+          tightened later. The applied factor is stamped on every position, and that stamp feeds the{' '}
+          <strong className="text-slate-200">regime-tighten ledger</strong> (Journal › Analytics): each closed stock
+          trade’s MFE says whether the full, untightened target would have been reached, and a counterfactual R takes
+          the most optimistic case for the full target — reached means banked there with no reversal, not reached means
+          the untightened trade did as well as this one — read against realized R with a bootstrap CI by a rule written
+          before the first trade (30 trades; a counterfactual that beats realized R with a CI excluding zero retires the
+          tighten, one that cannot keeps it). With a <strong className="text-slate-200">High-Vol conviction bar</strong>{' '}
+          set (0 = off), a new live equity entry must also clear that signal score while the effective regime is High
+          Volatility/Bearish — the bar rises where the size falls, a third source in the one live score gate beside the
+          live conviction floor and the armed-day bar, the strictest binding; paper keeps screening at the screen
+          minimum. Nothing else acts on the reading, except the backtest: it can replay the overlay from the
+          walk-forward regime history — each simulated day reads the previous session’s regime, never its own — so the
+          cut, the tighten and the bar are measured out of sample before any is trusted live, by a rule written before
+          the run. The model card (docs/MARKET_REGIME_MODEL.md) has the data, the validation, the enabling rules and
+          what it does not do.
         </p>
       </Section>
 

@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { MARKETABLE_LIMIT_BUFFER_PCT } from '../src/services/autotrading/marketableLimit';
 import {
   BatchRefusal,
   buildAttribution,
@@ -10,6 +11,7 @@ import {
   mulberry32,
   paperControlDrift,
   runEdgeLeakScan,
+  SLIPPAGE_MIN_TRADES,
   verdictFor,
   WATCH_MIN_TRADES,
 } from '../src/services/autotrading/edgeLeakScan';
@@ -72,6 +74,7 @@ const scan = (live: LeakTrade[], paper: LeakTrade[] = [], over: Partial<Paramete
     execution: [],
     configuration: [],
     entrySlippagePct: [],
+    entryLimitBufferPct: MARKETABLE_LIMIT_BUFFER_PCT,
     journalSkips: [],
     asOf: Date.parse('2026-09-08T21:00:00Z'),
     rng: RNG(),
@@ -286,10 +289,17 @@ describe('attribution — where the live book loses the paper book’s edge', ()
   it('pairs the same decision in both books and reports the difference', () => {
     const live = [trade({ symbol: 'NVDA', entryAt: at('09:35'), r: 0.1 })];
     const paper = [trade({ symbol: 'NVDA', book: 'paper', entryAt: at('09:35') + 20_000, r: 0.4 })];
-    const a = buildAttribution(live, paper, [], [], [0.3, 0.5], RNG());
+    // Slippage rows are NEGATIVE by construction — a marketable limit fills at
+    // or inside its own price — so the fixture uses numbers the producer can
+    // actually emit. It used to use +0.3/+0.5, a shape no fill can have.
+    const a = buildAttribution(live, paper, [], [], [-0.3, -0.5], MARKETABLE_LIMIT_BUFFER_PCT, RNG());
     expect(a.pairedTrades).toBe(1);
     expect(a.meanDiffR).toBeCloseTo(-0.3, 4);
-    expect(a.meanEntrySlippagePct).toBeCloseTo(0.4, 2);
+    expect(a.meanEntrySlippagePct).toBeCloseTo(-0.4, 2);
+    // …and the readable version of the same rows: 0.5% buffer, 0.4% given back
+    // at the fill, so 0.1% of the concession was actually paid.
+    expect(a.entryLimitBufferPct).toBe(MARKETABLE_LIMIT_BUFFER_PCT);
+    expect(a.meanEntryBufferConsumedPct).toBeCloseTo(0.1, 2);
     expect(a.untaken).toEqual([]);
   });
 
@@ -305,7 +315,7 @@ describe('attribution — where the live book loses the paper book’s edge', ()
     // book genuinely traded counted as an unexplained refusal.
     const live = [trade({ symbol: 'NVDA', entryAt: at('09:35'), r: 0.1 })];
     const paper = [trade({ symbol: 'NVDA', book: 'paper', entryAt: at('10:05'), r: 0.4 })];
-    const a = buildAttribution(live, paper, [], [], [], RNG());
+    const a = buildAttribution(live, paper, [], [], [], MARKETABLE_LIMIT_BUFFER_PCT, RNG());
     expect(a.pairedTrades).toBe(1);
     expect(a.untaken).toEqual([]);
     // The looseness is REPORTED, not hidden in a constant.
@@ -317,7 +327,7 @@ describe('attribution — where the live book loses the paper book’s edge', ()
     // a different decision by any reading.
     const live = [trade({ symbol: 'NVDA', etDate: '2026-09-07', entryAt: at('09:35') - 86_400_000, r: 0.1 })];
     const paper = [trade({ symbol: 'NVDA', book: 'paper', entryAt: at('09:35'), r: 0.4 })];
-    const a = buildAttribution(live, paper, [], [], [], RNG());
+    const a = buildAttribution(live, paper, [], [], [], MARKETABLE_LIMIT_BUFFER_PCT, RNG());
     expect(a.pairedTrades).toBe(0);
     expect(a.untaken).toHaveLength(1);
   });
@@ -337,6 +347,7 @@ describe('attribution — where the live book loses the paper book’s edge', ()
       ],
       [],
       [],
+      MARKETABLE_LIMIT_BUFFER_PCT,
       RNG(),
     );
     const byReason = new Map(a.untaken.map((u) => [u.reason, u]));
@@ -358,7 +369,7 @@ describe('attribution — where the live book loses the paper book’s edge', ()
       trade({ symbol: 'GAP', book: 'paper', entryAt: at('15:56'), r: -0.2 }),
       trade({ symbol: 'ESTC', book: 'paper', entryAt: at('15:56') + 30_000, r: 0.1 }),
     ];
-    const a = buildAttribution([], paper, [], [ewc(at('15:56') + 2_000)], [], RNG());
+    const a = buildAttribution([], paper, [], [ewc(at('15:56') + 2_000)], [], MARKETABLE_LIMIT_BUFFER_PCT, RNG());
     const byReason = new Map(a.untaken.map((u) => [u.reason, u]));
     expect(byReason.get('entry_window_closed')?.n).toBe(2);
     expect(byReason.get('no_live_row')).toBeUndefined();
@@ -373,7 +384,7 @@ describe('attribution — where the live book loses the paper book’s edge', ()
     // was reached. Banking the day is the plan's GOAL — it must not accumulate
     // evidence that the strategy is leaking.
     const paper = [trade({ symbol: 'NVDA', book: 'paper', entryAt: at('14:10'), r: 0.6 })];
-    const a = buildAttribution([], paper, [], [halted(at('14:10') + 3_000)], [], RNG());
+    const a = buildAttribution([], paper, [], [halted(at('14:10') + 3_000)], [], MARKETABLE_LIMIT_BUFFER_PCT, RNG());
     expect(a.untaken[0].reason).toBe('live_entries_halted');
   });
 
@@ -382,7 +393,7 @@ describe('attribution — where the live book loses the paper book’s edge', ()
     // nothing, and nothing refused that name — so the gap stays a gap rather
     // than borrowing the nearest batch row for a cause.
     const paper = [trade({ symbol: 'NVDA', book: 'paper', entryAt: at('09:35'), r: 0.4 })];
-    const a = buildAttribution([], paper, [], [ewc(at('15:56'))], [], RNG());
+    const a = buildAttribution([], paper, [], [ewc(at('15:56'))], [], MARKETABLE_LIMIT_BUFFER_PCT, RNG());
     expect(a.untaken).toHaveLength(1);
     expect(a.untaken[0].reason).toBe('no_live_row');
   });
@@ -398,6 +409,7 @@ describe('attribution — where the live book loses the paper book’s edge', ()
       [{ symbol: 'HOOD', at: at('15:56'), action: 'live_score_floor_skipped', failedRule: null }],
       [ewc(at('15:56'))],
       [],
+      MARKETABLE_LIMIT_BUFFER_PCT,
       RNG(),
     );
     expect(a.untaken[0].reason).toBe('live_score_floor_skipped');
@@ -409,7 +421,7 @@ describe('attribution — where the live book loses the paper book’s edge', ()
       trade({ symbol: 'NVDA', book: 'paper', entryAt: at('09:35') + 5_000, r: 0.4 }),
       trade({ symbol: 'NVDA', book: 'paper', entryAt: at('09:35') + 10_000, r: 0.6 }),
     ];
-    const a = buildAttribution(live, paper, [], [], [], RNG());
+    const a = buildAttribution(live, paper, [], [], [], MARKETABLE_LIMIT_BUFFER_PCT, RNG());
     expect(a.pairedTrades).toBe(1);
     expect(a.untaken.reduce((s, u) => s + u.n, 0)).toBe(1);
   });
@@ -496,6 +508,7 @@ describe('determinism — the same book must produce the same scan', () => {
       execution: [],
       configuration: [],
       entrySlippagePct: [],
+      entryLimitBufferPct: MARKETABLE_LIMIT_BUFFER_PCT,
       journalSkips: [],
       asOf: 1,
     });
@@ -508,9 +521,57 @@ describe('determinism — the same book must produce the same scan', () => {
       execution: [],
       configuration: [],
       entrySlippagePct: [],
+      entryLimitBufferPct: MARKETABLE_LIMIT_BUFFER_PCT,
       journalSkips: [],
       asOf: 1,
     });
     expect(JSON.stringify(a)).toBe(JSON.stringify(b));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The slippage rule has to be able to FIRE (2026-09-12).
+//
+// The playbook's pre-committed rule was "mean entry slippage above 0.5% is an
+// execution finding", measured on a quantity that is <= 0 for every filled
+// marketable limit. These cases pin the fireable version: the share of the
+// buffer the fills paid away, against a half-buffer bar.
+// ---------------------------------------------------------------------------
+describe('entry slippage — the buffer is the thing that gets consumed', () => {
+  const B = MARKETABLE_LIMIT_BUFFER_PCT;
+  /** n rows at `pct`, the sign a real fill produces. */
+  const rows = (n: number, pct: number): number[] => Array.from({ length: n }, () => pct);
+  const slippage = (r: number[]) =>
+    scan([], [], { entrySlippagePct: r }).findings.find((f) => f.id === 'execution:entry_slippage');
+
+  it('a fill at the QUOTE consumes nothing; a fill at the LIMIT consumes the whole buffer', () => {
+    const atQuote = buildAttribution([], [], [], [], rows(4, -B), B, RNG());
+    expect(atQuote.meanEntryBufferConsumedPct).toBeCloseTo(0, 4);
+    const atLimit = buildAttribution([], [], [], [], rows(4, 0), B, RNG());
+    expect(atLimit.meanEntryBufferConsumedPct).toBeCloseTo(B, 4);
+  });
+
+  it('says nothing when the fills are landing near the quote', () => {
+    expect(slippage(rows(40, -0.45))).toBeUndefined();
+  });
+
+  it('raises a finding once more than half the buffer is being paid away', () => {
+    const f = slippage(rows(40, -0.1));
+    expect(f?.kind).toBe('execution');
+    expect(f?.count).toBe(40);
+    expect(f?.detail).toContain('0.4%');
+    expect(f?.lever?.direction).toBe('safe');
+  });
+
+  it('will not call two bad fills a regime', () => {
+    expect(slippage(rows(SLIPPAGE_MIN_TRADES - 1, -0.1))).toBeUndefined();
+    expect(slippage(rows(SLIPPAGE_MIN_TRADES, -0.1))).toBeDefined();
+  });
+
+  it('reports no buffer at all when there were no fills to measure', () => {
+    const a = buildAttribution([], [], [], [], [], B, RNG());
+    expect(a.meanEntrySlippagePct).toBeNull();
+    expect(a.entryLimitBufferPct).toBeNull();
+    expect(a.meanEntryBufferConsumedPct).toBeNull();
   });
 });
