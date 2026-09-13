@@ -1516,8 +1516,10 @@ equally-weighted cards in the order they happened to be built:
   2026-09-12 you do not have to remember to read that row: the edge-leak scan
   reads it for you and raises a finding when the set turns over materially,
   which on the deployed book it does — about fifteen symbols a tick newly pass
-  against a third of one newly failing, so the floor needs re-fitting before the
-  flag goes on),
+  against a third of one newly failing. That finding also does the re-fit: the
+  screen counts how many symbols reach each rung of a score ladder under both
+  scorings, so the scan can say what floor pace scoring admits the same set at,
+  measured rather than guessed from the average score move),
   **min move today (%)** (2026-08-25 — a candidate must have moved at least this far
   in the trade's own direction *today*: a long needs +this, a short −this. 0 = off. The
   rest of the screener is largely positional — momentum averages today's change with the

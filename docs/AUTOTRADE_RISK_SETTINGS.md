@@ -353,28 +353,42 @@ covered right after this one). If that already-correlated capital exceeds this
 percentage of your account, the new, similarly-moving trade is blocked, even though
 it would be a "different" symbol.
 
-*Example:* $100,000 account, 6% max correlated exposure → **$6,000 cap**. You hold a
-$5,000 position in one semiconductor stock, and a candidate in a second
-semiconductor stock (moving in near lock-step with the first, historically) would add
-another $5,000 of position value → $10,000 total in correlated names, which exceeds
-the $6,000 cap, so it's blocked — protecting you from what looks like "two trades"
-but is really one bet, doubled. That's the case when both positions are on the
-**same side** (both long, or both short) — the usual case, and the only one possible
-before the app could hold equity shorts at all.
+*Example:* $100,000 account, 6% max correlated exposure → **$6,000 cap**. You already
+hold **$7,000** across semiconductor names that move in near lock-step with a new
+candidate → $7,000 exceeds the $6,000 cap, so the candidate is blocked whatever size
+it would have been — protecting you from what looks like "another trade" but is
+really more of one bet you already own. That's the case when the existing positions
+are on the **same side** as the candidate (both long, or both short) — the usual
+case, and the only one possible before the app could hold equity shorts at all.
+
+(Note what the example does *not* do: it never adds the candidate's own position
+value. This version of the example used to, and that was wrong — see "The candidate's
+own size never counts against itself" below, which the code has always honoured and
+the arithmetic here contradicted.)
 
 Now that positions can be long or short, a correlated position on the **opposite**
-side from the candidate is a **hedge**, not a doubled bet, so it's netted out instead
-of added: *same example, but your $5,000 semiconductor position is **short** and the
-new candidate is a **long** in the closely-correlated second name* — already-correlated
-exposure counts as $5,000 − $5,000 = **$0**, nowhere near the $6,000 cap, since the
-two positions partially offset each other's risk rather than compound it. The netted
-total is floored at $0 either way — a hedge can bring the counted exposure down to
-zero, never into negative territory that would then "shield" other, unrelated risk
-elsewhere.
+side from the candidate is a **hedge**, not a doubled bet, so it's subtracted instead
+of added: *you hold a $7,000 **short** in one semiconductor name and a $7,000 **long**
+in another, and the candidate is a **long*** — the long counts +$7,000 and the short
+counts −$7,000, so already-correlated exposure is **$0**, nowhere near the $6,000 cap,
+since the two positions partially offset each other's risk rather than compound it.
+The netted total is floored at $0 either way — a hedge can bring the counted exposure
+down to zero, never into negative territory that would then "shield" other, unrelated
+risk elsewhere.
 
 The candidate's own size never counts against itself here — only capital that's
 *already* committed to correlated names. A single, isolated first trade is never
 blocked by this check just because it's "correlated with itself."
+
+**This cap, and max sector exposure, can exceed 100% (2026-09-12).** They measure
+*position value* against equity, and position value routinely exceeds equity on
+margin — the live account runs `liveMaxExposurePct` at 190. Both fields used to be
+validated at a maximum of 100 and silently clamped there, which made the coherent
+value unstorable: at 2.5% risk over a 2% stop a single position is **119% of equity**,
+so no legal value left room for a second name in the same sector or cluster. Set them
+above 100 when the sizing calls for it. The *risk* percentages beside them — max
+aggregate open risk, the daily drawdown — are still capped at 100, because risk above
+all of your equity is not a position, it is an arithmetic error.
 
 **Note:** unlike the other checks, this one doesn't currently have its own tile on
 the Monitoring dashboard — see [§7](#7-quick-answers-for-common-situations) for where

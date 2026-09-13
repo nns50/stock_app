@@ -9726,3 +9726,106 @@ re-fit is work to be scoped, not a knob to turn.
 against realized P&L in PR #44; re-fitting it against the pace-scored one is its own piece of
 work with its own evidence, and doing it in the same change that noticed the need would be
 deciding the question by the act of measuring it.
+
+## 2026-09-12 — two exposure ratios were wearing the risk sanitiser
+
+**What it is.** `maxSectorExposurePct` and `maxCorrelatedExposurePct` gate capital
+**already held** in a sector or in names correlated with the candidate. They are measured in
+NOTIONAL and, by deliberate design in `riskCheck.ts`, they exclude the candidate's own size —
+*"every symbol is trivially correlated with itself… position notional is typically many times
+the $ risk, since sizing is risk-based off a stop distance"*. So they cannot be satisfied by
+trimming an order; they are answered entirely by what is already open.
+
+Both were validated `z.number().min(0).max(100)` at the route and clamped by the config
+sanitiser's `pct()` helper — the same helper the genuine fractions-of-equity use (risk per
+trade, the daily drawdown, aggregate open risk). Their real sibling is `liveMaxExposurePct`,
+which measures the same quantity against the same denominator and has always been
+`nonnegative()`. It sits at **190** in production.
+
+**Why the clamp was a bug, not caution.** Notional-to-equity exceeds 1 on margin, routinely.
+At the trial sizing — `riskPerTradePct` 2.5 over a 2% stop — a single position is **119% of
+equity**. With the cap unable to exceed 100, *no legal value of either field could leave room
+for a second name in the same sector*. The control could not express a coherent setting, and a
+`PUT` of 150 returned **200 OK** and stored **100**: accepted, stored, wrong — the exact
+failure shape CLAUDE.md's three config guards exist for, in a field none of them covers.
+
+Probed on the deployed box at the live config: AAPL approved at $4,200 notional, MSFT then
+refused with *"$4,200.00 already in Information Technology vs cap $2,818.25 (80% of equity)"*.
+
+**The arithmetic, and why it drifted.** `concentrationCapFloorPct` (targetTune.ts) is the
+smallest a notional concentration cap can be without contradicting the sizer: the per-order cap
+as a percentage of equity — `sizerFloorFraction` (risk ÷ the widest stop) times
+`ORDER_CAP_SIZER_HEADROOM`, the same two terms `deriveDollarCaps` uses for `liveMaxOrderUsd`,
+so the two cannot drift apart. It moves when the sizing moves:
+
+| | risk % | widest stop | floor | the 80% caps |
+|---|---|---|---|---|
+| before 2026-09-12 | 1.25 | 2.5 | **75** | coherent |
+| the trial | 2.5 | 2.5 | **150** | one position fills the sector |
+
+Nobody edited the caps. The ground moved under them when Decision 1 raised risk, exposure and
+the aggregate together and left these two behind — which is why the scan now reports the gap
+rather than trusting anyone to re-derive it.
+
+**What shipped.** Both fields become `nonnegative()` at the route and `nonNeg()` in the
+sanitiser. `configuration:concentration_cap:<field>` reports a cap below the floor, with the
+floor as its lever value and `direction: 'exposure'` — raising a cap adds exposure, so the app
+reports and waits, always. The risk percentages beside them stay capped at 100, and a test pins
+that they do.
+
+**A doc that taught the opposite.** `AUTOTRADE_RISK_SETTINGS.md`'s worked example added the
+candidate's own $5,000 to reach the blocking total, four paragraphs above the sentence saying
+"the candidate's own size never counts against itself here". The example is corrected; it is
+how a reader (this one, for an hour) comes to believe the cap is about what a trade would add.
+
+**The shipped defaults are below the floor too** — `maxSectorExposurePct` 20,
+`maxCorrelatedExposurePct` 6 — and always have been, which is the un-fixed half of the
+2026-08-27 finding CLAUDE.md records ("a percentage chosen as if it were risk"). Production was
+hand-raised to 80 and the defaults never were. Left alone deliberately: changing a default
+changes every account that has not overridden it, and that is a decision, not a cleanup.
+
+## 2026-09-12 — the pace-scoring floor, re-fitted rather than guessed
+
+**The question the flag waits on.** The section above established that pace scoring is not
+cosmetic — ~15 symbols a tick newly pass against 0.3 newly failing. The spec's rule beside the
+shadow then says `liveMinSignalScore` "has to be re-fitted against the pace-scored distribution
+**before** the flag goes on". Nothing collected what a re-fit needs.
+
+**And a re-score after the fact is impossible.** The pace component is `relVolume ÷ the universe
+median this tick`. Neither term is persisted per symbol — `entry_components` stores the RAW
+component on each trade, and the shadow row is an aggregate. So the pace-scored total of any
+past entry cannot be reconstructed from anything the app has kept. Reaching for the mean shift
+instead (72 + 2.2 = 74.2) would be a number with no basis: the lift is not uniform, it is
+concentrated in the symbols that scored ZERO on the component under raw scoring (365 of 482 a
+tick, falling to 244).
+
+**What the screen already had in hand.** `runAutotradeScreen` computes BOTH scorings for every
+scored symbol each tick and keeps `best` for each — the score of the better side, returned
+precisely so a comparison can cover every symbol rather than only the survivors of the scoring
+under examination. The distribution therefore costs a pair of counters, not a re-run.
+
+**`SCORE_LADDER`** — 55, 60, 64, 66, 68, 70, 72, 74, 76, 78, 80, 85 — is counted both ways every
+tick and journaled on the shadow row as `ladderRawAtOrAbove` / `ladderPaceAtOrAbove` over
+`ladderScored`. Two-point resolution around the band any sane floor sits in (live 72, paper 60).
+
+**`equivalentPaceFloor`** (edgeLeakScan.ts) reads it: the floor that preserves today's
+selectivity is the pace rung admitting as many symbols as the live floor admits under raw
+scoring, linearly interpolated between rungs at both ends of the translation. It returns null
+off either end of the measured ladder rather than extrapolating, and the finding then says the
+floor is "not yet measurable" rather than naming one.
+
+The scan's `configuration:relvol_pace_scoring_shadow` finding now carries the answer directly:
+
+```
+THE RE-FIT: pace scoring admits as many symbols at a floor of <F> as the live
+liveMinSignalScore of 72 admits under raw scoring, measured over <N> ticks of
+the score ladder rather than inferred from the mean shift.
+```
+
+**Reading it, and what it still does not say.** The ladder answers the *distribution* half of
+PR #44's original fit — the floor that admits the same set. It does not answer the *realized
+edge* half, which needs closed trades at the new scoring and therefore cannot precede the flag
+without the chicken-and-egg the shadow exists to avoid. That is the honest division: translate
+the floor from the distribution now, then watch realized R against the pace score once the flag
+is on. Enabling remains the operator's — the turnover widens the candidate set, which adds
+exposure, so the lever stays `research` and the app never applies it.

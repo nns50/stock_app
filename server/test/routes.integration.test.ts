@@ -1504,6 +1504,37 @@ describe('autotrade config routes (integration)', () => {
     }
   });
 
+  // -------------------------------------------------------------------------
+  // EXPOSURE RATIOS ARE NOT RISK PERCENTAGES (2026-09-12).
+  //
+  // maxSectorExposurePct and maxCorrelatedExposurePct gate NOTIONAL already
+  // held, and notional-to-equity exceeds 1 on margin — the live account runs
+  // liveMaxExposurePct 190. Both were validated `.max(100)` and clamped by the
+  // config sanitiser's pct() helper, which made the coherent value UNSTORABLE:
+  // at riskPerTradePct 2.5 over a 2% stop one position is 119% of equity, so no
+  // legal value of either field left room for a second name in that sector.
+  //
+  // The generic sweep below cannot catch this: it round-trips a small number
+  // that clamping never touches. The clamp only shows on a value above 100,
+  // which is exactly the range the fields need.
+  // -------------------------------------------------------------------------
+  it('stores a concentration cap above 100% — it is an exposure ratio, not a fraction of equity', async () => {
+    for (const key of ['maxSectorExposurePct', 'maxCorrelatedExposurePct'] as const) {
+      const set = await put('/api/autotrade/config', { [key]: 150 });
+      expect(set.status, `${key} = 150`).toBe(200);
+      // The bug returned 100 here, with a 200 and no error — the shape of
+      // failure CLAUDE.md's config guards exist for: accepted, stored, wrong.
+      expect(((await getJson('/api/autotrade/config')) as Record<string, unknown>)[key]).toBe(150);
+    }
+  });
+
+  it('still caps the RISK percentages at 100 — those really are fractions of equity', async () => {
+    // The sibling that must NOT move: aggregate open risk is risk, and risk
+    // above 100% of equity is not a position, it is an arithmetic error.
+    const res = await put('/api/autotrade/config', { maxAggregateOpenRiskPct: 150 });
+    expect(res.status).toBe(400);
+  });
+
   it('rejects an inverted give-back pair, even when the two halves arrive in separate PUTs', async () => {
     // arm 2 / floor 1 is coherent; then a floor ABOVE the stored arm must fail
     // against the MERGED result, not just against the body — and the stored

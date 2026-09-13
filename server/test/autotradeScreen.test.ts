@@ -50,6 +50,7 @@ import {
   runAutotradeScreen,
   resetCandleIndicatorCache,
   resetWeeklyIndicatorCache,
+  SCORE_LADDER,
 } from '../src/services/autotrading/screen';
 import { clearEventsCache } from '../src/services/events';
 import { getProvider } from '../src/providers';
@@ -1112,6 +1113,40 @@ describe('relative-volume pace SCORING', () => {
     expect(d.relVolComponentZeroPace).toBe(BACKGROUND.length); // the movers are rescued
     expect(d.meanTotalDelta).toBeGreaterThan(0);
     expect(d.universeMedian).toBeCloseTo(0.2, 5);
+    spy.mockRestore();
+  });
+
+  it('carries the score LADDER, which is what a re-fit of the floor needs', async () => {
+    // The counts above say the set turns over; they cannot say at what floor
+    // pace scoring admits the same set, which is the question the spec's
+    // "re-fit before the flag goes on" rule actually asks. A faithful re-score
+    // after the fact is impossible — the pace component needs the tick's
+    // universe median and the symbol's intraday relVolume, neither persisted
+    // per symbol — so the distribution is counted here, where both totals are
+    // already in hand.
+    const spy = mockQuotes();
+    await runAutotradeScreen({ symbols: ALL, config: { filters: RELAXED_FILTERS } });
+    const d = shadowRow()! as unknown as {
+      scoreLadder: number[];
+      ladderScored: number;
+      ladderRawAtOrAbove: number[];
+      ladderPaceAtOrAbove: number[];
+    };
+    expect(d.scoreLadder).toEqual([...SCORE_LADDER]);
+    expect(d.ladderScored).toBe(ALL.length);
+    expect(d.ladderRawAtOrAbove).toHaveLength(SCORE_LADDER.length);
+    expect(d.ladderPaceAtOrAbove).toHaveLength(SCORE_LADDER.length);
+    // Non-increasing in the rung, as a "how many reach at least this" curve
+    // must be — the property equivalentPaceFloor's interpolation relies on.
+    for (const counts of [d.ladderRawAtOrAbove, d.ladderPaceAtOrAbove]) {
+      for (let i = 1; i < counts.length; i++) expect(counts[i]).toBeLessThanOrEqual(counts[i - 1]);
+      expect(counts[0]).toBeLessThanOrEqual(ALL.length);
+    }
+    // Pace scoring rescues the movers, so it admits at least as many at every
+    // rung — the direction the deployed shadow shows.
+    for (let i = 0; i < SCORE_LADDER.length; i++) {
+      expect(d.ladderPaceAtOrAbove[i], `rung ${SCORE_LADDER[i]}`).toBeGreaterThanOrEqual(d.ladderRawAtOrAbove[i]);
+    }
     spy.mockRestore();
   });
 
