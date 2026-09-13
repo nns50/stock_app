@@ -1535,6 +1535,37 @@ describe('autotrade config routes (integration)', () => {
     expect(res.status).toBe(400);
   });
 
+  // -------------------------------------------------------------------------
+  // THE OPTIONS LADDER'S GAIN SIDE IS UNBOUNDED (2026-09-12).
+  //
+  // Five fields on one ladder measure "% of premium GAINED" — a quantity with
+  // no ceiling, since an option can be worth several times what you paid. They
+  // were validated .max(100); optionsGiveBackArmPct, which measures the SAME
+  // quantity, never was. So a take-profit could not be set above "double your
+  // money" while a give-back could be armed at +150%, on one feature.
+  // -------------------------------------------------------------------------
+  it('stores an options gain trigger above 100% of premium', async () => {
+    for (const key of [
+      'optionsTakeProfitPct',
+      'optionsBreakevenTriggerPct',
+      'optionsTrailStartPct',
+      'optionsTrailStopPct',
+      'optionsPartialExitTriggerPct',
+    ] as const) {
+      const set = await put('/api/autotrade/config', { [key]: 150 });
+      expect(set.status, `${key} = 150`).toBe(200);
+      expect(((await getJson('/api/autotrade/config')) as Record<string, unknown>)[key]).toBe(150);
+    }
+    // The sibling this argument rests on, unchanged and already unbounded.
+    expect((await put('/api/autotrade/config', { optionsGiveBackArmPct: 150 })).status).toBe(200);
+  });
+
+  it('still caps what genuinely cannot exceed 100 — a loss, and a share of the position', async () => {
+    // You cannot lose more than the premium, or close more than you hold.
+    expect((await put('/api/autotrade/config', { optionsStopLossPct: 150 })).status).toBe(400);
+    expect((await put('/api/autotrade/config', { optionsPartialExitPct: 150 })).status).toBe(400);
+  });
+
   it('rejects an inverted give-back pair, even when the two halves arrive in separate PUTs', async () => {
     // arm 2 / floor 1 is coherent; then a floor ABOVE the stored arm must fail
     // against the MERGED result, not just against the body — and the stored

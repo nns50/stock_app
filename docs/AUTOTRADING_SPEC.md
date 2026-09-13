@@ -9829,3 +9829,42 @@ without the chicken-and-egg the shadow exists to avoid. That is the honest divis
 the floor from the distribution now, then watch realized R against the pace score once the flag
 is on. Enabling remains the operator's — the turnover widens the candidate set, which adds
 exposure, so the lever stays `research` and the app never applies it.
+
+## 2026-09-12 — the options ladder's gain side was capped at "double your money"
+
+**The inconsistency, inside one feature.** Six fields govern the short-dated options exit
+ladder, and five of them measure the same thing — **percent of premium GAINED**:
+
+| field | unit | validator before |
+|---|---|---|
+| `optionsGiveBackArmPct` (40) | % of premium gained | `nonnegative()` |
+| `optionsTakeProfitPct` (60) | % of premium gained | `.max(100)` |
+| `optionsBreakevenTriggerPct` | % of premium gained | `.max(100)` |
+| `optionsTrailStartPct` | % of premium gained | `.max(100)` |
+| `optionsTrailStopPct` | percentage points of gain, behind the peak | `.max(100)` |
+| `optionsPartialExitTriggerPct` | % of premium gained | `.max(100)` |
+| `optionsStopLossPct` (40) | % of premium **lost** | `.max(100)` |
+| `optionsPartialExitPct` | % of the **position** closed | `.max(100)` |
+
+Percent-of-premium-gained is unbounded above — an option can be worth three times what you paid,
+which is the entire reason the sleeve trades 0DTE contracts at all. `optionsGiveBackArmPct`
+measures exactly that quantity and has always been `nonnegative()`. Its five siblings were
+capped at 100, so **a take-profit could not be set above "double your money"**, a trail could
+not start above it, and a partial exit could not be triggered above it — while the give-back on
+the same ladder could arm at +150%.
+
+This is not a judgement call about the right level: the loss-side fields are correctly capped
+(you cannot lose more than the premium, or close more than the position you hold), which shows
+the distinction was understood and then applied unevenly across one block of the schema.
+
+**Not binding today, and said plainly.** Production runs take-profit 60 with the other four at
+0, so nothing is currently refused by the ceiling. It is a latent ceiling on the direction the
+evidence points: `OPTIONS_TUNING_PLAN`'s re-score found 40% and 30% take-profits read *worse*
+than 60 (≈ +13% / +9% of premium against +17%), so the next move on this ladder is upward, and
+100 is where it would have stopped.
+
+**What shipped.** The five gain-side fields become `nonnegative()` at all three schemas that
+carry them (the config route and both options backtest bodies) and `nonNeg()` in the sanitiser.
+The loss-side and share-of-position fields stay capped, with a test pinning that they do — the
+same shape as the concentration-cap change earlier the same day, and found by the same sweep:
+*for every written bound, ask what range the quantity can actually take.*
