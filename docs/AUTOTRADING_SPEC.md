@@ -7095,6 +7095,10 @@ the risk. If the set turns over materially, then `liveMinSignalScore` has to be
 re-fitted against the pace-scored distribution **before** the flag goes on — not
 after.
 
+**Since 2026-09-12 the edge-leak scan reads it, and the reading is done** — see
+the dated section below. The answer was not cosmetic: about **15 symbols newly
+pass per tick against 0.3 newly failing**. The re-fit comes first.
+
 ---
 
 ## Raising the excursion cap, and what it did NOT unblock (2026-09-08, corrected 2026-09-09)
@@ -9673,3 +9677,52 @@ identical with probation active and inactive, drives a premium at the ceiling th
 again. The case it replaces asserted the halving, so the old behaviour was pinned by a test: a
 reminder that a test only proves the code does what someone believed, and the belief is the part
 worth re-deriving.
+
+## 2026-09-12 — the scoring shadow nobody was reading, and what it says
+
+**The gap.** `relvol_pace_scoring_shadow` has been journaled once per tick since the pace
+scoring shipped behind `relVolUsePaceScoring` — roughly **200 rows a session**, on the deployed
+box for weeks — with the decision rule written directly beside it in this spec: *"If
+`wouldNewlyPass` and `wouldNewlyFail` are both small the change is cosmetic… If the set turns
+over materially, then `liveMinSignalScore` has to be re-fitted against the pace-scored
+distribution before the flag goes on."*
+
+Nothing read it. Not the leak scan, not the tune advisor, not the daily routine. The reading
+depended on someone remembering the row existed — the failure mode the Playbook's *"Rules that
+apply themselves"* section and Decision 11 (*"leaks are found by the app, not by the
+operator"*) are both written against. A measurement whose reading is a human's memory is a
+measurement that gets read when someone remembers.
+
+**What it says, read on the deployed box for the first time (2026-09-09 … 09-11, ~195 ticks a
+session, ~480 symbols scored a tick):**
+
+| | 09-09 | 09-10 | 09-11 |
+|---|---|---|---|
+| would newly **pass** / tick | 16.5 | 11.8 | 15.4 |
+| would newly **fail** / tick | 0.66 | 0.65 | 0.01 |
+| mean total score move | +2.20 | +2.01 | +2.31 |
+| scoring **zero** on the relative-volume component | 357 → 242 | 361 → 245 | 382 → 243 |
+
+Not cosmetic, and **one-sided**: roughly fifteen symbols enter the candidate set for every one
+third of a symbol that leaves it — about **3% of the scored universe changing sides every
+tick** — with the whole score distribution lifted about **+2.2 points**. A uniform lift of that
+size against a floor fitted to the RAW distribution is a `liveMinSignalScore` about two points
+lower than the one anyone agreed to. That is exactly what the spec's rule anticipated, which is
+why the rule says re-fit first.
+
+**What shipped.** `collectScoringShadowFinding` in `edgeLeakScanData.ts` averages the window's
+rows and raises `configuration:relvol_pace_scoring_shadow` when the share of the scored universe
+changing sides clears `SCORING_SHADOW_TURNOVER_PCT` (1% — about five symbols a tick, small
+enough to catch a real turnover and large enough that noise does not report itself). It goes
+silent on its own once `enabled` is true: the decision has been taken and re-reporting it would
+nag about a choice the operator made.
+
+**Its lever is `research`, deliberately, and can never be anything else.** The turnover widens
+the candidate set, so enabling the flag ADDS exposure and is the operator's call under the
+standing "safe direction auto, exposure on my word" rule — the app must never apply it. And the
+re-fit is work to be scoped, not a knob to turn.
+
+**Not done here:** the re-fit itself. `liveMinSignalScore` was fitted to the raw distribution
+against realized P&L in PR #44; re-fitting it against the pace-scored one is its own piece of
+work with its own evidence, and doing it in the same change that noticed the need would be
+deciding the question by the act of measuring it.

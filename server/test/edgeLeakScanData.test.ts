@@ -9,6 +9,7 @@ import {
   collectConfigurationFindings,
   collectExecutionFindings,
   collectOptionsFlowFindings,
+  collectScoringShadowFinding,
   joinLeakTrades,
   runEdgeLeakScanFromDb,
   storedTargetRFor,
@@ -226,6 +227,69 @@ describe('the options sleeve, which nothing else in the scan can see', () => {
     expect(collectOptionsFlowFindings(getAutotradeConfig(), etDateTimeToMs('2026-09-10', '17:00') as number)).toEqual(
       [],
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The scoring shadow, finally read (2026-09-12). It had journaled ~200 rows a
+// session for weeks with a written decision rule beside it and nothing in the
+// app reading it. These cases pin both branches of that rule.
+// ---------------------------------------------------------------------------
+describe('the scoring shadow', () => {
+  /** One tick's row, in the shape screen.ts actually writes. */
+  function shadowRow(at: number, over: Record<string, unknown> = {}) {
+    db.prepare(
+      "INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) VALUES (NULL,'screen','relvol_pace_scoring_shadow',?,NULL,?)",
+    ).run(
+      JSON.stringify({
+        enabled: false,
+        universeMedian: 0.58,
+        scored: 480,
+        compared: 480,
+        relVolComponentZeroRaw: 370,
+        relVolComponentZeroPace: 243,
+        meanTotalDelta: 2.2,
+        wouldNewlyPass: 15,
+        wouldNewlyFail: 0.3,
+        ...over,
+      }),
+      at,
+    );
+  }
+  const now = etDateTimeToMs('2026-09-10', '17:00') as number;
+  const at = etDateTimeToMs('2026-09-09', '10:00') as number;
+
+  it('reports the deployed reading: a one-sided turnover, as research', () => {
+    for (let i = 0; i < 10; i++) shadowRow(at + i);
+    const [f] = collectScoringShadowFinding(now);
+    expect(f).toBeTruthy();
+    expect(f.kind).toBe('configuration');
+    expect(f.count).toBe(10);
+    expect(f.lastSeenEtDate).toBe('2026-09-09');
+    // 15.3 of 480 = 3.2% of the universe changing sides.
+    expect(f.detail).toMatch(/newly PASS 15 symbols a tick and newly FAIL 0\.3/);
+    expect(f.detail).toMatch(/3\.2% of the universe changing sides/);
+    expect(f.detail).toMatch(/\+2\.2 points/);
+    expect(f.detail).toMatch(/fall from 370 to 243/);
+    // Enabling it WIDENS the set, so it can never be a config lever the app applies.
+    expect(f.lever?.direction).toBe('research');
+    expect(f.lever?.kind).toBe('code');
+    expect(f.lever?.detail).toMatch(/re-fit that floor/);
+  });
+
+  it('stays silent when the change really is cosmetic', () => {
+    for (let i = 0; i < 10; i++) shadowRow(at + i, { wouldNewlyPass: 2, wouldNewlyFail: 1 });
+    // 3 of 480 = 0.6%, under the 1% bar.
+    expect(collectScoringShadowFinding(now)).toEqual([]);
+  });
+
+  it('stops nagging once the flag is on — the decision has been taken', () => {
+    for (let i = 0; i < 10; i++) shadowRow(at + i, { enabled: true });
+    expect(collectScoringShadowFinding(now)).toEqual([]);
+  });
+
+  it('says nothing at all when the shadow has not run', () => {
+    expect(collectScoringShadowFinding(now)).toEqual([]);
   });
 });
 

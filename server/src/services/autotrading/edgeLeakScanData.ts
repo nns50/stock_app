@@ -696,6 +696,112 @@ export function collectOptionsFlowFindings(cfg: AutotradeConfig, now: number): S
   ];
 }
 
+// ---------------------------------------------------------------------------
+// THE SCORING SHADOW NOBODY WAS READING (2026-09-12).
+//
+// `relvol_pace_scoring_shadow` has been journaled once per tick since the pace
+// scoring shipped behind a flag — roughly 200 rows a session, on the deployed
+// box for weeks. The spec wrote the decision rule beside it: "Read a few
+// sessions... If `wouldNewlyPass` and `wouldNewlyFail` are both small the
+// change is cosmetic and the flag is not worth the risk. If the set turns over
+// materially, then `liveMinSignalScore` has to be re-fitted against the
+// pace-scored distribution BEFORE the flag goes on."
+//
+// Nothing read it. Not the scan, not the tune advisor, not the daily routine —
+// the reading depended on someone remembering the row existed, which is the
+// exact failure mode `docs/STRATEGY_PLAYBOOK.md`'s "Rules that apply
+// themselves" is written against, and Decision 11's "leaks are found by the
+// app, not by the operator".
+//
+// When it was finally read (2026-09-09..11, ~195 ticks a session) the answer
+// was not cosmetic and was one-sided: about **15 symbols newly PASS per tick
+// against 0.3 newly failing**, on ~480 scored, with the mean total score up
+// about **+2.2 points**. A uniform lift of that size against a floor fitted to
+// the raw distribution is a floor about two points lower than the one anyone
+// agreed to — which is precisely why the spec says re-fit first.
+//
+// So this reports, and it reports as RESEARCH. Enabling the flag widens the
+// candidate set, which adds exposure, so it is the operator's call and never
+// the app's; and the re-fit is work to be scoped, not a knob to turn.
+// ---------------------------------------------------------------------------
+
+/** Share of the scored universe that must change sides before the flag is more
+ *  than cosmetic. One percent of ~480 symbols is ~5 a tick — small enough to
+ *  catch a real turnover, large enough that noise does not report itself. */
+export const SCORING_SHADOW_TURNOVER_PCT = 1;
+
+export function collectScoringShadowFinding(now: number): ScanFinding[] {
+  let date = etToday(now);
+  for (let i = 0; i < EXECUTION_LOOKBACK_SESSIONS; i++) date = previousTradingSession(date);
+  const since = etDateTimeToMs(date, '00:00') ?? now - EXECUTION_LOOKBACK_SESSIONS * 24 * 60 * 60 * 1000;
+
+  const { events } = listAutotradeEventsInWindow({ actions: ['relvol_pace_scoring_shadow'], since });
+  let ticks = 0;
+  let compared = 0;
+  let pass = 0;
+  let fail = 0;
+  let delta = 0;
+  let zeroRaw = 0;
+  let zeroPace = 0;
+  let enabled = false;
+  let lastSeen: string | null = null;
+  for (const e of events) {
+    if (e.detail === null) continue;
+    let d: Record<string, unknown>;
+    try {
+      d = JSON.parse(e.detail) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    const num = (k: string): number => (typeof d[k] === 'number' ? (d[k] as number) : 0);
+    // The flag being ON makes this row a record of what the OLD scoring would
+    // do — the decision is already made, and re-reporting it would nag about a
+    // choice the operator has taken.
+    if (d.enabled === true) enabled = true;
+    ticks += 1;
+    compared += num('compared');
+    pass += num('wouldNewlyPass');
+    fail += num('wouldNewlyFail');
+    delta += num('meanTotalDelta');
+    zeroRaw += num('relVolComponentZeroRaw');
+    zeroPace += num('relVolComponentZeroPace');
+    const day = etToday(e.createdAt);
+    if (lastSeen === null || day > lastSeen) lastSeen = day;
+  }
+  if (enabled || ticks === 0 || compared === 0) return [];
+
+  const perTick = (n: number): number => Math.round((n / ticks) * 10) / 10;
+  const turnoverPct = ((pass + fail) / compared) * 100;
+  if (turnoverPct < SCORING_SHADOW_TURNOVER_PCT) return [];
+
+  return [
+    {
+      id: 'configuration:relvol_pace_scoring_shadow',
+      kind: 'configuration',
+      label: 'Pace scoring would change which symbols the screen picks',
+      count: ticks,
+      lastSeenEtDate: lastSeen,
+      detail:
+        `Over ${ticks} ticks, pace scoring would newly PASS ${perTick(pass)} symbols a tick and newly FAIL ` +
+        `${perTick(fail)}, out of ${perTick(compared)} scored — ${turnoverPct.toFixed(1)}% of the universe changing ` +
+        `sides, against a ${SCORING_SHADOW_TURNOVER_PCT}% "cosmetic" bar. Mean total score moves ` +
+        `${perTick(delta) >= 0 ? '+' : ''}${perTick(delta)} points, and symbols scoring ZERO on the ` +
+        `relative-volume component fall from ${perTick(zeroRaw)} to ${perTick(zeroPace)} a tick.`,
+      lever: {
+        kind: 'code',
+        field: null,
+        value: null,
+        direction: 'research',
+        detail:
+          'Not a switch to flip. The turnover is one-sided — it WIDENS the candidate set, which adds exposure, so ' +
+          "enabling relVolUsePaceScoring is the operator's call. And the spec's own rule comes first: a uniform " +
+          'lift in total score against a liveMinSignalScore fitted to the RAW distribution is a floor nobody agreed ' +
+          'to lower, so re-fit that floor against the pace-scored distribution BEFORE the flag goes on, not after.',
+      },
+    },
+  ];
+}
+
 /** The stored daily goal expressed in R at the stored risk % — the level the
  *  goal-rate is counted at. Null when no goal is armed or risk is 0, because
  *  "how often did we reach nothing" is not a question. */
@@ -756,7 +862,11 @@ export function runEdgeLeakScanFromDb(opts: EdgeLeakScanOptions = {}): EdgeLeakS
     lookbackSessions,
     storedTargetR: storedTargetRFor(cfg),
     execution: collectExecutionFindings(now),
-    configuration: [...collectConfigurationFindings(cfg, now), ...collectOptionsFlowFindings(cfg, now)],
+    configuration: [
+      ...collectConfigurationFindings(cfg, now),
+      ...collectOptionsFlowFindings(cfg, now),
+      ...collectScoringShadowFinding(now),
+    ],
     entrySlippagePct,
     entryLimitBufferPct: MARKETABLE_LIMIT_BUFFER_PCT,
     journalSkips: skipRead.skips,
