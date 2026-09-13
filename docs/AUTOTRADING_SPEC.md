@@ -9868,3 +9868,121 @@ carry them (the config route and both options backtest bodies) and `nonNeg()` in
 The loss-side and share-of-position fields stay capped, with a test pinning that they do — the
 same shape as the concentration-cap change earlier the same day, and found by the same sweep:
 *for every written bound, ask what range the quantity can actually take.*
+
+## 2026-09-13 — the entry was sized at a price it had already stopped paying
+
+The loop decided at one price and placed at another, and the gap landed on the
+account as risk nobody approved.
+
+`evaluateRiskCheck` sizes from `signal.entry` — the price the screener saw when
+it picked the name. `placeOneLiveEntry` then runs: the idempotency guard, the
+probation cut, and a **fresh quote**, from which it builds the marketable
+limit. Between those two moments the batch has awaited a broker round-trip for
+every candidate ahead of this one. Nothing revisited the quantity, and the
+bracket's stop goes in at `signal.stop` either way — so the whole drift became
+extra distance between the fill and the stop, on a share count sized for the
+old distance.
+
+It is one-sided, and the buffer is why. A marketable buy limit sits above the
+quote and fills at or inside it, so a long's fill is never meaningfully below
+the price the stop was hung from. Drift the other way costs nothing; drift this
+way is unbudgeted.
+
+**The record.** Every live row carrying `plannedStopDistancePct` (the
+2026-09-11 forensics column, capture-only until now), realized stop distance
+over planned:
+
+| symbol | fill | stop | planned | realized | realized ÷ planned |
+| --- | --- | --- | --- | --- | --- |
+| MRNA | 147.61 | 143.91 | 2.50% | 2.51% | 1.003 |
+| ACVA | 10.44 | 10.18 | 2.49% | 2.49% | 1.000 |
+| HPQ | 34.96 | 34.08 | 2.49% | 2.52% | 1.011 |
+| TNON | 9.42 | 9.17 | 2.45% | 2.65% | 1.083 |
+| SWKS | 91.23 | 87.91 | 2.50% | 3.64% | **1.456** |
+| DELL | 565.50 | 550.60 | 2.50% | 2.63% | 1.054 |
+| MRNA | 144.86 | 141.06 | 2.50% | 2.62% | 1.049 |
+
+Mean 1.094, median 1.049, and **not one below 1.000**. SWKS filled 1.19% above
+the price its stop was anchored to: a trade sized for 2.5% of equity risked
+3.64% of it. At the trial sizing that is most of a fourth of the daily halt on
+one position, and three such positions carry 8.2% against a 7.5% aggregate cap
+that believes it is holding the line.
+
+**Three derivations of one quantity, and the main one disagreed.** The
+scale-in add-on (`liveExecute.ts`) and the per-lot second lot both already
+computed `|limitPrice − stop| × qty`. The entry path recorded
+`approvedRiskAmount`, which is `|signal.entry − stop| × qty`. CLAUDE.md's rule
+is that two places deriving one quantity agree by construction, so all three
+now call `entryRisk.ts`'s `orderRiskAmount`.
+
+**Which price risk is measured at.** Not the limit, and the distinction is the
+difference between a fix and an over-correction. `guardrails.ts` values an
+order's *notional* at its limit because that is what the broker reserves — a
+limit order can consume every cent of its own limit. *Risk* is realized at the
+**fill**, and this book's fills consume 0.05% of the 0.5% buffer
+(`meanEntryBufferConsumedPct`, read 2026-09-12), so the fill lands essentially
+at the quote. Sizing at the limit would have over-stated risk by most of the
+buffer — at a 2.5% stop, a fifth of the position given away on every entry for
+a fill that does not happen. `riskBasisPrice` names the choice so the two
+prices stop looking interchangeable.
+
+**What changed.** After the limit is built, the entry re-derives the quantity
+against the placement quote and takes the **minimum** of that and the
+risk-checked size. Never the maximum: a favourable drift would fund more
+shares, but those shares never passed the guardrails and were never counted
+against the aggregate budget, so sizing up would spend headroom nobody checked.
+The order row, the batch's running risk total and `placedRiskUsd` all record
+the risk the order really carries. `live_entry_risk_resized` journals both
+prices, the drift, both quantities and what the unresized order would have
+risked.
+
+The budget takes the probation cut too. `approvedRiskAmount` is
+`riskPerUnit × suggestedQuantity` *before* the multiplier is applied, so at 0.5×
+it describes an order twice the size of the one being sent — a bound derived
+from it would have been loose enough to pass a doubled risk. The same
+overstatement is written down one sleeve over (`liveOptionsExecute.ts` scales it
+explicitly) and one field over (`placedNotionalUsd`, fixed for the same reason
+on an earlier pass). This is its third site.
+
+**What did NOT change, and why it matters:** R. `initialRiskOf` already
+measures the denominator from the **fill**, so the book's recorded edge was
+never flattered by any of this — only the size was. Re-anchoring the stop or
+the target to the fill would move exits, which is a trading decision, not a bug
+fix, and it waits for the operator's word.
+
+**The measurement.** The leak scan gains `execution:entry_drift`, fed from
+`live_order_placed` (which now carries `signalEntry` and `riskBasisPrice`
+beside `limitPrice` precisely so the question stays answerable after the fill
+lands). The bar is the marketable-limit buffer itself: below it the drift is
+smaller than the concession the loop already makes on purpose. The drift is
+**signed**, positive for adverse on both sides, because a book that pays up 3%
+half the time and saves 3% the other half is not a calm book and an unsigned
+mean would read as one.
+
+Separately, `fundableMaxQuantity`'s `boundBy` is finally read. It exists so a
+shrunk order says which of the three ceilings shrank it, and all four messages
+said "buying power" whatever the answer was — buying power is the broker's,
+`order_notional` is `liveMaxOrderUsd`, `account_exposure` is
+`liveMaxExposurePct`, and only the last two are within reach of a config
+change. Naming the wrong one sent the operator at a dial that cannot move.
+
+**What it costs, replayed on the seven rows that carry both prices.** Three are untouched
+(the quote had drifted favourably or not at all, and the rule only sizes down); the median
+keeps 99.4% of its shares; DELL 95%, MRNA 97%, HPQ 99%; and SWKS is cut to **66%**. Mean
+94%, but the mean is one trade. The measured drift itself is mean **+0.19%**, median
+**+0.014%**, worst **+1.26%** — so `execution:entry_drift` would NOT fire on this window
+(the bar is the 0.5% buffer, and n=7 is under its minimum of 10 anyway), which is the
+correct answer: the drift is a tail problem, not a book-wide one, and the rule is built to
+cap the tail rather than to shave every entry.
+
+This also separates two numbers that look alike. The 1.094 mean *inflation* above is
+measured at the FILL and includes the ~0.05% of price the marketable buffer costs on every
+fill — structural, and not something sizing can remove, since the stop is simply that much
+further from a fill than from a quote. The rule removes the DRIFT component only.
+
+**Pre-committed check on the next session:** the first `live_order_placed` row
+carries `signalEntry` and `riskBasisPrice`; a session with any adverse drift
+produces at least one `live_entry_risk_resized` whose `riskAtBasisUsd`
+exceeds its `approvedRiskUsd`; and
+`GET /api/journal/edge-leaks?sessions=40&book=live` reports
+`execution:entry_drift` only if the mean adverse drift exceeds 0.5%.

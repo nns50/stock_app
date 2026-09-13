@@ -902,6 +902,12 @@ tabs of one **Analytics** button (top right) — pick a tab, the report loads on
   against, and a manually logged or imported trade was never a live order at all, so
   neither is included. A consistent positive bias points at marketable limits or wide
   spreads at entry/exit.
+  This is **not** the same number as the Auto page's entry *drift* (2026-09-13): slippage
+  compares the fill to **your own limit** and so can only be zero or better, while drift
+  compares the **placement quote** to the price the position was *sized* at. A book can
+  fill perfectly inside every limit and still be placing at a materially worse price than
+  it decided at — which is exactly what was happening until the entry started re-sizing
+  against the placement quote.
 - **Stop overrun** (2026-07-28) — for every *stock* exit that was a **stop execution**,
   compares the realized exit price to the position's **declared stop**. Positive overrun
   means the exit landed **beyond** the stop (a gap-through or a wide spread), costing
@@ -947,7 +953,8 @@ tabs of one **Analytics** button (top right) — pick a tab, the report loads on
   (the same decision in both books, and why the live book skipped what paper took), and
   **findings** — anything that simply went wrong (an exit that failed, a position with no
   stop, a cap that no longer matches its own formula, a tuner row on a day the tuner is
-  off), where one occurrence is enough. It reads the database and the journal only: no
+  off, or **entries being placed at a worse price than they were decided at**, past the
+  0.5% the marketable-limit buffer concedes on purpose), where one occurrence is enough. It reads the database and the journal only: no
   market data, no provider quota. The Auto page shows the count and the worst open leak;
   the full table is here. It exists because every leak found in this book so far was
   found because a person happened to look, and all of them were already sitting in
@@ -1314,7 +1321,11 @@ equally-weighted cards in the order they happened to be built:
   concurrent positions** (ONE combined open-position budget shared by stocks and
   options — a stock position and an option position draw from the same pool) already
   worked: **risk per trade** (% of equity risked per trade, before any step-down cut;
-  for options this is premium paid, not notional exposure), **max daily drawdown** (%
+  for options this is premium paid, not notional exposure — and since 2026-09-13 a live
+  stock entry re-checks this against the **placement quote** just before it sends, so a
+  stock that moved between the screener's tick and the order gets fewer shares rather
+  than more risk; it only ever sizes DOWN, and `live_entry_risk_resized` in the
+  journal shows both prices when it does), **max daily drawdown** (%
   realized loss for the day that halts new entries until tomorrow — existing
   positions' stops/targets keep working regardless), **step-down after (consecutive
   losses)** and **step-down size cut** (once your losing streak reaches the trigger

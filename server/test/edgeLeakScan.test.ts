@@ -13,6 +13,7 @@ import {
   paperControlDrift,
   runEdgeLeakScan,
   SLIPPAGE_MIN_TRADES,
+  ENTRY_DRIFT_MIN_TRADES,
   verdictFor,
   WATCH_MIN_TRADES,
 } from '../src/services/autotrading/edgeLeakScan';
@@ -76,6 +77,7 @@ const scan = (live: LeakTrade[], paper: LeakTrade[] = [], over: Partial<Paramete
     configuration: [],
     entrySlippagePct: [],
     entryLimitBufferPct: MARKETABLE_LIMIT_BUFFER_PCT,
+    entryDriftPct: [],
     journalSkips: [],
     asOf: Date.parse('2026-09-08T21:00:00Z'),
     rng: RNG(),
@@ -496,6 +498,49 @@ describe('findings — a thing that happened, not a distribution', () => {
   });
 });
 
+describe('entry drift — the price we place at vs the price we decided at', () => {
+  // Two quantities both called slippage. `entrySlippagePct` measures the FILL
+  // against the LIMIT and is structurally <= 0; this measures the placement
+  // quote against the price the risk budget was computed from, and has no sign
+  // restriction. Mixing them is how "mean slippage is negative, so we are
+  // fine" hid an entry risking 1.46x what it was approved for.
+  const drift = (n: number, pct: number) => Array.from({ length: n }, () => pct);
+
+  it('says nothing when the drift is inside the buffer the loop concedes on purpose', () => {
+    const result = scan(bucket(20, 0.1), [], { entryDriftPct: drift(20, 0.4) });
+    expect(result.findings.some((f) => f.id === 'execution:entry_drift')).toBe(false);
+  });
+
+  it('raises a finding once the drift exceeds the buffer', () => {
+    const result = scan(bucket(20, 0.1), [], { entryDriftPct: drift(20, 1.2) });
+    const finding = result.findings.find((f) => f.id === 'execution:entry_drift');
+    expect(finding).toBeDefined();
+    expect(finding?.count).toBe(20);
+    expect(finding?.detail).toContain('1.2%');
+    expect(finding?.lever?.direction).toBe('safe');
+  });
+
+  it('stays quiet under the minimum count, however bad the drift', () => {
+    const result = scan(bucket(20, 0.1), [], { entryDriftPct: drift(ENTRY_DRIFT_MIN_TRADES - 1, 5) });
+    expect(result.findings.some((f) => f.id === 'execution:entry_drift')).toBe(false);
+  });
+
+  it('does not let favourable drift cancel adverse drift', () => {
+    // The reason the collector signs the number instead of taking |x|: a book
+    // that pays up 3% half the time and saves 3% the other half is not a calm
+    // book, but a mean of zero would read as one. Signed, the mean is honest —
+    // and here it is 0, which is genuinely below the bar, so the assertion is
+    // that the SHAPE survives: ten 3% rows on their own do fire.
+    const mixed = [...drift(10, 3), ...drift(10, -3)];
+    expect(
+      scan(bucket(20, 0.1), [], { entryDriftPct: mixed }).findings.some((f) => f.id === 'execution:entry_drift'),
+    ).toBe(false);
+    expect(
+      scan(bucket(20, 0.1), [], { entryDriftPct: drift(10, 3) }).findings.some((f) => f.id === 'execution:entry_drift'),
+    ).toBe(true);
+  });
+});
+
 describe('determinism — the same book must produce the same scan', () => {
   it('reads identically twice, so a leak cannot appear and vanish between runs', () => {
     const live = [...bucket(30, 0.12, { round: 1 }), ...bucket(20, -0.14, { round: 2 })];
@@ -510,6 +555,7 @@ describe('determinism — the same book must produce the same scan', () => {
       configuration: [],
       entrySlippagePct: [],
       entryLimitBufferPct: MARKETABLE_LIMIT_BUFFER_PCT,
+      entryDriftPct: [],
       journalSkips: [],
       asOf: 1,
     });
@@ -523,6 +569,7 @@ describe('determinism — the same book must produce the same scan', () => {
       configuration: [],
       entrySlippagePct: [],
       entryLimitBufferPct: MARKETABLE_LIMIT_BUFFER_PCT,
+      entryDriftPct: [],
       journalSkips: [],
       asOf: 1,
     });

@@ -16,6 +16,7 @@ import { maxAffordablePremiumPerShare, riskPctUpperBound } from './optionsAfford
 import { getOptionsProbationStatus } from './liveOptionsExecute';
 import { buildLiveSlippageRows } from './autoTune';
 import { MARKETABLE_LIMIT_BUFFER_PCT } from './marketableLimit';
+import { entryDriftPct } from './entryRisk';
 import {
   BatchRefusal,
   CollectedLeakBook,
@@ -600,6 +601,43 @@ function collectBatchRefusals(since: number): BatchRefusal[] {
   return events.map((e) => ({ at: e.createdAt, action: e.action }));
 }
 
+/**
+ * How far the placement quote had drifted from the price the sizer used, per
+ * live entry in the window (2026-09-13).
+ *
+ * Read off `live_order_placed`, which carries both prices precisely so this
+ * question stays answerable: `signalEntry` is what riskCheck sized against and
+ * `riskBasisPrice` is the placement quote. NOT the limit — the limit is the
+ * signal's price plus the buffer plus the drift, and the finding's bar IS the
+ * buffer, so measuring against the limit would compare the buffer to itself
+ * and fire on every book. Signed so positive is ADVERSE on both sides — a buy
+ * paying up, a short selling down — because an unsigned mean would let the two
+ * directions cancel and report a calm book.
+ *
+ * Rows predating the field are skipped rather than reconstructed from
+ * `plannedStopDistancePct`: that reconstruction is exact only while the stop
+ * sat at the cap, and a silently-wrong drift is worse than a shorter window.
+ */
+function collectEntryDrift(since: number): number[] {
+  const { events } = listAutotradeEventsInWindow({ actions: ['live_order_placed'], since });
+  const out: number[] = [];
+  for (const e of events) {
+    if (!e.detail) continue;
+    let parsed: { signalEntry?: unknown; riskBasisPrice?: unknown; side?: unknown };
+    try {
+      parsed = JSON.parse(e.detail) as typeof parsed;
+    } catch {
+      continue;
+    }
+    const { signalEntry, riskBasisPrice, side } = parsed;
+    if (typeof signalEntry !== 'number' || typeof riskBasisPrice !== 'number') continue;
+    if (side !== 'buy' && side !== 'sell') continue;
+    const drift = entryDriftPct(signalEntry, riskBasisPrice, side);
+    if (drift !== null) out.push(drift);
+  }
+  return out;
+}
+
 /** Live-book skips within the window, for the attribution's untaken classes. */
 function collectJournalSkips(since: number): { skips: JournalSkip[]; truncated: boolean } {
   // WINDOWED, not capped. `listAutotradeEvents` clamps to ROW_CAP silently,
@@ -952,6 +990,7 @@ export function runEdgeLeakScanFromDb(opts: EdgeLeakScanOptions = {}): EdgeLeakS
     ],
     entrySlippagePct,
     entryLimitBufferPct: MARKETABLE_LIMIT_BUFFER_PCT,
+    entryDriftPct: collectEntryDrift(windowStart),
     journalSkips: skipRead.skips,
     journalSkipsTruncated: skipRead.truncated,
     batchRefusals: collectBatchRefusals(windowStart),

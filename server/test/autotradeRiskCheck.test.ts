@@ -107,6 +107,46 @@ describe('evaluateRiskCheck — buying-power aware sizing (2026-08-28)', () => {
     expect(c?.detail).toMatch(/sized down to 58 of 200 shares/);
   });
 
+  // `fundableMaxQuantity` returns `boundBy` so a shrunk order says WHICH of
+  // the three ceilings shrank it, and until 2026-09-13 nothing read it: all
+  // four messages said "buying power" whatever the answer was. The levers
+  // differ — buying power is the broker's, order_notional is liveMaxOrderUsd,
+  // account_exposure is liveMaxExposurePct — so the wrong name sends the
+  // operator at a dial that cannot move.
+  describe('the message names the bound that actually bound', () => {
+    it('names the per-order notional cap when that is the tightest', () => {
+      const c = findCheck(
+        evaluateRiskCheck(signal(), baseCtx({ buyingPowerUsd: 10_000_000, maxOrderUsd: 6_000 })),
+        'buying_power_sizing',
+      );
+      expect(c?.detail).toMatch(/the per-order notional cap/);
+      expect(c?.detail).not.toMatch(/buying power/);
+    });
+
+    it('names the exposure headroom when that is the tightest', () => {
+      const c = findCheck(
+        evaluateRiskCheck(signal(), baseCtx({ buyingPowerUsd: 10_000_000, exposureHeadroomUsd: 6_000 })),
+        'buying_power_sizing',
+      );
+      expect(c?.detail).toMatch(/the account exposure headroom/);
+      expect(c?.detail).not.toMatch(/buying power/);
+    });
+
+    it('still says buying power when buying power is the tightest', () => {
+      const c = findCheck(
+        evaluateRiskCheck(signal(), baseCtx({ buyingPowerUsd: 6_000, maxOrderUsd: 10_000_000 })),
+        'buying_power_sizing',
+      );
+      expect(c?.detail).toMatch(/buying power/);
+    });
+
+    it('carries the same name into the not-even-one-share block', () => {
+      const none = evaluateRiskCheck(signal(), baseCtx({ buyingPowerUsd: 10_000_000, maxOrderUsd: 50 }));
+      expect(none.ok).toBe(false);
+      expect(findCheck(none, 'quantity')?.detail).toMatch(/the per-order notional cap .* will not fund a single share/);
+    });
+  });
+
   it('is exact at the 25% floor — 49 of 200 is under it, 50 is not', () => {
     // $5,000 BP funds 49 of 200 shares = 24.5%, just under the floor; $5,200
     // funds 50 = 25.0%, just over. Worth pinning: the first draft of these
