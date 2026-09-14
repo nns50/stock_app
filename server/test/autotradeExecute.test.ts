@@ -226,6 +226,47 @@ describe('attemptPaperEntry', () => {
     expect(events[0].action).toBe('paper_entry_failed');
   });
 
+  it('says WHICH BOOK a risk-check refusal belongs to', async () => {
+    // 2026-09-14, straight from the operator. The journal showed thousands of
+    // `max_concurrent_positions: 3 open vs cap 3` rows while the LIVE account
+    // held nothing, and nothing on the row could tell the two books apart —
+    // so a full paper book read as real money being slot-blocked. That
+    // session: 4,983 of these against ZERO live refusals.
+    //
+    // The live path already avoids it by naming its action `live_risk_blocked`
+    // instead of `blocked`. This is the paper half of the same fix, as a FIELD
+    // rather than a rename, because `blocked`/`passed` is what every existing
+    // reader filters on.
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 101.5 }) as never);
+    // Two slots, both taken, so the third candidate is refused on concurrency.
+    setAutotradeConfig({ accountEquityUsd: 100_000, riskProfile: 'MODERATE', maxConcurrentPositions: 1 });
+    openPaperPosition({
+      symbol: 'HELD',
+      side: 'buy',
+      quantity: 1,
+      entryPrice: 100,
+      stopPrice: 95,
+      targetPrice: 110,
+      riskAmount: 50,
+      riskProfile: 'MODERATE',
+      rationale: 'fixture',
+    });
+
+    await runPaperExecution([{ signal: signal() }]);
+
+    const rows = listAutotradeEvents({ stage: 'risk_check', actions: ['blocked'] });
+    expect(rows.length).toBeGreaterThan(0);
+    const d = JSON.parse(rows[0].detail ?? '{}') as Record<string, unknown>;
+    expect(d.book).toBe('paper');
+    // The two numbers the confusing line is built from, named rather than left
+    // to be parsed out of the `checks` prose.
+    expect(d.openPositionsCount).toBe(1);
+    expect(d.maxConcurrentPositions).toBe(1);
+    expect((d.checks as { rule: string; passed: boolean }[]).some((c) => c.rule === 'max_concurrent_positions')).toBe(
+      true,
+    );
+  });
+
   it('journals a paper_order_placed event', async () => {
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 101.5 }) as never);
     await attemptPaperEntry(signal(), okResult, 'MODERATE');

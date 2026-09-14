@@ -527,7 +527,28 @@ export async function runPaperExecution(
       stage: 'risk_check',
       riskProfile: config.riskProfile,
       action: result.ok ? 'passed' : 'blocked',
-      detail: { checks: result.checks, quantity: result.sizing.suggestedQuantity },
+      detail: {
+        // WHICH BOOK (2026-09-14). This row said `max_concurrent_positions:
+        // 3 open vs cap 3` while the LIVE account was flat, and nothing on it
+        // could tell the two apart — so the operator read a paper book at its
+        // cap as their real money being slot-blocked. On that session it was
+        // 4,983 of these rows against ZERO live refusals.
+        //
+        // The live path already solved this for itself by naming its action
+        // `live_risk_blocked` rather than `blocked`, and says why at
+        // liveExecute.ts: "paper's would preserve the exact ambiguity this
+        // exists to remove". It does, and this is that ambiguity removed.
+        //
+        // A FIELD rather than a renamed action, deliberately: `blocked` and
+        // `passed` are what every existing reader filters on (the summary
+        // endpoint, the journal page, the attribution), and renaming them
+        // would make this book's whole history unreadable to fix a label.
+        book: 'paper',
+        openPositionsCount: ctx.openPositionsCount,
+        maxConcurrentPositions: ctx.maxConcurrentPositions,
+        checks: result.checks,
+        quantity: result.sizing.suggestedQuantity,
+      },
     });
     if (!result.ok) {
       outcomes.push({ symbol, ok: false, reason: 'Risk check blocked' });
