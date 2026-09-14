@@ -213,6 +213,11 @@ export async function webullAccountState(
   const exposureUsd = num(bal.total_market_value);
   const netLiquidationUsd = num(bal.total_net_liquidation_value);
   const settledCashUsd = numOrUndefined(asset.settled_cash);
+  // The per-currency cash balance, falling back to the top-level total. Both
+  // are in the captured payload above; neither was carried until a refusal
+  // needed explaining. numOrUndefined, not num: a fabricated 0 would read as
+  // "no cash" on an account the field simply was not reported for.
+  const cashBalanceUsd = numOrUndefined(asset.cash_balance) ?? numOrUndefined(bal.total_cash_balance);
 
   // --- realized P&L today, for the daily-loss halt -------------------------
   // `total_day_profit_loss` is NOT realized-only: a live capture (2026-07-28,
@@ -278,6 +283,7 @@ export async function webullAccountState(
       ordersToday: 0,
       currentPositionQty,
       settledCashUsd,
+      cashBalanceUsd,
       dayBuyingPowerUsd,
     },
     optionBuyingPowerUsd,
