@@ -2775,9 +2775,25 @@ export interface DailyTargetStatus {
   goalScale?: number;
   goalScaleReason?: string;
   baselineEquityUsd?: number;
+  /** What the ACCOUNT would be worth at the goal. Context only since
+   *  2026-09-14 — the day is banked on the loop's own P&L, so the account
+   *  reaching this number banks nothing. */
   targetEquityUsd?: number;
   currentEquityUsd?: number;
+  /** The LOOP's day: its realized P&L over the baseline. The number every
+   *  day-level halt is decided on. */
   gainPct?: number;
+  /** The loop's realized P&L for the session, in dollars — `gainPct`'s
+   *  numerator. */
+  strategyPnlUsd?: number;
+  /** The loop P&L that banks the day, in dollars. */
+  targetPnlUsd?: number;
+  /** Loop dollars still to go before the day banks (negative once past). */
+  gapToTargetUsd?: number;
+  /** The whole ACCOUNT's move over the same baseline — what the operator
+   *  feels, carrying their own trading and their open positions' mark.
+   *  Display only; it decides nothing. */
+  accountGainPct?: number;
   reached: boolean;
   reachedAt?: number | null;
   /** Give-back guard: armed once the day's gain touches the arm level, halted
@@ -2787,6 +2803,8 @@ export interface DailyTargetStatus {
   giveBackArmPct?: number;
   giveBackFloorPct?: number;
   giveBackHaltedAt?: number | null;
+  /** Loop dollars the day may still give back before the guard fires. */
+  headroomToFloorUsd?: number;
   /** reached || giveBackHalted — the flag that halts new live entries. */
   entriesHalted: boolean;
 }
@@ -2949,6 +2967,10 @@ export interface DailyResult {
    *  column existed or filled by the backfill. The review counts "sessions
    *  since the sizing changed" off this rather than off a journal row. */
   riskPerTradePct: number | null;
+  /** Which quantity stamped `goalReached`: 'strategy' is the loop's own
+   *  realized P&L, 'account' the whole brokerage account. Null on a row
+   *  recorded before the basis was tracked, or backfilled. */
+  goalBasis: 'strategy' | 'account' | null;
 }
 
 export interface DailyResultsAggregate {

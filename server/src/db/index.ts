@@ -543,7 +543,20 @@ CREATE TABLE IF NOT EXISTS autotrade_daily_results (
   -- was changed. The fallback then counted the previous session (old sizing,
   -- and a manual-trading day) as trial session 1. Recording the sizing ON the
   -- row makes the count right by construction and needs no journal row at all.
-  risk_per_trade_pct  REAL
+  risk_per_trade_pct  REAL,
+  -- WHICH QUANTITY stamped goal_reached on this row (2026-09-14): 'strategy'
+  -- for the loop's own realized P&L, 'account' for the whole brokerage
+  -- account, NULL on a row recorded before this column existed or backfilled.
+  --
+  -- Same reason as risk_per_trade_pct above: the pre-committed review reads
+  -- goal_reached, and until 2026-09-14 the flag was stamped when ACCOUNT equity
+  -- crossed the target, so a deposit or an afternoon of hand trading could bank
+  -- a day the loop had not earned. The review compensated by dropping every
+  -- manual-trading session from the goal rate -- throwing away real sessions
+  -- out of a window only ten sessions long. Recording the BASIS on the row lets
+  -- it drop only the rows that need it, and stop entirely once the window holds
+  -- no pre-change rows, with nothing to remember and no date literal anywhere.
+  goal_basis          TEXT
 );
 
 -- The last edge-leak scan (services/autotrading/edgeLeakScan.ts, 2026-09-12).
@@ -1181,6 +1194,11 @@ function migrate(): void {
   const dailyResultCols = db.prepare('PRAGMA table_info(autotrade_daily_results)').all() as { name: string }[];
   if (!dailyResultCols.some((c) => c.name === 'risk_per_trade_pct')) {
     db.exec('ALTER TABLE autotrade_daily_results ADD COLUMN risk_per_trade_pct REAL');
+  }
+  // 2026-09-14: which quantity stamped goal_reached — see the column's note in
+  // the schema above. Existing rows stay NULL, which reads as "the old basis".
+  if (!dailyResultCols.some((c) => c.name === 'goal_basis')) {
+    db.exec('ALTER TABLE autotrade_daily_results ADD COLUMN goal_basis TEXT');
   }
 
   const paperPosCols = db.prepare('PRAGMA table_info(autotrade_paper_positions)').all() as { name: string }[];

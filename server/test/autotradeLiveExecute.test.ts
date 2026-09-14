@@ -4772,6 +4772,28 @@ describe('runLiveExecution — end-of-day entry cutoff (2026-08-28)', () => {
     vi.setSystemTime(ms);
   };
 
+  it('names the symbols it refused, not just how many', async () => {
+    // 2026-09-14, from the operator: Recent activity showed a run of batch
+    // refusals with a dash in the Symbol column. These rows refuse the whole
+    // tick BEFORE any candidate is examined, so they carry no symbol column —
+    // but the signals are in hand when the row is written, and a bare count
+    // cannot answer "what did I miss while the book was stood down", which is
+    // the only question the row is ever read for.
+    setAutotradeConfig(cfgFields);
+    atClock(at('15:56'));
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100, MSFT: 100 }));
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+
+    await runLiveExecution([{ signal: signal() }, { signal: signal({ symbol: 'MSFT' }) }]);
+
+    const detail = JSON.parse(listAutotradeEvents({ actions: ['entry_window_closed'] })[0].detail ?? '{}') as {
+      refused: number;
+      symbols: string[];
+    };
+    expect(detail.refused).toBe(2);
+    expect(detail.symbols).toEqual(['AAPL', 'MSFT']);
+  });
+
   it('refuses the batch inside the flatten window, without touching the broker', async () => {
     // The real 2026-08-28 case: ESTC opened 15:56:04, flattened 15:57:12.
     // Blocking before the broker read matters — a doomed batch should cost no

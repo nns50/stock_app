@@ -1002,6 +1002,13 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
         action: 'live_entries_halted',
         detail: {
           refused: decision.signals.length,
+          // WHICH names, not just how many (2026-09-14). This is a BATCH row —
+          // the tick is refused before any candidate is looked at — so it
+          // carries no `symbol` column and the Recent activity table shows a
+          // dash. The signals are right here; a count alone cannot answer "what
+          // did I miss while the book was stood down", which is the only
+          // question this row is ever read for.
+          symbols: decision.signals.map((s) => s.symbol),
           reason: recheck.killSwitch
             ? 'kill_switch'
             : !recheck.liveTradingEnabled

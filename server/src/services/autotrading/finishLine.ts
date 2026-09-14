@@ -26,8 +26,9 @@ import { DailyTargetStatus } from './dailyTarget';
 //    the persisted, sticky definition of "this day has a gain worth
 //    protecting," so the two features agree about when protection starts.
 //
-// Both LIVE-only (the goal is a % of the real account) and both off by
-// default. Pure decisions here; the executors thread the results in.
+// Both LIVE-only (the goal is a % of the day's opening equity, banked on the
+// LOOP's own realized P&L — see evaluateDailyTarget) and both off by default.
+// Pure decisions here; the executors thread the results in.
 // ---------------------------------------------------------------------------
 
 export const FINISH_LINE_MIN_FACTOR = 0.25;
@@ -42,7 +43,9 @@ export interface FinishLineFactorResult {
 
 /**
  * The sizing trim for the next live entry, from the day's remaining gap to
- * the bank line. `rewardMultiple` is what a winner pays per $1 RISKED, and
+ * the bank line — `dailyTarget.gapToTargetUsd`, in dollars of the loop's own
+ * realized P&L, which is the unit the day is banked in.
+ * `rewardMultiple` is what a winner pays per $1 RISKED, and
  * the unit is load-bearing: `fullRiskUsd` below is the per-trade risk budget,
  * so a reward quoted in anything else is not comparable to it. The equity
  * path's targetRMultiple already is (the target sits that many stop-distances
@@ -80,10 +83,17 @@ export function computeFinishLineFactor(input: {
 }): FinishLineFactorResult {
   const { enabled, dailyTarget: dt, equity, riskPerTradePct, rewardMultiple } = input;
   if (!enabled) return { factor: 1, detail: 'inactive — finish-line sizing off' };
-  if (!dt.active || dt.targetEquityUsd === undefined || dt.currentEquityUsd === undefined) {
+  if (!dt.active || dt.gapToTargetUsd === undefined) {
     return { factor: 1, detail: 'inactive — no measurable daily goal' };
   }
-  const gapUsd = dt.targetEquityUsd - dt.currentEquityUsd;
+  // READ, never re-derived (2026-09-14). This was `targetEquityUsd -
+  // currentEquityUsd` — the ACCOUNT's distance to the line — while the halt
+  // moved to the loop's own realized P&L. Two derivations of one quantity, and
+  // they disagreed by exactly the operator's manual trading: on 2026-09-14 the
+  // account sat $66 PAST a line the loop was $105 short of, so the trim would
+  // have read "day already banked" and sized the closing trade at full risk on
+  // a day that had not been earned. One field, one owner.
+  const gapUsd = dt.gapToTargetUsd;
   if (gapUsd <= 0) return { factor: 1, detail: 'inactive — day already at/past the bank line' };
   const fullRiskUsd = equity * (riskPerTradePct / 100);
   const fullWinUsd = fullRiskUsd * rewardMultiple;

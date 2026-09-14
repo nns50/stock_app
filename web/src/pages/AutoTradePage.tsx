@@ -2089,8 +2089,9 @@ function MonitoringDashboard({
           </div>
           <p className="text-xs text-slate-300">
             {fmtPct(dt.gainPct ?? 0, 2)} of the{' '}
-            {fmtPct(dt.targetPct ?? 0, dt.goalScale != null && dt.goalScale < 1 ? 2 : 1, false)} goal — day started at{' '}
-            {fmtUsd(dt.baselineEquityUsd ?? 0)}, banks at {fmtUsd(dt.targetEquityUsd ?? 0)}
+            {fmtPct(dt.targetPct ?? 0, dt.goalScale != null && dt.goalScale < 1 ? 2 : 1, false)} goal — the loop has
+            made {fmtUsd(dt.strategyPnlUsd ?? 0)} of the {fmtUsd(dt.targetPnlUsd ?? 0)} that banks the day, on a{' '}
+            {fmtUsd(dt.baselineEquityUsd ?? 0)} start
             {dt.reached
               ? '. New live entries are halted until the next trading day; exits and paper keep running.'
               : dt.giveBackHalted
@@ -2107,6 +2108,15 @@ function MonitoringDashboard({
                     )} halts new live entries for the day.`
                   : '.'}
           </p>
+          {dt.accountGainPct != null && (
+            <p className="text-[11px] text-slate-500 mt-1" data-testid="daily-goal-account">
+              Whole account: {fmtPct(dt.accountGainPct, 2)} ({fmtUsd(dt.currentEquityUsd ?? 0)}), which also carries
+              your own trading and any open position's mark
+              {Math.abs(dt.accountGainPct - (dt.gainPct ?? 0)) > 0.5
+                ? ' — it differs from the loop\u2019s day above, and only the loop\u2019s day banks or halts anything.'
+                : '. Only the loop\u2019s day banks or halts anything.'}
+            </p>
+          )}
           {dt.goalScale != null && dt.goalScale < 1 && (
             <p className="text-[11px] text-amber-300/90 mt-1" data-testid="daily-goal-scale">
               Today's goal is scaled: {fmtPct(dt.targetPct ?? 0, 2, false)} ={' '}

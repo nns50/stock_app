@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import type { DailyTargetStatus } from '../src/services/autotrading/dailyTarget';
+import type { DailyBaseline } from '../src/db/dailyBaseline';
+import { evaluateDailyTarget, type DailyTargetStatus } from '../src/services/autotrading/dailyTarget';
 import {
   FINISH_LINE_MIN_FACTOR,
   computeFinishLineFactor,
@@ -7,22 +8,35 @@ import {
 } from '../src/services/autotrading/finishLine';
 import { NEUTRAL, preFinishLineFactors, preFinishLineRiskPct } from '../src/services/autotrading/effectiveRisk';
 
-// A day tracking a 3% goal off a $10,000 baseline: banks at $10,300.
-const tracking = (currentEquityUsd: number, over: Partial<DailyTargetStatus> = {}): DailyTargetStatus => ({
-  active: true,
-  targetPct: 3,
-  baselineEquityUsd: 10_000,
-  targetEquityUsd: 10_300,
-  currentEquityUsd,
-  gainPct: ((currentEquityUsd - 10_000) / 10_000) * 100,
-  reached: false,
+// A day tracking a 3% goal off a $10,000 baseline: it banks on $300 of the
+// LOOP's own realized P&L.
+//
+// Built by the REAL evaluator rather than by hand. The trim's whole input is
+// `gapToTargetUsd`, which evaluateDailyTarget owns; a hand-written status could
+// hold a gap that the evaluator would never produce, and then this file would
+// be testing a day that cannot exist. `accountEquityUsd` deliberately tracks
+// the loop by default, so the cases below read naturally — the test that pulls
+// the two apart is at the bottom of this file, and it is the point.
+const BASELINE: DailyBaseline = {
+  etDate: '2026-09-14',
+  equityUsd: 10_000,
   reachedAt: null,
-  giveBackArmed: false,
-  giveBackHalted: false,
-  giveBackArmPct: 2,
-  giveBackFloorPct: 1,
+  giveBackArmedAt: null,
   giveBackHaltedAt: null,
-  entriesHalted: false,
+  reachCandidateAt: null,
+  goalScale: null,
+  goalScaleReason: null,
+};
+
+const dayOf = (loopPnlUsd: number, accountEquityUsd = 10_000 + loopPnlUsd): DailyTargetStatus =>
+  evaluateDailyTarget(
+    { targetDailyGainPct: 3, accountEquityUsd, giveBackArmPct: 2, giveBackFloorPct: 1 },
+    BASELINE,
+    loopPnlUsd,
+  );
+
+const tracking = (loopPnlUsd: number, over: Partial<DailyTargetStatus> = {}): DailyTargetStatus => ({
+  ...dayOf(loopPnlUsd),
   ...over,
 });
 
@@ -39,36 +53,60 @@ describe('computeFinishLineFactor', () => {
   const base = { enabled: true, equity: 10_000, riskPerTradePct: 2, rewardMultiple: 2 };
 
   it('is 1 when disabled or the goal is unmeasurable', () => {
-    expect(computeFinishLineFactor({ ...base, enabled: false, dailyTarget: tracking(10_200) }).factor).toBe(1);
+    expect(computeFinishLineFactor({ ...base, enabled: false, dailyTarget: tracking(200) }).factor).toBe(1);
     expect(computeFinishLineFactor({ ...base, dailyTarget: inactive }).factor).toBe(1);
   });
 
   it('is 1 while the gap still needs at least a full-size winner — NEVER sizes up behind the target', () => {
     // $500 to the line > $400 full win: full size, no trim, no press.
-    const r = computeFinishLineFactor({ ...base, dailyTarget: tracking(9_800) });
+    const r = computeFinishLineFactor({ ...base, dailyTarget: tracking(-200) });
     expect(r.factor).toBe(1);
     expect(r.detail).toMatch(/inactive/);
   });
 
   it('trims the closing trade to just what banks the day', () => {
     // +2% day: $100 to the line vs a $400 full win => quarter... exactly 0.25.
-    expect(computeFinishLineFactor({ ...base, dailyTarget: tracking(10_200) }).factor).toBe(0.25);
+    expect(computeFinishLineFactor({ ...base, dailyTarget: tracking(200) }).factor).toBe(0.25);
     // +1% day: $200 gap / $400 full win => half size.
-    expect(computeFinishLineFactor({ ...base, dailyTarget: tracking(10_100) }).factor).toBe(0.5);
+    expect(computeFinishLineFactor({ ...base, dailyTarget: tracking(100) }).factor).toBe(0.5);
   });
 
   it('floors at quarter size so the closing trade stays viable — no dead zone under the line', () => {
     // +2.9% day: $10 gap / $400 => 0.03 raw, floored.
-    const r = computeFinishLineFactor({ ...base, dailyTarget: tracking(10_290) });
+    const r = computeFinishLineFactor({ ...base, dailyTarget: tracking(290) });
     expect(r.factor).toBe(FINISH_LINE_MIN_FACTOR);
   });
 
   it('is 1 at/past the line — the bank halt owns that state, not a trim', () => {
-    expect(computeFinishLineFactor({ ...base, dailyTarget: tracking(10_300) }).factor).toBe(1);
+    expect(computeFinishLineFactor({ ...base, dailyTarget: tracking(300) }).factor).toBe(1);
   });
 
   it('degrades to 1 on a nonsense payoff rather than dividing by zero', () => {
-    expect(computeFinishLineFactor({ ...base, rewardMultiple: 0, dailyTarget: tracking(10_200) }).factor).toBe(1);
+    expect(computeFinishLineFactor({ ...base, rewardMultiple: 0, dailyTarget: tracking(200) }).factor).toBe(1);
+  });
+
+  // THE GAP IS THE LOOP'S, NOT THE ACCOUNT'S (2026-09-14).
+  //
+  // This function used to compute its own gap as `targetEquityUsd -
+  // currentEquityUsd` while the halt it exists to anticipate moved to the
+  // loop's realized P&L. Two derivations of one quantity, differing by exactly
+  // whatever the operator traded by hand — CLAUDE.md's standing rule, and the
+  // reason the gap is a field on the status now rather than a subtraction here.
+  it('ignores the account entirely — the same loop P&L trims the same way at any equity', () => {
+    // $200 of loop P&L against a $300 goal: $100 to go, a full win pays $400.
+    const flat = computeFinishLineFactor({ ...base, dailyTarget: dayOf(200, 10_200) });
+    // Now the operator's own trading puts the ACCOUNT $100 past the bank line
+    // while the loop has not moved. Under the old derivation this read
+    // "inactive — day already at/past the bank line" and sized the closing
+    // trade at FULL risk on a day the loop had not earned.
+    const manualAhead = computeFinishLineFactor({ ...base, dailyTarget: dayOf(200, 10_400) });
+    // …and a manual LOSS did the opposite: a gap of $500 where the loop's is
+    // $100, leaving the trim inactive in the other direction.
+    const manualBehind = computeFinishLineFactor({ ...base, dailyTarget: dayOf(200, 9_800) });
+    expect(flat.factor).toBe(0.25);
+    expect(manualAhead.factor).toBe(0.25);
+    expect(manualBehind.factor).toBe(0.25);
+    for (const r of [flat, manualAhead, manualBehind]) expect(r.detail).toContain('$100.00 to the bank line');
   });
 });
 
@@ -76,15 +114,15 @@ describe('finishLineScoreGate', () => {
   const cfg = { finishLineMinSignalScore: 70 };
 
   it('never gates while off (0), unarmed, or untracked', () => {
-    expect(
-      finishLineScoreGate(10, tracking(10_250, { giveBackArmed: true }), { finishLineMinSignalScore: 0 }).skip,
-    ).toBe(false);
-    expect(finishLineScoreGate(10, tracking(10_150), cfg).skip).toBe(false); // not armed
+    expect(finishLineScoreGate(10, tracking(250, { giveBackArmed: true }), { finishLineMinSignalScore: 0 }).skip).toBe(
+      false,
+    );
+    expect(finishLineScoreGate(10, tracking(150), cfg).skip).toBe(false); // not armed
     expect(finishLineScoreGate(10, inactive, cfg).skip).toBe(false);
   });
 
   it('once ARMED, entries below the bar are skipped and entries at/above pass', () => {
-    const armed = tracking(10_250, { giveBackArmed: true });
+    const armed = tracking(250, { giveBackArmed: true });
     expect(finishLineScoreGate(69, armed, cfg)).toMatchObject({ skip: true });
     expect(finishLineScoreGate(70, armed, cfg)).toMatchObject({ skip: false });
   });
@@ -126,15 +164,22 @@ describe('the finish-line trim reasons about the risk the trade will really take
       expectancy: NEUTRAL,
       method: NEUTRAL,
     });
-  const trimAt = (consecutiveLosses: number, currentEquityUsd: number) =>
+  // A day on an EQUITY baseline with exactly `gapUsd` of LOOP P&L still to
+  // find. Built by the real evaluator: the 3% goal on $5,161 is $154.83, so
+  // the loop's P&L is whatever leaves the gap asked for. Expressed as the gap
+  // rather than as an equity because the gap is the only thing this function
+  // reads, and writing it in account dollars is how the old tests came to
+  // describe a day that can no longer exist.
+  const dayWithGap = (gapUsd: number): DailyTargetStatus =>
+    evaluateDailyTarget(
+      { targetDailyGainPct: 3, accountEquityUsd: EQUITY, giveBackArmPct: 2, giveBackFloorPct: 1 },
+      { ...BASELINE, equityUsd: EQUITY },
+      EQUITY * 0.03 - gapUsd,
+    );
+  const trimAt = (consecutiveLosses: number, gapUsd: number) =>
     computeFinishLineFactor({
       enabled: true,
-      dailyTarget: {
-        ...tracking(0),
-        baselineEquityUsd: EQUITY,
-        targetEquityUsd: EQUITY + 160, // a $160 gap when current === EQUITY
-        currentEquityUsd,
-      },
+      dailyTarget: dayWithGap(gapUsd),
       equity: EQUITY,
       riskPerTradePct: preFinishLineRiskPct(1.25, stepDownFactors(consecutiveLosses)),
       rewardMultiple: 2,
@@ -144,12 +189,7 @@ describe('the finish-line trim reasons about the risk the trade will really take
     const at = (rewardMultiple: number) =>
       computeFinishLineFactor({
         enabled: true,
-        dailyTarget: {
-          ...tracking(0),
-          baselineEquityUsd: EQUITY,
-          targetEquityUsd: EQUITY + 80,
-          currentEquityUsd: EQUITY,
-        },
+        dailyTarget: dayWithGap(80),
         equity: EQUITY,
         riskPerTradePct: 1.25,
         rewardMultiple,
@@ -167,12 +207,7 @@ describe('the finish-line trim reasons about the risk the trade will really take
     const gap = (riskPerTradePct: number, rewardMultiple: number) =>
       computeFinishLineFactor({
         enabled: true,
-        dailyTarget: {
-          ...tracking(0),
-          baselineEquityUsd: EQUITY,
-          targetEquityUsd: EQUITY + 80,
-          currentEquityUsd: EQUITY,
-        },
+        dailyTarget: dayWithGap(80),
         equity: EQUITY,
         riskPerTradePct,
         rewardMultiple,
@@ -188,7 +223,7 @@ describe('the finish-line trim reasons about the risk the trade will really take
     // reaches $80, so there is nothing to trim: the trade cannot overshoot.
     // This is the case that was wrong. On the raw 1.25% it trimmed to 0.62,
     // taking the entry down to a ~$40 win against an $80 gap.
-    const gapIs80 = EQUITY + 80;
+    const gapIs80 = 80;
     const withStepDown = trimAt(2, gapIs80);
     expect(withStepDown.factor).toBe(1);
     expect(withStepDown.detail).toMatch(/still to the bank line/);
@@ -202,7 +237,7 @@ describe('the finish-line trim reasons about the risk the trade will really take
     // The detail line is what the operator reads to understand a trimmed
     // entry; it must not name a full-size win the trade was never going to
     // take. $64.51 risk halved -> $32.26, a 2R win of $64.51.
-    const d = trimAt(2, EQUITY + 40).detail;
+    const d = trimAt(2, 120).detail;
     expect(d).toContain('$64.51');
     expect(d).not.toContain('$129.03');
   });
@@ -210,7 +245,7 @@ describe('the finish-line trim reasons about the risk the trade will really take
   it('still trims when the cut trade would overshoot a smaller gap', () => {
     // Cuts elsewhere must not disable the trim outright -- only rebase it.
     // Step-down payoff $64.51 against a $20 gap still overshoots.
-    const r = trimAt(2, EQUITY + 140); // target - current = 20
+    const r = trimAt(2, 20);
     expect(r.factor).toBeLessThan(1);
     expect(r.factor).toBeGreaterThanOrEqual(FINISH_LINE_MIN_FACTOR);
   });
@@ -219,8 +254,8 @@ describe('the finish-line trim reasons about the risk the trade will really take
     // preFinishLineRiskPct only ever shrinks the basis, and the function's own
     // ceiling is 1, so no combination of cuts can produce a factor above 1.
     for (const losses of [0, 2, 9]) {
-      for (const equityNow of [EQUITY, EQUITY + 40, EQUITY + 80, EQUITY + 159]) {
-        expect(trimAt(losses, equityNow).factor).toBeLessThanOrEqual(1);
+      for (const gapUsd of [160, 120, 80, 1]) {
+        expect(trimAt(losses, gapUsd).factor).toBeLessThanOrEqual(1);
       }
     }
   });

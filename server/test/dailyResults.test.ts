@@ -46,6 +46,7 @@ describe('the two percentages', () => {
     giveBackHalted: false,
     drawdownHalted: false,
     riskPerTradePct: 2.5,
+    goalBasis: 'strategy' as const,
     recordedAt: 1,
   };
 
@@ -214,6 +215,7 @@ describe('aggregates', () => {
     drawdownHalted: false,
     manualTrading: false,
     riskPerTradePct: 2.5,
+    goalBasis: 'strategy' as const,
     recordedAt: 1,
     ...over,
   });

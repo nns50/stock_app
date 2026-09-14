@@ -9638,7 +9638,8 @@ to.
 
 **And one stale comment removed, on the field the revert turns on.** `meanDayPct`'s doc comment
 still read "manual-trading days excluded" after the 2026-09-12 change that deliberately keeps them
-(the manual exclusion belongs to `goalRatePct` alone, whose flag is the account-derived one). The
+(the manual exclusion belongs to `goalRatePct` alone, whose flag was the account-derived one —
+since 2026-09-14 that exclusion is applied per row, off `goal_basis`). The
 code was right and the sentence one line above it was wrong — the cheapest possible way to talk a
 reader out of a correct number.
 
@@ -10953,3 +10954,108 @@ a label, which is the same trade the risk-check `book` field declined earlier
 the same day.
 
 A record that says the wrong thing is worse than one that says little.
+
+## 2026-09-14 — the day is the LOOP's P&L, not the account's
+
+Reported by the operator: "the auto trading stopped since the beginning of the
+afternoon." It had, and the reason was that the loop banked its day on money it
+had not made.
+
+`evaluateDailyTarget` measured `(accountEquityUsd − baseline) / baseline` — the
+whole brokerage account, synced from the broker every tick, carrying the
+operator's own manual trading and the UNREALIZED P&L of their open positions.
+
+The session, to the dollar:
+
+```
+baseline                                    3,522.81
+loop's realized closes    CRWD +82.35, COIN +35.46,
+                          NOW +0.63, BWIN −0.65      +117.79   (+3.34%)
+operator's realized closes                            −34.60   (−0.98%)
+                                          both       +83.19    (+2.36%)  <- under the 3% line
+manual TSLA options, ~14:40                          ~+88
+account crosses 3% and banks the day     14:41:01 ET
+```
+
+Every tick afterwards refused 26–28 live candidates with `live_entries_halted`.
+Realized trading alone never reached 3%; the manual options position is what
+banked it.
+
+The unrealized half is the sharper edge: an open manual position merely UP ON
+PAPER banks the loop's day, and can then give it back, leaving the book halted
+for a gain that never existed. The same number drove the give-back guard, so a
+manual LOSS could halt the book just as easily.
+
+### What it measures now
+
+The loop's own realized P&L — `strategyDayFor`, live stock plus live options,
+the exact figure the results calendar already reported and independent of every
+equity reading. One derivation serves the live control and the calendar.
+
+Two quantities that were being confused for each other now have one name each:
+`gainPct` is what the loop did, `accountGainPct` and `currentEquityUsd` stay on
+the status as what the operator feels, and decide nothing.
+
+The daily DRAWDOWN halt needed no change — `getLivePortfolioSnapshot`'s
+`dailyPnl` already counts autotrade-tagged closes only. It was the goal and the
+give-back guard that read the account.
+
+Realized, not marked-to-market, matching the halt's own long-standing
+convention: an open winner does not bank the day, for the same reason the halt
+lets open positions carry a loss a little past it.
+
+### What this changes about the trial
+
+The loop will trade later into a session than it did, because a green account no
+longer stands it down. That is an exposure increase and was the operator's
+explicit call. It also cuts the other way: a red afternoon in the operator's own
+account can no longer halt a book that is quietly up.
+
+The 2026-08-27 two-tick confirmation stays. Its original failure — a spurious
+net-liquidation reading banking the day at a fictional +9.69% — is now
+impossible twice over, but the confirmation still guards a spurious P&L (a
+mis-booked exit, a reconcile that double-counts), so its tests spike the thing
+that decides now rather than the thing that used to.
+
+### Three other rules were measuring the same day on the account
+
+Moving the halt is not the change; moving it while three other rules keep their
+own derivations is how CLAUDE.md's 2026-08-27 disease reproduces. Every place
+that asks "how far is the day from a day-level line" now READS one field off the
+status instead of subtracting its own pair of equities:
+
+| rule | it used to compute | it now reads | what disagreed |
+|---|---|---|---|
+| finish-line trim (`computeFinishLineFactor`) | `targetEquityUsd − currentEquityUsd` | `gapToTargetUsd` | on 2026-09-14 the account sat $66 PAST a line the loop was $105 short of, so the trim read "already banked" and would have sized the closing trade at full risk on a day that had not been earned |
+| day-protective stop (`dayProtectiveStop`) | `currentEquityUsd − floorEquity` | `headroomToFloorUsd` | it sets a REAL stop on a REAL position from that distance, so an afternoon of hand trading moved where the stop went |
+| the review's goal rate (`buildSizingReview`) | the stamped `goalReached`, minus every manual-trading session | the stamp, with the exclusion applied per row | see below |
+
+`evaluateDailyTarget` owns `targetPnlUsd`, `gapToTargetUsd` and
+`headroomToFloorUsd`, all in dollars of the loop's own realized P&L against the
+same baseline. Two derivations that agree today are not the goal; one
+derivation is.
+
+### The review's goal rate, and a column instead of a workaround
+
+`goalReached` was stamped when ACCOUNT equity crossed the target, so the review
+compensated by dropping every manual-trading session from the goal rate — which
+is the same charge its own notes lay against a threshold: it throws away real
+sessions out of a window only ten sessions long, and `manualTrading` fires on
+clean days too (options are deliberately not flattened at the close, so an open
+contract's mark can cross 0.5% on its own).
+
+A row now records WHICH quantity stamped it (`autotrade_daily_results.goal_basis`:
+`strategy`, `account`, or null for a row written before the column or
+backfilled). A `strategy` row cannot carry that contamination and is counted
+whatever the divergence flag says; a null row keeps the old exclusion, because
+for it the old charge is still true. Same construction as `risk_per_trade_pct`
+before it: no date literal decides anything, and the exclusion retires itself
+once the window holds no pre-change rows.
+
+### And the batch refusals name what they refused
+
+`live_entries_halted` and `entry_window_closed` refuse a whole tick before any
+candidate is examined, so they carry no `symbol` and Recent activity showed a
+dash — which is how this was reported in the first place. Both now carry the
+symbols. A count cannot answer "what did I miss while the book was stood down",
+which is the only question those rows are ever read for.

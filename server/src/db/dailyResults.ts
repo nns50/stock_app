@@ -5,6 +5,10 @@ import { db } from './index';
 // there are two percentages and why several columns are nullable.
 // ---------------------------------------------------------------------------
 
+/** Which quantity stamped `goalReached` on a row. Null on a row recorded
+ *  before the basis was tracked, and on every backfilled historical row. */
+export type GoalBasis = 'strategy' | 'account' | null;
+
 export interface DailyResult {
   etDate: string;
   /** The day's first-tick equity. Null for sessions before the baseline row
@@ -31,6 +35,11 @@ export interface DailyResult {
    *  makes it usable as the review's window test: a null cannot be mistaken
    *  for "this session ran the current sizing". */
   riskPerTradePct: number | null;
+  /** Which quantity stamped `goalReached` (2026-09-14). 'strategy' is the
+   *  loop's own realized P&L; 'account' the whole brokerage account, which a
+   *  deposit or a hand trade could move. Null means "recorded before the basis
+   *  was tracked" — read as the old, account-derived behaviour. */
+  goalBasis: GoalBasis;
 }
 
 interface Row {
@@ -48,6 +57,7 @@ interface Row {
   manual_trading: number;
   recorded_at: number;
   risk_per_trade_pct: number | null;
+  goal_basis: string | null;
 }
 
 const map = (r: Row): DailyResult => ({
@@ -65,6 +75,9 @@ const map = (r: Row): DailyResult => ({
   manualTrading: r.manual_trading === 1,
   recordedAt: r.recorded_at,
   riskPerTradePct: r.risk_per_trade_pct,
+  // Anything unrecognised reads as null — the conservative side, since null
+  // means "assume the old basis" everywhere it is consumed.
+  goalBasis: r.goal_basis === 'strategy' || r.goal_basis === 'account' ? r.goal_basis : null,
 });
 
 /**
@@ -79,8 +92,8 @@ export function saveDailyResult(r: DailyResult): void {
     `INSERT INTO autotrade_daily_results
        (et_date, baseline_equity_usd, close_equity_usd, account_gain_pct, strategy_pnl_usd,
         strategy_gain_pct, live_trades, paper_pnl_usd, goal_reached, give_back_halted,
-        drawdown_halted, manual_trading, recorded_at, risk_per_trade_pct)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        drawdown_halted, manual_trading, recorded_at, risk_per_trade_pct, goal_basis)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
      ON CONFLICT(et_date) DO UPDATE SET
        baseline_equity_usd = excluded.baseline_equity_usd,
        close_equity_usd = excluded.close_equity_usd,
@@ -94,7 +107,8 @@ export function saveDailyResult(r: DailyResult): void {
        drawdown_halted = excluded.drawdown_halted,
        manual_trading = excluded.manual_trading,
        recorded_at = excluded.recorded_at,
-       risk_per_trade_pct = excluded.risk_per_trade_pct`,
+       risk_per_trade_pct = excluded.risk_per_trade_pct,
+       goal_basis = excluded.goal_basis`,
   ).run(
     r.etDate,
     r.baselineEquityUsd,
@@ -110,6 +124,7 @@ export function saveDailyResult(r: DailyResult): void {
     r.manualTrading ? 1 : 0,
     r.recordedAt,
     r.riskPerTradePct,
+    r.goalBasis,
   );
 }
 

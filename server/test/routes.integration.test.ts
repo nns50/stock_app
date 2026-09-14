@@ -3680,8 +3680,21 @@ describe('autotrade monitoring dashboard + kill switch routes (integration)', ()
     await putCfg({ accountEquityUsd: 10_000, targetDailyGainPct: 3 });
     await post('/api/autotrade/daily-target/reset', {}); // establishes today's baseline at 10,000
 
-    // Bank the day the honest way — two consecutive ticks past the goal.
-    await putCfg({ accountEquityUsd: 10_400 });
+    // Bank the day the honest way — the LOOP closes +$400 (2026-09-14: raising
+    // account equity no longer banks anything, which is the whole point of the
+    // change; a day has to be traded for).
+    const won = createPosition({
+      assetType: 'stock',
+      symbol: 'BANKD',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      entryDate: etToday(),
+      stopPrice: 95,
+      targetPrice: 150,
+      tags: ['live', 'autotrade'],
+    });
+    addExit(won.id, { quantity: 10, exitPrice: 140, exitDate: etToday() });
     const dash = async () =>
       ((await getJson('/api/autotrade/dashboard')) as { dailyTarget: { reached: boolean; entriesHalted: boolean } })
         .dailyTarget;
@@ -3689,13 +3702,15 @@ describe('autotrade monitoring dashboard + kill switch routes (integration)', ()
     await dash();
     expect(await dash()).toMatchObject({ reached: true, entriesHalted: true });
 
-    // Clearing the flags alone is not enough while equity still reads above
-    // the target — the endpoint's own doc comment says so, and this proves it.
+    // Clearing the flags alone is not enough while the day still READS past the
+    // target — the endpoint's own doc comment says so, and this proves it.
     await post('/api/autotrade/daily-target/reset', {});
     expect((await dash()).reached).toBe(true);
 
-    // Re-basing onto the equity that is actually true does unhalt the day.
-    const res = await post('/api/autotrade/daily-target/reset', { baselineEquityUsd: 10_400 });
+    // Re-basing onto a truer baseline does unhalt it: the same +$400 is only
+    // +2% of 20,000, under the 3% line. The baseline is the DENOMINATOR now,
+    // which is exactly what a re-base is for.
+    const res = await post('/api/autotrade/daily-target/reset', { baselineEquityUsd: 20_000 });
     expect(res.status).toBe(200);
     expect((await res.json()) as { ok: boolean }).toMatchObject({ ok: true });
     expect(await dash()).toMatchObject({ reached: false, entriesHalted: false });

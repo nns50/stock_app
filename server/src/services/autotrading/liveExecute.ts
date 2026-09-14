@@ -1,4 +1,5 @@
 import { config } from '../../config';
+import { strategyDayFor } from './dailyResults';
 import { db } from '../../db';
 import { AutotradeConfig, getAutotradeConfig, setAutotradeConfig } from '../../db/autotradeConfig';
 import { getTradingConfig } from '../../db/trading';
@@ -1334,6 +1335,9 @@ export async function runLiveExecution(
         minutesLeft: entryCutoff.minutesLeft,
         cutoffMinutes: entryCutoff.cutoffMinutes,
         refused: candidates.length,
+        // The other BATCH row, carrying the same gap and fixed with it: a count
+        // with no symbol cannot say what the cutoff cost.
+        symbols: candidates.map(({ signal }) => signal.symbol.toUpperCase()),
       },
     });
     return candidates.map(({ signal }) => ({
@@ -1493,7 +1497,7 @@ export async function runLiveExecution(
   // computed once per batch. The daily-target status is re-evaluated from the
   // persisted baseline (not threaded from loop.ts) so a direct caller gets
   // the same protection the loop does.
-  const dailyTarget = evaluateDailyTarget(cfg, getDailyBaseline());
+  const dailyTarget = evaluateDailyTarget(cfg, getDailyBaseline(), strategyDayFor(etToday()).pnlUsd);
   const cooldowns = activeSymbolCooldowns(cfg);
   // Autotrade's OWN closed positions only — a human's manual trade in the same
   // name is not the loop's thesis and must not gate it.
@@ -4904,7 +4908,7 @@ export async function checkLiveEquityStopAdjusts(): Promise<LiveStopAdjustOutcom
 
   // One read for the sweep: the day does not move between positions, and
   // this is the same persisted baseline the entry path measures against.
-  const dailyTarget = evaluateDailyTarget(cfg, getDailyBaseline());
+  const dailyTarget = evaluateDailyTarget(cfg, getDailyBaseline(), strategyDayFor(etToday()).pnlUsd);
 
   const accountId = cfg.liveAccountId;
   const outcomes: LiveStopAdjustOutcome[] = [];

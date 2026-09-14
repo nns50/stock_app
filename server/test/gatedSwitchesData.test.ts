@@ -52,6 +52,11 @@ function result(etDate: string, over: Partial<DailyResult> = {}): DailyResult {
     // tests configure (2.5), so a row counts toward the review window; a test
     // about the window itself overrides it.
     riskPerTradePct: 2.5,
+    // Null = "recorded before the basis was tracked", i.e. goalReached came
+    // from ACCOUNT equity. That is what most of these rows are: sessions the
+    // review is reading back. The strategy-basis case opts in explicitly, so
+    // each test says which world it is in rather than inheriting one.
+    goalBasis: null,
     recordedAt: 1,
     ...over,
   };
@@ -119,12 +124,12 @@ describe('the review window', () => {
     expect(buildSizingReview(rows, null).meanDayPct).toBe(1.5);
   });
 
-  it('excludes a manual-trading day from the GOAL RATE, where the flag belongs', () => {
-    // goalReached is stamped when the ACCOUNT equity crosses the target, so a
-    // deposit or an afternoon of hand trading can bank a day the loop did not
-    // earn — 2026-08-27 banked a fictional +9.69% on a spurious equity print.
-    // A day whose two figures disagree cannot say whether the STRATEGY reached
-    // the goal, so it is counted neither way.
+  it('excludes a manual-trading day from the GOAL RATE while the row was stamped on the ACCOUNT', () => {
+    // On a row from before 2026-09-14, goalReached was stamped when the ACCOUNT
+    // equity crossed the target, so a deposit or an afternoon of hand trading
+    // could bank a day the loop did not earn — 2026-08-27 banked a fictional
+    // +9.69% on a spurious equity print. Such a day cannot say whether the
+    // STRATEGY reached the goal, so it is counted neither way.
     const rows = [
       result('2026-09-10', { goalReached: false }),
       result('2026-09-11', { goalReached: true, manualTrading: true }),
@@ -132,6 +137,26 @@ describe('the review window', () => {
     const review = buildSizingReview(rows, null);
     expect(review.activeSessionsSinceChange).toBe(2); // still a session
     expect(review.goalRatePct).toBe(0); // …but its banked day is not counted
+  });
+
+  it('counts a manual-trading day on the STRATEGY basis — that stamp cannot be contaminated', () => {
+    // The exclusion above is a workaround for a basis that no longer exists.
+    // Once the row records that the loop's OWN realized P&L banked the day, the
+    // operator's trading is irrelevant to the stamp, and dropping the session
+    // would throw away real evidence out of a ten-session review. Asserted at
+    // the CONSUMER: what changes is the rate the review reports, not a field.
+    const rows = [
+      result('2026-09-10', { goalReached: false, goalBasis: 'strategy' }),
+      result('2026-09-11', { goalReached: true, manualTrading: true, goalBasis: 'strategy' }),
+    ];
+    expect(buildSizingReview(rows, null).goalRatePct).toBe(50);
+    // Mixed window: the pre-change row is still dropped, so the rate is over
+    // the one row whose stamp can be trusted. No date literal decides this.
+    const mixed = [
+      result('2026-09-10', { goalReached: true, manualTrading: true, goalBasis: 'strategy' }),
+      result('2026-09-11', { goalReached: true, manualTrading: true, goalBasis: null }),
+    ];
+    expect(buildSizingReview(mixed, null).goalRatePct).toBe(100);
   });
 
   // DECISION 9'S NUMBERS, IN DECISION 9'S UNIT (2026-09-12).

@@ -3528,6 +3528,10 @@ describe('AutoTradePage', () => {
         targetEquityUsd: 10_195,
         currentEquityUsd: 10_050,
         gainPct: 0.5,
+        strategyPnlUsd: 50,
+        targetPnlUsd: 195,
+        gapToTargetUsd: 145,
+        accountGainPct: 0.5,
         reached: false,
         reachedAt: null,
         giveBackArmed: false,
@@ -3559,6 +3563,10 @@ describe('AutoTradePage', () => {
             targetEquityUsd: 10_195,
             currentEquityUsd: 10_140,
             gainPct: 1.4,
+            strategyPnlUsd: 140,
+            targetPnlUsd: 195,
+            gapToTargetUsd: 55,
+            accountGainPct: 1.4,
             reached: false,
             reachedAt: null,
             giveBackArmed: true,
@@ -3570,6 +3578,45 @@ describe('AutoTradePage', () => {
       );
       renderDashboard();
       expect(await screen.findByTestId('daily-goal-scale')).toHaveTextContent(/Locked for the day/);
+    });
+
+    // THE CARD SHOWS THE LOOP'S DAY, AND THE ACCOUNT'S BESIDE IT (2026-09-14).
+    it('reads the goal in the loop’s own dollars and keeps the account as context', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({
+          dailyTarget: {
+            active: true,
+            targetPct: 3,
+            configuredTargetPct: 3,
+            goalScale: 1,
+            baselineEquityUsd: 3_522.81,
+            targetEquityUsd: 3_628.49,
+            // The real 2026-09-14: the loop made $117.79 of the $105.68 that
+            // banks the day, while the account read +4.87% on manual trading.
+            currentEquityUsd: 3_694.39,
+            gainPct: 3.34,
+            strategyPnlUsd: 117.79,
+            targetPnlUsd: 105.68,
+            gapToTargetUsd: -12.11,
+            accountGainPct: 4.87,
+            reached: true,
+            reachedAt: 1,
+            giveBackArmed: true,
+            giveBackHalted: false,
+            giveBackHaltedAt: null,
+            entriesHalted: true,
+          },
+        }),
+      );
+      renderDashboard();
+      // The headline is the LOOP's percentage and the LOOP's dollars — not the
+      // account's +4.87%, and not an equity the day no longer banks at.
+      expect(await screen.findByText(/\+3\.34% of the 3\.0% goal/)).toBeInTheDocument();
+      expect(screen.getByText(/\$117\.79 of the \$105\.68 that banks the day/)).toBeInTheDocument();
+      // The account is present, labelled, and says what it is not.
+      const account = screen.getByTestId('daily-goal-account');
+      expect(account).toHaveTextContent(/Whole account: \+4\.87%/);
+      expect(account).toHaveTextContent(/only the loop’s day banks or halts anything/i);
     });
 
     it('shows no scale line on an unscaled day', async () => {
@@ -3584,6 +3631,10 @@ describe('AutoTradePage', () => {
             targetEquityUsd: 10_300,
             currentEquityUsd: 10_050,
             gainPct: 0.5,
+            strategyPnlUsd: 50,
+            targetPnlUsd: 300,
+            gapToTargetUsd: 250,
+            accountGainPct: 0.5,
             reached: false,
             reachedAt: null,
             giveBackArmed: false,
@@ -3611,6 +3662,10 @@ describe('AutoTradePage', () => {
             targetEquityUsd: 10_300,
             currentEquityUsd: 10_050,
             gainPct: 0.5,
+            strategyPnlUsd: 50,
+            targetPnlUsd: 300,
+            gapToTargetUsd: 250,
+            accountGainPct: 0.5,
             reached: false,
             reachedAt: null,
             giveBackArmed: false,
