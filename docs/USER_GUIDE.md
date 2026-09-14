@@ -2392,7 +2392,16 @@ because the loop is the only caller that is always flat by the bell, so it is
   book (**Paper**, **Live equity**, **Live options**), with a ●/○ marker under each book
   name showing whether that book is currently trading. The three books are three
   separate pools: each risk-checks against only its own numbers, matching how the loop
-  really enforces the caps, so the columns are never added together. The caps themselves
+  really enforces the caps, so the columns are never added together. A full paper book
+  therefore takes nothing away from the live one: the live slot count reads the real
+  positions table, and paper's positions live in a separate table the live path never
+  looks at.
+  Recent activity's `risk_check` rows say which book too, since **2026-09-14**. They did
+  not before, and that cost an afternoon: the journal filled with
+  `max_concurrent_positions: 3 open vs cap 3` while the live account was flat — the paper
+  book was at its cap, and nothing on the row said so. Paper's rows now carry
+  `book: "paper"`, the manual risk-check preview carries `book: "preview"`, and the live
+  book already had its own action name (`live_risk_blocked` rather than `blocked`). The caps themselves
   *are* shared, so each is written once in the row header instead of three times across
   the row: **open positions** vs. the configured concurrent-position cap
   (Configuration's "max concurrent positions," not the risk profile — see above),

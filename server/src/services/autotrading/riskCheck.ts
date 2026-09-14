@@ -971,7 +971,17 @@ export async function runAutotradeRiskCheck(signals: TradeSignal[]): Promise<Ris
       stage: 'risk_check',
       riskProfile: config.riskProfile,
       action: result.ok ? 'passed' : 'blocked',
-      detail: { checks: result.checks, quantity: result.sizing.suggestedQuantity },
+      // The manual /risk-check PREVIEW writes the same action the paper loop
+      // does, so without this a hand-run preview is indistinguishable from the
+      // book acting. See the note in execute.ts for the confusion the missing
+      // book label caused on 2026-09-14.
+      detail: {
+        book: 'preview',
+        openPositionsCount: ctx.openPositionsCount,
+        maxConcurrentPositions: ctx.maxConcurrentPositions,
+        checks: result.checks,
+        quantity: result.sizing.suggestedQuantity,
+      },
     });
 
     if (result.ok) {
