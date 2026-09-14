@@ -409,7 +409,21 @@ export function evaluateGuardrails(
     block('buying_power', false, m);
     block('account_exposure', false, m);
   } else {
-    block('order_notional', notional <= config.maxOrderUsd, `${usd(notional)} vs cap ${usd(config.maxOrderUsd)}`);
+    // A CLOSE is exempt, for the same reason buying_power is below: these are
+    // limits on how much risk an order may CREATE, and closing creates none —
+    // it realises risk already taken. Applying an opening cap to a close was a
+    // trap that tightened exactly as it mattered (2026-09-14): autotrade's own
+    // cap is liveMaxOrderUsd $5,284, so a $2,067 autotrade position could never
+    // fit the manual $500 cap, and every hand-close of one was refused. It
+    // stayed hidden until the first hand-close, and what it cost then was not a
+    // refusal but a NAKED position — closePosition.ts cancels the protective
+    // bracket before placing, so the cancel succeeded and the replacement was
+    // blocked. See the ordering fix there; this is the root cause.
+    if (intent.openClose === 'open') {
+      block('order_notional', notional <= config.maxOrderUsd, `${usd(notional)} vs cap ${usd(config.maxOrderUsd)}`);
+    } else {
+      block('order_notional', true, 'n/a (closing creates no new exposure)');
+    }
 
     // OPENING consumes buying power, closing frees it — for either side. This
     // used to key on `side`, which waved every sell through as "frees cash":
@@ -426,13 +440,22 @@ export function evaluateGuardrails(
       block('buying_power', true, 'n/a (closing frees buying power)');
     }
 
-    // Opening adds exposure; closing does not increase it.
-    const exposureAfter = intent.openClose === 'open' ? account.exposureUsd + notional : account.exposureUsd;
-    block(
-      'account_exposure',
-      exposureAfter <= config.maxExposureUsd,
-      `${usd(exposureAfter)} vs cap ${usd(config.maxExposureUsd)}`,
-    );
+    // Opening adds exposure; closing REDUCES it — so a close is exempt rather
+    // than judged on the exposure it is about to remove. Measuring "exposure
+    // after" as the CURRENT figure meant an account already over the cap could
+    // never close by hand: the further over you were, the harder it refused to
+    // let you out. That is backwards for a risk limit, and on 2026-09-14 it
+    // blocked a $2,077 close against a $2,000 cap after the protective bracket
+    // had already been cancelled.
+    if (intent.openClose === 'open') {
+      block(
+        'account_exposure',
+        account.exposureUsd + notional <= config.maxExposureUsd,
+        `${usd(account.exposureUsd + notional)} vs cap ${usd(config.maxExposureUsd)}`,
+      );
+    } else {
+      block('account_exposure', true, 'n/a (closing reduces exposure)');
+    }
 
     // Cash-account settlement (advisory). A cash account risks a Good Faith
     // Violation if a position bought with UNSETTLED funds (e.g. proceeds from

@@ -472,6 +472,51 @@ describe('closeLivePosition', () => {
     expect(mockPlaceOrder).not.toHaveBeenCalled();
     expect(getLiveOrder(r.intent!.id)).toBeUndefined();
   });
+
+  // A BLOCKED CLOSE MUST NOT STRIP THE PROTECTION (2026-09-14).
+  //
+  // The cancel used to run BEFORE the guardrails had a say, so a refused close
+  // left the position with no stop and no close — strictly worse than never
+  // having tried. It happened for real on the first hand-close of an autotrade
+  // position, which sat naked until the caps were widened by hand.
+  //
+  // The root cause is fixed in guardrails.ts (two OPENING caps were judging a
+  // closing order). This is the second line: ANY rule that refuses a close —
+  // here a kill switch — must refuse it before the bracket comes off.
+  it('leaves the resting bracket ALONE when the close is going to be blocked', async () => {
+    // A position with a REAL resting stop, so the cancel path is genuinely
+    // reachable and the assertion is not vacuous.
+    const entry = bracketEntryIntent();
+    const pos = longStock({ sourceIntentId: entry.id });
+    mockOpenOrders.mockResolvedValue({ ok: true, orders: [openOrder()] });
+    mockAccountState.mockResolvedValue(accountStateWith(100) as Awaited<ReturnType<typeof webullAccountState>>);
+    setTradingConfig({ enabled: true, killSwitch: true });
+
+    const r = await closeLivePosition(pos, 'ACC1', 'SELL 100 AAPL');
+
+    expect(r).toMatchObject({ placed: false, reason: 'blocked' });
+    // The whole point: the stop is still resting at the broker.
+    expect(mockCancelOrder).not.toHaveBeenCalled();
+    expect(r.bracketCancelled).toBeUndefined();
+  });
+
+  it('still cancels the bracket when the close WILL go through', async () => {
+    // The control. Without this the test above would pass just as happily if
+    // the cancel had been removed altogether.
+    const entry = bracketEntryIntent();
+    const pos = longStock({ sourceIntentId: entry.id });
+    // Resting on the first read, gone on the verification read — the same
+    // two-call shape the adopted-position test above uses.
+    mockOpenOrders.mockResolvedValueOnce({ ok: true, orders: [openOrder()] }).mockResolvedValueOnce(noOpenOrders);
+    mockAccountState.mockResolvedValue(accountStateWith(100) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-CLOSE-OK' });
+
+    const r = await closeLivePosition(pos, 'ACC1', 'SELL 100 AAPL');
+
+    expect(r.placed).toBe(true);
+    expect(r.bracketCancelled).toBe(true);
+    expect(mockCancelOrder).toHaveBeenCalled();
+  });
 });
 
 describe('closeLiveOptionsAutotradePosition', () => {
