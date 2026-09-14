@@ -224,6 +224,11 @@ export function fieldForUntakenReason(
   // whose stop the session is unlikely to reach either way, so the paper R here
   // is the whole question.
   if (reason === 'risk_atr_unreachable_skipped') return { field: 'maxRiskAtrFraction', direction: 'exposure' };
+  // Two thresholds, one verdict, so there is no single field to name: loosening
+  // means admitting names trading heavily inside a dead range. Reported with a
+  // null field rather than pointing at one of the pair, since moving either
+  // alone changes what the rule MEANS rather than how tight it is.
+  if (reason === 'absorbed_price_skipped') return null;
   // No lever: the broker refuses to parse the symbol, and no setting changes
   // that. The fix is to take it out of the universe, which is a decision about
   // the universe rather than about risk.
@@ -346,6 +351,7 @@ function humanReason(reason: string): string {
   if (reason === 'regime_score_floor_skipped') return 'the High-Vol conviction bar';
   if (reason === 'risk_atr_unreachable_skipped') return "a stop wider than the name's daily range";
   if (reason === 'symbol_unplaceable_skipped') return 'a symbol the broker will not trade';
+  if (reason === 'absorbed_price_skipped') return 'a price being absorbed at a level rather than moving';
   if (reason === NEVER_A_LEVER) return 'the live book standing down (banked day, give-back guard or kill switch)';
   return reason.replace(/_/g, ' ');
 }

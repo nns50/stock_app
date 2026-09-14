@@ -10,7 +10,7 @@ import {
   TradingConfig,
   wouldOpenShort,
 } from '../trading/guardrails';
-import { marketOpenContext } from '../trading/marketHours';
+import { marketOpenContext, minutesIntoSession } from '../trading/marketHours';
 import { webullAccountState } from '../../providers/webull/accountState';
 import {
   newClientOrderId,
@@ -87,6 +87,7 @@ import {
   pruneResizeLatches,
 } from './resizeRetryLatch';
 import { fetchTodaySessionContext } from './vwap';
+import { evaluateAbsorbedPrice } from './absorbedPrice';
 import { evaluateEntryExtension, REFERENCE_MAX_PCT_OF_RANGE, REFERENCE_MAX_VWAP_EXT_PCT } from './entryExtension';
 import { detectLevels } from '../../indicators/levels';
 import { reentryCooldownFor, sameDaySymbolExits } from './reentryCooldown';
@@ -189,6 +190,16 @@ import { dispatchAutotradeNotification } from './notify';
 // for it through this module.
 export { buyingPowerBasis };
 export type { BuyingPowerBasis };
+
+/** Today's session high-low for `symbol`, in price units, or null when the
+ *  provider could not say. Reads the SAME cached context entryExtension uses
+ *  later on the entry that proceeds, so the gate and the journal can never
+ *  describe two different sessions. */
+async function sessionRangeUsdFor(symbol: string): Promise<number | null> {
+  const range = (await fetchTodaySessionContext(symbol)).range;
+  if (!range || !Number.isFinite(range.high) || !Number.isFinite(range.low)) return null;
+  return Math.max(0, range.high - range.low);
+}
 
 function withDayBuyingPower(state: AccountState, cfg: AutotradeConfig, accountId: string): AccountState {
   const learned = learnedOpenNotionalCeiling(accountId, etToday());
@@ -1583,6 +1594,41 @@ export async function runLiveExecution(
         continue;
       }
     }
+    // Is the price FREE TO MOVE today? The gate above asks whether 1R fits
+    // this name's TYPICAL range, from a 14-day ATR. That is the wrong question
+    // for a stock pinned by a deal: BWIN's ATR was $1.133 (healthy, recent
+    // daily ranges $0.83-$1.99) so it passed — while today's entire range was
+    // $0.24. The gap that maxed its score also propped up the ATR the gate
+    // trusts, so both read the past and both were fooled by the same candle.
+    //
+    // Live-only for the same reason the ATR gate is: paper stays the control.
+    // Ordered AFTER it because that one is free, and this one costs a candle
+    // fetch — cached five minutes per symbol, and the entry that proceeds pays
+    // it again for entryExtension anyway, so only a skipped candidate is a
+    // genuinely extra call.
+    const absorbed = evaluateAbsorbedPrice({
+      sessionRangeUsd: await sessionRangeUsdFor(symbol),
+      atr: candidateSignal.atr,
+      relVolume: candidateSignal.relVolume,
+      minutesIntoSession: minutesIntoSession() ?? 0,
+      minRelVolume: cfg.absorbedPriceMinRelVolume,
+      maxRangeAtrFraction: cfg.absorbedPriceMaxRangeAtrFraction,
+      minMinutesIntoSession: cfg.absorbedPriceMinMinutesIntoSession,
+    });
+    if (absorbed.verdict === 'absorbed' && absorbed.reason) {
+      journalEntrySkipOncePerDay(symbol, 'absorbed_price_skipped', {
+        relVolume: absorbed.relVolume,
+        rangeAtrRatio: absorbed.rangeAtrRatio,
+        atr: candidateSignal.atr ?? null,
+        score: candidateSignal.score,
+        minRelVolume: cfg.absorbedPriceMinRelVolume,
+        maxRangeAtrFraction: cfg.absorbedPriceMaxRangeAtrFraction,
+        reason: absorbed.reason,
+      });
+      outcomes.push({ symbol, ok: false, reason: absorbed.reason });
+      continue;
+    }
+
     const reentry = reentryCooldownFor(symbol, closedAutotradeForReentry, cfg.symbolReentryCooldownMinutes);
     if (reentry) {
       const reason = `Re-entry cooldown — exited ${reentry.minutesSince}m ago, resumes after ${reentry.cooldownMinutes}m`;

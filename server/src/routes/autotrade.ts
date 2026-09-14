@@ -308,6 +308,9 @@ const configBody = z.object({
   equitySyncMaxJumpPct: z.number().nonnegative().optional(),
   liveDayBuyingPowerUsd: z.number().nonnegative().optional(),
   liveRefusalCeilingEnabled: z.boolean().optional(),
+  absorbedPriceMinRelVolume: z.number().nonnegative().optional(),
+  absorbedPriceMaxRangeAtrFraction: z.number().nonnegative().optional(),
+  absorbedPriceMinMinutesIntoSession: z.number().nonnegative().optional(),
   liveMaxDailyLossUsd: z.number().nonnegative().optional(),
   liveMaxOrdersPerDay: z.number().int().nonnegative().optional(),
   liveFatFingerPct: z.number().min(0).max(100).optional(),
@@ -622,6 +625,11 @@ autotradeRouter.put(
     if (body.equitySyncMaxJumpPct !== undefined) patch.equitySyncMaxJumpPct = body.equitySyncMaxJumpPct;
     if (body.liveDayBuyingPowerUsd !== undefined) patch.liveDayBuyingPowerUsd = body.liveDayBuyingPowerUsd;
     if (body.liveRefusalCeilingEnabled !== undefined) patch.liveRefusalCeilingEnabled = body.liveRefusalCeilingEnabled;
+    if (body.absorbedPriceMinRelVolume !== undefined) patch.absorbedPriceMinRelVolume = body.absorbedPriceMinRelVolume;
+    if (body.absorbedPriceMaxRangeAtrFraction !== undefined)
+      patch.absorbedPriceMaxRangeAtrFraction = body.absorbedPriceMaxRangeAtrFraction;
+    if (body.absorbedPriceMinMinutesIntoSession !== undefined)
+      patch.absorbedPriceMinMinutesIntoSession = body.absorbedPriceMinMinutesIntoSession;
     if (body.liveMaxDailyLossUsd !== undefined) patch.liveMaxDailyLossUsd = body.liveMaxDailyLossUsd;
     if (body.liveMaxOrdersPerDay !== undefined) patch.liveMaxOrdersPerDay = body.liveMaxOrdersPerDay;
     if (body.liveFatFingerPct !== undefined) patch.liveFatFingerPct = body.liveFatFingerPct;
