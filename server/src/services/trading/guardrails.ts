@@ -91,6 +91,20 @@ export interface AccountState {
    *  response didn't include it, so the settled_cash check below can skip
    *  rather than warn on a fabricated shortfall. */
   settledCashUsd?: number;
+  /** The account's CASH balance, as the broker reports it — distinct from
+   *  every buying-power figure above, which are margin-extended.
+   *
+   *  Reported (2026-09-14) because a buying-power refusal could not be read
+   *  without it. On the trial sizing's first session the broker refused a
+   *  $3,742 order with the book FLAT and the day figure reading ~$13.8k,
+   *  while the two names that had filled minutes earlier were large caps and
+   *  the two refused were small caps — the shape of a purchase that needs cash
+   *  rather than margin. Nothing in the journal could distinguish that from a
+   *  margin shortfall, because cash was never carried.
+   *
+   *  Capture-only: no rule reads it to decide anything. Undefined when the
+   *  broker did not report it. */
+  cashBalanceUsd?: number;
   /** Day-trading buying power — what a position opened and closed inside the
    *  same session can use. Typically a multiple of net liquidation (4x on a
    *  PDT-flagged margin account; on 2026-08-27 this account read $9,800.80

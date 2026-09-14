@@ -1207,6 +1207,23 @@ describe('buyingPowerBasis — which figure won, and saying so', () => {
     expect(b).toMatchObject({ usedUsd: 1_000, source: 'overnight', brokerDayUsd: null });
   });
 
+  it('carries the CASH balance beside the margin figures', () => {
+    // The number a purchase that cannot be margined has to fit inside. On
+    // 2026-09-14 a $3,742 order was refused with the book flat and the day
+    // figure at ~$13.8k; without cash on the row, a margin shortfall and a
+    // cash shortfall look identical.
+    const b = buyingPowerBasis(
+      state({ buyingPowerUsd: 1_000, dayBuyingPowerUsd: 13_990.49, cashBalanceUsd: 212.4 }),
+      cfg(),
+    );
+    expect(b.cashBalanceUsd).toBe(212.4);
+    expect(b.brokerDayUsd).toBe(13_990.49);
+  });
+
+  it('reports cash as null when the broker did not report it — never a fabricated 0', () => {
+    expect(buyingPowerBasis(state({ buyingPowerUsd: 1_000 }), cfg()).cashBalanceUsd).toBeNull();
+  });
+
   it('reports the DAY figure, and the exposure it was netted against', () => {
     // The live shape: a day figure several times equity, minus what is already
     // deployed. This is the number the sizer aims at.

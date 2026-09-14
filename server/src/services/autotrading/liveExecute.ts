@@ -210,6 +210,10 @@ export interface BuyingPowerBasis {
   ceilingUsd: number | null;
   /** Exposure the day figure was netted against. */
   exposureUsd: number;
+  /** The account's CASH balance, when the broker reported one — the figure a
+   *  purchase that cannot be margined has to fit inside. Carried so a refusal
+   *  can be told apart from a margin shortfall; no rule reads it. */
+  cashBalanceUsd: number | null;
 }
 
 /**
@@ -245,6 +249,7 @@ export function buyingPowerBasis(state: AccountState, cfg: AutotradeConfig): Buy
     brokerDayUsd: broker ?? null,
     ceilingUsd: null,
     exposureUsd: state.exposureUsd,
+    cashBalanceUsd: state.cashBalanceUsd ?? null,
   };
   if (broker === undefined || !(broker > 0)) return base;
   const capped = cfg.liveDayBuyingPowerUsd > 0;

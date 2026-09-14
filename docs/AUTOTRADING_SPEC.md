@@ -10250,3 +10250,51 @@ known, which is exactly why this ships as instrumentation first.
 Not the explanation: pattern-day-trader status. Webull no longer applies PDT to
 this account and it may trade without a day-trade count, so the gap is about
 which pool backs an opening order, not about a trade-count restriction.
+
+## 2026-09-14 (second) — the cash balance, beside the margin figures
+
+The instrumentation above answered "which buying-power figure did the sizer aim
+at". The session then asked a question it could not answer.
+
+**What the book did.** COIN exited 09:40, NOW exited 09:42 — flat. Then four
+entries were refused by the broker, every one with *"Buying power is
+insufficient. Please cancel open buy orders (if any) and try again."*: BWIN at
+09:57, FTFT at 10:03, BWIN again at 10:11 and 10:17. The app blocked none of
+them — zero live risk-check blocks, zero guardrail blocks — and there were no
+open positions and no resting orders at the broker for any of them. The account
+showed roughly $13.8–14.0k of buying power throughout, rising as positions
+closed.
+
+A $3,742 order refused against ~$13,800 with the book flat is not a margin
+shortfall in any ordinary reading.
+
+**The split that is in the data.** The two that filled were large caps (COIN
+$186, NOW $138); the two refused were small caps (BWIN $32, FTFT sub-$1). That
+is the shape of a purchase that needs CASH rather than margin — many brokers
+margin small and low-priced names at 100%, or not at all. n=4, so it is a
+hypothesis and is recorded as one.
+
+**Why it could not be settled from the journal.** The captured Webull payload
+carries three distinct figures — `day_buying_power`, `overnight_buying_power`
+and `cash_balance` (plus the top-level `total_cash_balance`) — and
+`withDayBuyingPower` bounds every order by the largest. Cash was parsed nowhere
+and carried nowhere, so a cash shortfall and a margin shortfall produced
+identical rows. Three separate explanations were advanced and discarded against
+the operator's own readings before this became obvious: pattern-day-trader
+status (Webull no longer applies it to this account), unsettled proceeds (the
+figure rose rather than fell as positions closed), and a static entitlement
+(it moved, $13,822.77 → $13,990.49).
+
+**What changed.** `AccountState` gains `cashBalanceUsd`, mapped from
+`asset.cash_balance` with the top-level `total_cash_balance` as a fallback, via
+`numOrUndefined` so an unreported field stays undefined rather than becoming a
+confident $0 — the same trap the file's own `firstNum` comment documents.
+`BuyingPowerBasis` carries it onto `live_order_placed` and
+`live_entry_failed`. Capture-only: no rule reads it to decide anything.
+
+**The reading to take next.** On a refusal, compare the order's notional
+against `buyingPower.cashBalanceUsd` rather than against `usedUsd`. If the
+order exceeds cash while sitting well inside the day figure, the hypothesis
+above is confirmed and the lever is the universe filter — `minPrice`, currently
+**$1** — not a buying-power cap. If instead cash is ample, the hypothesis is
+dead and the refusal is about something else again.
