@@ -29,6 +29,7 @@ import {
   EdgeLeakScanResult,
   equivalentPaceFloor,
   ExecutionOccurrence,
+  ExtensionQuality,
   JournalSkip,
   LeakBook,
   LeakTrade,
@@ -217,20 +218,41 @@ function weekdayOf(etDate: string): number {
   return at === null ? 0 : new Date(at).getUTCDay();
 }
 
-/** The `entry_extension_shadow` rows, keyed by symbol and minute, so a live
+/** The `entry_extension_shadow` rows, keyed by BOOK, symbol and minute, so an
  *  entry can be joined to what the shadow gate saw at the moment it was
  *  placed. The shadow is journaled immediately after the placement call, so
- *  the two land in the same minute. */
+ *  the two land in the same minute.
+ *
+ *  The book belongs in the key (2026-09-14): both books enter the same symbol
+ *  in the same tick and therefore the same minute, so a symbol-and-minute key
+ *  let the live row overwrite the paper one — and the scan's whole test for a
+ *  leak is whether the paper CONTROL agrees with the live book. A control that
+ *  is a copy of its subject always agrees. */
 export interface ExtensionRow {
   vwapExtPct: number | null;
   pctOfRange: number | null;
 }
 
-function extensionIndex(since: number): Map<string, ExtensionRow> {
-  const out = new Map<string, ExtensionRow>();
+/** A pctOfRange outside 0..100 is a KNOWN-BAD measurement, not an extreme one.
+ *
+ *  Rows written before 2026-09-14 divided the screener's price by a range from
+ *  a different moment, and five of the first 43 landed outside their own range
+ *  (FCX 130.0%, FTFT 114.8%, SMCI 110.9%, BWIN 105.9%, CHYM -1.6%). Clamping
+ *  them to 100 would invent a reading the data does not support; bucketing
+ *  them would put a trade in a band chosen by measurement error. Dropping the
+ *  attribute leaves the trade in every OTHER dimension and merely unmeasured
+ *  in this one, which is what it is. `rangeIncluding` makes the condition
+ *  unreachable for rows written since. */
+function usablePctOfRange(v: unknown): number | null {
+  return typeof v === 'number' && v >= 0 && v <= 100 ? v : null;
+}
+
+function extensionIndex(since: number): { rows: Map<string, ExtensionRow>; quality: ExtensionQuality } {
+  const rows = new Map<string, ExtensionRow>();
+  const quality: ExtensionQuality = { measured: 0, staleBars: 0, unusable: 0 };
   for (const e of listAutotradeEventsInWindow({ actions: ['entry_extension_shadow'], since }).events) {
     if (!e.symbol || !e.detail) continue;
-    let parsed: { vwapExtPct?: unknown; pctOfRange?: unknown };
+    let parsed: { vwapExtPct?: unknown; pctOfRange?: unknown; book?: unknown; extendedRange?: unknown };
     try {
       parsed = JSON.parse(e.detail) as typeof parsed;
     } catch {
@@ -238,12 +260,26 @@ function extensionIndex(since: number): Map<string, ExtensionRow> {
     }
     const minute = etMinuteOf(e.createdAt);
     if (minute === null) continue;
-    out.set(`${e.symbol}|${etToday(e.createdAt)}|${minute}`, {
+    // Rows written before the paper book journaled its own were all live, and
+    // carry no `book` field. Defaulting them to 'live' keeps the existing
+    // history joined rather than silently orphaning every trade before today.
+    const book = parsed.book === 'paper' ? 'paper' : 'live';
+    const pctOfRange = usablePctOfRange(parsed.pctOfRange);
+    if (pctOfRange === null && typeof parsed.pctOfRange === 'number') quality.unusable += 1;
+    if (pctOfRange !== null) {
+      quality.measured += 1;
+      if (parsed.extendedRange === 'above' || parsed.extendedRange === 'below') quality.staleBars += 1;
+    }
+    rows.set(extensionKey(book, e.symbol, etToday(e.createdAt), minute), {
       vwapExtPct: typeof parsed.vwapExtPct === 'number' ? parsed.vwapExtPct : null,
-      pctOfRange: typeof parsed.pctOfRange === 'number' ? parsed.pctOfRange : null,
+      pctOfRange,
     });
   }
-  return out;
+  return { rows, quality };
+}
+
+function extensionKey(book: 'live' | 'paper', symbol: string, etDate: string, minute: number): string {
+  return `${book}|${symbol}|${etDate}|${minute}`;
 }
 
 /** Attributes for one collector id, before the round number is assigned. */
@@ -262,7 +298,7 @@ function attributesForLiveBook(
     const entryAt = p.entryTime && p.entryDate ? etDateTimeToMs(p.entryDate, p.entryTime) : p.createdAt;
     const minute = entryAt === null ? null : etMinuteOf(entryAt);
     const etDate = p.entryDate ?? etToday(p.createdAt);
-    const ext = minute === null ? undefined : extensions.get(`${p.symbol}|${etDate}|${minute}`);
+    const ext = minute === null ? undefined : extensions.get(extensionKey('live', p.symbol, etDate, minute));
     out.set(`pos:${p.id}`, {
       id: `pos:${p.id}`,
       book: 'live',
@@ -314,11 +350,14 @@ function attributesForPaperBook(
   paper: PaperPosition[],
   optionsPaper: OptionsPaperPosition[],
   sectorOf: (symbol: string) => string | null,
+  extensions: Map<string, ExtensionRow>,
 ): Map<string, PartialLeakTrade> {
   const out = new Map<string, PartialLeakTrade>();
   for (const p of paper) {
     if (p.status !== 'closed' || p.exitAt === null) continue;
     const etDate = etToday(p.entryAt);
+    const minute = etMinuteOf(p.entryAt);
+    const ext = minute === null ? undefined : extensions.get(extensionKey('paper', p.symbol, etDate, minute));
     out.set(`paper:${p.id}`, {
       id: `paper:${p.id}`,
       book: 'paper',
@@ -334,8 +373,13 @@ function attributesForPaperBook(
       quantity: p.quantity,
       mlRegime: p.mlRegime,
       weekday: weekdayOf(etDate),
-      vwapExtPct: null,
-      pctOfRange: null,
+      // Null until 2026-09-14, which is why the scan could never CONFIRM an
+      // extension leak: its bar needs the paper control's bucket to agree in
+      // sign, and a null control agrees with nothing. execute.ts journals the
+      // paper reading now, so this joins for trades from that date on and
+      // stays null for the history behind it.
+      vwapExtPct: ext?.vwapExtPct ?? null,
+      pctOfRange: ext?.pctOfRange ?? null,
     });
   }
   for (const p of optionsPaper) {
@@ -1010,13 +1054,16 @@ export function runEdgeLeakScanFromDb(opts: EdgeLeakScanOptions = {}): EdgeLeakS
     ? (etDateTimeToMs(liveCollected.sessionDates[0], '00:00') ?? now - lookbackSessions * 86_400_000)
     : now - lookbackSessions * 86_400_000;
 
+  // One scan of the journal, read by both books — the index is keyed by book,
+  // so each takes its own rows out of it.
+  const { rows: extensions, quality: extensionQuality } = extensionIndex(windowStart);
   const live = joinLeakTrades(
     liveCollected,
     attributesForLiveBook(
       listPositions({ status: 'closed' }),
       listLiveOptionsPositions({ status: 'closed' }),
       sectorOf,
-      extensionIndex(windowStart),
+      extensions,
     ),
   );
   const paper = joinLeakTrades(
@@ -1025,6 +1072,7 @@ export function runEdgeLeakScanFromDb(opts: EdgeLeakScanOptions = {}): EdgeLeakS
       listPaperPositions({ status: 'closed' }),
       listOptionsPaperPositions({ status: 'closed' }),
       sectorOf,
+      extensions,
     ),
   );
 
@@ -1053,6 +1101,7 @@ export function runEdgeLeakScanFromDb(opts: EdgeLeakScanOptions = {}): EdgeLeakS
     entryDriftPct: collectEntryDrift(windowStart),
     journalSkips: skipRead.skips,
     journalSkipsTruncated: skipRead.truncated,
+    extensionQuality,
     batchRefusals: collectBatchRefusals(windowStart),
     asOf: now,
   });

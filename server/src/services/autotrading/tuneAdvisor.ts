@@ -356,6 +356,10 @@ function humanReason(reason: string): string {
   return reason.replace(/_/g, ' ');
 }
 
+/** The two dimensions whose value is a price measured against a session range,
+ *  and so the two the extension quality counts apply to. */
+const EXTENSION_DIMENSIONS = new Set(['pctOfRange', 'vwapExtension']);
+
 function edgeRecommendations(input: TuneAdvisorInput, gap: GoalGap): TuneRecommendation[] {
   const scan = input.scan;
   if (!scan || gap.activeSessions === 0 || gap.tradesPerSession === null) return [];
@@ -367,6 +371,20 @@ function edgeRecommendations(input: TuneAdvisorInput, gap: GoalGap): TuneRecomme
     // ratio of the bucket to the book.
     const dR = scan.coverage.liveTrades > 0 ? leak.severityR / scan.coverage.liveTrades : 0;
     const lever = leak.lever;
+    // The extension dimensions divide an entry price by a session range, and
+    // before 2026-09-14 the two came from different moments: five of the first
+    // 43 live readings put the price outside its own range, by as much as 30
+    // percentage points of it (FCX). Those rows are dropped, but a window that
+    // still contains them cannot support a cut at 50/70/85 — the bucket a
+    // trade lands in was partly chosen by measurement error. Downgraded, not
+    // ranked, for the same reason a truncated skip read downgrades no_live_row.
+    //
+    // Read defensively for the same reason `journalSkipsTruncated` is above:
+    // `scan` can be a blob read back out of `edge_leak_scans`, written by a
+    // build that predates the field. The type says it is there; the JSON on
+    // disk does not have to agree.
+    const unusableReadings = scan.coverage.extensionQuality?.unusable ?? 0;
+    const staleMeasure = EXTENSION_DIMENSIONS.has(leak.dimension) && unusableReadings > 0;
     out.push({
       id: `edge:${leak.dimension}:${leak.bucket}`,
       factor: 'edge',
@@ -380,9 +398,12 @@ function edgeRecommendations(input: TuneAdvisorInput, gap: GoalGap): TuneRecomme
       confidence: confidenceFor(leak.n),
       // A leak's lever CUTS, so it is not held by the review rule — the review
       // guards against widening mid-trial, not against closing a hole.
-      status: leak.verdict === 'unconfirmed' ? 'needs_data' : 'actionable',
-      statusReason:
-        leak.verdict === 'unconfirmed'
+      status: staleMeasure || leak.verdict === 'unconfirmed' ? 'needs_data' : 'actionable',
+      statusReason: staleMeasure
+        ? `${unusableReadings} extension readings in this window fell outside 0-100% of ` +
+          'their own session range, so the buckets are partly measurement error — not a cut until the window ' +
+          'is all post-fix rows'
+        : leak.verdict === 'unconfirmed'
           ? 'the paper control has too few trades in this bucket to agree or disagree'
           : 'reduces exposure — the gated-switch engine can apply this once its rule graduates',
       // Not an occurrence — a distribution has no "last seen".

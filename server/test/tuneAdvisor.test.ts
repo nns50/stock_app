@@ -70,7 +70,14 @@ function scan(over: Record<string, unknown> = {}) {
       meanEntrySlippagePct: 0.2,
       untaken: [],
     },
-    coverage: { liveTrades: 100, paperTrades: 120, liveDropped: 0, paperDropped: 0, sessions: 40 },
+    coverage: {
+      liveTrades: 100,
+      paperTrades: 120,
+      liveDropped: 0,
+      paperDropped: 0,
+      sessions: 40,
+      extensionQuality: { measured: 0, staleBars: 0, unusable: 0 },
+    },
     ...over,
   } as unknown as NonNullable<TuneAdvisorInput['scan']>;
 }
@@ -218,6 +225,67 @@ describe('every estimate goes through the identity', () => {
     // Using the bucket's own -0.24R mean would have overstated it fivefold.
     expect(rec?.expectedDayPctDelta).toBeCloseTo(0.5, 3);
     expect(rec?.action).toMatchObject({ kind: 'config', field: 'symbolReentryCooldownMinutes', to: 390 });
+  });
+
+  const extensionLeak = {
+    dimension: 'pctOfRange',
+    dimensionLabel: 'Entry as % of session range',
+    bucket: '70-85',
+    n: 20,
+    meanR: -0.4,
+    ciLow: -0.8,
+    ciHigh: -0.03,
+    totalPnlUsd: -101,
+    severityR: 8,
+    verdict: 'leak' as const,
+    lever: null,
+  };
+
+  it('will not rank an extension cut while the window still holds impossible readings', () => {
+    // 2026-09-14. pctOfRange divides an entry price by a session range, and
+    // before that date the two were measured at different moments: five of the
+    // first 43 live readings put the price outside its own range, FCX by 30
+    // percentage points of it. Those rows are dropped from the buckets, but a
+    // window that still contains them cannot support a cut at 50/70/85 — which
+    // band a trade fell in was partly chosen by measurement error. The
+    // non-monotonic first read (<50 -0.08, 50-70 -0.11, 70-85 -0.40, 85+ +0.18)
+    // is what that looks like from the outside.
+    const a = advise({
+      scan: scan({
+        leaks: [extensionLeak],
+        coverage: { ...scan().coverage, extensionQuality: { measured: 38, staleBars: 6, unusable: 5 } },
+      }),
+    });
+    const rec = a.recommendations.find((r) => r.id === 'edge:pctOfRange:70-85');
+    expect(rec?.status).toBe('needs_data');
+    expect(rec?.statusReason).toMatch(/outside 0-100% of their own session range/);
+  });
+
+  it('ranks the same extension leak once the window is all post-fix readings', () => {
+    // The other half: the downgrade must be about the DATA, not about the
+    // dimension. With nothing unusable in the window the same leak is
+    // actionable — otherwise the guard would bury the finding forever and read
+    // as "extension is never a lever", which is not what the evidence says.
+    const a = advise({
+      scan: scan({
+        leaks: [extensionLeak],
+        coverage: { ...scan().coverage, extensionQuality: { measured: 43, staleBars: 6, unusable: 0 } },
+      }),
+    });
+    expect(a.recommendations.find((r) => r.id === 'edge:pctOfRange:70-85')?.status).toBe('actionable');
+  });
+
+  it('leaves a dimension that is not measured against a session range alone', () => {
+    // Only pctOfRange and vwapExtension divide a price by a range; a round or
+    // score-band leak in the same window is unaffected by how stale the bars
+    // were.
+    const a = advise({
+      scan: scan({
+        leaks: [{ ...extensionLeak, dimension: 'round', dimensionLabel: 'Round within symbol-day', bucket: '2' }],
+        coverage: { ...scan().coverage, extensionQuality: { measured: 38, staleBars: 6, unusable: 5 } },
+      }),
+    });
+    expect(a.recommendations.find((r) => r.id === 'edge:round:2')?.status).toBe('actionable');
   });
 
   it('will not rank "unexplained" flow when the journal read was truncated', () => {

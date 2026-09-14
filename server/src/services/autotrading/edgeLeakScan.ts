@@ -329,6 +329,8 @@ export interface EdgeLeakScanInput {
   journalSkips: JournalSkip[];
   /** Whether `journalSkips` is the complete window or was cut short. */
   journalSkipsTruncated?: boolean;
+  /** How trustworthy the extension dimensions' inputs are over this window. */
+  extensionQuality?: ExtensionQuality;
   /** The batch-level live refusals in the window — the ones that carry NO
    *  symbol, so `journalSkips` cannot hold them. See classifyUntaken. */
   batchRefusals?: BatchRefusal[];
@@ -375,7 +377,36 @@ export interface EdgeLeakScanResult {
      * from a real recording gap unless the incompleteness travels with it.
      */
     journalSkipsTruncated: boolean;
+    /**
+     * How far the extension readings can be trusted (2026-09-14).
+     *
+     * The pctOfRange dimension divides an entry price by a session range built
+     * from 5-minute bars, and the two can describe different moments. Two
+     * counts travel with the scan rather than being discarded quietly:
+     *
+     *   `staleBars` — readings where the price printed outside the completed
+     *   bars, so the bars were behind. Not an error: a genuine new high of day
+     *   does it. It is the measurable proxy for how much lag the window
+     *   carried, and a window where it is common is a window whose bucket
+     *   edges mean less.
+     *
+     *   `unusable` — readings DROPPED for falling outside 0..100 at all, which
+     *   only pre-2026-09-14 rows can do. A report that silently discards 12%
+     *   of its input is the failure this codebase keeps repeating, so the
+     *   count is on the wire.
+     */
+    extensionQuality: ExtensionQuality;
   };
+}
+
+/** Counts of extension readings by how much they can be trusted. */
+export interface ExtensionQuality {
+  /** Rows with a usable 0..100 reading. */
+  measured: number;
+  /** Of those, how many had the price outside the bar-derived range. */
+  staleBars: number;
+  /** Rows dropped for a reading outside 0..100 — impossible since 2026-09-14. */
+  unusable: number;
 }
 
 // --- the catalog -----------------------------------------------------------
@@ -1125,6 +1156,7 @@ export function runEdgeLeakScan(input: EdgeLeakScanInput): EdgeLeakScanResult {
       paperControl: paperControlDrift(paper),
       sessions: input.live.sessionDates.length,
       journalSkipsTruncated: input.journalSkipsTruncated ?? false,
+      extensionQuality: input.extensionQuality ?? { measured: 0, staleBars: 0, unusable: 0 },
     },
   };
 }

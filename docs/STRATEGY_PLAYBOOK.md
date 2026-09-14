@@ -1914,6 +1914,23 @@ agrees" can be a fact about *when* a bucket's trades happened. `coverage.paperCo
 is the gap between the control's two halves; when it is large, discount every control-backed
 verdict in that run.
 
+_A dimension can be structurally unconfirmable._ The extension readings (VWAP extension and
+% of session range) were journaled on the **live entry path only** until 2026-09-14, so every
+paper row carried a null — and the bar needs the paper control's bucket to agree in sign. The
+dimension read "unconfirmed" for a reason that had nothing to do with its sample size and
+would never have resolved. The paper book journals its own reading now. Before you accept an
+"unconfirmed" verdict, check that the control arm exists at all.
+
+_And a reading can be worse than absent._ Those same readings divide an entry price by a
+session range, and until 2026-09-14 the two were measured at different moments — five of the
+first 43 live rows put the price **outside** the range it was divided by (FCX read 130.0% of
+it; CHYM -1.6%). Only the tail that crosses 100 is visible, so the error rate is a floor. Such
+rows are dropped from the buckets rather than clamped, and `coverage.extensionQuality`
+reports `measured` / `staleBars` / `unusable` so a discarded input is never silent. While
+`unusable` is above zero the tune advisor will not rank an extension cut: which band a trade
+fell in was partly chosen by measurement error, and a cut at 50/70/85 cannot survive noise
+of 30 percentage points.
+
 **Severity is R left on the table** over the window — a leak that has cost nothing yet is
 still a leak, just not urgent — and every leak carries its lever: the config field with
 the value that closes it, or the code path when no setting expresses it. A lever is
@@ -1929,6 +1946,25 @@ report round 2 as a leak (both books negative, lever `symbolReentryCooldownMinut
 390), the HOOD options day as an execution finding, the options order cap as a
 configuration finding (hand-frozen), and the entry-extension buckets as watches at most.
 If it does not, the scan is wrong, not the record.
+
+**Read 2026-09-14, and what it cost to believe.** The extension buckets came back
+non-monotonic — `<50 -0.08R`, `50-70 -0.11R`, `70-85 -0.40R`, `85+ +0.18R` — which is not a
+dose-response, and the reference rule (block above 60% of range) would have removed a net
++$99 and kept a net -$63.
+
+Be precise about what the defect does and does not explain. **Dropping the five impossible
+rows barely moves the buckets**: three of them map to a closed trade (FCX +0.38R, SMCI
+0.00R, CHYM +0.14R), and removing them takes 85+ from +0.180R to +0.180R and `<50` from
+-0.08R to -0.10R. So the visible errors are not what produced the shape.
+
+What undermines the cut is the part that **cannot** be seen. The range is cached up to five
+minutes, so the dominant error is a denominator that is too SMALL, which pushes a reading
+UP — the >100 rows are that error's extreme tail, and the rest of the tail reads as an
+ordinary number in a higher bucket than the trade belongs to. The error reaches 30
+percentage points of range (FCX), it is directional, and only its extreme is observable. A
+cut at 50/70/85 cannot be defended on a measurement like that, whatever the buckets say.
+**A cut is only as good as the number it is cut from** — when a bucket pattern has no
+monotone shape, rule out the measurement before believing the market.
 
 **Two readings it replaces**, each with its own written rule:
 

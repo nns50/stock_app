@@ -50,6 +50,39 @@
 // NOTE FOR WHEN THIS DOES GATE: the live path computes session context AFTER
 // the broker placement, deliberately, so measurement can never delay or fail a
 // real order. A blocking version has to move ahead of placement.
+//
+// THE RATIO IS NOW WELL-FORMED BY CONSTRUCTION (2026-09-14). It was not, and
+// the journal said so out loud: five of the first 43 live rows put the entry
+// price OUTSIDE the range it was divided by — FCX 130.0%, FTFT 114.8%, SMCI
+// 110.9%, BWIN 105.9%, and CHYM at -1.6%, below its own session low. The cause
+// is the disease entryRisk.ts was written for, one dimension over: the
+// numerator was `signal.entry`, the price the SCREEN saw, and the denominator
+// a range built from 5-minute bars behind a 5-minute cache and fetched AFTER
+// the placement. Two different moments, divided by each other.
+//
+// Two changes, and the second is the one that cannot regress:
+//
+//   1. The caller passes the price the order was really priced at, not the
+//      screener's (liveExecute.ts passes riskBasisPrice of the placement
+//      quote; execute.ts passes the paper fill).
+//   2. `rangeIncluding` extends the range with that price before the division.
+//      A price that just printed in this session IS part of the session's
+//      range; a range that does not contain it is simply behind. So
+//      0 <= pctOfRange <= 100 holds for every input, and "at a new high of
+//      day" reads 100 with `extendedRange: 'above'` beside it rather than an
+//      impossible 130.
+//
+// What is NOT fixed, and is journaled instead of pretended away: the bars can
+// be up to one bar plus one cache TTL behind, so a high printed after the last
+// completed bar but above our own quote is still invisible. That residual
+// biases a reading DOWN (the range looks smaller than it was), where the old
+// defect was two-sided and unbounded. `extendedRange` counts how often the
+// quote was outside the bars at all, which is the measurable proxy for it.
+//
+// Error size matters for the buckets, not just the outliers: FCX's entry sat
+// 30 percentage points of range beyond its high. Bucket edges at 50/70/85 do
+// not survive noise of that size, which is why the first bucket read was
+// non-monotonic and why no gate could be cut from it.
 // ---------------------------------------------------------------------------
 
 import { Candle } from '../../providers/types';
@@ -105,8 +138,40 @@ export function computeSessionRange(candles: Candle[], now: number): SessionRang
 export const REFERENCE_MAX_PCT_OF_RANGE = 60;
 export const REFERENCE_MAX_VWAP_EXT_PCT = 0.4;
 
+/**
+ * The session range widened to contain `price`.
+ *
+ * The range comes from completed 5-minute bars; `price` is a quote taken now.
+ * When the quote sits outside the bars, the bars are behind — the session's
+ * true high is at least this print — so the honest range is the wider one.
+ * Doing this BEFORE the division is what makes 0..100 a property of the
+ * function rather than a hope about its inputs.
+ *
+ * Null range in, null range out: widening nothing is still nothing.
+ */
+export function rangeIncluding(range: SessionRange | null, price: number): SessionRange | null {
+  if (!range) return null;
+  if (!(price > 0)) return range;
+  return { high: Math.max(range.high, price), low: Math.min(range.low, price) };
+}
+
+/** Which side of the bar-derived range the measured price fell outside, if either. */
+export type RangeExtension = 'above' | 'below' | null;
+
+/** Whether `price` sat outside the bar-derived `range` — i.e. the bars were behind. */
+export function rangeExtendedBy(range: SessionRange | null, price: number): RangeExtension {
+  if (!range || !(price > 0)) return null;
+  if (price > range.high) return 'above';
+  if (price < range.low) return 'below';
+  return null;
+}
+
 export interface EntryExtensionInput {
   side: 'long' | 'short';
+  /** The price the trade was really priced at — the placement quote on the
+   *  live path, the fill on the paper path. NOT `signal.entry`: that is the
+   *  screen's price, minutes and a broker round-trip older than the range it
+   *  would be divided by (see the header). */
   price: number;
   vwap: number | null;
   range: SessionRange | null;
@@ -117,6 +182,10 @@ export interface EntryExtension {
   vwapExtPct: number | null;
   /** 0 = at the session low, 100 = at the session high. Flipped for a short. Null when unmeasured. */
   pctOfRange: number | null;
+  /** Which side of the bar-derived range the price fell outside, before the
+   *  range was widened to include it. Null when it sat inside, or when there
+   *  was no range. A running count of these is how stale the bars are. */
+  extendedRange: RangeExtension;
   /** What the reference thresholds WOULD have done. Never acted on here. */
   wouldBlock: boolean;
   reasons: string[];
@@ -143,9 +212,11 @@ export function evaluateEntryExtension(input: EntryExtensionInput): EntryExtensi
     vwapExtPct = Math.round((side === 'long' ? raw : -raw) * 1000) / 1000;
   }
 
+  const extendedRange = rangeExtendedBy(range, price);
+  const measured = rangeIncluding(range, price);
   let pctOfRange: number | null = null;
-  if (range && range.high > range.low) {
-    const raw = ((price - range.low) / (range.high - range.low)) * 100;
+  if (measured && measured.high > measured.low) {
+    const raw = ((price - measured.low) / (measured.high - measured.low)) * 100;
     pctOfRange = Math.round((side === 'long' ? raw : 100 - raw) * 10) / 10;
   }
 
@@ -156,5 +227,5 @@ export function evaluateEntryExtension(input: EntryExtensionInput): EntryExtensi
   if (vwapExtPct !== null && vwapExtPct > REFERENCE_MAX_VWAP_EXT_PCT) {
     reasons.push(`entered ${vwapExtPct}% beyond VWAP (reference max ${REFERENCE_MAX_VWAP_EXT_PCT}%)`);
   }
-  return { vwapExtPct, pctOfRange, wouldBlock: reasons.length > 0, reasons };
+  return { vwapExtPct, pctOfRange, extendedRange, wouldBlock: reasons.length > 0, reasons };
 }
