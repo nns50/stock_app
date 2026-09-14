@@ -1950,9 +1950,21 @@ If it does not, the scan is wrong, not the record.
 **Read 2026-09-14, and what it cost to believe.** The extension buckets came back
 non-monotonic — `<50 -0.08R`, `50-70 -0.11R`, `70-85 -0.40R`, `85+ +0.18R` — which is not a
 dose-response, and the reference rule (block above 60% of range) would have removed a net
-+$99 and kept a net -$63. The reason was the measurement, not the market: see the defect
-above. **A cut is only as good as the number it is cut from** — when a bucket pattern has
-no monotone shape, suspect the measurement before the market.
++$99 and kept a net -$63.
+
+Be precise about what the defect does and does not explain. **Dropping the five impossible
+rows barely moves the buckets**: three of them map to a closed trade (FCX +0.38R, SMCI
+0.00R, CHYM +0.14R), and removing them takes 85+ from +0.180R to +0.180R and `<50` from
+-0.08R to -0.10R. So the visible errors are not what produced the shape.
+
+What undermines the cut is the part that **cannot** be seen. The range is cached up to five
+minutes, so the dominant error is a denominator that is too SMALL, which pushes a reading
+UP — the >100 rows are that error's extreme tail, and the rest of the tail reads as an
+ordinary number in a higher bucket than the trade belongs to. The error reaches 30
+percentage points of range (FCX), it is directional, and only its extreme is observable. A
+cut at 50/70/85 cannot be defended on a measurement like that, whatever the buckets say.
+**A cut is only as good as the number it is cut from** — when a bucket pattern has no
+monotone shape, rule out the measurement before believing the market.
 
 **Two readings it replaces**, each with its own written rule:
 

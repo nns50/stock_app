@@ -10659,9 +10659,19 @@ leak scan reported —
 50-70  n=5   -0.11R        85+    n=16  +0.18R  CI [ 0.02,  0.35]
 ```
 
-— needs no real effect to explain it. The reference rule (block above 60% of
-range) would have removed a net +$99 and kept a net -$63, which is the shape
-scrambled bucket assignment produces.
+— needs no real effect to explain it, and the reference rule (block above 60%
+of range) would have removed a net +$99 and kept a net -$63.
+
+Be precise about which part of the defect does that. **Dropping the five
+impossible rows barely moves the buckets**: three map to a closed trade (FCX
++0.38R, SMCI 0.00R, CHYM +0.14R), and removing them takes 85+ from +0.180R to
++0.180R and `<50` from -0.08R to -0.10R. The visible errors did not produce the
+shape. What undermines the cut is the part that cannot be seen: the range is
+cached up to five minutes, so the dominant error is a denominator that is too
+SMALL, which pushes a reading UP. The >100 rows are that error's extreme tail;
+the rest of the tail reads as an ordinary number in a higher bucket than the
+trade belongs to. Directional, up to 30 percentage points of range, and
+observable only at its extreme.
 
 ### What changed
 
