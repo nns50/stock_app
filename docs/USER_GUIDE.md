@@ -1290,7 +1290,20 @@ equally-weighted cards in the order they happened to be built:
   `daily_give_back_halted` entry in Recent activity, sticky until the next ET day,
   everything else unaffected — so a green morning can't be traded all the way back to
   flat. Chop that never reaches the arm level never triggers it, and the guard runs
-  only while both levels are set with arm above floor (≥ 0). Two optional companions
+  only while both levels are set with arm above floor (≥ 0).
+  **It is OFF as of 2026-09-15**, because a guard needs a day taller than one trade and
+  the current sizing does not give it one. At 2.5% risk with a 1R target each trade moves
+  the day ±2.5 points, while the band from arm (+2%) to floor (+1%) is one point wide — so
+  a win followed by a loss lands the day at 0%, under the floor, and halts the book after
+  two trades. On the live record that sequence opened 2 of the last 10 sessions, and the
+  sessions it would cut short are the busiest ones. Clearing the arm and floor turns the
+  guard off (the **Daily goal** card; leave the goal itself set); the `daily_give_back_halted`
+  row simply stops being possible. Everything else that limits a bad day is untouched — the
+  **max daily drawdown** halt, the losing-streak **step-down**, one entry per symbol per
+  session, and the stagnation exit. Under the pre-2026-09-12 sizing (1.25% risk, a 2R
+  target) the same 2/1 band was coherent — a winner moved the day +2.5% and a loser only
+  −1.25%, so it took a win and _two_ losses to fire — and if that sizing comes back at the
+  10-session review, so should the guard. Two optional companions
   (2026-08-22, both off by default, live-only) reduce the chance of the fade in the
   first place: **finish-line sizing** trims the closing trade's risk to just what
   banks the day once the remaining gap is smaller than a full-size winner's expected
@@ -1784,7 +1797,9 @@ equally-weighted cards in the order they happened to be built:
   and the guard still stops the bleeding; it just cannot lock in the floor when one trade
   moves the day further than the band is wide. The edge-leak scan raises **"One winner
   arms the give-back guard"** when the arm sits at or below one trade's move, so this
-  shows up as a finding rather than as a surprising session.
+  shows up as a finding rather than as a surprising session. That finding is what took the
+  guard **off** on 2026-09-15: at 2.5% risk and a 1R target there is no band that works,
+  because the floor cannot go below zero and the whole goal is only 1.2 trades tall.
 
 - **Daily goal** (2026-09-07, collapsed by default, right below the tune card) — the
   three fields the tune stamps, editable on their own: **Daily gain goal %**,

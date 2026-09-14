@@ -132,8 +132,11 @@ export default function AboutPage() {
           you do by hand can neither bank the loop's day nor stand it down. On a day the regime cut fires, the daily
           goal, the give-back arm and the floor are all scaled by the same factor entries were cut by (3 / 2 / 1 reads
           1.95 / 1.3 / 0.65 at a 35% cut), so the goal is held constant in R rather than becoming harder on the one day
-          more entries is the wrong answer; the scale locks once the guard arms or the day banks. The daily goal those
-          live-only rules serve is itself checked against the record:{' '}
+          more entries is the wrong answer; the scale locks once the guard arms or the day banks. The give-back guard
+          itself is <strong className="text-slate-200">off since 2026-09-15</strong>: a guard needs a day taller than
+          one trade, and at 2.5% risk with a 1R target each trade moves the day ±2.5 points against a band one point
+          wide, so a win and then a loss halted the book after two trades. The bank halt, the drawdown halt and the
+          step-down are unaffected. The daily goal those live-only rules serve is itself checked against the record:{' '}
           <span className="tabular-nums">expected day % = entries/session × risk % × avg R</span>, the loop's realized
           average R and median entries per session over its last 40 sessions at the current risk — the same identity the
           tune inverts to solve a risk % from a target — and the Auto page shows that expected day beside the goal, with
