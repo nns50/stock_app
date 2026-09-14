@@ -11059,3 +11059,49 @@ candidate is examined, so they carry no `symbol` and Recent activity showed a
 dash — which is how this was reported in the first place. Both now carry the
 symbols. A count cannot answer "what did I miss while the book was stood down",
 which is the only question those rows are ever read for.
+
+## 2026-09-14 — four sizing lines were each claiming the whole product
+
+Found while reading a production `live_risk_blocked` row from 2026-09-11 to
+understand a 3-share order. The same journal entry said:
+
+```
+step_down_sizing     active — 4 consecutive losses, sizing at
+                     0.36540000000000006% instead of 1.25% (50% cut)
+repeat_entry_sizing  active — 1 prior exit(s) in this name today, sizing at
+                     0.36540000000000006% instead of 1.25% (40% cut)
+```
+
+Two lines claiming the same move for two different reasons, and **neither cut
+produces it**: 50% of 1.25 is 0.625, the 40% cut gives 0.75. 0.3654 is the
+product of five factors (step-down ×0.50, repeat-entry ×0.60, expectancy ×1.12,
+method ×0.87) — and no line in the row reported it as a product. There was no
+line for the effective risk at all. The raw float went out as text, too.
+
+Both risk checks built `sizing at ${effectiveRiskPct}% instead of
+${ctx.riskPerTradePct}%` **once** and appended it to four different factor
+lines. It is CLAUDE.md's sibling-value mistake living in the record rather than
+in the arithmetic: one computed value, presented as four different ones. The
+sizing itself was correct throughout; what was wrong was the only line an
+operator reads to understand a small order — and it matters more at the trial's
+2.5%, where a compounded cut to 0.73% is exactly what someone would go looking
+for.
+
+**Now:** each factor line states only its own effect (every one already named
+its cut or its multiplier), and one new `effective_risk` check reports the
+product with the terms that made it:
+
+```
+effective_risk  0.37% of the configured 1.25% — step-down ×0.50,
+                repeat-entry ×0.60, expectancy ×1.12, method ×0.87 (net ×0.29)
+```
+
+Factors at exactly 1 are left out, so the two that did something are not buried
+under five that did not; when none moved, the line says so rather than printing
+an empty list. Both books call one describer in `effectiveRisk.ts`, for the
+reason the product itself lives there: the two copies of that product are what
+drifted in the first place. `effectiveRisk.test.ts` scans both sources and
+fails if any factor line interpolates the final percentage again — the
+per-line tests pin today's wording, the scan pins the shape.
+
+Reporting only. No sizing changed.

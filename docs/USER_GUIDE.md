@@ -1450,7 +1450,12 @@ equally-weighted cards in the order they happened to be built:
   book takes every signal at full size on purpose, so it stays a clean control arm to
   re-measure this against. Its `repeat_entry_sizing` line appears in every
   risk-check's own entry under **Recent activity**, and it never calls a 0% cut
-  "active". Finally, **equity-curve
+  "active". Each of these sizing lines reports **its own** cut, and a separate
+  `effective_risk` line reports what they came to together — "0.37% of the configured
+  1.25% — step-down ×0.50, repeat-entry ×0.60, expectancy ×1.12, method ×0.87 (net
+  ×0.29)" — so a small order can be read back to the factors that made it. Until
+  2026-09-14 every one of those lines quoted the combined figure as if its own cut had
+  produced it, and nothing reported the combination. Finally, **equity-curve
   de-risking** (2026-07-24, off by default) is the same idea keyed to your _own_
   results instead of the market: when the strategy's cumulative closed-P&L curve —
   tracked separately for paper and live — is below its **equity-curve lookback
