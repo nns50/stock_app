@@ -3368,10 +3368,19 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
     // guardrails (so the kill switch stops it), and already handles the
     // ambiguous-placement case that stops a second close going out against a
     // position whose first may have filled.
+    //
+    // AN UNANSWERED RE-ARM IS NOT A REFUSED ONE. `rearmNote === 'unanswered'`
+    // means the placement timed out or the broker 5xx'd, so a protective
+    // bracket may well be resting with a combo id we never learned. Closing on
+    // top of that is two sells against one position, and for a long an oversell
+    // flips it short — the exact disaster the re-arm's own comment refuses to
+    // retry an ambiguous placement over. Only an EXPLICIT refusal counts as
+    // fact (2); an unanswered one pages, as it did before.
     let breachClose: BracketProtectionOutcome['breachClose'];
     if (
       !rearmed &&
       rearmNote !== null &&
+      rearmNote !== 'unanswered' &&
       heldQty !== null &&
       heldQty > 0 &&
       pos.stopPrice !== null &&

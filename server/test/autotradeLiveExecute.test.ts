@@ -2822,6 +2822,29 @@ describe('adoptOrphanedLivePositions', () => {
     expect(unprotectedEvents()).toHaveLength(1);
   });
 
+  it('will not close over an UNANSWERED re-arm — that bracket may be resting', async () => {
+    // The hole found re-reading the diff rather than by a failing test. An
+    // ambiguous placement (timeout, 429, 5xx) may well have gone through, with
+    // a combo id we never learned. A close on top of it is two sells against
+    // one position, and for a long an oversell flips it short — which is the
+    // very reason the re-arm above refuses to RETRY an ambiguous placement.
+    // Only an explicit refusal is evidence that no stop is resting.
+    await agedProtectionCandidate('AAPL', 10);
+    vi.mocked(listWebullOpenOrders).mockResolvedValue({ ok: true, orders: [] });
+    vi.mocked(webullPlaceStandaloneBracket).mockResolvedValueOnce({ ok: false, ambiguous: true, error: 'timeout' });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 94 }) as ReturnType<typeof getProvider>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-NOPE' });
+    armedForClose();
+
+    const outcomes = await checkLiveBracketProtection();
+
+    expect(closeOrders()).toHaveLength(0);
+    expect(outcomes[0].breachClose).toBeUndefined();
+    // Still paged, carrying the unanswered state so a human knows to look.
+    expect(unprotectedEvents()).toHaveLength(1);
+    expect(JSON.parse(unprotectedEvents()[0].detail ?? '{}')).toMatchObject({ rearmOutcome: 'unanswered' });
+  });
+
   it('the kill switch stops the close, and detection keeps running', async () => {
     // The split this sweep's header now states: it RUNS regardless of the kill
     // switch, because a halted account still needs to know a position is naked,

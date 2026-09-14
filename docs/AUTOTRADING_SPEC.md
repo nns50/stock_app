@@ -11169,7 +11169,11 @@ human in the loop, so the gate is deliberately narrow:
 
 1. the broker confirms the shares are still held — the same read that tells a
    naked position from a stop mid-fill (the SMCI case of 2026-09-08);
-2. the re-arm was **attempted and refused**;
+2. the re-arm was **attempted and explicitly refused** — an *unanswered* one
+   (timeout, 429, 5xx) does not count: that bracket may well be resting with a
+   combo id nobody learned, and closing over it is two sells against one
+   position, which for a long means an oversell that flips it short. It is the
+   same reason the re-arm itself never retries an ambiguous placement;
 3. a quote **fetched at that moment** is through the recorded stop (at or below
    for a long, at or above for a short — equality counts, since a stop resting
    exactly at the market is what the broker refuses).
@@ -11198,6 +11202,7 @@ which for a long means flipping short.
 ### What it deliberately does not do
 
 - No quote, no action: without the third fact it pages, as before.
+- Unanswered re-arm: pages. See fact (2).
 - Price not through the stop: the position needs its stop back, not an exit.
 - Re-arm succeeded: a stop the broker accepted is protection.
 - **Kill switch engaged: no close.** The sweep still RUNS under the kill switch,
