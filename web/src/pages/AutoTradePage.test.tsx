@@ -479,6 +479,7 @@ beforeEach(() => {
     exclusions: [{ symbol: 'VNQ', reason: 'Real estate ETF', source: 'default', createdAt: Date.now() }],
   });
   vi.spyOn(client, 'autotradeMacroEvents').mockResolvedValue({ events: [] });
+  vi.spyOn(client, 'autotradeRealEstateBans').mockResolvedValue({ bans: [] });
   vi.spyOn(client, 'autotradeEvents').mockResolvedValue(eventsFixture([]));
   vi.spyOn(client, 'events').mockResolvedValue({ events: [] });
   vi.spyOn(client, 'autotradePaperPositions').mockResolvedValue({ positions: [] });
@@ -1957,6 +1958,37 @@ describe('AutoTradePage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Run screen' }));
 
     expect(await screen.findByText(/No signal — insufficient volatility history \(1\)/)).toBeInTheDocument();
+  });
+
+  it('shows the sector-classified real-estate bans, which the hand list never held', async () => {
+    // 2026-09-14. 32 symbols were refused as real estate that session; 29 came
+    // from the SECTOR CHECK and existed nowhere but journal rows, because this
+    // card only ever showed the hand-maintained table.
+    vi.spyOn(client, 'autotradeExclusions').mockResolvedValue({
+      exclusions: [{ symbol: 'BWIN', reason: 'going private on a buyout', source: 'user', createdAt: Date.now() }],
+    });
+    vi.spyOn(client, 'autotradeRealEstateBans').mockResolvedValue({
+      bans: [
+        { symbol: 'AMT', sector: 'Real Estate', industry: null, source: 'universe', classifiedAt: null },
+        { symbol: 'PLD', sector: 'Real Estate', industry: null, source: 'universe', classifiedAt: null },
+      ],
+    });
+    localStorage.setItem('tile.collapsed.autotrade.realEstateExclusion', JSON.stringify(false));
+    renderPage();
+
+    const tabs = within(await screen.findByRole('group', { name: 'Exclusion source' }));
+    // The hand list holds ONE name and the sector check bans two; before this
+    // the card would have claimed the whole answer was that one name.
+    expect(tabs.getByRole('button', { name: 'By hand 1' })).toBeInTheDocument();
+    expect(tabs.getByRole('button', { name: 'Real estate 2' })).toBeInTheDocument();
+
+    // BWIN is on the hand list and is NOT real estate — it is a going-private
+    // buyout. The two tabs exist so that distinction survives.
+    expect(await screen.findByText('going private on a buyout')).toBeInTheDocument();
+    fireEvent.click(tabs.getByRole('button', { name: 'Real estate 2' }));
+    expect(await screen.findByText('AMT')).toBeInTheDocument();
+    expect(screen.getByText('PLD')).toBeInTheDocument();
+    expect(screen.queryByText('going private on a buyout')).toBeNull();
   });
 
   it('re-fetches from the SERVER when the book tab changes, rather than filtering the page', async () => {

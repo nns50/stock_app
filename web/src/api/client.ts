@@ -97,6 +97,7 @@ import type {
   AutotradeRiskCheckResult,
   AutotradeOptionsRiskCheckResult,
   AutotradeEventBook,
+  RealEstateBan,
   AutotradeEventsResponse,
   AutotradeStage,
   BacktestRequest,
@@ -614,6 +615,7 @@ export const client = {
     autoPromoteMaxSymbols?: number;
   }) => api<AutotradeConfig>('/autotrade/config', { method: 'PUT', body: JSON.stringify(body) }),
   autotradeExclusions: () => api<{ exclusions: AutotradeExclusion[] }>('/autotrade/exclusions'),
+  autotradeRealEstateBans: () => api<{ bans: RealEstateBan[] }>('/autotrade/real-estate-bans'),
   addAutotradeExclusion: (body: { symbol: string; reason?: string }) =>
     api<AutotradeExclusion>('/autotrade/exclusions', post(body)),
   removeAutotradeExclusion: (symbol: string) =>

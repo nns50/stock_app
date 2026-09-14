@@ -127,10 +127,39 @@ describe('runAutotradeScreen', () => {
 
   it('never fetches fundamentals for a statically-excluded symbol (short-circuits first)', async () => {
     // If this reached classifySector it would hit the mocked Yahoo fundamentals
-    // path; either way the outcome is exclusion, but asserting `source: 'list'`
-    // above already proves the list check — not the classifier — is what fired.
+    // path; either way the outcome is exclusion, so the proof is WHICH check
+    // fired. Asserted on the journaled `check` field rather than on the reason
+    // prose, which used to be a hardcoded sentence and is now the operator's
+    // own words (see the next case).
+    await runAutotradeScreen({ symbols: [LISTED] });
+    const detail = JSON.parse(listAutotradeEvents({ stage: 'screen', symbol: LISTED })[0].detail!);
+    expect(detail).toMatchObject({ check: 'exclusion_list', source: 'list' });
+  });
+
+  it('records WHY a hand-excluded symbol was excluded, not just that it was', async () => {
+    // 2026-09-14. This branch hardcoded "On the real-estate exclusion list" and
+    // discarded the reason stored on the row. The list is named for real estate
+    // and is not real-estate-only in practice: BWIN was added that morning for
+    // being a going-private buyout that had stopped moving, and was recorded
+    // and displayed as a REIT. A record that says the wrong thing is worse than
+    // one that says little.
     const result = await runAutotradeScreen({ symbols: [LISTED] });
-    expect(result.excluded[0].reason).toMatch(/exclusion list/i);
+    expect(result.excluded[0].reason).toContain('test fixture');
+    const detail = JSON.parse(listAutotradeEvents({ stage: 'screen', symbol: LISTED })[0].detail!);
+    expect(detail.listReason).toBe('test fixture');
+    // And it must NOT claim real estate for a name excluded for another reason.
+    expect(detail.reason).not.toMatch(/real.estate/i);
+  });
+
+  it('tells the two checks apart on the row, since the ACTION cannot', async () => {
+    // Both write `excluded_re`, and renaming either would make every existing
+    // reader of this book's history wrong in order to fix a label.
+    await runAutotradeScreen({ symbols: [LISTED] });
+    await runAutotradeScreen({ symbols: [SECTORED] });
+    const listed = JSON.parse(listAutotradeEvents({ stage: 'screen', symbol: LISTED })[0].detail!);
+    const sectored = JSON.parse(listAutotradeEvents({ stage: 'screen', symbol: SECTORED })[0].detail!);
+    expect(listed.check).toBe('exclusion_list');
+    expect(sectored.check).toBe('sector_classifier');
   });
 
   it('scores and journals a normal candidate when filters are relaxed', async () => {
