@@ -15,11 +15,14 @@ const OVERNIGHT_BP = 4_322.36;
 const OPTION_BP = 471.41;
 
 const cfg = (over: Partial<AutotradeConfig> = {}): AutotradeConfig =>
-  ({ liveAccountId: 'ACC1', liveDayBuyingPowerUsd: 0, ...over }) as AutotradeConfig;
+  ({ liveAccountId: 'ACC1', liveDayBuyingPowerUsd: 0, liveRefusalCeilingEnabled: true, ...over }) as AutotradeConfig;
 
 const okState = (over: Record<string, unknown> = {}) => ({
   ok: true,
-  state: { buyingPowerUsd: OVERNIGHT_BP, dayBuyingPowerUsd: DAY_BP },
+  // exposureUsd is REQUIRED on AccountState and the shared derivation nets the
+  // day figure against it, so the fixture carries it rather than leaving the
+  // day branch to fall through on a NaN.
+  state: { buyingPowerUsd: OVERNIGHT_BP, dayBuyingPowerUsd: DAY_BP, exposureUsd: 0 },
   optionBuyingPowerUsd: OPTION_BP,
   ...over,
 });
@@ -52,8 +55,20 @@ describe('tuneBuyingPower', () => {
   });
 
   it('falls back to overnight BP when the broker reports no day figure', async () => {
-    mockAccountState.mockResolvedValue(okState({ state: { buyingPowerUsd: OVERNIGHT_BP } }));
+    mockAccountState.mockResolvedValue(okState({ state: { buyingPowerUsd: OVERNIGHT_BP, exposureUsd: 0 } }));
     expect((await tuneBuyingPower(cfg())).buyingPowerUsd).toBe(OVERNIGHT_BP);
+  });
+
+  // ONE DERIVATION WITH THE LIVE SIZER (2026-09-14). This warning judges a
+  // stored cap against "what today can actually fund". It used to derive the
+  // figure itself and disagreed with buyingPowerBasis on both netting (it
+  // never subtracted exposure) and precedence (it took day over overnight
+  // unconditionally rather than the larger).
+  it('nets the day figure against open exposure, as the sizer does', async () => {
+    // The old derivation never subtracted exposure, so it advised on a pool
+    // that was already partly spent.
+    mockAccountState.mockResolvedValue(okState({ state: { ...okState().state, exposureUsd: 2_000 } }));
+    expect((await tuneBuyingPower(cfg())).buyingPowerUsd).toBeCloseTo(DAY_BP - 2_000, 2);
   });
 
   it("honours the operator's own day-BP ceiling when one is set", async () => {
@@ -93,8 +108,12 @@ describe('tuneBuyingPower', () => {
     expect(await tuneBuyingPower(cfg())).toEqual({});
   });
 
-  it('omits the figure entirely when the broker reported no buying power', async () => {
-    mockAccountState.mockResolvedValue({ ok: true, state: {} });
-    expect(await tuneBuyingPower(cfg())).toEqual({});
+  it('reports zero when the broker reported no buying power at all', async () => {
+    // Was `{}` — the old derivation dropped the key when every field was
+    // missing. The shared one always answers with a number, and 0 is the
+    // honest reading of "the broker named no pool": a warning that the cap
+    // exceeds what can be funded is CORRECT in that state, and silence is not.
+    mockAccountState.mockResolvedValue({ ok: true, state: { exposureUsd: 0 } });
+    expect(await tuneBuyingPower(cfg())).toEqual({ buyingPowerUsd: 0 });
   });
 });

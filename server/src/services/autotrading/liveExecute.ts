@@ -94,6 +94,14 @@ import { etToday } from '../../util/marketDate';
 import { atr } from '../../indicators/indicators';
 import { planAroundLevels } from './levelPlan';
 import { MARKETABLE_LIMIT_BUFFER_PCT } from './marketableLimit';
+import { buyingPowerBasis, type BuyingPowerBasis } from './buyingPowerBasis';
+import {
+  ceilingCappedQuantity,
+  isInsufficientBuyingPowerError,
+  learnedOpenNotionalCeiling,
+  markBuyingPowerAccepted,
+  markBuyingPowerRefusal,
+} from './buyingPowerRefusals';
 import { entryDriftPct, orderRiskAmount, riskBasisPrice, riskCappedQuantity } from './entryRisk';
 import { applyExternalCashFlow, evaluateDailyTarget } from './dailyTarget';
 import { evaluateEquitySync, freshEquityGuardState, EquityGuardState } from './equitySyncGuard';
@@ -175,99 +183,16 @@ import { dispatchAutotradeNotification } from './notify';
 // decides what a fill is measured against is the divergence CLAUDE.md's
 // "agree by construction" rule exists to stop.
 
-/**
- * Let an intraday entry use the account's DAY-trading buying power.
- *
- * `buyingPowerUsd` is deliberately the overnight figure — what a position can
- * use without having to be closed by the bell. autotrade's live equity loop is
- * the one caller that always IS flat by the bell (endOfDayFlattenMinutes), so
- * it is the one caller entitled to the day figure. On 2026-08-27 the account
- * reported $9,800.80 of day buying power against $2,450.20 of equity, while
- * entries were being refused for "$1,005.46 available".
- *
- * `liveDayBuyingPowerUsd` is a CAP, not a value: 0 (the default) uses the
- * broker's figure in full, and a positive number refuses to use more than
- * that however much the broker offers. It was originally a hand-entered
- * substitute for a field I believed the payload lacked; the payload has it,
- * and a number typed in by hand only goes stale, so it earns its keep as a
- * ceiling instead.
- *
- * What is already deployed still consumes it, the same way the broker's own
- * figures net out open positions. Never LOWERS what the guardrail would have
- * used, so this cannot turn into a new way to block a fundable order.
- */
-export interface BuyingPowerBasis {
-  /** The figure the sizer is bound by — what `fundableMaxQuantity` receives. */
-  usedUsd: number;
-  /** Which field it came from. `'day'` means the broker's DAY-TRADING figure
-   *  was larger than the overnight one and won. */
-  source: 'overnight' | 'day';
-  /** The broker's overnight figure, always present. */
-  overnightUsd: number;
-  /** The broker's day figure, when it reported one. */
-  brokerDayUsd: number | null;
-  /** `liveDayBuyingPowerUsd` when it capped the day figure, else null. */
-  ceilingUsd: number | null;
-  /** Exposure the day figure was netted against. */
-  exposureUsd: number;
-  /** The account's CASH balance, when the broker reported one — the figure a
-   *  purchase that cannot be margined has to fit inside. Carried so a refusal
-   *  can be told apart from a margin shortfall; no rule reads it. */
-  cashBalanceUsd: number | null;
-}
+// buyingPowerBasis moved to its own leaf module on 2026-09-14 so the tune
+// preview's funding warning can call the SAME derivation the live sizer does.
+// Re-exported here because the journal writers below and the tests both reach
+// for it through this module.
+export { buyingPowerBasis };
+export type { BuyingPowerBasis };
 
-/**
- * Which buying-power figure the sizer is aiming at, and where it came from.
- *
- * Split out from `withDayBuyingPower` on 2026-09-14 so the two have ONE
- * derivation: the number the sizer used and the number a journal row reports
- * cannot disagree about which field won.
- *
- * WHY IT IS WORTH REPORTING. On the trial sizing's first session the broker
- * refused BWIN for insufficient buying power while the sizer had a figure and
- * was happy — the build-then-refuse loop buyingPowerSizing.ts exists to end,
- * happening again. The account showed $13,822.77 of intraday buying power
- * against $3,522.74 of equity (3.92x), so the day figure won and the sizer
- * aimed at it; the broker then refused a $3,742 order with roughly $6,282
- * already deployed. Whatever pool it checks when ACCEPTING an opening order,
- * that 3.92x is not it — its own message asks the account to "cancel open buy
- * orders", which is committed capital counted against something smaller.
- *
- * The premise above is about HOLDING ("this caller is flat by the bell"), and
- * the constraint that bit is about OPENING. Those are not the same pool, and
- * nothing in the journal said which figure had been used — so the whole of it
- * had to be inferred from outside. Now it is on the row, and the next refusal
- * reads as "aimed at X from the day field, refused at Y" instead.
- */
-export function buyingPowerBasis(state: AccountState, cfg: AutotradeConfig): BuyingPowerBasis {
-  const overnightUsd = state.buyingPowerUsd;
-  const broker = state.dayBuyingPowerUsd;
-  const base: BuyingPowerBasis = {
-    usedUsd: overnightUsd,
-    source: 'overnight',
-    overnightUsd,
-    brokerDayUsd: broker ?? null,
-    ceilingUsd: null,
-    exposureUsd: state.exposureUsd,
-    cashBalanceUsd: state.cashBalanceUsd ?? null,
-  };
-  if (broker === undefined || !(broker > 0)) return base;
-  const capped = cfg.liveDayBuyingPowerUsd > 0;
-  const ceiling = capped ? Math.min(broker, cfg.liveDayBuyingPowerUsd) : broker;
-  const availableIntraday = Math.max(0, ceiling - state.exposureUsd);
-  // Ties stay 'overnight': the day figure only WON if it was strictly larger,
-  // and reporting a tie as a day read would overstate how often it matters.
-  if (!(availableIntraday > overnightUsd)) return { ...base, ceilingUsd: capped ? ceiling : null };
-  return {
-    ...base,
-    usedUsd: availableIntraday,
-    source: 'day',
-    ceilingUsd: capped ? ceiling : null,
-  };
-}
-
-function withDayBuyingPower(state: AccountState, cfg: AutotradeConfig): AccountState {
-  return { ...state, buyingPowerUsd: buyingPowerBasis(state, cfg).usedUsd };
+function withDayBuyingPower(state: AccountState, cfg: AutotradeConfig, accountId: string): AccountState {
+  const learned = learnedOpenNotionalCeiling(accountId, etToday());
+  return { ...state, buyingPowerUsd: buyingPowerBasis(state, cfg, learned?.ceilingUsd).usedUsd };
 }
 
 /** Combine the autotrade-specific live caps with BOTH kill switches — the
@@ -954,6 +879,50 @@ export async function attemptLiveEntry(
     return { symbol, ok: false, reason: `Re-sizing against the placement quote ${riskBasis} left 0 shares` };
   }
 
+  // WHAT THE BROKER HAS ALREADY REFUSED TODAY (2026-09-14).
+  //
+  // Applied HERE, on the finished quantity, and not to the buying-power figure
+  // the sizer aims at: the probation multiplier is applied above, so bounding
+  // the pool would let probation halve an order that was already trimmed to
+  // fit, and the book would walk itself down for no reason. The broker judges
+  // a NOTIONAL; this clamps that notional.
+  //
+  // Inert until the broker has actually refused something today, so a normal
+  // session sizes exactly as it did before.
+  const learnedCeiling = learnedOpenNotionalCeiling(accountId, etToday());
+  if (autotradeCfg.liveRefusalCeilingEnabled && learnedCeiling) {
+    const ceilingQuantity = ceilingCappedQuantity(learnedCeiling.ceilingUsd, limitPrice);
+    if (ceilingQuantity !== undefined && ceilingQuantity < quantity) {
+      logAutotradeEvent({
+        symbol,
+        stage: 'execution',
+        action: 'live_entry_ceiling_resized',
+        detail: {
+          fromQuantity: quantity,
+          toQuantity: ceilingQuantity,
+          limitPrice,
+          ceilingUsd: Math.round(learnedCeiling.ceilingUsd * 100) / 100,
+          // The two brackets the ceiling was bisected from, so a reader can
+          // see how the app arrived at it rather than taking the number.
+          refusedUsd: learnedCeiling.refusedUsd,
+          acceptedUsd: learnedCeiling.acceptedUsd,
+          fromNotionalUsd: Math.round(quantity * limitPrice * 100) / 100,
+        },
+        riskProfile,
+      });
+      quantity = ceilingQuantity;
+    }
+  }
+  if (quantity <= 0) {
+    return {
+      symbol,
+      ok: false,
+      reason: learnedCeiling
+        ? `The broker refused $${learnedCeiling.refusedUsd.toFixed(2)} earlier today; nothing fits under the $${learnedCeiling.ceilingUsd.toFixed(2)} that leaves`
+        : 'Re-sizing left 0 shares',
+    };
+  }
+
   // PER-LOT BRACKETS (#26, off by default): spend the sized quantity across TWO
   // bracketed entries rather than one, so a partial is just the smaller group's
   // target filling — no modify, no cancel-and-replace, no naked window. Lot 1
@@ -1010,6 +979,7 @@ export async function attemptLiveEntry(
   const accountState: AccountState = withDayBuyingPower(
     { ...acct.state, ordersToday: countTodaysOrders() },
     autotradeCfg,
+    accountId,
   );
   const guardrails = evaluateGuardrails(intent, accountState, liveCfg, { marketOpen: marketOpenContext(intent) });
   // Only matters for a permitted short entry (allowNakedShort — naked_short
@@ -1148,6 +1118,16 @@ export async function attemptLiveEntry(
     // data alone is not evidence that a symbol is tradable.
     const unparseable = isUnparseableSymbolError(symbol, broker.error);
     if (unparseable) markUnplaceableSymbol(symbol, broker.error ?? 'broker cannot parse this symbol');
+    // Learn the ceiling from the broker itself. The reported buying power
+    // overstates what it will fund on an opening order — it is netted against
+    // CURRENT exposure, which a closed position returns to zero, while the
+    // broker's pool is spent by purchases and not credited back on the sale.
+    // Recording the refused notional lets the next candidate be sized under it
+    // instead of being refused in turn (buyingPowerRefusals.ts).
+    const refusedNotionalUsd = Math.round(quantityToOrder * limitPrice * 100) / 100;
+    if (isInsufficientBuyingPowerError(broker.error)) {
+      markBuyingPowerRefusal(accountId, etToday(), refusedNotionalUsd);
+    }
     logAutotradeEvent({
       symbol,
       stage: 'execution',
@@ -1158,7 +1138,7 @@ export async function attemptLiveEntry(
         // What the sizer believed it had, beside what the broker just said.
         // A "buying power is insufficient" rejection is unreadable without it.
         ...(bpBasis ? { buyingPower: bpBasis } : {}),
-        orderNotionalUsd: Math.round(quantityToOrder * limitPrice * 100) / 100,
+        orderNotionalUsd: refusedNotionalUsd,
       },
       riskProfile,
     });
@@ -1169,6 +1149,12 @@ export async function attemptLiveEntry(
     brokerOrderId: broker.orderId,
     detail: `broker accepted${broker.orderId ? ` (order ${broker.orderId})` : ''}`,
   });
+  // The other bracket: proof the broker will fund at least this much today.
+  // `quantityToOrder`, not `quantity`: under per-lot bracketing this is the
+  // first LOT, so the recorded acceptance can understate what the broker would
+  // have taken. That only ever makes the next bisection more conservative,
+  // which is the safe direction for a bracket that exists to avoid refusals.
+  markBuyingPowerAccepted(accountId, etToday(), Math.round(quantityToOrder * limitPrice * 100) / 100);
   recordLiveOrder(orderRow);
   logAutotradeEvent({
     symbol,
@@ -1340,8 +1326,8 @@ export async function runLiveExecution(
   // the previous behaviour exactly.
   let buyingPowerLoaded = false;
   let availableBuyingPowerUsd: number | undefined;
-  // The basis behind that number, kept for the journal only — which broker
-  // field won, and what it was netted against. Never read to decide anything.
+  // Carried onto the journal row: which broker field won, what it was netted
+  // against, and the ceiling the broker's own refusals have taught today.
   let bpBasis: BuyingPowerBasis | null = null;
   // Room left under the ACCOUNT EXPOSURE cap, loaded from the same account read
   // and decremented alongside buying power below.
@@ -1389,7 +1375,11 @@ export async function runLiveExecution(
             });
           }
           if (acct.ok && acct.state) {
-            bpBasis = buyingPowerBasis(acct.state, cfg);
+            bpBasis = buyingPowerBasis(
+              acct.state,
+              cfg,
+              learnedOpenNotionalCeiling(cfg.liveAccountId, etToday())?.ceilingUsd,
+            );
             availableBuyingPowerUsd = bpBasis.usedUsd;
             // Same rearrangement the guardrail does, one step earlier:
             // exposureAfter <= maxExposureUsd becomes notional <= headroom.

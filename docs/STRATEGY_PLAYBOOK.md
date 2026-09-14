@@ -317,6 +317,60 @@ hot streak never sizes up real money. It stacks multiplicatively with step-down,
 equity-curve sizing, and like them is live + paper only, with no backtest equivalent — prove a
 grade's edge in the by-grade report first, then let this size to it.
 
+### The pool the broker will actually fund (2026-09-14)
+
+Every formula above answers *how big a position should be*. A separate question
+decides whether it can be **placed at all**, and the two can disagree badly.
+
+Your broker reports buying power. That figure is not necessarily what it checks
+when it accepts an opening order. On 2026-09-14 this account was shown
+$13,990.49 of intraday buying power with **the book flat**, and the broker
+refused a $3,720.12 order. Five orders were refused that session while the app's
+sizer was happy.
+
+The reason is a unit mismatch hiding in an honest-looking subtraction:
+
+> The app offered the sizer `day buying power − what I currently hold`.
+> The broker's pool is spent by **purchases**, and closing a position does not
+> give it back. Current exposure returns to zero; the pool does not.
+
+Two consequences for sizing:
+
+1. **A refusal is worth nothing; a smaller fill is worth most of it.** The app
+   now remembers the smallest order the broker refused today and the largest it
+   accepted, and bisects between them. A refused $3,720 order becomes a ~$3,500
+   order that fills. Over a session that is the difference between three entries
+   and none.
+2. **Don't look for a setting.** No buying-power field corrects this, because the
+   reported number is not the one being checked. The app learns the ceiling
+   empirically and forgets it overnight.
+
+Margin is real and is used — that same morning the account held $6,249.48
+against $3,497.62 of cash, 1.79×. This is not a cash-account restriction.
+
+### What actually caps trades per session — check this before the caps
+
+On 2026-09-14 the live book placed three entries and then went quiet, and none
+of it was buying power. Of 96 signals:
+
+| filter | removed | note |
+| --- | --- | --- |
+| shorts off | 87 | **65 of 96 signals were shorts** |
+| `liveMinSignalScore` 72 | 10 | PSKY 71.7, BBY 69.8, IT 68.7, CRWD 68.0, HOOD 61.9, CRM 61.9 … |
+| 390-min re-entry cooldown | 107 | the three names that did trade, locked for the session |
+| relative-volume pace floor 1.5× | 120+ | AMAT 1.42–1.48, BBY 1.20–1.29, BKR 1.13, ALB 1.06–1.10 |
+| the risk check | **0** | it blocked nothing all day |
+
+Only **eleven long names existed all session**. Three traded, and the cooldown
+then locked them. CRWD — the day's strongest morning mover — was skipped at
+09:37:25 on a score of 68.0 against the floor of 72, and only cleared it at
+10:40, after the move.
+
+In `expected day % = trades/session × risk% × edge R`, the binding term here is
+**trades/session**, and what binds it is the conviction floor, the direction
+setting and the pace floor — upstream of every sizing rule in this document. When
+the day comes up short on trades, read the skip counts before touching a cap.
+
 ---
 
 ## Scaling into winners (pyramiding)

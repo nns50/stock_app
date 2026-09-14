@@ -1140,6 +1140,200 @@ describe('runLiveExecution — sizing to every dollar bound the guardrail applie
     expect(9_000 + placedNotional()).toBeLessThanOrEqual(17_000);
   });
 
+  // THE LEARNED CEILING, ASSERTED AT THE CONSUMER (2026-09-14).
+  //
+  // CLAUDE.md's rule: a test that exercises a value where it is COMPUTED proves
+  // nothing about whether anything consumes it. buyingPowerBasis's own unit
+  // tests would pass just as happily if `withDayBuyingPower` threw the ceiling
+  // away — which is exactly how liveOptionsMaxOrderUsd was computed and
+  // discarded on 2026-08-27. So these drive the whole live path and read the
+  // QUANTITY that reached the broker.
+  it('learns from a broker refusal and sizes the NEXT order under it', async () => {
+    // The 09:57 shape: the broker refuses an order the app's figure said was
+    // comfortably fundable. Before this, the next candidate was built just as
+    // large and refused in turn — five times in one session, for zero entries.
+    setAutotradeConfig({ ...cfgFields, liveMaxOrderUsd: 500_000, liveMaxExposurePct: 1_000 });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100, MSFT: 100 }));
+    mockAccountState.mockResolvedValue({
+      ...okAccountState,
+      state: { ...okAccountState.state, buyingPowerUsd: 1_000_000, dayBuyingPowerUsd: 2_000_000 },
+    } as Awaited<ReturnType<typeof webullAccountState>>);
+
+    // Round 1: the broker refuses, in its own words.
+    mockPlaceOrder.mockResolvedValue({
+      ok: false,
+      error: 'Buying power is insufficient. Please cancel open buy orders (if any) and try again.',
+    });
+    const refused = await runLiveExecution([{ signal: signal() }]);
+    expect(refused[0].ok).toBe(false);
+    const refusedNotional = placedNotional();
+    expect(refusedNotional).toBeGreaterThan(0);
+
+    // Round 2: same account, same signal, nothing else changed.
+    mockPlaceOrder.mockReset();
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-LEARNED' });
+    const after = await runLiveExecution([{ signal: signal({ symbol: 'MSFT' }) }]);
+
+    expect(after[0].ok, `expected an entry, got: ${after[0].reason}`).toBe(true);
+    // Strictly under what was refused — that is the whole mechanism. Nothing
+    // was accepted yet today, so it is the blind 10% step, not a bisection.
+    expect(placedNotional()).toBeLessThan(refusedNotional);
+    // The blind 10% step, applied to the NOTIONAL and not to the pool: nothing
+    // has been accepted yet today, so there is no lower bracket to bisect
+    // against. Within one share of the step, since quantity is whole.
+    expect(placedNotional()).toBeGreaterThan(refusedNotional * 0.9 - 2 * 100.5);
+    expect(placedNotional()).toBeLessThanOrEqual(refusedNotional * 0.9);
+  });
+
+  it('bisects between the largest ACCEPTED and the smallest refused order', async () => {
+    // Once one order has been accepted there is a lower bracket, so the next
+    // attempt splits the difference instead of stepping blindly down.
+    setAutotradeConfig({ ...cfgFields, liveMaxOrderUsd: 500_000, liveMaxExposurePct: 1_000 });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100, MSFT: 100, NVDA: 100 }));
+    mockAccountState.mockResolvedValue({
+      ...okAccountState,
+      state: { ...okAccountState.state, buyingPowerUsd: 1_000_000, dayBuyingPowerUsd: 2_000_000 },
+    } as Awaited<ReturnType<typeof webullAccountState>>);
+
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-OK' });
+    await runLiveExecution([{ signal: signal() }]);
+    const accepted = placedNotional();
+
+    mockPlaceOrder.mockReset();
+    mockPlaceOrder.mockResolvedValue({ ok: false, error: 'Buying power is insufficient.' });
+    await runLiveExecution([{ signal: signal({ symbol: 'MSFT' }) }]);
+    const refused = placedNotional();
+    // The fixture sizes both the same, so force the brackets apart: the
+    // refusal must be the LARGER of the two for a bisection to mean anything.
+    expect(refused).toBeGreaterThanOrEqual(accepted);
+
+    mockPlaceOrder.mockReset();
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-MID' });
+    await runLiveExecution([{ signal: signal({ symbol: 'NVDA' }) }]);
+    // Midpoint of the two brackets, not the blind step.
+    expect(placedNotional()).toBeLessThanOrEqual((accepted + refused) / 2);
+  });
+
+  it('does nothing to sizing on a session with no refusal', async () => {
+    // The guarantee that makes this safe to leave on: until the broker says
+    // no, the order is exactly the size it would have been.
+    setAutotradeConfig({ ...cfgFields, liveMaxOrderUsd: 500_000, liveMaxExposurePct: 1_000 });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100, MSFT: 100 }));
+    mockAccountState.mockResolvedValue({
+      ...okAccountState,
+      state: { ...okAccountState.state, buyingPowerUsd: 1_000_000, dayBuyingPowerUsd: 2_000_000 },
+    } as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-A' });
+
+    await runLiveExecution([{ signal: signal() }]);
+    const first = placedNotional();
+    mockPlaceOrder.mockReset();
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-B' });
+    await runLiveExecution([{ signal: signal({ symbol: 'MSFT' }) }]);
+
+    expect(placedNotional()).toBeCloseTo(first, 2);
+  });
+
+  it('ignores a rejection that is NOT about buying power', async () => {
+    // An unparseable symbol or a bad price must not teach a ceiling — that
+    // would shrink every later order over an unrelated failure.
+    setAutotradeConfig({ ...cfgFields, liveMaxOrderUsd: 500_000, liveMaxExposurePct: 1_000 });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100, MSFT: 100 }));
+    mockAccountState.mockResolvedValue({
+      ...okAccountState,
+      state: { ...okAccountState.state, buyingPowerUsd: 1_000_000, dayBuyingPowerUsd: 2_000_000 },
+    } as Awaited<ReturnType<typeof webullAccountState>>);
+
+    mockPlaceOrder.mockResolvedValue({ ok: false, error: 'Order price is invalid' });
+    await runLiveExecution([{ signal: signal() }]);
+    const attempted = placedNotional();
+
+    mockPlaceOrder.mockReset();
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-UNRELATED' });
+    await runLiveExecution([{ signal: signal({ symbol: 'MSFT' }) }]);
+
+    expect(placedNotional()).toBeCloseTo(attempted, 2);
+  });
+
+  it('leaves the order alone when the operator turns liveRefusalCeilingEnabled off', async () => {
+    // The switch exists so a broker whose refusals turn out to mean something
+    // else is a config change, not a deploy. Asserted at the CONSUMER: the
+    // flag is read where the order is trimmed, not where the ceiling is
+    // computed, so a test of the helper alone would prove nothing.
+    setAutotradeConfig({
+      ...cfgFields,
+      liveMaxOrderUsd: 500_000,
+      liveMaxExposurePct: 1_000,
+      liveRefusalCeilingEnabled: false,
+    });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100, MSFT: 100 }));
+    mockAccountState.mockResolvedValue({
+      ...okAccountState,
+      state: { ...okAccountState.state, buyingPowerUsd: 1_000_000, dayBuyingPowerUsd: 2_000_000 },
+    } as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: false, error: 'Buying power is insufficient.' });
+    await runLiveExecution([{ signal: signal() }]);
+    const refused = placedNotional();
+
+    mockPlaceOrder.mockReset();
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-OFF' });
+    await runLiveExecution([{ signal: signal({ symbol: 'MSFT' }) }]);
+
+    expect(placedNotional()).toBeCloseTo(refused, 2);
+    expect(listAutotradeEvents({ actions: ['live_entry_ceiling_resized'] })).toHaveLength(0);
+  });
+
+  it('journals the trim with the brackets it was bisected from', async () => {
+    // The lever has to be readable. A shrunk order that says only "buying
+    // power" points the operator at a config field; there is no buying-power
+    // field that can raise this, so the row names the refusal instead.
+    setAutotradeConfig({ ...cfgFields, liveMaxOrderUsd: 500_000, liveMaxExposurePct: 1_000 });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100, MSFT: 100 }));
+    mockAccountState.mockResolvedValue({
+      ...okAccountState,
+      state: { ...okAccountState.state, buyingPowerUsd: 1_000_000, dayBuyingPowerUsd: 2_000_000 },
+    } as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: false, error: 'Buying power is insufficient.' });
+    await runLiveExecution([{ signal: signal() }]);
+
+    mockPlaceOrder.mockReset();
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-LABEL' });
+    await runLiveExecution([{ signal: signal({ symbol: 'MSFT' }) }]);
+
+    const rows = listAutotradeEvents({ actions: ['live_entry_ceiling_resized'] });
+    expect(rows).toHaveLength(1);
+    const detail = JSON.parse(rows[0].detail ?? '{}') as Record<string, number | null>;
+    expect(detail.toQuantity).toBeLessThan(detail.fromQuantity as number);
+    expect(detail.refusedUsd).toBeGreaterThan(0);
+    expect(detail.acceptedUsd).toBeNull();
+    expect(detail.ceilingUsd).toBeCloseTo((detail.refusedUsd as number) * 0.9, 2);
+  });
+
+  it('carries the learned ceiling onto the placed row without binding the pool with it', async () => {
+    // The units split: buyingPower.usedUsd stays the POOL (unchanged by the
+    // ceiling), learnedCeilingUsd is the ORDER NOTIONAL the broker will take.
+    setAutotradeConfig({ ...cfgFields, liveMaxOrderUsd: 500_000, liveMaxExposurePct: 1_000 });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100, MSFT: 100 }));
+    mockAccountState.mockResolvedValue({
+      ...okAccountState,
+      state: { ...okAccountState.state, buyingPowerUsd: 1_000_000, dayBuyingPowerUsd: 2_000_000 },
+    } as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: false, error: 'Buying power is insufficient.' });
+    await runLiveExecution([{ signal: signal() }]);
+
+    mockPlaceOrder.mockReset();
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-ROW' });
+    await runLiveExecution([{ signal: signal({ symbol: 'MSFT' }) }]);
+
+    const placed = listAutotradeEvents({ actions: ['live_order_placed'] });
+    const detail = JSON.parse(placed[0].detail ?? '{}') as {
+      buyingPower?: { usedUsd?: number; source?: string; learnedCeilingUsd?: number | null };
+    };
+    expect(detail.buyingPower?.source).toBe('day');
+    expect(detail.buyingPower?.usedUsd).toBe(2_000_000);
+    expect(detail.buyingPower?.learnedCeilingUsd).toBeGreaterThan(0);
+  });
+
   it('values the order at the marketable limit, not the raw signal entry', async () => {
     // The two derivations of one quantity. The guardrail values an order at its
     // LIMIT price (entry × 1.005 for a buy); the sizer used signal.entry. Sized
@@ -1254,6 +1448,45 @@ describe('buyingPowerBasis — which figure won, and saying so', () => {
       cfg({ liveDayBuyingPowerUsd: 7_045 }),
     );
     expect(b).toMatchObject({ source: 'day', usedUsd: 7_045, ceilingUsd: 7_045, brokerDayUsd: 13_822.77 });
+  });
+
+  // THE LEARNED CEILING (2026-09-14). Five opening orders refused by the broker
+  // for insufficient buying power while the app's figure said there was plenty.
+  // The row that named the mechanism, 09:57 ET: the book was FLAT (COIN and NOW
+  // both sold), so exposureUsd was back to 0 and the day branch handed over the
+  // whole $13,990.49 — and the broker refused $3,720.12. Closing a position
+  // returns the app's exposure to zero; it does not return the broker's pool.
+  //
+  // Margin itself is real on this account and is NOT the bug: COIN and NOW were
+  // held together, $6,249.48 against $3,497.62 of cash, 1.79x. A cash bound
+  // would have refused NOW outright.
+  it('CARRIES the learned ceiling without binding the pool with it', () => {
+    // Units. `usedUsd` answers "how much pool is there"; `learnedCeilingUsd`
+    // answers "how big an order will this broker take today". Different
+    // quantities judged at different points, so the ceiling rides along here
+    // and is applied to the finished order in liveExecute — after probation,
+    // which would otherwise halve an order that was already trimmed to fit.
+    const b = buyingPowerBasis(
+      state({ buyingPowerUsd: 3_658.24, dayBuyingPowerUsd: 13_990.49, exposureUsd: 0 }),
+      cfg(),
+      3_516.06,
+    );
+    expect(b).toMatchObject({ usedUsd: 13_990.49, source: 'day', learnedCeilingUsd: 3_516.06 });
+  });
+
+  it('reports a null learned ceiling until the broker has refused something', () => {
+    const b = buyingPowerBasis(state({ buyingPowerUsd: 1_000, dayBuyingPowerUsd: 5_000 }), cfg());
+    expect(b).toMatchObject({ usedUsd: 5_000, source: 'day', learnedCeilingUsd: null });
+  });
+
+  it('carries the CASH balance without deciding on it', () => {
+    // Kept on the row from #600 for readability. Nothing reads it: margin is
+    // real here, so a cash bound would be wrong.
+    const b = buyingPowerBasis(
+      state({ buyingPowerUsd: 1_000, dayBuyingPowerUsd: 13_990.49, cashBalanceUsd: 18.07 }),
+      cfg(),
+    );
+    expect(b).toMatchObject({ usedUsd: 13_990.49, source: 'day', cashBalanceUsd: 18.07 });
   });
 });
 
