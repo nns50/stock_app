@@ -5,7 +5,7 @@ import { listOptionsPaperPositions } from '../../db/autotradeOptionsPaperPositio
 import { optionsPaperRealizedPnl } from './optionsExecute';
 import { getDailyBaseline } from '../../db/dailyBaseline';
 import { getAutotradeConfig } from '../../db/autotradeConfig';
-import { DailyResult, listDailyResults, saveDailyResult } from '../../db/dailyResults';
+import { DailyResult, GoalBasis, listDailyResults, saveDailyResult } from '../../db/dailyResults';
 import { realizedPnlOf } from '../pnl';
 import { etToday } from '../../util/marketDate';
 import { isTradingSession } from '../trading/marketCalendar';
@@ -106,6 +106,8 @@ export interface RecordDailyResultInput {
    *  the sizing changed" off this rather than off a journal row, because the
    *  journal row did not exist for the trial that needed it. */
   riskPerTradePct: number | null;
+  /** Which quantity stamped `goalReached` — see DailyResult.goalBasis. */
+  goalBasis: GoalBasis;
 }
 
 /** Pure: the row a set of readings implies. Split out so the two percentages,
@@ -134,6 +136,7 @@ export function buildDailyResult(input: RecordDailyResultInput, strategy: Strate
     riskPerTradePct: input.riskPerTradePct,
     paperPnlUsd: paperPnl,
     goalReached: input.goalReached,
+    goalBasis: input.goalBasis,
     giveBackHalted: input.giveBackHalted,
     drawdownHalted: input.drawdownHalted,
     manualTrading,
@@ -170,6 +173,12 @@ export function recordDailyResult(etDate: string, now: number = Date.now()): Dai
       // fabrication this column exists to avoid.
       riskPerTradePct: current ? cfg.riskPerTradePct : (existing?.riskPerTradePct ?? null),
       goalReached: current ? current.reachedAt !== null : (existing?.goalReached ?? false),
+      // The stamp on today's baseline was made by evaluateDailyTarget, which
+      // has measured the LOOP's own realized P&L since 2026-09-14. A
+      // re-recording of a PAST date keeps whatever basis that day actually ran
+      // under, for the same reason it keeps that day's sizing: today's truth
+      // must not be written onto a session that did not live under it.
+      goalBasis: current ? 'strategy' : (existing?.goalBasis ?? null),
       giveBackHalted: current ? current.giveBackHaltedAt !== null : (existing?.giveBackHalted ?? false),
       // The drawdown halt has no baseline stamp of its own; the journal is its
       // record, and the caller passes it through the same route that reads it.
@@ -236,6 +245,9 @@ export function backfillDailyResults(from: string, now: number = Date.now()): { 
           // review's window test treats null as "not this trial", so a
           // backfill can never pad the count.
           riskPerTradePct: null,
+          // `goalReached` is hard false above — a historical session has no
+          // stamp at all — so there is no basis to name.
+          goalBasis: null,
           recordedAt: now,
         },
         strategyDayFor(etDate),

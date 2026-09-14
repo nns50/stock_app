@@ -1218,6 +1218,15 @@ entirely; instead it trimmed to 62%, sizing the closing trade down to a ~$40 win
 could no longer reach the line with. Always the same direction — under-sizing near
 the goal, right after the losses that make a day worth rescuing.
 
+The same rule applies to the OTHER side of that question, and it bit on 2026-09-14.
+"What is left to the goal" and "how much may this position lose before the give-back
+floor" are distances to day-level lines, and the trim and the day-protective stop each
+computed their own from account equity while the lines themselves moved to the loop's
+realized P&L. On that session the account sat $66 past a bank line the loop was $105
+short of. Both now read one field off the day's status (`gapToTargetUsd`,
+`headroomToFloorUsd`), because two derivations that agree today are not the goal — one
+derivation is.
+
 **And a payoff must be quoted in the same unit as the budget it is compared against.**
 The other half of the same rule, found on 2026-09-12. The trim's first factor is dollars of
 RISK — `equity x riskPerTradePct/100`, what the equity book calls 1R — so the reward it

@@ -147,25 +147,28 @@ function dayProtectiveStop(
 ): number | null {
   if (!cfg.dayProtectiveStopEnabled) return null;
   if (!dt || !dt.active || !dt.giveBackArmed) return null;
-  if (dt.baselineEquityUsd === undefined || dt.currentEquityUsd === undefined) return null;
-  // The floor comes from the day's STATUS — the guard's own effective level,
-  // scaled by the regime overlay together with the goal (dailyTarget.ts) —
-  // never from the raw config field. Until 2026-09-08 this read
-  // cfg.giveBackFloorPct while the guard read the status: two derivations of
-  // one floor, agreeing by coincidence, one step apart the day the overlay
-  // scaled it (CLAUDE.md's 2026-08-27 disease).
+  // Both the floor and the DISTANCE to it come from the day's STATUS — the
+  // guard's own effective level, scaled by the regime overlay together with the
+  // goal (dailyTarget.ts) — never from the raw config field and never
+  // re-derived here. Until 2026-09-08 this read cfg.giveBackFloorPct while the
+  // guard read the status: two derivations of one floor, agreeing by
+  // coincidence, one step apart the day the overlay scaled it (CLAUDE.md's
+  // 2026-08-27 disease). It then kept its OWN headroom — account equity minus a
+  // floor equity — which caught the same disease again on 2026-09-14, when the
+  // guard moved to the loop's realized P&L: an afternoon of manual trading
+  // would have set this position's stop from money the loop never made. The
+  // status owns both numbers now.
   const floorPct = dt.giveBackFloorPct;
   if (floorPct === undefined || !(floorPct > 0)) return null;
 
   const qty = pos.remainingQuantity;
   if (!(qty > 0)) return null;
 
-  const floorEquity = dt.baselineEquityUsd * (1 + floorPct / 100);
-  // Headroom: how much this position may lose before the day breaches its
-  // floor. Non-positive means the day is already at or below it, which is the
+  // How much this position may lose before the day breaches its floor.
+  // Non-positive means the day is already at or below it, which is the
   // give-back guard's business, not this rule's.
-  const headroomUsd = dt.currentEquityUsd - floorEquity;
-  if (!(headroomUsd > 0)) return null;
+  const headroomUsd = dt.headroomToFloorUsd;
+  if (headroomUsd === undefined || !(headroomUsd > 0)) return null;
 
   const perShare = headroomUsd / qty;
   const long = pos.side === 'long';

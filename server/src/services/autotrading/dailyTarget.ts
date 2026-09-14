@@ -1,4 +1,5 @@
 import { AutotradeConfig, getAutotradeConfig } from '../../db/autotradeConfig';
+import { strategyDayFor } from './dailyResults';
 import {
   DailyBaseline,
   getDailyBaseline,
@@ -114,6 +115,21 @@ export interface DailyTargetStatus {
   currentEquityUsd?: number;
   /** Day gain so far as a % of the baseline (can be negative). */
   gainPct?: number;
+  /** The loop's own realized P&L for the session, the numerator of `gainPct`. */
+  strategyPnlUsd?: number;
+  /** The loop P&L that banks the day — `baselineEquityUsd × targetPct`. The
+   *  dollar twin of the goal, and the thing `targetEquityUsd` STOPPED being on
+   *  2026-09-14: the account crossing its target no longer banks anything. */
+  targetPnlUsd?: number;
+  /** How far the loop still is from banking, in dollars (negative once past).
+   *  THE one derivation of that distance — the finish-line trim reads this
+   *  field rather than subtracting a pair of equities of its own, so the trim
+   *  and the halt can never disagree about how close the day is. */
+  gapToTargetUsd?: number;
+  /** The whole account's move, DISPLAY ONLY — it carries the operator's manual
+   *  trading and their open positions' unrealized P&L. It banked the loop's day
+   *  at 14:41 on 2026-09-14; it decides nothing now. */
+  accountGainPct?: number;
   /** True once the target has been reached TODAY — sticky for the rest of the
    *  ET day. */
   reached: boolean;
@@ -132,6 +148,14 @@ export interface DailyTargetStatus {
   giveBackFloorPct?: number;
   /** Epoch ms the guard fired today, from the persisted baseline row. */
   giveBackHaltedAt?: number | null;
+  /** How much loop P&L the day may still give back before the guard fires, in
+   *  dollars — `strategyPnlUsd - baselineEquityUsd × giveBackFloorPct`. Present
+   *  only when a coherent floor is configured. THE one derivation of that
+   *  headroom, for the same reason `gapToTargetUsd` is: the day-protective stop
+   *  sets a REAL stop on a REAL position from it, and a headroom it computed
+   *  itself off account equity would carry the operator's manual trading into
+   *  where that stop goes. */
+  headroomToFloorUsd?: number;
   /** THE flag the loop's live entry/scale-in gates read: the day is done for
    *  new real risk, either banked (reached) or protected (giveBackHalted). */
   entriesHalted: boolean;
@@ -160,9 +184,47 @@ function giveBackLevels(
 }
 
 /** Pure evaluation — all I/O stays in updateDailyTarget. */
+/**
+ * WHAT THE DAY IS MEASURED ON (2026-09-14, the operator's call).
+ *
+ * This used to be `(accountEquityUsd - baseline) / baseline` — the whole
+ * brokerage account, synced from the broker every tick, including the
+ * operator's own manual trading and the UNREALIZED P&L of their open
+ * positions. So the loop banked its day on money it had not made.
+ *
+ * It happened, and cost most of a session. On 2026-09-14 the loop's own
+ * realized closes were +$117.79 and the operator's were -$34.60 — together
+ * +2.36% of the baseline, BELOW the 3% target. Then a manual TSLA options
+ * position moved roughly +$88, the account crossed 3% at 14:41:01 ET, the day
+ * was banked, and every tick for the rest of the session refused 26-28 live
+ * candidates with `live_entries_halted`.
+ *
+ * The unrealized half is the sharper edge: an open manual position merely UP
+ * ON PAPER banks the loop's day, and can then give it back, leaving the book
+ * halted for a gain that never existed. The same number drove the give-back
+ * guard, so a manual LOSS could halt the book just as easily.
+ *
+ * So the day is now the LOOP's own realized P&L — `strategyDayFor`, the exact
+ * figure the results calendar already reports, live stock plus live options and
+ * independent of every equity reading. Two quantities that were being confused
+ * for each other now have one name each: `gainPct` is what the loop did, and
+ * `currentEquityUsd`/`accountGainPct` stay on the status as what the operator
+ * feels.
+ *
+ * The daily DRAWDOWN halt needed no change — `getLivePortfolioSnapshot`'s
+ * `dailyPnl` already counts autotrade-tagged closes only.
+ *
+ * Realized, not marked-to-market, matching the halt's own long-standing
+ * convention: an open winner does not bank the day, which is the same reason
+ * the halt lets open positions carry a loss a little past it.
+ */
 export function evaluateDailyTarget(
   cfg: Pick<AutotradeConfig, 'targetDailyGainPct' | 'accountEquityUsd' | 'giveBackArmPct' | 'giveBackFloorPct'>,
   baseline: DailyBaseline | null,
+  /** The loop's OWN realized P&L for this ET session, in dollars. Passed in
+   *  rather than read here so this stays pure and one derivation
+   *  (`strategyDayFor`) serves the live control and the results calendar. */
+  strategyPnlUsd: number,
 ): DailyTargetStatus {
   const inactive = (reason: string): DailyTargetStatus => ({
     active: false,
@@ -187,11 +249,18 @@ export function evaluateDailyTarget(
   const goalScale = goalScaleOf(baseline);
   const targetPct = round4(cfg.targetDailyGainPct * goalScale);
   const targetEquityUsd = round2(baseline.equityUsd * (1 + targetPct / 100));
-  // Unrounded for the threshold comparisons; rounded only for display.
-  const rawGainPct = ((equity - baseline.equityUsd) / baseline.equityUsd) * 100;
+  // The goal in DOLLARS OF LOOP P&L, which is what the day is decided on now.
+  // Same baseline and same targetPct as `targetEquityUsd`, so the two agree
+  // about the size of the goal; they differ only in what they measure it on.
+  const targetPnlUsd = baseline.equityUsd * (targetPct / 100);
+  // Unrounded for the threshold comparisons; rounded only for display. The
+  // numerator is the LOOP's realized P&L and the denominator the day's opening
+  // equity — both in dollars of the same account, so the ratio is a percentage
+  // of equity and comparable to targetPct directly.
+  const rawGainPct = (strategyPnlUsd / baseline.equityUsd) * 100;
   const gainPct = round2(rawGainPct);
-  // Sticky: a recorded reach holds for the day even if equity slips back.
-  const reached = baseline.reachedAt !== null || equity >= targetEquityUsd;
+  // Sticky: a recorded reach holds for the day even if the book gives some back.
+  const reached = baseline.reachedAt !== null || rawGainPct >= targetPct;
   const levels = giveBackLevels(cfg, goalScale);
   const giveBackArmed = baseline.giveBackArmedAt !== null || (levels !== null && rawGainPct >= levels.armPct);
   // Fires only on an armed, not-yet-banked day — once reached, entries are
@@ -210,11 +279,29 @@ export function evaluateDailyTarget(
     targetEquityUsd,
     currentEquityUsd: equity,
     gainPct,
+    strategyPnlUsd: round2(strategyPnlUsd),
+    targetPnlUsd: round2(targetPnlUsd),
+    // Both terms are the loop's own dollars against the same baseline, so this
+    // crosses zero on exactly the tick `reached` turns true.
+    gapToTargetUsd: round2(targetPnlUsd - strategyPnlUsd),
+    // What the ACCOUNT did, kept beside what the loop did so the difference —
+    // the operator's own trading — is visible rather than inferred. Never used
+    // for a halt decision again.
+    accountGainPct: round2(((equity - baseline.equityUsd) / baseline.equityUsd) * 100),
     reached,
     reachedAt: baseline.reachedAt,
     giveBackArmed,
     giveBackHalted,
-    ...(levels !== null ? { giveBackArmPct: levels.armPct, giveBackFloorPct: levels.floorPct } : {}),
+    ...(levels !== null
+      ? {
+          giveBackArmPct: levels.armPct,
+          giveBackFloorPct: levels.floorPct,
+          // Loop dollars minus loop dollars: positive while the day still has
+          // something above the floor to protect, and crossing zero on exactly
+          // the tick `giveBackHalted` would fire.
+          headroomToFloorUsd: round2(strategyPnlUsd - baseline.equityUsd * (levels.floorPct / 100)),
+        }
+      : {}),
     giveBackHaltedAt: baseline.giveBackHaltedAt,
     entriesHalted: reached || giveBackHalted,
   };
@@ -246,7 +333,10 @@ export function updateDailyTarget(now: number = Date.now()): DailyTargetStatus {
     }
   }
 
-  const status = evaluateDailyTarget(cfg, baseline);
+  // The loop's OWN day, not the account's — see evaluateDailyTarget's header
+  // for the session this cost. Read once per tick, here, so the pure evaluator
+  // stays pure and every caller below gets the same number.
+  const status = evaluateDailyTarget(cfg, baseline, strategyDayFor(today).pnlUsd);
 
   // Two-tick confirmation before the FIRST bank of the day. Banking is
   // irreversible for the session, so it must not rest on one instantaneous
@@ -273,6 +363,10 @@ export function updateDailyTarget(now: number = Date.now()): DailyTargetStatus {
         configuredTargetPct: status.configuredTargetPct,
         goalScale: status.goalScale,
         baselineEquityUsd: status.baselineEquityUsd,
+        // The loop's P&L is the numerator of `gainPct`; `currentEquityUsd` is
+        // the whole account and decides nothing. Both are here so a row read
+        // months later cannot mistake one for the other.
+        strategyPnlUsd: status.strategyPnlUsd,
         currentEquityUsd: status.currentEquityUsd,
         gainPct: status.gainPct,
         note: 'target reached on this tick — banking the day needs it again on the next one',
@@ -296,6 +390,8 @@ export function updateDailyTarget(now: number = Date.now()): DailyTargetStatus {
         configuredTargetPct: status.configuredTargetPct,
         goalScale: status.goalScale,
         baselineEquityUsd: status.baselineEquityUsd,
+        targetPnlUsd: status.targetPnlUsd,
+        strategyPnlUsd: status.strategyPnlUsd,
         targetEquityUsd: status.targetEquityUsd,
         currentEquityUsd: status.currentEquityUsd,
         gainPct: status.gainPct,
@@ -323,6 +419,7 @@ export function updateDailyTarget(now: number = Date.now()): DailyTargetStatus {
         goalScale: status.goalScale,
         configuredTargetPct: status.configuredTargetPct,
         baselineEquityUsd: status.baselineEquityUsd,
+        strategyPnlUsd: status.strategyPnlUsd,
         currentEquityUsd: status.currentEquityUsd,
         gainPct: status.gainPct,
         note: 'day gain fell back to the give-back floor after arming — new live entries and scale-ins halted until the next ET day',

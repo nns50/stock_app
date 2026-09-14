@@ -30,6 +30,7 @@ import { initDb, db } from '../src/db';
 import { defaultAutotradeConfig, setAutotradeConfig } from '../src/db/autotradeConfig';
 import { setTradingConfig } from '../src/db/trading';
 import { saveDailyBaseline } from '../src/db/dailyBaseline';
+import { addExit, createPosition } from '../src/db/positions';
 import { config } from '../src/config';
 import { runLiveExecution } from '../src/services/autotrading/liveExecute';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
@@ -51,7 +52,13 @@ import { evaluateEntryCutoff } from '../src/services/autotrading/endOfDayFlatten
 // ---------------------------------------------------------------------------
 
 const EQUITY = 5_161;
-const BASELINE = EQUITY - 80; // day is up $80; the bank line is another $80 away
+// The day is up $80 OF THE LOOP'S OWN REALIZED P&L (2026-09-14), seeded as a
+// closed autotrade position below; the bank line is another $80 away. It used
+// to be `BASELINE = EQUITY - 80`, standing the day's gain up as account equity
+// — which stopped meaning anything the day the goal moved to the loop's P&L,
+// and is the same account-dollars-for-loop-dollars mistake the trim itself had.
+const BASELINE = EQUITY;
+const LOOP_PNL = 80;
 
 // STARTS FROM THE DEFAULTS, DELIBERATELY (2026-09-08).
 //
@@ -89,7 +96,7 @@ const cfgFields = {
   // The live shape this was found under.
   riskPerTradePct: 1.25,
   targetRMultiple: 2,
-  targetDailyGainPct: 3.1, // baseline * 1.031 ≈ EQUITY + 80 -> an $80 gap
+  targetDailyGainPct: 3.1, // 3.1% of 5,161 ≈ $160, of which the loop has $80 -> an $80 gap
   finishLineSizingEnabled: true,
   finishLineMinSignalScore: 0,
   stepDownAfterLosses: 2,
@@ -167,6 +174,20 @@ beforeEach(() => {
   } as unknown as ReturnType<typeof getProvider>);
   vi.mocked(webullAccountState).mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
   saveDailyBaseline(etToday(Date.now()), BASELINE);
+  // The loop's own +$80, which is what the goal — and so the trim's gap — is
+  // measured on. Seeded after the DELETE above, so every case starts from it.
+  const won = createPosition({
+    assetType: 'stock',
+    symbol: 'FLGAP',
+    side: 'long',
+    quantity: 10,
+    entryPrice: 100,
+    entryDate: etToday(Date.now()),
+    stopPrice: 95,
+    targetPrice: 120,
+    tags: ['live', 'autotrade'],
+  });
+  addExit(won.id, { quantity: 10, exitPrice: 100 + LOOP_PNL / 10, exitDate: etToday(Date.now()) });
 });
 
 afterEach(() => {

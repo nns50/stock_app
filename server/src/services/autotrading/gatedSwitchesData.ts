@@ -124,8 +124,24 @@ export function buildSizingReview(
   // that page answers "how am I doing", which is the question the account
   // figure is for.
   const pcts = sessions.map((r) => r.strategyGainPct).filter((p): p is number => p !== null);
-  // Kept for the GOAL RATE below, whose flag is account-derived — see there.
-  const judged = sessions.filter((r) => !r.manualTrading);
+  // THE GOAL RATE, and why the manual exclusion is now PER ROW (2026-09-14).
+  //
+  // `goalReached` is stamped by evaluateDailyTarget, which measured ACCOUNT
+  // equity until 2026-09-14 — so on an older row a deposit or an afternoon of
+  // hand trading could bank a day the loop never earned (2026-08-27 banked a
+  // fictional +9.69% on a spurious equity print). The blunt fix was to drop
+  // every manual-trading session from this rate, which is the same charge the
+  // mean's note above lays against a threshold: it throws away real sessions
+  // out of a window only ten sessions long, and `manualTrading` fires on clean
+  // days too, because an open option's mark can cross 0.5% by itself.
+  //
+  // A row stamped on the STRATEGY basis cannot have that contamination — the
+  // loop's realized P&L does not move when the operator trades — so it is
+  // counted whatever the divergence flag says. A row from before the basis was
+  // recorded (null) keeps the old exclusion, because for it the old charge is
+  // still true. No date literal, and the exclusion retires itself once the
+  // window holds no pre-change rows.
+  const judged = sessions.filter((r) => r.goalBasis === 'strategy' || !r.manualTrading);
   let haltsMaxIn5 = 0;
   for (let i = 0; i < sessions.length; i++) {
     const window = sessions.slice(Math.max(0, i - HALT_WINDOW + 1), i + 1);
@@ -134,13 +150,7 @@ export function buildSizingReview(
   return {
     activeSessionsSinceChange: sessions.length,
     meanDayPct: meanOf(pcts),
-    // The goal rate is where the manual exclusion BELONGS, and it was the half
-    // that did not have it. `goalReached` is stamped when the ACCOUNT equity
-    // crosses the target (dailyTarget.ts reads the synced net liquidation), so
-    // a deposit or an afternoon of hand trading can bank a day the loop did not
-    // earn — which is not hypothetical: 2026-08-27 banked a fictional +9.69% on
-    // a spurious equity print. A day whose two figures disagree cannot say
-    // whether the STRATEGY reached the goal, so it is not counted either way.
+    // Counted over the rows whose stamp can be trusted — see `judged` above.
     goalRatePct: judged.length
       ? Math.round((judged.filter((r) => r.goalReached).length / judged.length) * 1000) / 10
       : null,

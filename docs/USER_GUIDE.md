@@ -1257,8 +1257,23 @@ equally-weighted cards in the order they happened to be built:
   closed above it (a day can bank the goal and still finish below it). It
   never sizes UP to chase a shortfall — behind the target, sizing stays exactly what
   the tune calibrated. **Reset to moderate** (or clearing the field) disarms it.
+  Since **2026-09-14** the day is measured on **what the loop itself made** — the realized
+  P&L of its own live stock and options trades — and not on your account's balance. Your
+  own trading cannot bank its day or halt it, in either direction. Before that it read the
+  whole account, and it cost a session: on 2026-09-14 the loop's closes were +$117.79 and
+  yours were −$34.60, together +2.36% of the baseline and under the 3% goal, until a manual
+  TSLA options position moved about +$88 around 14:40. The account crossed 3% at 14:41:01,
+  the day was banked, and every tick after that refused 26–28 live candidates. Worse, the
+  broker's balance carries **unrealized** P&L, so an open position of yours that was merely
+  up on paper could bank the loop's day and then give it back, leaving it halted for a gain
+  that never existed. The Monitoring card still shows the account figure beside the loop's —
+  it is what you feel — but it decides nothing. The **drawdown halt** already counted only
+  the loop's own closes and was never affected.
   Since 2026-08-27 a **deposit or withdrawal no longer counts as gain**: the goal is a
-  _return_ on the day's starting value, and money you pay in was not earned. When the
+  _return_ on the day's starting value, and money you pay in was not earned. (Since the
+  change above a deposit cannot move the gain at all — it is not a trade. Re-basing still
+  matters, because the baseline is the denominator every later percentage is measured
+  against.) When the
   broker reports a sustained balance change that its own day P&L does not account for,
   the loop moves the day's baseline by that amount instead — one
   `daily_baseline_rebased` entry in Recent activity — so the gain % runs continuously
@@ -1285,7 +1300,12 @@ equally-weighted cards in the order they happened to be built:
   multipliers have had their say — not the raw risk-per-trade %. It has to: the trim
   is itself one of those multipliers, so measuring against the raw % double-counted
   every cut already in force and trimmed a trade that could no longer overshoot
-  anyway (fixed 2026-09-05). An **armed-day min signal score** holds
+  anyway (fixed 2026-09-05). "What is left to the goal" is the **loop's** remaining
+  dollars, not your account's distance to a balance: since 2026-09-14 both the trim
+  and the day-protective stop read that distance off the same day the goal is banked
+  on, so your own trading cannot make either of them act (before that the trim could
+  read a green account as "already banked" and size the closing trade at full risk on
+  a day the loop had not earned). An **armed-day min signal score** holds
   new live entries to a higher conviction bar while the guard is armed (0 = off).
   Beside it, a **live conviction floor** (`liveMinSignalScore`, 2026-09-06, 0 = off)
   applies the same idea on an ordinary day: a new **live equity** entry must clear

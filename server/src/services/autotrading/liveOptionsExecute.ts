@@ -1,4 +1,6 @@
 import { config } from '../../config';
+import { etToday } from '../../util/marketDate';
+import { strategyDayFor } from './dailyResults';
 import { getProvider } from '../../providers';
 import { db } from '../../db';
 import { AutotradeConfig, getAutotradeConfig, RiskProfileName } from '../../db/autotradeConfig';
@@ -1166,7 +1168,7 @@ export async function runLiveOptionsExecution(
   // computation as runLiveExecution's (see its comment). The options reward
   // multiple is what a winner pays per $1 of premium risked: the take-profit
   // % of premium, in R terms.
-  const dailyTarget = evaluateDailyTarget(cfg, getDailyBaseline());
+  const dailyTarget = evaluateDailyTarget(cfg, getDailyBaseline(), strategyDayFor(etToday()).pnlUsd);
   const cooldowns = activeSymbolCooldowns(cfg);
   // The trim itself is derived PER SIGNAL, below: it must reason about the risk
   // % this entry will actually take, and the method lean that helps set that is

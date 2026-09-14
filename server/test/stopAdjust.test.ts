@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { evaluateStopAdjust, StopAdjustPosition } from '../src/services/autotrading/stopAdjust';
 import { initDb } from '../src/db';
 import { createPosition, updatePosition, ratchetPositionStop } from '../src/db/positions';
-import type { DailyTargetStatus } from '../src/services/autotrading/dailyTarget';
+import { evaluateDailyTarget, type DailyTargetStatus } from '../src/services/autotrading/dailyTarget';
 
 beforeAll(() => initDb());
 
@@ -249,19 +249,39 @@ describe('initial stop seeding — the adoption path', () => {
 describe('day-protective stop', () => {
   const dpCfg = { ...cfg, dayProtectiveStopEnabled: true };
 
-  /** A day up `gainPct` on a 2103.43 baseline, guard armed, with the guard's
-   *  EFFECTIVE levels on the status (arm 2, floor 1 — the rule reads the floor
-   *  from here, never from the config, since 2026-09-08). */
+  const BASELINE_USD = 2103.43;
+
+  /** A day up `gainPct` OF THE LOOP'S OWN REALIZED P&L on a 2103.43 baseline,
+   *  guard armed, with the guard's EFFECTIVE levels on the status (arm 2,
+   *  floor 1).
+   *
+   *  Built by the real evaluator (2026-09-14). The rule reads the floor from
+   *  the status rather than the config (2026-09-08) and now reads the HEADROOM
+   *  from it too — so a hand-written status could hold a headroom the evaluator
+   *  would never produce, and these cases would be protecting a day that cannot
+   *  exist. The arm flag stays an explicit override: it is sticky on the
+   *  persisted baseline row, so a day can genuinely be armed at any gain. */
   const day = (gainPct: number, armed = true, floorPct = 1): DailyTargetStatus => ({
-    active: true,
-    reached: false,
+    ...evaluateDailyTarget(
+      {
+        targetDailyGainPct: 3,
+        accountEquityUsd: BASELINE_USD,
+        giveBackArmPct: floorPct * 2,
+        giveBackFloorPct: floorPct,
+      },
+      {
+        etDate: '2026-09-14',
+        equityUsd: BASELINE_USD,
+        reachedAt: null,
+        giveBackArmedAt: null,
+        giveBackHaltedAt: null,
+        reachCandidateAt: null,
+        goalScale: null,
+        goalScaleReason: null,
+      },
+      BASELINE_USD * (gainPct / 100),
+    ),
     giveBackArmed: armed,
-    giveBackHalted: false,
-    entriesHalted: false,
-    baselineEquityUsd: 2103.43,
-    currentEquityUsd: 2103.43 * (1 + gainPct / 100),
-    giveBackArmPct: floorPct * 2,
-    giveBackFloorPct: floorPct,
   });
 
   /** ANF as it actually was. 1R = 3.78/share. */
@@ -292,6 +312,39 @@ describe('day-protective stop', () => {
     // protective stop sits under that, so the winner survives it.
     const d = evaluateStopAdjust(anf(), 146.5, dpCfg, day(1.6));
     expect(d.newStop!).toBeLessThan(145.11);
+  });
+
+  it('sets the stop from the LOOP’s headroom, which the operator’s own trading cannot move (2026-09-14)', () => {
+    // This rule used to compute its own headroom as `currentEquityUsd −
+    // floorEquity` while the guard it protects moved to the loop's realized
+    // P&L. Two derivations of one distance, differing by exactly whatever was
+    // traded by hand — and this one puts a REAL stop on a REAL position.
+    //
+    // Same +1.6% loop day, three accounts: flat, $60 ahead on manual trading,
+    // $60 behind. The stop must not move by a cent.
+    const withAccount = (accountEquityUsd: number): DailyTargetStatus => ({
+      ...evaluateDailyTarget(
+        { targetDailyGainPct: 3, accountEquityUsd, giveBackArmPct: 2, giveBackFloorPct: 1 },
+        {
+          etDate: '2026-09-14',
+          equityUsd: BASELINE_USD,
+          reachedAt: null,
+          giveBackArmedAt: null,
+          giveBackHaltedAt: null,
+          reachCandidateAt: null,
+          goalScale: null,
+          goalScaleReason: null,
+        },
+        BASELINE_USD * 0.016,
+      ),
+      giveBackArmed: true,
+    });
+    const flat = evaluateStopAdjust(anf(), 146.5, dpCfg, withAccount(BASELINE_USD * 1.016));
+    const manualAhead = evaluateStopAdjust(anf(), 146.5, dpCfg, withAccount(BASELINE_USD * 1.016 + 60));
+    const manualBehind = evaluateStopAdjust(anf(), 146.5, dpCfg, withAccount(BASELINE_USD * 1.016 - 60));
+    expect(flat.adjust).toBe(true);
+    expect(manualAhead.newStop).toBe(flat.newStop);
+    expect(manualBehind.newStop).toBe(flat.newStop);
   });
 
   it('does NOTHING while the give-back guard is unarmed — a normal day is untouched', () => {

@@ -1,4 +1,6 @@
 import { MlRegimeReading, peekMarketRegime } from '../mlRegime';
+import { etToday } from '../../util/marketDate';
+import { strategyDayFor } from './dailyResults';
 import { getMlRegimeReadiness, MlRegimeReadiness } from '../mlRegimeReadiness';
 import { getDailyBaseline } from '../../db/dailyBaseline';
 import { MethodStats, computeMethodPerformance } from './methodSizing';
@@ -439,7 +441,7 @@ export function getAutotradeDashboard(): AutotradeDashboard {
     killSwitch: config.killSwitch,
     riskProfile: config.riskProfile,
     equity: config.accountEquityUsd,
-    dailyTarget: evaluateDailyTarget(config, getDailyBaseline()),
+    dailyTarget: evaluateDailyTarget(config, getDailyBaseline(), strategyDayFor(etToday()).pnlUsd),
     dailyGoalEvidence: dailyGoalEvidence(
       realizedEdgeOf(liveBook),
       config.riskPerTradePct,
