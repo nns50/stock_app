@@ -10400,3 +10400,61 @@ the three that traded were then locked out by the 390-minute re-entry cooldown
 names were removed upstream by the 1.5x relative-volume pace floor (AMAT
 1.42-1.48, BBY 1.20-1.29, BKR 1.13, ALB 1.06-1.10). CRWD was skipped at 09:37
 and only cleared the floor at 10:40, after the move.
+
+## 2026-09-14 (fourth) — raising the floor re-scored the shorts evidence
+
+Enabling pace scoring came with `liveMinSignalScore` 72 → 81, the
+exposure-neutral partner the shadow's own re-fit measured (pace-at-80.8 admits
+as many symbols as raw-at-72). Within the hour the operator asked whether to
+enable live shorts, and `GET /api/journal/short-shadow-record` answered:
+
+```
+journaledRows 165   n 1   avgR 0   winRatePct 0
+excluded { below_live_floor: 164 }
+gate { minTrades 30, minAvgR 0.1, minWinRatePct 50, passes false }
+```
+
+**164 of 165 declined shorts were excluded by a floor that had moved an hour
+earlier.** The same rows counted at each bar:
+
+| floor | eligible rows | sessions |
+| --- | --- | --- |
+| 72 | 32 | 2 |
+| 76 | 19 | 2 |
+| 78 | 6 | 2 |
+| 81 | 1 | 1 |
+
+`buildShortShadowRecord` filtered on `cfg.liveMinSignalScore` — the CURRENT
+floor — applied to HISTORICAL scores. Two faults in one line. It re-scores its
+own history every time the floor moves, and after this change it judged
+**raw**-scored rows by a **pace**-calibrated floor, which is stricter than the
+live book has ever been.
+
+**The field to fix it was already on the row, and the write site says why.**
+`live_short_skipped` carries `liveMinSignalScore` and `liveEligible`, and
+`liveExecute.ts` states the contract where it writes them: *"the floor travels
+with the row so a later change to `liveMinSignalScore` cannot silently rewrite
+history."* Nothing read it. This is the "computed and never read" class one
+layer below config — the value was journaled specifically to prevent this, and
+the thing it was meant to prevent happened anyway, to the one instrument a
+real-money direction decision depends on.
+
+**What changed.** `SkippedShort` gains `floorAtSkip`, the route carries
+`detail.liveMinSignalScore` through, and the filter uses the row's own floor,
+falling back to current config only for rows written before the field existed.
+
+**The decision it was asked for, recorded.** Shorts stay OFF. Even read at the
+old floor the sample is 32 rows across **two sessions** with repeats (AMAT ×3,
+KLAC ×2, VRT ×2) — nowhere near 30 independent trades, and the gate wants 30
+with avg R ≥ +0.1 and a 50% win rate. The one short that did clear and replay
+(VRT, score 81.1) exited at **0.00R on the breakeven ratchet after peaking at
++0.35R**, which is a fact about the book's exit geometry rather than about
+direction: `liveScaleOutEnabled` is now false, so there is no partial to bank
+on a winner that fades.
+
+**The lesson, generalised.** When a report filters history by a threshold read
+from live config, the report is not a record — it is a view that changes under
+you. Any gate whose inputs are journaled must judge each row by the state in
+force when the row was written, and the journal row has to carry that state.
+Wherever a stamped field exists for this purpose, something must read it, or
+the stamp is decoration.

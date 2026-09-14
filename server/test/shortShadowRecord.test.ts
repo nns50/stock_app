@@ -152,6 +152,51 @@ describe('buildShortShadowRecord', () => {
     expect(out.excluded.below_live_floor).toBe(1);
   });
 
+  // RAISING THE FLOOR MUST NOT RE-SCORE HISTORY (2026-09-14).
+  //
+  // `live_short_skipped` carries the floor in force when it was written, for
+  // the reason liveExecute.ts states at the write site: "the floor travels
+  // with the row so a later change to liveMinSignalScore cannot silently
+  // rewrite history". This filter read CURRENT config instead, so the field
+  // was journaled to prevent a thing and nothing read it — and the thing
+  // happened. The floor went 72 -> 81 that afternoon (the exposure-neutral
+  // partner to pace scoring) and the eligible sample fell from 32 rows to 1,
+  // reading as "shorts stopped qualifying" rather than "the yardstick moved".
+  //
+  // The like-for-like point is the sharper one: those scores came from RAW
+  // relative-volume scoring, and 81 is calibrated for PACE scoring — the
+  // shadow's own re-fit puts pace-at-80.8 level with raw-at-72.
+  it('judges a row by the floor in force WHEN IT WAS SKIPPED, not the floor today', async () => {
+    const src = sourceOf({ KLAC: [bar(0, 100, 95)] });
+    // Scored 75 against a floor of 72 on the day; the floor is 81 now.
+    const out = await buildShortShadowRecord(
+      src,
+      [shortAt100({ score: 75, floorAtSkip: 72 })],
+      cfg({ liveMinSignalScore: 81 }),
+    );
+    expect(out.excluded.below_live_floor).toBe(0);
+    expect(out.n).toBe(1);
+  });
+
+  it('still excludes a row that was below the floor of ITS OWN day', async () => {
+    // The stamped floor cuts both ways: it is the row's own verdict, not a
+    // licence to admit everything that today's lower bar would let in.
+    const src = sourceOf({ KLAC: [bar(0, 100, 95)] });
+    const out = await buildShortShadowRecord(
+      src,
+      [shortAt100({ score: 65, floorAtSkip: 72 })],
+      cfg({ liveMinSignalScore: 60 }),
+    );
+    expect(out.n).toBe(0);
+    expect(out.excluded.below_live_floor).toBe(1);
+  });
+
+  it('falls back to the current floor for a row written before the field existed', async () => {
+    const src = sourceOf({ KLAC: [bar(0, 100, 95)] });
+    const out = await buildShortShadowRecord(src, [shortAt100({ score: 65 })], cfg({ liveMinSignalScore: 72 }));
+    expect(out.excluded.below_live_floor).toBe(1);
+  });
+
   it('excludes a signal with no measurable 1R rather than dividing by zero', async () => {
     const src = sourceOf({ KLAC: [bar(0, 100, 95)] });
     const out = await buildShortShadowRecord(src, [shortAt100({ stop: 100 })], cfg());

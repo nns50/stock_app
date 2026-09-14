@@ -44,6 +44,27 @@ export interface SkippedShort {
   score: number;
   entry: number;
   stop: number;
+  /** The live conviction floor IN FORCE when this row was journaled.
+   *
+   *  `live_short_skipped` carries it for one reason, stated in liveExecute.ts
+   *  where the row is written: "the floor travels with the row so a later
+   *  change to liveMinSignalScore cannot silently rewrite history". This
+   *  filter re-derived it from CURRENT config instead, so the field was
+   *  journaled to prevent a thing and then nothing read it — and the thing
+   *  happened. On 2026-09-14 the floor went 72 → 81 (the exposure-neutral
+   *  partner to pace scoring) and the eligible sample fell from 32 rows to 1,
+   *  which reads as "shorts stopped qualifying" rather than "the yardstick
+   *  moved".
+   *
+   *  Worse than losing sample: the comparison stops being like-for-like. Those
+   *  historical scores were produced by RAW relative-volume scoring, and 81 is
+   *  calibrated for PACE scoring — the shadow's own re-fit puts pace-at-80.8
+   *  level with raw-at-72. Judging raw scores by a pace floor is stricter than
+   *  the live book ever was.
+   *
+   *  Undefined for rows written before the field existed; those fall back to
+   *  the current floor, which is the old behaviour and the best available. */
+  floorAtSkip?: number;
 }
 
 export interface ShadowTrade extends SkippedShort {
@@ -156,7 +177,9 @@ export async function buildShortShadowRecord(
   };
 
   const eligible = rows.filter((r) => {
-    if (!(r.score >= cfg.liveMinSignalScore)) {
+    // The floor THIS ROW was judged against, not today's. See SkippedShort.
+    const floor = r.floorAtSkip ?? cfg.liveMinSignalScore;
+    if (!(r.score >= floor)) {
       excluded.below_live_floor += 1;
       return false;
     }
