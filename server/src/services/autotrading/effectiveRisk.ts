@@ -369,3 +369,64 @@ export function factorState(triggered: boolean, factor: number): FactorState {
   if (!triggered) return 'inactive';
   return factor === NEUTRAL ? 'triggered-but-neutral' : 'active';
 }
+
+// ---------------------------------------------------------------------------
+// SAYING what the product did (2026-09-14).
+//
+// Both risk checks built ONE string from the FINAL effective % —
+// `sizing at ${effectiveRiskPct}% instead of ${ctx.riskPerTradePct}%` — and
+// appended it to four different factor lines, each of which then named its own
+// cut. A production row from 2026-09-11 read, in the same journal entry:
+//
+//   step_down_sizing    active — 4 consecutive losses, sizing at
+//                       0.36540000000000006% instead of 1.25% (50% cut)
+//   repeat_entry_sizing active — 1 prior exit(s) in this name today, sizing at
+//                       0.36540000000000006% instead of 1.25% (40% cut)
+//
+// Two lines claiming the same move for two different reasons, and NEITHER cut
+// produces it: 50% of 1.25 is 0.625, the 40% cut gives 0.75. 0.3654 is the
+// product of five factors (0.50 x 0.60 x 1.12 x 0.87), and nothing in the row
+// said so — there was no line for the product at all. Same sibling-value
+// mistake CLAUDE.md's 2026-08-27 entry is about, in the record rather than in
+// the arithmetic, on the one line an operator reads to understand a small
+// order. It matters more at the trial's 2.5%, where a compounded cut to 0.73%
+// is exactly what someone would go looking for.
+//
+// So each factor line now states only its OWN effect (they all already named
+// their cut or their multiplier), and the product gets a line of its own,
+// listing the terms that made it. Both books call this: a second copy would
+// drift the way the two copies of the product itself did.
+// ---------------------------------------------------------------------------
+
+/** Human labels for the factors, in the order they compose. */
+const FACTOR_LABELS: { key: keyof SizingFactors; label: string }[] = [
+  { key: 'stepDown', label: 'step-down' },
+  { key: 'regime', label: 'regime' },
+  { key: 'repeatEntry', label: 'repeat-entry' },
+  { key: 'equityCurveDerisk', label: 'equity-curve' },
+  { key: 'expectancy', label: 'expectancy' },
+  { key: 'method', label: 'method' },
+  { key: 'finishLine', label: 'finish-line' },
+];
+
+/** Two decimals, without the float tail that `0.36540000000000006` is. */
+const pct2 = (n: number): string => `${Math.round(n * 100) / 100}%`;
+const times = (n: number): string => `×${(Math.round(n * 100) / 100).toFixed(2)}`;
+
+/**
+ * The `effective_risk` check line: the risk % this entry is sized at, the
+ * configured % it came from, and every factor that moved it.
+ *
+ * Factors at exactly NEUTRAL are left out — a list of seven ×1.00 terms buries
+ * the two that did something. When none moved, it says so rather than printing
+ * an empty parenthesis.
+ */
+export function describeEffectiveRisk(riskPerTradePct: number, f: SizingFactors): string {
+  const effective = effectiveRiskPct(riskPerTradePct, f);
+  const moved = FACTOR_LABELS.filter(({ key }) => f[key] !== NEUTRAL);
+  if (moved.length === 0)
+    return `${pct2(effective)} — the configured ${pct2(riskPerTradePct)}, nothing cut or raised it`;
+  const terms = moved.map(({ key, label }) => `${label} ${times(f[key])}`).join(', ');
+  const net = riskPerTradePct > 0 ? effective / riskPerTradePct : 0;
+  return `${pct2(effective)} of the configured ${pct2(riskPerTradePct)} — ${terms} (net ${times(net)})`;
+}

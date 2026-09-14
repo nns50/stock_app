@@ -270,7 +270,9 @@ yesterday's close never suppresses this morning's first entry. It is **live equi
 the paper book keeps taking every signal at full size so it stays a clean control arm to
 re-measure this against at ~60 repeats. Watch the `repeat_entry_sizing` line in each
 risk-check under **Recent activity** to see what it actually did — it reports itself from
-the factor, so a 0% cut reads as "triggered, size unchanged" rather than "active".
+the factor, so a 0% cut reads as "triggered, size unchanged" rather than "active", and
+since 2026-09-14 it reports only ITS cut: the combined effect of every factor is the
+`effective_risk` line beside it, with its terms.
 
 **Don't size bigger than you can exit.** Risk-based sizing only looks at your stop
 distance, not the stock's liquidity — so a tight stop on a thin name can hand you a

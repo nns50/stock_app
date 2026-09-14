@@ -67,6 +67,58 @@ function baseCtx(overrides: Partial<RiskCheckContext> = {}): RiskCheckContext {
 }
 
 // ---------------------------------------------------------------------------
+// WHAT THE ROW SAYS THE CUTS DID (2026-09-14).
+//
+// Both risk checks built one string from the FINAL effective % and appended it
+// to four separate factor lines, each of which also named its own cut. The
+// production row this reproduces said, in the same entry, that a 50% step-down
+// took 1.25% to 0.3654% AND that a 40% repeat-entry cut took 1.25% to 0.3654%.
+// Neither is true of its own factor, no line reported the product as a product,
+// and the raw float leaked into the text.
+//
+// Asserted on the journaled DETAIL, which is the thing an operator reads — not
+// on describeEffectiveRisk, which would prove only that the helper works.
+// ---------------------------------------------------------------------------
+describe('the sizing lines each report their own factor, and the product gets its own', () => {
+  // The 2026-09-11 row, to the factor: 4 consecutive losses (50% cut), one
+  // prior exit today (40% cut), grade expectancy 1.12x, method 0.87x.
+  const compounded = baseCtx({
+    riskPerTradePct: 1.25,
+    consecutiveLosses: 4,
+    stepDownAfterLosses: 2,
+    stepDownSizeCutPct: 50,
+    priorSameDayExits: 1,
+    repeatEntrySizeCutPct: 40,
+    expectancyMultiplier: 1.12,
+    methodMultiplier: 0.87,
+  });
+
+  it('no longer credits one factor with the whole product', () => {
+    const r = evaluateRiskCheck(signal(), compounded);
+    const stepDown = findCheck(r, 'step_down_sizing').detail;
+    const repeat = findCheck(r, 'repeat_entry_sizing').detail;
+    expect(stepDown).toBe('active — 4 consecutive losses, 50% cut');
+    expect(repeat).toBe('active — 1 prior exit(s) in this name today, 40% cut');
+    // The specific falsehood: neither line may claim the compounded number.
+    for (const line of [stepDown, repeat]) expect(line).not.toMatch(/0\.365|instead of/);
+  });
+
+  it('reports the product with the terms that made it, and no float tail', () => {
+    const detail = findCheck(evaluateRiskCheck(signal(), compounded), 'effective_risk').detail;
+    // 1.25 x 0.50 x 0.60 x 1.12 x 0.87 = 0.3654 -> 0.37% at two decimals.
+    expect(detail).toBe(
+      '0.37% of the configured 1.25% — step-down ×0.50, repeat-entry ×0.60, expectancy ×1.12, method ×0.87 (net ×0.29)',
+    );
+    expect(detail).not.toMatch(/0000000/);
+  });
+
+  it('says plainly when nothing moved the size, rather than listing seven ×1.00 terms', () => {
+    const detail = findCheck(evaluateRiskCheck(signal(), baseCtx()), 'effective_risk').detail;
+    expect(detail).toBe('1% — the configured 1%, nothing cut or raised it');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Buying power must reach the SIZER, not just the guardrail. On 2026-08-28 the
 // sizer worked from risk alone and the guardrail refused the result 627 times,
 // for zero live entries — while a smaller, fundable position was available all
@@ -340,9 +392,12 @@ describe('evaluateRiskCheck — pure evaluator', () => {
       expect(result.regimeActive).toBe(true);
       expect(result.sizing.suggestedQuantity).toBe(100);
       expect(result.sizing.riskOfPosition).toBe(500);
+      // The regime line names the REGIME's own effect; the product is its own
+      // line (2026-09-14 — four lines used to claim it at once).
       expect(findCheck(result, 'regime_sizing').detail).toBe(
-        'active — ML regime High Volatility/Bearish (50% cut; ATR trigger inactive at 0.9%), sizing at 0.5% instead of 1%',
+        'active — ML regime High Volatility/Bearish (50% cut; ATR trigger inactive at 0.9%)',
       );
+      expect(findCheck(result, 'effective_risk').detail).toBe('0.5% of the configured 1% — regime ×0.50 (net ×0.50)');
     });
 
     it('sizes at 0.65% at the shipped default of 35', () => {

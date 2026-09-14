@@ -15,12 +15,14 @@ import {
 } from './riskCheck';
 import {
   cutFactor,
+  describeEffectiveRisk,
   factorState,
   effectiveRiskPct as computeEffectiveRiskPct,
   isStepDownActive,
   preFinishLineFactors,
   regimeTriggers,
   NEUTRAL,
+  type SizingFactors,
 } from './effectiveRisk';
 import { ML_REGIME_LABELS } from '../regimeModel';
 import { actionableRegime, peekMarketRegime } from '../mlRegime';
@@ -253,7 +255,9 @@ export function evaluateOptionsRiskCheck(signal: OptionsTradeSignal, ctx: RiskCh
   // became invisible: an absent factor looks like nothing at all. Now each one
   // is a written NEUTRAL with a reason, and a new factor does not compile here
   // until this book says what it does with it.
-  const effectiveRiskPct = computeEffectiveRiskPct(ctx.riskPerTradePct, {
+  // Built ONCE and named, so the product and the `effective_risk` line that
+  // explains it cannot come from two different factor sets.
+  const sizingFactors: SizingFactors = {
     ...preFinishLineFactors({
       consecutiveLosses: ctx.consecutiveLosses,
       stepDownAfterLosses: ctx.stepDownAfterLosses,
@@ -277,18 +281,21 @@ export function evaluateOptionsRiskCheck(signal: OptionsTradeSignal, ctx: RiskCh
       method: methodMultiplier,
     }),
     finishLine: finishLineFactor,
-  });
+  };
+  const effectiveRiskPct = computeEffectiveRiskPct(ctx.riskPerTradePct, sizingFactors);
   // Described from the FACTOR, not the trigger — same reasoning as the equity
   // book's copy (see factorState): a threshold firing and a size actually
   // changing are different facts.
   const stepDownState = factorState(stepDownActive, cutFactor(stepDownActive, ctx.stepDownSizeCutPct));
   const regimeState = factorState(regime.triggered, regime.factor);
-  const sizingAt = `sizing at ${effectiveRiskPct}% instead of ${ctx.riskPerTradePct}%`;
+  // Each factor line states its OWN effect; the product has its own line. The
+  // equity book's twin carries the reasoning — both call one describer.
+  check('effective_risk', true, describeEffectiveRisk(ctx.riskPerTradePct, sizingFactors));
   check(
     'step_down_sizing',
     true,
     stepDownState === 'active'
-      ? `active — ${ctx.consecutiveLosses} consecutive losses, ${sizingAt} (${ctx.stepDownSizeCutPct}% cut)`
+      ? `active — ${ctx.consecutiveLosses} consecutive losses, ${ctx.stepDownSizeCutPct}% cut`
       : stepDownState === 'triggered-but-neutral'
         ? `triggered at ${ctx.consecutiveLosses} consecutive losses, but the configured cut is 0% — size unchanged`
         : `inactive — ${ctx.consecutiveLosses} consecutive losses (triggers at ${ctx.stepDownAfterLosses})`,
@@ -316,7 +323,7 @@ export function evaluateOptionsRiskCheck(signal: OptionsTradeSignal, ctx: RiskCh
     regime.skip
       ? `${ML_REGIME_LABELS.high_vol_bearish} — entries skipped (cut 100%): ${regime.detail}`
       : regimeState === 'active'
-        ? `active — ${regime.detail}, ${sizingAt}`
+        ? `active — ${regime.detail}`
         : regimeState === 'triggered-but-neutral'
           ? `triggered — ${regime.detail}, but the configured cut is 0% — size unchanged`
           : `inactive — ${regime.detail}`,

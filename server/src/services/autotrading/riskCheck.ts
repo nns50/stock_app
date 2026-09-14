@@ -11,12 +11,14 @@ import { getMarketAtrPct, getMarketRangePct } from './executionGuards';
 import { computeEquityCurveDerisk } from './equityCurveDerisk';
 import {
   cutFactor,
+  describeEffectiveRisk,
   factorState,
   effectiveRiskPct as computeEffectiveRiskPct,
   isRepeatEntryActive,
   isStepDownActive,
   preFinishLineFactors,
   regimeTriggers,
+  type SizingFactors,
 } from './effectiveRisk';
 import { ML_REGIME_LABELS, MlRegime } from '../regimeModel';
 import { actionableRegime, peekMarketRegime } from '../mlRegime';
@@ -566,7 +568,9 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
   // forgotten on the other. The caller derives finishLineFactor from
   // preFinishLineRiskPct over these same six, so the trim reasons about the
   // payoff this trade will really produce.
-  const effectiveRiskPct = computeEffectiveRiskPct(ctx.riskPerTradePct, {
+  // Built ONCE and named, so the product below and the `effective_risk` line
+  // that explains it cannot be computed from two different factor sets.
+  const sizingFactors: SizingFactors = {
     ...preFinishLineFactors({
       consecutiveLosses: ctx.consecutiveLosses,
       stepDownAfterLosses: ctx.stepDownAfterLosses,
@@ -586,7 +590,8 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
       method: methodMultiplier,
     }),
     finishLine: finishLineFactor,
-  });
+  };
+  const effectiveRiskPct = computeEffectiveRiskPct(ctx.riskPerTradePct, sizingFactors);
   // Each of these three describes itself from its own FACTOR, not from the
   // trigger: a threshold firing and a size actually changing are different
   // facts, and reporting "active" for the first is how a status comes to lie.
@@ -597,12 +602,14 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
   const equityCurveState = factorState(equityCurveDeriskActive, cutFactor(equityCurveDeriskActive, equityCurveCutPct));
   const repeatEntryActive = isRepeatEntryActive(ctx.priorSameDayExits);
   const repeatEntryState = factorState(repeatEntryActive, cutFactor(repeatEntryActive, ctx.repeatEntrySizeCutPct));
-  const sizingAt = `sizing at ${effectiveRiskPct}% instead of ${ctx.riskPerTradePct}%`;
+  // Each factor line states its OWN effect; the product has its own line
+  // below. See describeEffectiveRisk for the row that made this necessary.
+  check('effective_risk', true, describeEffectiveRisk(ctx.riskPerTradePct, sizingFactors));
   check(
     'step_down_sizing',
     true,
     stepDownState === 'active'
-      ? `active — ${ctx.consecutiveLosses} consecutive losses, ${sizingAt} (${ctx.stepDownSizeCutPct}% cut)`
+      ? `active — ${ctx.consecutiveLosses} consecutive losses, ${ctx.stepDownSizeCutPct}% cut`
       : stepDownState === 'triggered-but-neutral'
         ? `triggered at ${ctx.consecutiveLosses} consecutive losses, but the configured cut is 0% — size unchanged`
         : `inactive — ${ctx.consecutiveLosses} consecutive losses (triggers at ${ctx.stepDownAfterLosses})`,
@@ -616,7 +623,7 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
     regime.skip
       ? `${ML_REGIME_LABELS.high_vol_bearish} — entries skipped (cut 100%): ${regime.detail}`
       : regimeState === 'active'
-        ? `active — ${regime.detail}, ${sizingAt}`
+        ? `active — ${regime.detail}`
         : regimeState === 'triggered-but-neutral'
           ? `triggered — ${regime.detail}, but the configured cut is 0% — size unchanged`
           : `inactive — ${regime.detail}`,
@@ -626,7 +633,7 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
     'equity_curve_derisk',
     true,
     equityCurveState === 'active'
-      ? `active — strategy equity below its recent average, ${sizingAt} (${equityCurveCutPct}% cut)`
+      ? `active — strategy equity below its recent average, ${equityCurveCutPct}% cut`
       : equityCurveState === 'triggered-but-neutral'
         ? 'triggered — strategy equity below its recent average, but the configured cut is 0% — size unchanged'
         : 'inactive — strategy equity at/above its recent average (or disabled)',
@@ -635,7 +642,7 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
     'repeat_entry_sizing',
     true,
     repeatEntryState === 'active'
-      ? `active — ${ctx.priorSameDayExits} prior exit(s) in this name today, ${sizingAt} (${ctx.repeatEntrySizeCutPct}% cut)`
+      ? `active — ${ctx.priorSameDayExits} prior exit(s) in this name today, ${ctx.repeatEntrySizeCutPct}% cut`
       : repeatEntryState === 'triggered-but-neutral'
         ? `triggered — ${ctx.priorSameDayExits} prior exit(s) in this name today, but the configured cut is 0% — size unchanged`
         : 'inactive — first entry in this name today (or this book takes no repeat cut)',

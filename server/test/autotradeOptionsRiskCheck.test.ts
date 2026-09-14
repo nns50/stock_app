@@ -337,6 +337,25 @@ describe('evaluateOptionsRiskCheck — pure evaluator', () => {
       expect(findCheck(both, 'regime_sizing').detail).toMatch(/deeper of ATR 30% \/ ML 50%/);
     });
 
+    it('reports the product on its own line, and only the regime’s own cut on the regime line', () => {
+      // The options book had the same shared-string defect as the equity one
+      // (2026-09-14) and is fixed through the same describer — a second copy is
+      // how the product itself came to be written twice. Options take neither
+      // the repeat-entry cut nor grade expectancy by decision, so a High-Vol
+      // day with a losing streak is step-down × regime and nothing else.
+      const r = evaluateOptionsRiskCheck(
+        optionSignal(),
+        highVol({ mlRegimeSizeCutPct: 50, consecutiveLosses: 4, stepDownAfterLosses: 2, stepDownSizeCutPct: 50 }),
+      );
+      expect(findCheck(r, 'step_down_sizing').detail).toBe('active — 4 consecutive losses, 50% cut');
+      expect(findCheck(r, 'effective_risk').detail).toBe(
+        '0.25% of the configured 1% — step-down ×0.50, regime ×0.50 (net ×0.25)',
+      );
+      for (const rule of ['step_down_sizing', 'regime_sizing']) {
+        expect(findCheck(r, rule).detail).not.toMatch(/instead of/);
+      }
+    });
+
     it('a cut of 100 refuses the entry; the overlay off changes nothing', () => {
       const skip = evaluateOptionsRiskCheck(optionSignal(), highVol({ mlRegimeSizeCutPct: 100 }));
       expect(skip.ok).toBe(false);

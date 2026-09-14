@@ -393,3 +393,28 @@ describe('one derivation of the regime', () => {
     },
   );
 });
+
+// ---------------------------------------------------------------------------
+// NO FACTOR LINE MAY QUOTE THE PRODUCT (2026-09-14).
+//
+// Both risk checks built `sizing at ${effectiveRiskPct}% instead of
+// ${ctx.riskPerTradePct}%` ONCE and appended it to four separate factor lines,
+// each of which also named its own cut — so a single journal row said a 50%
+// step-down took 1.25% to 0.3654% and that a 40% repeat-entry cut did the same.
+// The per-line tests in autotradeRiskCheck.test.ts and its options twin pin
+// today's wording; this pins the SHAPE, because the cheapest way to reintroduce
+// the bug is to add a fifth factor and reach for the same convenient string.
+// ---------------------------------------------------------------------------
+describe('the sizing lines describe their own factor, by construction', () => {
+  const read = (rel: string) => readFileSync(join(__dirname, '..', 'src', 'services', 'autotrading', rel), 'utf8');
+  it.each(['riskCheck.ts', 'optionsRiskCheck.ts'])('%s has one line for the product and no shared one', (name) => {
+    const body = read(name);
+    // The product is reported through the shared describer, once.
+    expect(body.match(/check\('effective_risk', true, describeEffectiveRisk\(/g)).toHaveLength(1);
+    // And no check line interpolates the final effective % into its own text.
+    // `effectiveRiskPct` may still be READ (the sizer needs it) — what must not
+    // come back is a template that puts it in a factor's sentence.
+    expect(body).not.toMatch(/`[^`]*\$\{effectiveRiskPct\}[^`]*`/);
+    expect(body).not.toMatch(/instead of \$\{ctx\.riskPerTradePct\}/);
+  });
+});
