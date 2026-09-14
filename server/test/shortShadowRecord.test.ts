@@ -127,6 +127,32 @@ describe('buildShortShadowRecord', () => {
     expect(withScaleOut.trades[0].exitR).toBeGreaterThan(without.trades[0].exitR);
   });
 
+  it('carries the exit geometry that produced its numbers', async () => {
+    // 2026-09-14. Every figure this record reports is a function of the live
+    // exit rules, and on 2026-09-14 three of them moved in a single settings
+    // PUT: targetR 2 -> 1, the scale-out off, the stagnation timer 90 -> 60.
+    // The previous case proves the same bars give a different exitR under a
+    // different geometry; this one proves the record SAYS which geometry, so a
+    // reader comparing two evenings cannot mistake a knob turn for the shorts
+    // getting better. The gate below puts real money on a threshold.
+    const src = sourceOf({ KLAC: [bar(0, 100, 99.4), bar(5, 102.5, 101)] });
+    const before = await buildShortShadowRecord(
+      src,
+      [shortAt100()],
+      cfg({ targetRMultiple: 2, liveScaleOutEnabled: true, partialExitRMultiple: 0.25, stagnationExitMinutes: 90 }),
+    );
+    const after = await buildShortShadowRecord(
+      src,
+      [shortAt100()],
+      cfg({ targetRMultiple: 1, liveScaleOutEnabled: false, stagnationExitMinutes: 60 }),
+    );
+
+    expect(before.exitRules).toMatchObject({ targetR: 2, scaleOutR: 0.25, stagnationMinutes: 90 });
+    expect(after.exitRules).toMatchObject({ targetR: 1, scaleOutR: 0, stagnationMinutes: 60 });
+    // And the provenance is not decorative: the numbers really did move.
+    expect(after.trades[0].exitR).not.toBeCloseTo(before.trades[0].exitR, 5);
+  });
+
   it('replays a losing short to its stop', async () => {
     const src = sourceOf({ KLAC: [bar(0, 101, 100), bar(5, 103, 101)] });
     const out = await buildShortShadowRecord(src, [shortAt100()], cfg());

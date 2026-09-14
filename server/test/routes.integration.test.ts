@@ -678,6 +678,64 @@ describe('positions + journal routes (integration)', () => {
 // network call — sufficient to prove the route reaches closeLivePosition
 // without crashing.
 // ---------------------------------------------------------------------------
+// The declined-entry shadow through the real route (2026-09-14).
+//
+// The route is the consumer, and the thing worth asserting at it is that a row
+// the journal cannot score is COUNTED rather than dropped in silence. Every
+// refusal row written before entry/stop existed is unscorable, so a reading
+// taken today is mostly holes — and a report that hides its holes reads like a
+// verdict.
+// ---------------------------------------------------------------------------
+describe('GET /journal/declined-entry-shadow (integration)', () => {
+  beforeEach(() => {
+    db.exec('DELETE FROM autotrade_events;');
+  });
+
+  it('counts the rows it could not score instead of quietly dropping them', async () => {
+    // What the ATR gate wrote before 2026-09-14: the rule's own reasoning, and
+    // nothing a replay can use.
+    logAutotradeEvent({
+      symbol: 'MSFT',
+      stage: 'execution',
+      action: 'risk_atr_unreachable_skipped',
+      detail: { stopDistance: 12.63, atr: 10.65, ratio: 1.19 },
+    });
+    // ...and what it writes now.
+    logAutotradeEvent({
+      symbol: 'GOOGL',
+      stage: 'execution',
+      action: 'risk_atr_unreachable_skipped',
+      detail: { ratio: 1.06, side: 'long', score: 74, entry: 245.9, stop: 237.25, liveMinSignalScore: 72 },
+    });
+
+    const out = (await getJson('/api/journal/declined-entry-shadow?action=risk_atr_unreachable_skipped')) as {
+      action: string;
+      journaledRows: number;
+      unscorableRows: number;
+      n: number;
+      excluded: Record<string, number>;
+    };
+    expect(out.action).toBe('risk_atr_unreachable_skipped');
+    expect(out.journaledRows).toBe(2);
+    expect(out.unscorableRows).toBe(1);
+  });
+
+  it('reads an empty record for an action nobody has journaled', async () => {
+    const out = (await getJson('/api/journal/declined-entry-shadow?action=nothing_ever_skipped')) as {
+      n: number;
+      avgR: number | null;
+      journaledRows: number;
+    };
+    expect(out).toMatchObject({ n: 0, avgR: null, journaledRows: 0 });
+  });
+
+  it('rejects a request with no action rather than replaying everything', async () => {
+    const res = await fetch(`${base}/api/journal/declined-entry-shadow`);
+    expect(res.status).toBe(400);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // The daily results calendar through the real routes (2026-09-12).
 // ---------------------------------------------------------------------------
 describe('GET/POST /journal/daily-results (integration)', () => {

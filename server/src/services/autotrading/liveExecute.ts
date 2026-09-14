@@ -58,7 +58,8 @@ import { checkSessionWindow } from './executionGuards';
 import { computeEquityCurveDerisk } from './equityCurveDerisk';
 import { computeGradeExpectancyMultipliers } from './expectancySizing';
 import { computeMethodMultipliers, methodOfEquitySignal } from './methodSizing';
-import { activeSymbolCooldowns, journalEntrySkipOncePerDay } from './symbolCooldown';
+import { activeSymbolCooldowns } from './symbolCooldown';
+import { declinedSide, journalDeclinedEntry } from './declinedEntry';
 import { isUnparseableSymbolError, markUnplaceableSymbol, unplaceableReason } from './unplaceableSymbols';
 import { computeFinishLineFactor } from './finishLine';
 import { regimeAdjustedTargets } from './regimeTargets';
@@ -1520,12 +1521,7 @@ export async function runLiveExecution(
       // operator unknowingly muting a name, and a working order is a transient
       // that should clear within a tick or two.
       const holder = heldByAutotrade.has(symbol) ? 'autotrade' : heldManually.has(symbol) ? 'manual' : 'pending_order';
-      journalEntrySkipOncePerDay(symbol, 'live_symbol_held_skipped', {
-        holder,
-        score: candidateSignal.score,
-        liveEligible: candidateSignal.score >= cfg.liveMinSignalScore,
-        liveMinSignalScore: cfg.liveMinSignalScore,
-      });
+      journalDeclinedEntry(candidateSignal, 'live_symbol_held_skipped', cfg.liveMinSignalScore, { holder });
       outcomes.push({ symbol, ok: false, reason: `Already has an open live position (${holder})` });
       continue;
     }
@@ -1544,7 +1540,9 @@ export async function runLiveExecution(
     // day's maxOrdersPerDay allowance.
     const unplaceable = unplaceableReason(symbol);
     if (unplaceable) {
-      journalEntrySkipOncePerDay(symbol, 'symbol_unplaceable_skipped', { reason: unplaceable });
+      journalDeclinedEntry(candidateSignal, 'symbol_unplaceable_skipped', cfg.liveMinSignalScore, {
+        reason: unplaceable,
+      });
       outcomes.push({ symbol, ok: false, reason: `broker cannot trade this symbol: ${unplaceable}` });
       continue;
     }
@@ -1608,7 +1606,7 @@ export async function runLiveExecution(
         const reason =
           `1R costs ${(stopDistance / atrForReach).toFixed(2)}x this name's daily range ` +
           `(max ${cfg.maxRiskAtrFraction}) — not reachable in a session`;
-        journalEntrySkipOncePerDay(symbol, 'risk_atr_unreachable_skipped', {
+        journalDeclinedEntry(candidateSignal, 'risk_atr_unreachable_skipped', cfg.liveMinSignalScore, {
           stopDistance: Math.round(stopDistance * 100) / 100,
           atr: Math.round(atrForReach * 100) / 100,
           ratio: Math.round((stopDistance / atrForReach) * 100) / 100,
@@ -1641,11 +1639,10 @@ export async function runLiveExecution(
       minMinutesIntoSession: cfg.absorbedPriceMinMinutesIntoSession,
     });
     if (absorbed.verdict === 'absorbed' && absorbed.reason) {
-      journalEntrySkipOncePerDay(symbol, 'absorbed_price_skipped', {
+      journalDeclinedEntry(candidateSignal, 'absorbed_price_skipped', cfg.liveMinSignalScore, {
         relVolume: absorbed.relVolume,
         rangeAtrRatio: absorbed.rangeAtrRatio,
         atr: candidateSignal.atr ?? null,
-        score: candidateSignal.score,
         minRelVolume: cfg.absorbedPriceMinRelVolume,
         maxRangeAtrFraction: cfg.absorbedPriceMaxRangeAtrFraction,
         reason: absorbed.reason,
@@ -1664,7 +1661,20 @@ export async function runLiveExecution(
         symbol,
         stage: 'execution',
         action: 'symbol_reentry_cooldown_skipped',
-        detail: { ...reentry, reason },
+        // Every tick, not once per day (see above), so this one keeps its own
+        // writer rather than journalDeclinedEntry's throttle — but it carries
+        // the same replay fields, because a refusal nobody can score is a
+        // refusal nobody can judge.
+        detail: {
+          ...reentry,
+          reason,
+          side: declinedSide(candidateSignal.side),
+          score: candidateSignal.score,
+          entry: candidateSignal.entry,
+          stop: candidateSignal.stop,
+          liveEligible: candidateSignal.score >= cfg.liveMinSignalScore,
+          liveMinSignalScore: cfg.liveMinSignalScore,
+        },
         riskProfile: cfg.riskProfile,
       });
       outcomes.push({ symbol, ok: false, reason });
@@ -1673,7 +1683,10 @@ export async function runLiveExecution(
     const cooldown = cooldowns.get(symbol);
     if (cooldown) {
       const reason = `Symbol cooling down after ${cooldown.losses} losses since ${cooldown.lastLossDate} — resumes ${cooldown.until}`;
-      journalEntrySkipOncePerDay(symbol, 'symbol_cooldown_skipped', { ...cooldown, reason });
+      journalDeclinedEntry(candidateSignal, 'symbol_cooldown_skipped', cfg.liveMinSignalScore, {
+        ...cooldown,
+        reason,
+      });
       outcomes.push({ symbol, ok: false, reason });
       continue;
     }
@@ -1685,8 +1698,7 @@ export async function runLiveExecution(
     // the everyday floor.
     const scoreGate = liveEntryScoreGate(candidateSignal.score, dailyTarget, cfg, regime.effectiveRegime);
     if (scoreGate.skip) {
-      journalEntrySkipOncePerDay(symbol, scoreGate.action ?? 'live_score_floor_skipped', {
-        score: candidateSignal.score,
+      journalDeclinedEntry(candidateSignal, scoreGate.action ?? 'live_score_floor_skipped', cfg.liveMinSignalScore, {
         bar: scoreGate.bar,
         source: scoreGate.source,
         effectiveRegime: regime.effectiveRegime,

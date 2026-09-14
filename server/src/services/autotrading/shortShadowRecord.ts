@@ -1,7 +1,7 @@
-import { Candle } from '../../providers/types';
 import { AutotradeConfig } from '../../db/autotradeConfig';
-import { CandleSource, INTRADAY_TIMEFRAME } from '../excursion';
-import { ExitRules, replayExit } from '../exitReplay';
+import { CandleSource } from '../excursion';
+import { DeclinedEntry } from './declinedEntry';
+import { buildDeclinedEntryShadow, DeclinedEntryShadow } from './declinedEntryShadow';
 
 /**
  * What the live book WOULD have made on the shorts it declined — measured on
@@ -37,54 +37,15 @@ import { ExitRules, replayExit } from '../exitReplay';
  */
 
 /** One declined short, as journaled. */
-export interface SkippedShort {
-  symbol: string;
-  /** Epoch ms the live book declined it — the replay starts at this bar. */
-  at: number;
-  score: number;
-  entry: number;
-  stop: number;
-  /** The live conviction floor IN FORCE when this row was journaled.
-   *
-   *  `live_short_skipped` carries it for one reason, stated in liveExecute.ts
-   *  where the row is written: "the floor travels with the row so a later
-   *  change to liveMinSignalScore cannot silently rewrite history". This
-   *  filter re-derived it from CURRENT config instead, so the field was
-   *  journaled to prevent a thing and then nothing read it — and the thing
-   *  happened. On 2026-09-14 the floor went 72 → 81 (the exposure-neutral
-   *  partner to pace scoring) and the eligible sample fell from 32 rows to 1,
-   *  which reads as "shorts stopped qualifying" rather than "the yardstick
-   *  moved".
-   *
-   *  Worse than losing sample: the comparison stops being like-for-like. Those
-   *  historical scores were produced by RAW relative-volume scoring, and 81 is
-   *  calibrated for PACE scoring — the shadow's own re-fit puts pace-at-80.8
-   *  level with raw-at-72. Judging raw scores by a pace floor is stricter than
-   *  the live book ever was.
-   *
-   *  Undefined for rows written before the field existed; those fall back to
-   *  the current floor, which is the old behaviour and the best available. */
-  floorAtSkip?: number;
-}
+/** A row from `live_short_skipped`. It carries no `side`, and should not: the
+ *  ACTION is the side. buildShortShadowRecord stamps it on the way into the
+ *  shared replay, which is the one place that knows both. */
+export type SkippedShort = Omit<DeclinedEntry, 'side'>;
 
-export interface ShadowTrade extends SkippedShort {
-  exitR: number;
-  reason: string;
-  bestR: number;
-  barsHeld: number;
-}
+export type { ShadowSkipReason, ShadowTrade } from './declinedEntryShadow';
+export { dedupeBySymbolDay, barsFromSignal, liveExitRules } from './declinedEntryShadow';
 
-export type ShadowSkipReason = 'below_live_floor' | 'duplicate_same_day' | 'no_bars' | 'unusable_signal';
-
-export interface ShortShadowRecord {
-  /** Replayed trades, one per symbol per ET day. */
-  trades: ShadowTrade[];
-  n: number;
-  avgR: number | null;
-  winRatePct: number | null;
-  byReason: Record<string, number>;
-  /** Journaled rows that produced no trade, and why. */
-  excluded: Record<ShadowSkipReason, number>;
+export interface ShortShadowRecord extends DeclinedEntryShadow {
   /** The three numbers task #21's rule reads, and whether each passes. */
   gate: {
     minTrades: number;
@@ -103,137 +64,35 @@ export interface ShortShadowRecord {
 export const SHORT_ENABLE_GATE = { minTrades: 30, minAvgR: 0.1, minWinRatePct: 50 } as const;
 
 /**
- * The live book's own exit geometry — the rules a real short would have been
- * managed under, not a hypothetical set. Every field is read straight from
- * config so the two cannot drift: the replay treats 0 as "disabled", which is
- * the same convention the config itself uses, so a rule the book switches off
- * switches off here by construction rather than by anyone remembering to.
+ * The short half of the declined-entry shadow: the same replay, plus task #21's
+ * enabling gate.
  *
- * The scale-out and the stagnation timer were added on 2026-09-11, the day
- * after the shadow record shipped. exitReplay learned them in #563 and the live
- * book has been running both all along (partialExitPct 67 at partialExitRMultiple
- * 0.25, and a 90-minute stagnation scratch below 0.5R), so a record that omitted
- * them was not replaying the book's geometry — it was replaying the four-field
- * subset that existed when it was written, and UNDERSTATING as a result: a
- * winner that peaks at 0.44R and falls back to breakeven books 0.00R without the
- * scale-out and roughly +0.17R with it, which is most of the difference between
- * a direction that looks flat and one that looks slightly positive.
- *
- * NOT modelled, and named here so the omission stays a decision: the scale-out's
- * scarcity gate, its cancel/replace mechanics, and whether the second lot's
- * bracket actually got placed. Those are execution questions; this measures
- * geometry.
+ * The replay itself lives in declinedEntryShadow.ts and is shared with every
+ * other refusal class (2026-09-14). It was written here first, for shorts, and
+ * then the same question turned out to be open for the ATR reachability gate,
+ * which refuses ten times as many symbol-days — so it moved rather than being
+ * copied. Two modules replaying the same geometry would agree on the day they
+ * were written and not for long, which is the rule this codebase keeps
+ * relearning.
  */
-export function liveExitRules(cfg: AutotradeConfig): ExitRules {
-  return {
-    breakevenTriggerR: cfg.breakevenTriggerRMultiple,
-    trailStartR: cfg.trailStartRMultiple,
-    trailStopR: cfg.trailStopRMultiple,
-    targetR: cfg.targetRMultiple,
-    scaleOutR: cfg.liveScaleOutEnabled ? cfg.partialExitRMultiple : 0,
-    scaleOutFraction: cfg.partialExitPct / 100,
-    stagnationMinutes: cfg.stagnationExitMinutes,
-    stagnationMinR: cfg.stagnationExitMinR,
-  };
-}
-
-const etDate = (ms: number): string => new Date(ms).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
-
-/**
- * One trade per symbol per ET day, keeping the EARLIEST — the moment live
- * actually declined it. Duplicates exist for a real reason: the once-per-day
- * claim behind the journal row is in-memory, so a mid-session deploy
- * re-journals a symbol already seen (observed 2026-09-10: 61 rows, 39 symbols).
- * Deduping on the READ side means the record is not hostage to how often the
- * box restarted.
- */
-export function dedupeBySymbolDay(rows: SkippedShort[]): { kept: SkippedShort[]; dropped: number } {
-  const first = new Map<string, SkippedShort>();
-  let dropped = 0;
-  for (const r of [...rows].sort((a, b) => a.at - b.at)) {
-    const key = `${r.symbol.toUpperCase()}|${etDate(r.at)}`;
-    if (first.has(key)) dropped += 1;
-    else first.set(key, r);
-  }
-  return { kept: [...first.values()], dropped };
-}
-
-/** Bars at or after the moment live saw the signal. A short declined at 14:00
- *  must not be credited with the morning's fall. */
-export function barsFromSignal(bars: Candle[], at: number): Candle[] {
-  return bars.filter((b) => b.time >= at);
-}
-
 export async function buildShortShadowRecord(
   source: CandleSource,
   rows: SkippedShort[],
   cfg: AutotradeConfig,
 ): Promise<ShortShadowRecord> {
-  const excluded: Record<ShadowSkipReason, number> = {
-    below_live_floor: 0,
-    duplicate_same_day: 0,
-    no_bars: 0,
-    unusable_signal: 0,
-  };
-
-  const eligible = rows.filter((r) => {
-    // The floor THIS ROW was judged against, not today's. See SkippedShort.
-    const floor = r.floorAtSkip ?? cfg.liveMinSignalScore;
-    if (!(r.score >= floor)) {
-      excluded.below_live_floor += 1;
-      return false;
-    }
-    // A signal whose stop sits at or through its entry has no 1R to measure.
-    if (!Number.isFinite(r.entry) || !Number.isFinite(r.stop) || !(Math.abs(r.entry - r.stop) > 0)) {
-      excluded.unusable_signal += 1;
-      return false;
-    }
-    return true;
-  });
-
-  const { kept, dropped } = dedupeBySymbolDay(eligible);
-  excluded.duplicate_same_day = dropped;
-
-  const rules = liveExitRules(cfg);
-  const trades: ShadowTrade[] = [];
-  for (const r of kept) {
-    const day = etDate(r.at);
-    let bars: Candle[];
-    try {
-      bars = await source.getCandles(r.symbol, INTRADAY_TIMEFRAME, { start: day, end: day });
-    } catch {
-      // A provider failure must cost this one signal, never the whole record.
-      excluded.no_bars += 1;
-      continue;
-    }
-    const window = barsFromSignal(bars, r.at);
-    const out = window.length
-      ? replayExit({ side: 'short', entryPrice: r.entry, initialStopPrice: r.stop }, window, rules)
-      : null;
-    if (!out) {
-      excluded.no_bars += 1;
-      continue;
-    }
-    trades.push({ ...r, exitR: out.exitR, reason: out.reason, bestR: out.bestR, barsHeld: out.barsHeld });
-  }
-
-  const rs = trades.map((t) => t.exitR);
-  const avgR = rs.length ? rs.reduce((s, v) => s + v, 0) / rs.length : null;
-  const winRatePct = rs.length ? (rs.filter((v) => v > 0).length / rs.length) * 100 : null;
-  const byReason: Record<string, number> = {};
-  for (const t of trades) byReason[t.reason] = (byReason[t.reason] ?? 0) + 1;
-
+  const shadow = await buildDeclinedEntryShadow(
+    source,
+    // Every row here came from the naked-short skip, so the side is not in
+    // doubt even for rows written before `side` was stamped.
+    rows.map((r) => ({ ...r, side: 'short' as const })),
+    cfg,
+  );
   const g = SHORT_ENABLE_GATE;
-  const passesN = trades.length >= g.minTrades;
-  const passesAvgR = avgR !== null && avgR >= g.minAvgR;
-  const passesWinRate = winRatePct !== null && winRatePct >= g.minWinRatePct;
+  const passesN = shadow.n >= g.minTrades;
+  const passesAvgR = shadow.avgR !== null && shadow.avgR >= g.minAvgR;
+  const passesWinRate = shadow.winRatePct !== null && shadow.winRatePct >= g.minWinRatePct;
   return {
-    trades,
-    n: trades.length,
-    avgR,
-    winRatePct,
-    byReason,
-    excluded,
+    ...shadow,
     gate: { ...g, passesN, passesAvgR, passesWinRate, passes: passesN && passesAvgR && passesWinRate },
   };
 }

@@ -70,6 +70,14 @@ function constants(src: string): Map<string, string | string[]> {
   return out;
 }
 
+/** Writers that take the journal action as a POSITIONAL argument. Both scans
+ *  below read this, so a new wrapper is taught once rather than twice. */
+const POSITIONAL_SKIP_WRITERS = ['journalEntrySkipOncePerDay', 'journalDeclinedEntry'];
+
+/** Fresh each call: a global regex carries lastIndex between matchAll uses. */
+const positionalSkips = () =>
+  new RegExp(`(?:${POSITIONAL_SKIP_WRITERS.join('|')})\\(\\s*[^,]+,\\s*'([a-z0-9_]+)'`, 'g');
+
 function scan(): { emitted: Set<string>; consumed: Map<string, Set<string>> } {
   const emitted = new Set<string>();
   const consumed = new Map<string, Set<string>>();
@@ -110,8 +118,12 @@ function scan(): { emitted: Set<string>; consumed: Map<string, Set<string>> } {
     // dead, and this guard reported a live emitter as missing. The mirror of
     // that blind spot is the dangerous one: a genuinely dead filter on a
     // throttled action would have been vouched for by nothing and caught by
-    // nothing.
-    for (const m of src.matchAll(/journalEntrySkipOncePerDay\(\s*[^,]+,\s*'([a-z0-9_]+)'/g)) emitted.add(m[1]);
+    // nothing. It happened AGAIN on 2026-09-14, in the other direction: wrapping
+    // the writer in `journalDeclinedEntry` blinded this scan to the same four
+    // actions in one rename, and the guard caught it. Both names live in
+    // POSITIONAL_SKIP_WRITERS so the two scans below cannot learn a new writer
+    // separately.
+    for (const m of src.matchAll(positionalSkips())) emitted.add(m[1]);
 
     // CONSUME side: `actions: [...]` filters and `e.action === '...'` compares.
     for (const m of src.matchAll(/actions:\s*\[([^\]]*)\]/g)) {
@@ -173,7 +185,7 @@ describe('journal action reachability', () => {
   it('classifies every throttled entry skip, or says out loud why not', () => {
     const entrySkips = new Set<string>();
     for (const f of files) {
-      for (const m of code(f).matchAll(/journalEntrySkipOncePerDay\(\s*[^,]+,\s*'([a-z0-9_]+)'/g)) {
+      for (const m of code(f).matchAll(positionalSkips())) {
         entrySkips.add(m[1]);
       }
     }
