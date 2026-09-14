@@ -33,6 +33,7 @@ vi.mock('../src/services/autotrading/executionGuards', async (importOriginal) =>
 }));
 
 import { config } from '../src/config';
+import type { AccountState } from '../src/services/trading/guardrails';
 import { getProvider } from '../src/providers';
 import { webullAccountState } from '../src/providers/webull/accountState';
 import {
@@ -73,6 +74,7 @@ import {
   getLivePortfolioSnapshot,
   listAutotradeLivePositions,
   reconcileLiveOrders,
+  buyingPowerBasis,
   runLiveExecution,
   resetEquitySyncGuardState,
   syncAccountEquityFromBroker,
@@ -1186,6 +1188,58 @@ describe('runLiveExecution — sizing to every dollar bound the guardrail applie
   });
 });
 
+// WHICH BUYING-POWER FIGURE THE SIZER AIMED AT (2026-09-14).
+//
+// On the trial sizing's first session the broker refused BWIN for insufficient
+// buying power while the sizer had a figure and was happy — the
+// build-then-refuse loop buyingPowerSizing.ts exists to end, happening again.
+// The account showed $13,822.77 of intraday buying power against $3,522.74 of
+// equity, so the DAY field won; the broker then refused a $3,742 order with
+// ~$6,282 already deployed. Nothing in the journal said which figure had been
+// used, so all of it had to be inferred from outside the app.
+describe('buyingPowerBasis — which figure won, and saying so', () => {
+  const cfg = (over: Partial<AutotradeConfig> = {}) => ({ ...defaultAutotradeConfig(), ...over });
+  const state = (over: Partial<AccountState> = {}) =>
+    ({ buyingPowerUsd: 1_000, exposureUsd: 0, ...over }) as AccountState;
+
+  it('reports the overnight figure when the broker offers no day figure', () => {
+    const b = buyingPowerBasis(state({ buyingPowerUsd: 1_000 }), cfg());
+    expect(b).toMatchObject({ usedUsd: 1_000, source: 'overnight', brokerDayUsd: null });
+  });
+
+  it('reports the DAY figure, and the exposure it was netted against', () => {
+    // The live shape: a day figure several times equity, minus what is already
+    // deployed. This is the number the sizer aims at.
+    const b = buyingPowerBasis(
+      state({ buyingPowerUsd: 1_000, dayBuyingPowerUsd: 13_822.77, exposureUsd: 6_282 }),
+      cfg(),
+    );
+    expect(b.source).toBe('day');
+    expect(b.usedUsd).toBeCloseTo(7_540.77, 2);
+    expect(b).toMatchObject({ overnightUsd: 1_000, brokerDayUsd: 13_822.77, exposureUsd: 6_282, ceilingUsd: null });
+  });
+
+  it('stays on the overnight figure when the day figure nets out smaller', () => {
+    // Not a tie-break dressed as a day read: the day field only WINS when it
+    // is strictly larger, so a journal row saying 'day' always means it moved
+    // the number.
+    const b = buyingPowerBasis(
+      state({ buyingPowerUsd: 9_000, dayBuyingPowerUsd: 13_822.77, exposureUsd: 6_282 }),
+      cfg(),
+    );
+    expect(b).toMatchObject({ source: 'overnight', usedUsd: 9_000 });
+  });
+
+  it('reports the operator ceiling when liveDayBuyingPowerUsd caps the day figure', () => {
+    // The lever that exists today for exactly this: a CAP, not a value.
+    const b = buyingPowerBasis(
+      state({ buyingPowerUsd: 1_000, dayBuyingPowerUsd: 13_822.77, exposureUsd: 0 }),
+      cfg({ liveDayBuyingPowerUsd: 7_045 }),
+    );
+    expect(b).toMatchObject({ source: 'day', usedUsd: 7_045, ceilingUsd: 7_045, brokerDayUsd: 13_822.77 });
+  });
+});
+
 // The gap between the price the loop DECIDED at and the price it PLACES at.
 //
 // riskCheck sizes from signal.entry — what the screen saw — and placement then
@@ -1288,6 +1342,50 @@ describe('runLiveExecution — the entry is sized against the price it will pay'
 
     expect(placedIntent().quantity).toBe(nearQty);
     expect(listAutotradeEvents({ actions: ['live_entry_risk_resized'] })).toHaveLength(0);
+  });
+
+  it('journals WHICH buying-power figure the sizer aimed at', async () => {
+    // The BWIN case: a day figure several times equity wins, the sizer aims at
+    // it, and until 2026-09-14 nothing on the row said so — a "buying power is
+    // insufficient" rejection was unreadable without it.
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }));
+    mockAccountState.mockResolvedValue({
+      ...okAccountState,
+      state: { ...okAccountState.state, buyingPowerUsd: 1_000, dayBuyingPowerUsd: 13_822.77, exposureUsd: 6_282 },
+    } as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-BP' });
+
+    await runLiveExecution([{ signal: signal() }]);
+
+    const detail = JSON.parse(listAutotradeEvents({ actions: ['live_order_placed'] })[0]?.detail ?? '{}') as {
+      buyingPower?: { source: string; usedUsd: number; brokerDayUsd: number; exposureUsd: number };
+    };
+    expect(detail.buyingPower?.source).toBe('day');
+    expect(detail.buyingPower?.brokerDayUsd).toBe(13_822.77);
+    expect(detail.buyingPower?.exposureUsd).toBe(6_282);
+    expect(detail.buyingPower?.usedUsd).toBeCloseTo(7_540.77, 2);
+  });
+
+  it('journals the same basis on a BROKER refusal, beside the order it refused', async () => {
+    // The row that actually reported the problem. "Aimed at X, refused at Y"
+    // has to be readable from one row, or it is inferred from outside again.
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }));
+    mockAccountState.mockResolvedValue({
+      ...okAccountState,
+      state: { ...okAccountState.state, buyingPowerUsd: 1_000, dayBuyingPowerUsd: 13_822.77, exposureUsd: 6_282 },
+    } as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: false, error: 'Buying power is insufficient.' });
+
+    await runLiveExecution([{ signal: signal() }]);
+
+    const detail = JSON.parse(listAutotradeEvents({ actions: ['live_entry_failed'] })[0]?.detail ?? '{}') as {
+      reason?: string;
+      orderNotionalUsd?: number;
+      buyingPower?: { source: string; usedUsd: number };
+    };
+    expect(detail.reason).toMatch(/Buying power is insufficient/);
+    expect(detail.buyingPower?.source).toBe('day');
+    expect(detail.orderNotionalUsd).toBeGreaterThan(0);
   });
 
   it('records the risk the ORDER carries, not the risk the check approved', async () => {

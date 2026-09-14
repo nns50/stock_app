@@ -10190,3 +10190,63 @@ count ageing out). Treating them identically is the "comparison whose two sides
 are not the same kind of thing" class. Whether the gate should also forgive the
 second kind is a judgement about how much autonomy the engine gets, and belongs
 to the operator rather than to this fix.
+
+## 2026-09-14 — which buying-power figure the sizer aimed at, on the row
+
+First session at the trial sizing, 09:57 ET. BWIN was risk-checked, re-sized
+118 → 117 by the placement-price rule, built, sent — and refused by the
+**broker**: `live_entry_failed { reason: "Buying power is insufficient. Please
+cancel open buy orders (if any) and try again." }`. COIN and NOW were both open
+at the time.
+
+That is the build-then-refuse loop `buyingPowerSizing.ts` exists to end — the
+case that motivated it was 627 refusals and zero entries on 2026-08-28 —
+happening again on day one of the new sizing. And there were **zero**
+`live_buying_power_unavailable` rows, so the sizer had a figure. It simply
+aimed at one the broker would not honour.
+
+**The arithmetic, with the account's own number.** The account showed
+**$13,822.77** of intraday buying power against **$3,522.74** of equity —
+3.92×. `withDayBuyingPower` takes the broker's day figure whenever it is larger
+(`liveDayBuyingPowerUsd` is 0, so uncapped), nets it against exposure, and
+hands that to the sizer:
+
+| | |
+| --- | --- |
+| deployed (COIN ≈ $3,323 + NOW ≈ $2,959) | $6,282 |
+| the sizer's bound (13,822.77 − 6,282) | **$7,540** |
+| BWIN's order (117 × 31.98) | $3,742 — fits, so it was sent |
+| what the broker accepted against | smaller; it refused |
+
+Whatever pool the broker checks when **accepting an opening order**, that
+3.92× is not it. Its own message asks the account to *cancel open buy orders* —
+committed capital counted against something smaller. `withDayBuyingPower`'s
+written premise is about **holding** ("this caller is flat by the bell, so it
+is entitled to the day figure"); the constraint that bit is about **opening**.
+Those are not the same pool.
+
+**What shipped here is the measurement, not a fix.** Nothing in the journal
+said which figure had been used, so the entire paragraph above had to be
+inferred from outside the app — including by reading the account balance by
+hand. `buyingPowerBasis(state, cfg)` now returns the figure and its provenance
+(`source: 'overnight' | 'day'`, the broker's overnight and day fields, the
+`liveDayBuyingPowerUsd` ceiling when one applied, and the exposure it was
+netted against), `withDayBuyingPower` is a one-line call to it so the sizer's
+bound and the journal's number are ONE derivation, and both
+`live_order_placed` and `live_entry_failed` carry it. A refusal now reads
+"aimed at $7,540 from the day field, refused at $3,742 of order" on one row.
+
+A tie stays `'overnight'` on purpose: the day field is only reported as having
+won when it strictly raised the number, so a `'day'` row always means it moved
+something.
+
+**The lever that already exists**, once a session of rows says how wide the gap
+runs: `liveDayBuyingPowerUsd` is a **cap, not a value** — 0 uses the broker's
+figure in full, and a positive number refuses to use more than that however
+much the broker offers. Setting it to the pool the broker actually honours
+would make the sizer aim at the binding constraint. That number is not yet
+known, which is exactly why this ships as instrumentation first.
+
+Not the explanation: pattern-day-trader status. Webull no longer applies PDT to
+this account and it may trade without a day-trade count, so the gap is about
+which pool backs an opening order, not about a trade-count restriction.

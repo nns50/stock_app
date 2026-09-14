@@ -196,12 +196,73 @@ import { dispatchAutotradeNotification } from './notify';
  * figures net out open positions. Never LOWERS what the guardrail would have
  * used, so this cannot turn into a new way to block a fundable order.
  */
-function withDayBuyingPower(state: AccountState, cfg: AutotradeConfig): AccountState {
+export interface BuyingPowerBasis {
+  /** The figure the sizer is bound by — what `fundableMaxQuantity` receives. */
+  usedUsd: number;
+  /** Which field it came from. `'day'` means the broker's DAY-TRADING figure
+   *  was larger than the overnight one and won. */
+  source: 'overnight' | 'day';
+  /** The broker's overnight figure, always present. */
+  overnightUsd: number;
+  /** The broker's day figure, when it reported one. */
+  brokerDayUsd: number | null;
+  /** `liveDayBuyingPowerUsd` when it capped the day figure, else null. */
+  ceilingUsd: number | null;
+  /** Exposure the day figure was netted against. */
+  exposureUsd: number;
+}
+
+/**
+ * Which buying-power figure the sizer is aiming at, and where it came from.
+ *
+ * Split out from `withDayBuyingPower` on 2026-09-14 so the two have ONE
+ * derivation: the number the sizer used and the number a journal row reports
+ * cannot disagree about which field won.
+ *
+ * WHY IT IS WORTH REPORTING. On the trial sizing's first session the broker
+ * refused BWIN for insufficient buying power while the sizer had a figure and
+ * was happy — the build-then-refuse loop buyingPowerSizing.ts exists to end,
+ * happening again. The account showed $13,822.77 of intraday buying power
+ * against $3,522.74 of equity (3.92x), so the day figure won and the sizer
+ * aimed at it; the broker then refused a $3,742 order with roughly $6,282
+ * already deployed. Whatever pool it checks when ACCEPTING an opening order,
+ * that 3.92x is not it — its own message asks the account to "cancel open buy
+ * orders", which is committed capital counted against something smaller.
+ *
+ * The premise above is about HOLDING ("this caller is flat by the bell"), and
+ * the constraint that bit is about OPENING. Those are not the same pool, and
+ * nothing in the journal said which figure had been used — so the whole of it
+ * had to be inferred from outside. Now it is on the row, and the next refusal
+ * reads as "aimed at X from the day field, refused at Y" instead.
+ */
+export function buyingPowerBasis(state: AccountState, cfg: AutotradeConfig): BuyingPowerBasis {
+  const overnightUsd = state.buyingPowerUsd;
   const broker = state.dayBuyingPowerUsd;
-  if (broker === undefined || !(broker > 0)) return state;
-  const ceiling = cfg.liveDayBuyingPowerUsd > 0 ? Math.min(broker, cfg.liveDayBuyingPowerUsd) : broker;
+  const base: BuyingPowerBasis = {
+    usedUsd: overnightUsd,
+    source: 'overnight',
+    overnightUsd,
+    brokerDayUsd: broker ?? null,
+    ceilingUsd: null,
+    exposureUsd: state.exposureUsd,
+  };
+  if (broker === undefined || !(broker > 0)) return base;
+  const capped = cfg.liveDayBuyingPowerUsd > 0;
+  const ceiling = capped ? Math.min(broker, cfg.liveDayBuyingPowerUsd) : broker;
   const availableIntraday = Math.max(0, ceiling - state.exposureUsd);
-  return { ...state, buyingPowerUsd: Math.max(state.buyingPowerUsd, availableIntraday) };
+  // Ties stay 'overnight': the day figure only WON if it was strictly larger,
+  // and reporting a tie as a day read would overstate how often it matters.
+  if (!(availableIntraday > overnightUsd)) return { ...base, ceilingUsd: capped ? ceiling : null };
+  return {
+    ...base,
+    usedUsd: availableIntraday,
+    source: 'day',
+    ceilingUsd: capped ? ceiling : null,
+  };
+}
+
+function withDayBuyingPower(state: AccountState, cfg: AutotradeConfig): AccountState {
+  return { ...state, buyingPowerUsd: buyingPowerBasis(state, cfg).usedUsd };
 }
 
 /** Combine the autotrade-specific live caps with BOTH kill switches — the
@@ -767,6 +828,12 @@ export async function attemptLiveEntry(
   /** The target tighten factor the bracket's target was built with
    *  (regimeTargets.ts): 1 when untightened; null for a direct caller. */
   regimeTargetFactor: number | null = null,
+  /** The buying-power figure the SIZER was bound by this batch, and which
+   *  broker field it came from (buyingPowerBasis). Journaled on the placement
+   *  and on a broker refusal so "aimed at X, refused at Y" is readable rather
+   *  than inferred — see buyingPowerBasis for the session that made that
+   *  necessary. Null for a direct caller, or when no figure was loaded. */
+  bpBasis: BuyingPowerBasis | null = null,
 ): Promise<LiveExecutionOutcome> {
   const symbol = signal.symbol.toUpperCase();
   // The deploy-level master gate, checked FIRST — mirrors placeOrder.ts's own
@@ -1080,7 +1147,14 @@ export async function attemptLiveEntry(
       symbol,
       stage: 'execution',
       action: 'live_entry_failed',
-      detail: { reason: broker.error, ...(unparseable ? { symbolUnplaceable: true } : {}) },
+      detail: {
+        reason: broker.error,
+        ...(unparseable ? { symbolUnplaceable: true } : {}),
+        // What the sizer believed it had, beside what the broker just said.
+        // A "buying power is insufficient" rejection is unreadable without it.
+        ...(bpBasis ? { buyingPower: bpBasis } : {}),
+        orderNotionalUsd: Math.round(quantityToOrder * limitPrice * 100) / 100,
+      },
       riskProfile,
     });
     return { symbol, ok: false, reason: `Broker rejected: ${broker.error}`, intentId: intentRec.id };
@@ -1108,6 +1182,7 @@ export async function attemptLiveEntry(
       riskBasisPrice: riskBasis,
       stop: signal.stop,
       target: targetToBracket,
+      ...(bpBasis ? { buyingPower: bpBasis } : {}),
       orderId: broker.orderId,
       entryVwap,
       // Journaled too, not only stored: the squeeze ratio is the number the
@@ -1260,6 +1335,9 @@ export async function runLiveExecution(
   // the previous behaviour exactly.
   let buyingPowerLoaded = false;
   let availableBuyingPowerUsd: number | undefined;
+  // The basis behind that number, kept for the journal only — which broker
+  // field won, and what it was netted against. Never read to decide anything.
+  let bpBasis: BuyingPowerBasis | null = null;
   // Room left under the ACCOUNT EXPOSURE cap, loaded from the same account read
   // and decremented alongside buying power below.
   //
@@ -1306,7 +1384,8 @@ export async function runLiveExecution(
             });
           }
           if (acct.ok && acct.state) {
-            availableBuyingPowerUsd = withDayBuyingPower(acct.state, cfg).buyingPowerUsd;
+            bpBasis = buyingPowerBasis(acct.state, cfg);
+            availableBuyingPowerUsd = bpBasis.usedUsd;
             // Same rearrangement the guardrail does, one step earlier:
             // exposureAfter <= maxExposureUsd becomes notional <= headroom.
             // maxExposureUsd is 0 when equity is unset, which fails closed
@@ -1825,6 +1904,7 @@ export async function runLiveExecution(
         marketAtrPct,
         regimeStamp(regime),
         regimeAdjustedTargets(freshCfg, regime.effectiveRegime).factor,
+        bpBasis,
       );
     } catch (err) {
       const reason = `Unexpected error placing order: ${(err as Error).message}`;
