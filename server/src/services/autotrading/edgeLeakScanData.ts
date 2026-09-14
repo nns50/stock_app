@@ -171,6 +171,11 @@ export const SKIP_ACTIONS = [
   'risk_atr_unreachable_skipped',
   // The broker has already refused to parse this symbol.
   'symbol_unplaceable_skipped',
+  // Heavy volume inside a collapsed range — the price is being absorbed at a
+  // level rather than moving (a buyout pin, a tender, a hard institutional
+  // bid). Live-only for the same reason the ATR one is: paper keeps taking
+  // these, which is what makes this attribution a control rather than a tally.
+  'absorbed_price_skipped',
 ];
 // NOT here: `live_entry_cutoff_skipped`. It sat in this list from the day the
 // list was written and nothing has ever emitted it — the equity entry cutoff

@@ -10458,3 +10458,95 @@ you. Any gate whose inputs are journaled must judge each row by the state in
 force when the row was written, and the journal row has to carry that state.
 Wherever a stamped field exists for this purpose, something must read it, or
 the stamp is decoration.
+
+## 2026-09-14 (sixth) — an entry whose price is being absorbed at a level
+
+The operator spotted what the screener structurally cannot: BWIN scored **85.2**
+— clearing even the raised 81 floor — while being, in their words, *"continuous
+flat for several candles and not going to move"*. It was up on going-private
+news, pinned at the buyout price. The journal agrees to the decimal:
+
+```
+09:57:06   $31.82   total 85.2   gap 8.27%   relVol 7.74
+11:48:28   $31.95   total 85.2   gap 8.27%   relVol 9.88
+```
+
+Two hours, **thirteen cents**, and an identical score. Momentum, gap and trend
+all read 100 — off the one-time deal gap, not off any ongoing move. The model
+has no way to tell *"gapped 8% and still running"* from *"gapped 8% and died at
+the deal price"*.
+
+**Why the existing reachability gate misses it, by design.**
+`risk_atr_unreachable_skipped` asks whether 1R fits this name's TYPICAL range,
+reading a 14-day ATR:
+
+```
+ATR(14)            $1.133   (3.82% of price; recent daily ranges $0.83-$1.99)
+stop distance      $0.741   = min(1.5 x ATR, 2.5% of price)
+gate               0.741 > ATR x 0.7 = 0.793 ?  ->  PASSES, by 7%
+today's range      $0.24    = 0.32x the stop distance
+```
+
+The ATR is propped up **by the gap day itself**. The same event that maxed the
+score also inflated the yardstick the gate trusts, so both read the past and
+both were fooled by the same candle. So the new gate asks the other question:
+not what the name usually does, but what it is actually doing today.
+
+**Why both conditions, and why neither alone.** A collapsed range is also
+exactly what a coiled breakout looks like before it breaks; refusing those would
+cost real trades. Volume separates them — heavy volume in a dead range is size
+being absorbed at a fixed level, light volume is an ordinary coil still free to
+expand. Across every name the loop looked at that session, BWIN was alone on
+both axes:
+
+| symbol | relVol | range / ATR |
+| --- | --- | --- |
+| **BWIN** | **9.88** | **0.21** |
+| NOW | 1.84 | 0.68 |
+| COIN | 1.20 | 0.81 |
+| TER | 0.64 | 0.86 |
+| VRT | 1.16 | 0.88 |
+| CRWD | 1.42 | 1.68 |
+| DFTX | 2.11 | 2.11 |
+
+The next lowest ratio is more than three times BWIN's and the next highest
+relVol is a fifth of it, so the defaults (**3x**, **0.5x**) sit in that gap
+rather than on either edge of it.
+
+**The elapsed-minutes guard (default 30) is not incidental.** Range accumulates
+through the session, so every name looks collapsed at 09:31 — without it the
+gate refuses the whole open, which is where the book's edge lives, and it would
+have blocked COIN and NOW at 09:37. Before the guard expires the verdict is
+`too_early`, never a block, and the ratio is still reported so an early row can
+be fitted later.
+
+**What changed.** `absorbedPrice.ts` (pure: `absorbed` / `free` / `too_early` /
+`unmeasured`), three config fields (`absorbedPriceMinRelVolume`,
+`absorbedPriceMaxRangeAtrFraction`, `absorbedPriceMinMinutesIntoSession`; either
+threshold at 0 switches it off, the same idiom `maxRiskAtrFraction` uses), the
+live gate journaling `absorbed_price_skipped`, `relVolume` carried onto
+`TradeSignal`, and `minutesIntoSession()` on `marketHours`.
+
+It **fails open** on any missing input: a provider hiccup that nulls the session
+range must never read as "collapsed" and refuse every entry for as long as the
+feed is unhappy.
+
+**`relVolume` is NOT `relVolPace`, and the distinction is the gate.**
+`relVolPace` is this symbol against the UNIVERSE this tick; `relVolume` is this
+symbol against ITSELF. The question here is "heavy **for this name**", which only
+the self-relative one answers — pace would call a quiet name heavy on a quiet
+day.
+
+**Live-only**, beside its ATR sibling, for the same written-down reason: paper
+stays the always-on control track, so the filter can be judged against a book
+that never had it.
+
+**BWIN was also added to the exclusion list** with the measured reason, which
+took effect on the next tick rather than waiting for this to deploy.
+
+**The pre-committed reading.** The gate should fire rarely — one name in roughly
+forty on the session it was built from. If `absorbed_price_skipped` starts
+appearing on more than a couple of names a day, the thresholds are too loose and
+the rows carry `relVolume` and `rangeAtrRatio` to re-fit them from. If it never
+fires again, that is the expected outcome of a rule built for a specific,
+uncommon shape — not evidence it is broken.
