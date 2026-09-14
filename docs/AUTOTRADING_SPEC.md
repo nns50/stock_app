@@ -10726,3 +10726,116 @@ extension dimension becomes rankable for the first time, with a real paper
 control beside it. `staleBars` is the number to watch meanwhile: if most
 readings are taken while the bars are behind, the 5-minute fetch is too coarse
 for this measurement and the next step is a finer bar, not a finer cut.
+
+## 2026-09-14 — every refused entry is journaled; none of them could be SCORED
+
+Task #45 audited the live entry path and found no gate silent: every refusal
+writes a row. What nothing asked is whether those rows can be **replayed**, and
+none of them could. Each carried the reason and the numbers the rule itself
+reasoned about — and not the entry price, the stop or the side, which are the
+three a replay needs. `live_short_skipped` was the lone exception, which is the
+only reason the short shadow record exists at all.
+
+So the largest refusal class on the entry path was unmeasurable:
+
+```
+risk_atr_unreachable_skipped   80 symbol-days over 8 sessions (09-02..09-14)
+                               16 on 09-14 alone, against FOUR entries placed
+```
+
+### The gate is a universe filter, not a setup filter
+
+It refuses when 1R costs more than `maxRiskAtrFraction` of the name's daily ATR
+— sound in isolation. Composed with the stop derivation it is something else.
+The stop is `min(stopAtrMultiple × ATR, maxStopDistancePct% × price)`, so at
+1.5 / 2.5% / 0.7 the ATR term can **never** pass (1.5 > 0.7) and the percentage
+clamp must bind, leaving one admission rule:
+
+```
+admitted  <=>  ATR >= maxStopDistancePct / maxRiskAtrFraction  =  2.5 / 0.7  =  3.57% of price
+```
+
+Every live entry confirms it: COIN, NOW, CRWD and BWIN on 09-14 all placed with
+a stop at exactly 2.50% of entry. And the refusals are the liquid large-cap
+universe, by construction rather than by any judgement about those setups:
+
+```
+GOOGL 1.06   MSFT 1.19   META 0.77   IBM 0.86   NFLX 0.92   XOM 1.19
+EOG 1.08     MDT 1.03    MPC 0.89    KR 0.98    DVN 1.06    OXY 1.08
+VZ 1.38      ACN 0.72    APA 0.79    DV 1.50
+```
+
+Loosening to 0.9 would admit 52% of the 80; to 1.0, 62%. **No such change is
+being made here** — the point of this entry is that there was no basis for
+making one either way.
+
+### Paper was not the control it was believed to be
+
+The gate was moved live-only on 2026-09-01 expressly so paper would be the
+control group ("left the experiment measuring it with no control group"). Over
+the same eight sessions exactly **two** closed paper trades land on a symbol-day
+the gate refused, both ROIV on 09-08 (−0.24R, 0.00R). Paper's three slots fill
+early on the same high-ATR names, so it almost never reaches the ones the gate
+turns away. A control arm producing two trades in eight sessions is not a
+control arm — the same discovery the entry-extension dimension made on the same
+day, wearing different clothes.
+
+### What changed
+
+`journalDeclinedEntry` (declinedEntry.ts) replaces `journalEntrySkipOncePerDay`
+on every entry-path gate and stamps, by construction:
+
+- `entry` / `stop` / `side` — a replay's inputs. 1R is `|entry − stop|`; without
+  the pair the row can be counted and never scored.
+- `liveMinSignalScore` and `liveEligible` — the floor **in force at the
+  refusal**. Several of these gates run BEFORE the score floor, so their rows
+  include candidates the book would have declined anyway, and a reader filtering
+  by TODAY's floor silently re-scores its own history every time the floor moves
+  (raising it 72 → 81 cut the short record's eligible rows from 32 to 1). The
+  fix was `floorAtSkip`; stamping it here makes it impossible to forget on the
+  next gate someone writes.
+
+The caller's own detail is merged **first**, so a rule's own key can never
+shadow a replay field — several gates journaled their own `score`, and the two
+have drifted apart before.
+
+A source-scan test (`declinedEntry.test.ts`) fails if any bare
+`journalEntrySkipOncePerDay` call returns to `liveExecute.ts`, and a second one
+pins the every-tick re-entry row, which keeps its own writer and would otherwise
+drift out of the rule unnoticed.
+
+### And something reads it
+
+`declinedEntryShadow.ts` is the short shadow's replay with the SHORT taken out:
+one derivation, shared, rather than a second copy that agrees on the day it is
+written and not for long. `shortShadowRecord.ts` is now that replay plus task
+#21's enabling gate. `GET /api/journal/declined-entry-shadow?action=&since=`
+points it at any refusal class.
+
+`unscorableRows` is on the response on purpose. Every row written before today
+is unscorable, so a reading taken now is mostly holes — and a report that hides
+its holes reads like a verdict.
+
+**The floor filter has a carve-out, and it is load-bearing.** Rows are dropped
+when they sit below the floor that judged them, because most of these gates run
+BEFORE the score floor and their rows include candidates the book would have
+declined anyway. For the floor's OWN refusals that is exactly backwards: those
+rows are below the floor by definition, so the filter deletes the evidence and
+the replay returns empty — which reads as "no signal" when it means "wrong
+question asked". `SCORE_FLOOR_ACTIONS` names the three
+(`live_score_floor_skipped`, `finish_line_skipped`,
+`regime_score_floor_skipped`) and the route turns the filter off for them. The
+last two are the subtle ones: their rows sit ABOVE the everyday floor and were
+refused by a stricter bar, so the filter would pass them and quietly measure
+only part of what each rule costs.
+
+### The pre-committed reading
+
+`risk_atr_unreachable_skipped` accrues ~10 rows a session. At 30 scorable
+symbol-days, read the shadow. If the refused names average **below** 0R the gate
+is earning its flow cost and stays at 0.7. If they average at or above the live
+book's own mean R with a 95% interval clearing zero, the gate is refusing trades
+that work, and the lever is `maxRiskAtrFraction` — an **exposure** change, so it
+waits for the operator under Workstream 7's table, with the replay's three
+caveats (not a P&L, not a fill, resolves ambiguity against the trade) quoted
+beside the number.

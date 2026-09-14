@@ -800,7 +800,12 @@ trades.
   or stale, never guessed). Live-placed positions also get a real
   **entry time** (ET), so from now on the bot's trades appear in the entry-session
   breakdown above — they previously carried no time at all and were silently absent
-  from it. A companion read, `GET /api/journal/short-shadow-record` (2026-09-10), answers
+  from it. `GET /api/journal/declined-entry-shadow?action=` (2026-09-14) asks the same
+  question of any other refusal — what would the entries this gate turned away have done —
+  by replaying them on their own bars under the book's current exits. Its `unscorableRows`
+  count says how many journal rows predate the entry/stop fields and therefore cannot be
+  scored at all; while that number is large the reading is mostly holes, not a verdict.
+  A companion read, `GET /api/journal/short-shadow-record` (2026-09-10), answers
   the direction question the journal could not: it replays every live-eligible short the
   live book declined on real 5-minute bars, under the book's own exit geometry, and reports
   the sample size, average R and win rate independently of the paper book's slots. The

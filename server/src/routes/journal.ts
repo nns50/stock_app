@@ -24,6 +24,8 @@ import {
 } from '../services/exitReplay';
 import { validateExitTuneRules, type ValidationTrade } from '../services/autotrading/exitTuneValidation';
 import { buildShortShadowRecord, type SkippedShort } from '../services/autotrading/shortShadowRecord';
+import { parseDeclinedEntry, type DeclinedEntry } from '../services/autotrading/declinedEntry';
+import { buildDeclinedEntryShadow, SCORE_FLOOR_ACTIONS } from '../services/autotrading/declinedEntryShadow';
 import { listAutotradeEvents } from '../db/autotradeEvents';
 import type { Candle } from '../providers/types';
 import {
@@ -973,5 +975,53 @@ journalRouter.get(
 
     const record = await buildShortShadowRecord(getProvider(), rows, cfg);
     res.json({ since: from, journaledRows: rows.length, ...record });
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// GET /api/journal/declined-entry-shadow?action=&since=
+//
+// The same replay as the short record, pointed at any other refusal class
+// (2026-09-14). It exists because the biggest gate on the entry path had no
+// reading at all: `risk_atr_unreachable_skipped` refused 80 symbol-days over
+// eight sessions — SIXTEEN on 09-14 against four entries actually placed — and
+// neither the journal nor the paper book could say whether that was the gate
+// protecting the book or the gate being the reason the book has no flow.
+//
+// Paper is not the control it was assumed to be. The ATR gate was made
+// live-only in 2026-09-01 expressly so paper would be the control group, and
+// over those eight sessions exactly TWO closed paper trades land on a
+// symbol-day the gate refused: paper's three slots fill early on the same
+// high-ATR names and it never reaches the ones the gate turns away.
+//
+// Reads empty for rows written before the entry/stop fields existed — those
+// cannot be scored and are counted as `unscorableRows` rather than silently
+// skipped, so a thin reading is visibly thin instead of looking like a verdict.
+// ---------------------------------------------------------------------------
+journalRouter.get(
+  '/declined-entry-shadow',
+  asyncHandler(async (req, res) => {
+    const { action, since } = parseQuery(
+      z.object({ action: z.string().min(1).max(64), since: z.coerce.number().optional() }),
+      req,
+    );
+    const cfg = getAutotradeConfig();
+    const from = since ?? Date.now() - 40 * 24 * 60 * 60 * 1000;
+    const journaled = listAutotradeEvents({ actions: [action], since: from, limit: 1000 });
+    const rows: DeclinedEntry[] = [];
+    let unscorableRows = 0;
+    for (const e of journaled) {
+      const parsed = parseDeclinedEntry(e);
+      if (parsed) rows.push(parsed);
+      else unscorableRows += 1;
+    }
+    // The floor filter answers "would the book have wanted this candidate at
+    // all, setting aside THIS gate" — which is the wrong question when the gate
+    // under test is the floor itself: it would drop exactly the rows that
+    // constitute the evidence and return an empty record that reads as "no
+    // signal" instead of "wrong question".
+    const applyScoreFloor = !SCORE_FLOOR_ACTIONS.has(action);
+    const record = await buildDeclinedEntryShadow(getProvider(), rows, cfg, { applyScoreFloor });
+    res.json({ action, since: from, journaledRows: journaled.length, unscorableRows, applyScoreFloor, ...record });
   }),
 );

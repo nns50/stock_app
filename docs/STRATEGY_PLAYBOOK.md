@@ -588,6 +588,25 @@ reads flat and one that reads slightly positive. What is still not modelled: the
 scale-out's scarcity gate and its cancel/replace mechanics. Those are execution
 questions, and this measures geometry.
 
+**The same replay now serves every gate** (2026-09-14). It was written for shorts and then the
+same question turned out to be open for the ATR reachability gate, which refuses ten times as
+many symbol-days — 80 over eight sessions, sixteen on 09-14 against four entries actually
+placed. So the replay moved into `declinedEntryShadow.ts` rather than being copied, and
+`GET /api/journal/declined-entry-shadow?action=` points it at any refusal class.
+
+Two things that made the ATR gate worth looking at, and both generalise:
+
+- **It is a universe filter, not a setup filter.** The stop is
+  `min(stopAtrMultiple x ATR, maxStopDistancePct% x price)`, so at 1.5 / 2.5% / 0.7 the ATR
+  term can never pass and the percentage clamp must bind — leaving one admission rule,
+  `ATR >= 2.5/0.7 = 3.57% of price`. Every live entry on 09-14 placed with a stop at exactly
+  2.50% of entry, and the refusals were GOOGL, MSFT, META, IBM, NFLX, XOM and ten more. When
+  two settings compose into a rule neither of them states, read the composition.
+- **Its control arm did not exist.** The gate was made live-only expressly so paper would be
+  the control, and over eight sessions exactly TWO closed paper trades land on a refused
+  symbol-day: paper's slots fill early on the same high-ATR names. Before trusting "paper
+  agrees" or "paper cannot say", check how many paper trades are actually in the comparison.
+
 **And the geometry travels with the number** (2026-09-14). Reading the CURRENT rules is the
 right question — "would shorts work under the exits we actually run" — but it means every
 figure in the record moves when the book is re-tuned, and on 2026-09-14 three of those
