@@ -90,7 +90,12 @@ export function placeConfirmation(intent: OrderIntent): string {
  *  documented behavior above ("a market-data miss falls back to the client
  *  value") was never actually reachable for any symbol that had ever been
  *  cached, which is every symbol you have ever looked at. */
-async function withServerReference(intent: OrderIntent): Promise<OrderIntent> {
+// Exported so closePosition.ts can DRY-RUN the same guardrails before it
+// cancels a protective bracket. Re-deriving the reference there instead would
+// be a second, differently-timed measurement of the one quantity the
+// fat-finger rule judges — the divergence CLAUDE.md's "agree by construction"
+// rule exists to stop.
+export async function withServerReference(intent: OrderIntent): Promise<OrderIntent> {
   if (intent.orderType !== 'limit') return intent;
   let ref: number | undefined;
   try {

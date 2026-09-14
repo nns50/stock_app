@@ -10459,6 +10459,76 @@ force when the row was written, and the journal row has to carry that state.
 Wherever a stamped field exists for this purpose, something must read it, or
 the stamp is decoration.
 
+## 2026-09-14 (fifth) — a blocked close cancelled the protection and left the position naked
+
+The operator asked for an open BWIN position to be closed by hand. The first
+attempt came back:
+
+```
+bracketCancelled: true
+placed: false   reason: "blocked"
+  order_notional:   $2,067.00 vs cap $500.00
+  account_exposure: $2,077.40 vs cap $2,000.00
+```
+
+**The cancel succeeded and the replacement was refused**, so 65 shares sat at
+the broker with no stop and no take-profit until the caps were widened by hand
+and the close re-issued. Nothing re-armed the bracket and nothing alerted.
+
+**Two faults, and the second is the one that made it inevitable.**
+
+**1. Two OPENING caps were judging a CLOSING order.** `order_notional` and
+`account_exposure` are limits on the risk an order may CREATE. A close creates
+none — it realises risk already taken. `buying_power` had carried that
+exemption since 2026-08-27 (*"n/a (closing frees buying power)"*); the other two
+never got it. `account_exposure` was the worse of the pair: for a close it
+compared the CURRENT exposure against the cap, so **the further over the cap you
+were, the more firmly it refused the only action that fixes it**. That is
+backwards for a risk limit.
+
+It also could never be satisfied by construction. Autotrade's own per-order cap
+is `liveMaxOrderUsd` **$5,284**, while the manual Trade page's is **$500** — so
+every hand-close of an autotrade position was always going to exceed it. The
+rule had been broken for the entire live book and stayed hidden because nobody
+had hand-closed one before.
+
+**2. The cancel ran before the guardrails had a say.** `closeLivePosition`
+cancels the resting legs first, because the broker refuses a close as *"will
+reverse an existing position"* while they rest. `placeOrder` then re-runs the
+guardrails and can refuse — at which point the protection is already gone. The
+file's own comment reasons correctly about the CONFIRMATION (*"an unconfirmed
+request must have NO side effect at all"*) and that reasoning was simply never
+extended to the guardrail verdict.
+
+**What changed.**
+
+- `guardrails.ts`: `order_notional` and `account_exposure` now exempt a close,
+  reporting *"n/a (closing creates no new exposure)"* and *"n/a (closing reduces
+  exposure)"*. Opening orders are judged exactly as before.
+- `closePosition.ts`: `previewCloseGuardrails` dry-runs the same check BEFORE
+  the cancel, from the same account read, the same `TradingConfig` and the same
+  `withServerReference` (now exported rather than re-derived, so the preview and
+  the real check cannot drift). A refusal skips the cancel only — it still falls
+  through to `placeOrder`, which blocks again on its own fresh read and persists
+  the rejected intent. Returning early would have protected the bracket and
+  quietly stopped recording that a close was attempted, trading one invisible
+  failure for another.
+- A preview that cannot run returns null and the close proceeds as before:
+  failing to evaluate must never be a reason to refuse, because refusing is what
+  leaves a position stuck.
+
+**What it does NOT fix, stated rather than papered over.** `placeOrder` re-checks
+against its own fresh read, so a state change between the preview and the
+placement can still refuse after the cancel. The window is now the width of one
+account round-trip instead of the whole guardrail surface.
+
+**The lesson.** Every one of these caps was written for an opening order and
+then applied to everything. When a rule's justification is "this order creates
+risk", the rule has a direction, and a check that ignores `openClose` is not
+conservative — it is wrong in the direction that traps you in a position. The
+one cap that got it right did so in 2026-08-27 for a reason it wrote down, and
+nobody carried that reasoning across to its two neighbours.
+
 ## 2026-09-14 (sixth) — an entry whose price is being absorbed at a level
 
 The operator spotted what the screener structurally cannot: BWIN scored **85.2**
@@ -10550,3 +10620,4 @@ appearing on more than a couple of names a day, the thresholds are too loose and
 the rows carry `relVolume` and `rangeAtrRatio` to re-fit them from. If it never
 fires again, that is the expected outcome of a rule built for a specific,
 uncommon shape — not evidence it is broken.
+

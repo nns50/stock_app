@@ -779,3 +779,48 @@ describe('buying_power — opening vs closing, not buy vs sell', () => {
     expect(check(r, 'buying_power').passed).toBe(false);
   });
 });
+
+// A CLOSE CREATES NO RISK (2026-09-14). Two OPENING caps judged a closing
+// order, and it cost a NAKED position the first time anyone hand-closed an
+// autotrade trade: closePosition.ts cancels the protective bracket before
+// placing, so the cancel succeeded and the replacement was blocked.
+//
+// The trap tightened exactly as it mattered — the further over the cap you
+// were, the harder it refused to let you out — and it could never be satisfied
+// by construction: autotrade's own cap is liveMaxOrderUsd $5,284, so a $2,067
+// autotrade position was always going to exceed a $500 manual order cap.
+describe('evaluateGuardrails — closing orders are exempt from the OPENING caps', () => {
+  const closing = () => ({ ...order(), side: 'sell' as const, openClose: 'close' as const, quantity: 65 });
+
+  it('lets a close through an order-notional cap it could never fit', () => {
+    const r = evaluateGuardrails(closing(), acct({ exposureUsd: 2_077.4 }), cfg({ maxOrderUsd: 500 }));
+    const c = r.checks.find((x) => x.rule === 'order_notional');
+    expect(c?.passed).toBe(true);
+    expect(c?.detail).toContain('closing creates no new exposure');
+  });
+
+  it('lets a close through when the account is ALREADY over the exposure cap', () => {
+    // The backwards case: exposure $2,077 against a $2,000 cap. Closing is the
+    // only thing that fixes that, so refusing it is the one answer that cannot
+    // be right.
+    const r = evaluateGuardrails(closing(), acct({ exposureUsd: 2_077.4 }), cfg({ maxExposureUsd: 2_000 }));
+    const c = r.checks.find((x) => x.rule === 'account_exposure');
+    expect(c?.passed).toBe(true);
+    expect(c?.detail).toContain('closing reduces exposure');
+  });
+
+  it('still applies BOTH caps to an opening order', () => {
+    // The exemption is about direction, not about switching the caps off.
+    const opening = { ...order(), openClose: 'open' as const };
+    const r = evaluateGuardrails(opening, acct({ exposureUsd: 2_077.4 }), cfg({ maxOrderUsd: 1, maxExposureUsd: 1 }));
+    expect(r.checks.find((x) => x.rule === 'order_notional')?.passed).toBe(false);
+    expect(r.checks.find((x) => x.rule === 'account_exposure')?.passed).toBe(false);
+  });
+
+  it('still blocks a close on rules that are genuinely about closing', () => {
+    // Exempting the opening caps must not wave a close past the kill switch.
+    const r = evaluateGuardrails(closing(), acct(), cfg({ killSwitch: true }));
+    expect(r.ok).toBe(false);
+    expect(r.checks.find((x) => x.rule === 'kill_switch')?.passed).toBe(false);
+  });
+});
