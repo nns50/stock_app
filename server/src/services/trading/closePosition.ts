@@ -1,7 +1,10 @@
 import { Position } from '../../db/positions';
-import { OrderIntent } from './guardrails';
-import { placeOrder, PlaceResult } from './placeOrder';
-import { getIntent } from '../../db/orders';
+import { AccountState, evaluateGuardrails, GuardrailReport, OrderIntent } from './guardrails';
+import { marketOpenContext } from './marketHours';
+import { webullAccountState } from '../../providers/webull/accountState';
+import { getTradingConfig } from '../../db/trading';
+import { placeOrder, PlaceResult, withServerReference } from './placeOrder';
+import { countTodaysOrders, getIntent } from '../../db/orders';
 import { getAutotradeConfig } from '../../db/autotradeConfig';
 import { recordLiveExitOrder, getLiveEntryOrderForPosition } from '../../db/autotradeLiveOrders';
 import { recordLiveOptionsExitOrder } from '../../db/autotradeLiveOptionsOrders';
@@ -44,6 +47,34 @@ interface BuiltCloseIntent {
    *  close, and refusing it outright would leave them holding a contract with
    *  no way to close it from here at all. */
   quoteWarning?: string;
+}
+
+/**
+ * What the guardrails WOULD say about closing `pos`, without placing anything.
+ *
+ * Built from the same three pieces placeOrder uses — the broker's account
+ * state, the stored TradingConfig, and the server-side fat-finger reference —
+ * so this preview and the real check cannot drift into disagreeing about the
+ * same order. Anything it cannot evaluate returns null and the caller proceeds
+ * exactly as before: a preview that fails to run must never be a reason to
+ * refuse a close, because refusing is the outcome that leaves a position stuck.
+ */
+async function previewCloseGuardrails(pos: Position, accountId: string): Promise<GuardrailReport | null> {
+  try {
+    const { intent } = await buildCloseIntent(pos);
+    const acct = await webullAccountState(accountId, intent.symbol, {
+      assetKind: intent.assetKind,
+      strike: intent.strike,
+      expiration: intent.expiration,
+      optionType: intent.optionType,
+    });
+    if (!acct.ok || !acct.state || acct.positionsUnavailable) return null;
+    const accountState: AccountState = { ...acct.state, ordersToday: countTodaysOrders() };
+    const priced = await withServerReference(intent);
+    return evaluateGuardrails(priced, accountState, getTradingConfig(), { marketOpen: marketOpenContext(priced) });
+  } catch {
+    return null;
+  }
 }
 
 async function buildCloseIntent(pos: Position): Promise<BuiltCloseIntent> {
@@ -137,6 +168,34 @@ export async function closeLivePosition(
     return { ok: true, placed: false, reason: 'not_confirmed', error: 'Confirmation phrase did not match the order.' };
   }
 
+  // DRY-RUN THE GUARDRAILS BEFORE TOUCHING THE BRACKET (2026-09-14).
+  //
+  // Cancelling the resting stop/target is a real, consequential action and it
+  // happens BELOW. placeOrder() then re-runs the guardrails and can refuse —
+  // at which point the position is left with no protection and no close, which
+  // is strictly worse than never having tried. That is not hypothetical: the
+  // first hand-close of an autotrade position did exactly this, and the
+  // position sat naked until the caps were widened by hand.
+  //
+  // The root cause was that two OPENING caps judged a closing order, and it is
+  // fixed at source in guardrails.ts. This check is the second line: any future
+  // rule that refuses a close — a kill switch thrown mid-request, a daily-loss
+  // halt, a fat-finger reading off a bad quote — must refuse it BEFORE the
+  // bracket comes off, not after.
+  //
+  // Deliberately a preview and not a promise: placeOrder re-checks against its
+  // own fresh account read, so a state change in between can still refuse
+  // after the cancel. That residual window is reported honestly below rather
+  // than papered over.
+  // On a refusal it SKIPS THE CANCEL and falls through to placeOrder anyway,
+  // rather than returning here. placeOrder blocks it again for the same
+  // reason, but on its own fresh read — and in doing so it persists the
+  // rejected intent that is this app's audit trail for "a close was attempted
+  // and refused". Returning early would have protected the bracket and quietly
+  // stopped recording the attempt, trading one invisible failure for another.
+  // The cost is one extra account read on a path that is already failing.
+  const previewOk = (await previewCloseGuardrails(pos, accountId))?.ok ?? true;
+
   let bracketCancelled: boolean | undefined;
   // EITHER link, not source_intent_id alone. An ADOPTED position never carries
   // source_intent_id (adoption deliberately does not set it — a null is the
@@ -152,7 +211,7 @@ export async function closeLivePosition(
   // Third occurrence of this exact lookup bug (after the CTVA stagnation close
   // and checkLiveBracketProtection), which is why the helper is shared now
   // rather than re-derived per call site.
-  const entryIntentId = entryIntentIdForPosition(pos);
+  const entryIntentId = previewOk ? entryIntentIdForPosition(pos) : null;
   if (entryIntentId !== null) {
     const entryIntent = getIntent(entryIntentId);
     if (entryIntent?.isBracket) {
