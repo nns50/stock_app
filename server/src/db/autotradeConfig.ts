@@ -842,6 +842,21 @@ export interface AutotradeConfig {
    *  constant, so a broker whose refusals turn out to mean something else is a
    *  switch and not a deploy. */
   liveRefusalCeilingEnabled: boolean;
+  /** ABSORBED-PRICE GATE (2026-09-14, BWIN). Minimum `relVolume` — this
+   *  symbol's volume today over its OWN average — for the gate to consider the
+   *  name heavily traded. 0 switches the whole gate off, the same way
+   *  maxRiskAtrFraction does. Default 3. */
+  absorbedPriceMinRelVolume: number;
+  /** Session range below this FRACTION of the daily ATR counts as collapsed.
+   *  0 switches the gate off. Default 0.5 — BWIN read 0.21 while every other
+   *  name the loop looked at that session read 0.68-2.11, so the bar sits in
+   *  the gap rather than on either edge of it. */
+  absorbedPriceMaxRangeAtrFraction: number;
+  /** Minutes of regular session that must have elapsed before the gate may
+   *  block anything. Range accumulates through the day, so without this every
+   *  name looks collapsed at 09:31 and the gate would refuse the whole open —
+   *  the part of the session the book's edge lives in. Default 30. */
+  absorbedPriceMinMinutesIntoSession: number;
   /** How many live trades (counted from liveEnabledAt) get an extra
    *  liveProbationSizeMultiplier size cut on top of the risk profile's normal
    *  sizing and any loss-streak step-down already active (Phase 8 Step B). */
@@ -1359,6 +1374,9 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     equitySyncMaxJumpPct: 5,
     liveDayBuyingPowerUsd: 0,
     liveRefusalCeilingEnabled: true,
+    absorbedPriceMinRelVolume: 3,
+    absorbedPriceMaxRangeAtrFraction: 0.5,
+    absorbedPriceMinMinutesIntoSession: 30,
     liveMaxDailyLossUsd: 250,
     liveMaxOrdersPerDay: DEFAULT_LIVE_MAX_ORDERS_PER_DAY,
     liveFatFingerPct: 10,
@@ -1666,6 +1684,15 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
       typeof input.liveRefusalCeilingEnabled === 'boolean'
         ? input.liveRefusalCeilingEnabled
         : d.liveRefusalCeilingEnabled,
+    absorbedPriceMinRelVolume: nonNeg(input.absorbedPriceMinRelVolume, d.absorbedPriceMinRelVolume),
+    absorbedPriceMaxRangeAtrFraction: nonNeg(
+      input.absorbedPriceMaxRangeAtrFraction,
+      d.absorbedPriceMaxRangeAtrFraction,
+    ),
+    absorbedPriceMinMinutesIntoSession: nonNeg(
+      input.absorbedPriceMinMinutesIntoSession,
+      d.absorbedPriceMinMinutesIntoSession,
+    ),
     liveMaxDailyLossUsd: nonNeg(input.liveMaxDailyLossUsd, d.liveMaxDailyLossUsd),
     liveMaxOrdersPerDay: posInt(input.liveMaxOrdersPerDay, d.liveMaxOrdersPerDay),
     liveFatFingerPct: pct(input.liveFatFingerPct, d.liveFatFingerPct),

@@ -42,6 +42,29 @@ export function isUsEquityMarketOpen(now: Date = new Date()): boolean {
 }
 
 /**
+ * Minutes elapsed in the REGULAR session at `now`, or null outside one.
+ *
+ * Null rather than 0 before the open and on a closed day, because "the session
+ * has not started" and "the session just started" must not read the same to a
+ * caller gating on elapsed time — a 0 would let an off-hours check behave like
+ * the opening bell. Clamped at the close so an early half-day reports its own
+ * length rather than running on to 16:00.
+ */
+export function minutesIntoSession(now: Date | number = new Date()): number | null {
+  const at = typeof now === 'number' ? new Date(now) : now;
+  if (!isUsEquityMarketOpen(at)) return null;
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(at);
+  const get = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? '0');
+  const minutes = (get('hour') % 24) * 60 + get('minute');
+  return Math.max(0, Math.min(minutes, sessionCloseMinute(at)) - OPEN_MINUTES);
+}
+
+/**
  * Whether `now` is a trading day whose session has already ENDED.
  *
  * Not the negation of isUsEquityMarketOpen: that is also false all weekend, on

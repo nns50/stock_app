@@ -117,6 +117,18 @@ export interface TradeSignal {
    *  downstream would mean a second, differently-timed measurement of the same
    *  quantity. Null when unmeasurable. */
   relVolPace?: number | null;
+  /** Cumulative volume today over this symbol's own ~20-day average FULL-DAY
+   *  volume, at signal time. Carried for the same reason relVolPace is — and
+   *  it is NOT interchangeable with it: `relVolPace` is this symbol against
+   *  the UNIVERSE this tick, `relVolume` is this symbol against ITSELF.
+   *
+   *  The live path needs the self-relative one to tell an ABSORBED price from
+   *  a quiet one: heavy volume in a collapsed range means size is being filled
+   *  at a fixed level (a buyout pin, a tender, a hard institutional bid), while
+   *  a light-volume collapse is an ordinary coil that may still break. Only
+   *  `relVolume` separates those, because "heavy for this name" is the
+   *  question. Null when unmeasurable. */
+  relVolume?: number | null;
   /** The daily ATR the stop was derived from, in price units. Carried for the
    *  same reason avgVolume and relVolPace are: the LIVE path needs it to judge
    *  whether 1R is reachable on this name, and re-deriving it downstream would
@@ -245,6 +257,7 @@ export function generateSignal(
     components: Object.fromEntries(candidate.components.map((c) => [c.key, Math.round(c.score * 10) / 10])),
     avgVolume: candidate.indicators.avgVolume,
     relVolPace: candidate.relVolPace ?? null,
+    relVolume: candidate.indicators.relVolume ?? null,
     atr,
     stopSqueezeRatio,
     plannedStopDistancePct,
