@@ -947,9 +947,24 @@ journalRouter.get(
       .map((e) => {
         if (!e.symbol || !e.detail) return null;
         try {
-          const d = JSON.parse(e.detail) as { score?: number; entry?: number; stop?: number };
+          const d = JSON.parse(e.detail) as {
+            score?: number;
+            entry?: number;
+            stop?: number;
+            liveMinSignalScore?: number;
+          };
           if (typeof d.score !== 'number' || typeof d.entry !== 'number' || typeof d.stop !== 'number') return null;
-          return { symbol: e.symbol, at: e.createdAt, score: d.score, entry: d.entry, stop: d.stop };
+          return {
+            symbol: e.symbol,
+            at: e.createdAt,
+            score: d.score,
+            entry: d.entry,
+            stop: d.stop,
+            // Carried through so the replay judges each row by the floor that
+            // actually declined it. Without this the report silently re-scores
+            // its own history every time liveMinSignalScore moves.
+            ...(typeof d.liveMinSignalScore === 'number' ? { floorAtSkip: d.liveMinSignalScore } : {}),
+          };
         } catch {
           return null;
         }
