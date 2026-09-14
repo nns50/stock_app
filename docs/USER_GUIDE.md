@@ -2341,7 +2341,18 @@ because the loop is the only caller that is always flat by the bell, so it is
   placed — if the take-profit is still working and only the stop is gone, the stop is re-armed
   alone rather than stacking a second take-profit at the same price on the same shares. In
   that case the re-armed stop is not linked to the old take-profit, so if the stop fills, that
-  target can stay resting at the broker until the position's close cancels it. (Options are
+  target can stay resting at the broker until the position's close cancels it.
+  Since **2026-09-15** there is one case the re-arm cannot fix, and it now **closes** instead:
+  a stop cannot be placed where the market has already been, so a naked position whose price is
+  already through its recorded stop gets a marketable-limit exit rather than a stop it can never
+  hold. On 2026-09-14 that exact case — BWIN at 12:13 ET — was refused by the broker and left
+  naked all afternoon with only an alert. Three things must all be true before anything is
+  sold: the broker confirms the shares are still held, the re-arm was tried and **refused**, and
+  a price fetched right then is through the stop — two independent sources agreeing, so a stale
+  quote alone can't trigger it. It appears in Recent activity as a `live_time_exit_placed` row
+  with `trigger: unprotected_breach`. The **kill switch** stops it (the close runs the same
+  guardrails every order does) while detection keeps running, and a close that fails still pages
+  you, because the position really is unprotected. (Options are
   excluded on purpose:
   Webull only allows DAY orders on the option sell side, so an option bracket's exits
   legitimately disappear at each close, and checking them would alarm every day for a known,

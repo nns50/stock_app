@@ -3053,16 +3053,29 @@ export interface BracketProtectionOutcome {
    *  a position naked. null when the read failed. Zero means the position is
    *  gone — its stop filled — which is not the same thing as unprotected. */
   heldAtBroker?: number | null;
+  /** Set when the position was naked AND already through its recorded stop, so
+   *  the sweep closed it instead of re-arming a stop the market has passed.
+   *  Asserted by the tests at the CONSUMER — the outcome the loop sees — rather
+   *  than only on the helper that places the order. */
+  breachClose?: { requested: boolean; lastPrice: number; reason?: string };
 }
 
 /**
  * Check every open autotrade EQUITY position that was opened with a bracket for
  * a resting exit-side order at the broker, and journal the ones that have none.
  *
- * Read-only: one open-orders pull per tick regardless of position count, and it
- * places, cancels and modifies nothing. Runs regardless of the kill switch for
- * the same reason the reconcilers do — a halted account still needs to know a
- * real position is sitting there unprotected.
+ * NOT read-only, and that sentence stood here after it stopped being true. It
+ * placed nothing until 2026-09-12, when the naked case gained an automatic
+ * re-arm; since 2026-09-15 it can also CLOSE a position whose stop is already
+ * through the market (see that branch). One open-orders pull per tick
+ * regardless of position count; the broker calls that place anything happen
+ * only on a position this sweep has already proven naked.
+ *
+ * It still RUNS regardless of the kill switch, for the same reason the
+ * reconcilers do — a halted account still needs to know a real position is
+ * sitting there unprotected — but the switch stops it acting: both the re-arm
+ * and the close go through the shared guardrails, which fail `kill_switch`.
+ * Detection is free and always on; placement is not.
  *
  * Attribution caveat, stated rather than papered over: the scan matches by
  * symbol and side, so it cannot tell one position's stop from another order on
@@ -3103,6 +3116,15 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
   const open = await listWebullOpenOrders(accountId);
   if (!open.ok) return []; // couldn't ask — say nothing, retry next tick
   const outcomes: BracketProtectionOutcome[] = [];
+  // Positions that already have a closing order working. The breach close below
+  // must never stack a second one, and this is the DB-backed way to know —
+  // unlike an in-memory latch it survives the restart that would otherwise let
+  // one through, which matters for the only branch here that sells shares.
+  const pendingExitPositionIds = new Set(
+    listPendingLiveOrders()
+      .filter((o) => o.role === 'exit' && o.positionId !== null)
+      .map((o) => o.positionId!),
+  );
 
   for (const pos of candidates) {
     const symbol = pos.symbol.toUpperCase();
@@ -3216,7 +3238,17 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
       });
       continue;
     }
-    outcomes.push({ positionId: pos.id, symbol, protectedAtBroker: false, heldAtBroker: heldQty });
+    // Held by reference so the breach close below can fill in its result
+    // without indexing back into the array — an index would keep working right
+    // up until someone pushes another outcome in between, and then be wrong
+    // silently.
+    const outcome: BracketProtectionOutcome = {
+      positionId: pos.id,
+      symbol,
+      protectedAtBroker: false,
+      heldAtBroker: heldQty,
+    };
+    outcomes.push(outcome);
 
     // RE-ARM IT (2026-09-12), rather than only paging a human.
     //
@@ -3304,8 +3336,101 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
       }
     }
 
+    // THE STOP IS ALREADY THROUGH THE MARKET — CLOSE, DO NOT RE-ARM (2026-09-15).
+    //
+    // A stop cannot be placed where the market has already been. The broker says
+    // so outright, and on 2026-09-14 it did: BWIN was confirmed naked at 12:13
+    // ET, the re-arm above was refused with "The stop price of the stop-loss
+    // order should be higher than the current market price", and this function's
+    // whole response was to page a human. The position stayed naked. It closed
+    // near flat, which was luck — the recorded stop was the decision, price was
+    // past it, and nothing was acting on that.
+    //
+    // PR A's plan said "a standalone bracket at the recorded stop, OR a
+    // marketable close if price is already through it". Only the first half was
+    // built. This is the second.
+    //
+    // THREE INDEPENDENT FACTS, ALL REQUIRED, because this is the one branch here
+    // that sells real shares with no human in the loop:
+    //   1. the broker confirms the shares are still held (heldQty > 0, above —
+    //      the same read that tells a naked position from a stop mid-fill);
+    //   2. the re-arm was ATTEMPTED and the broker REFUSED it;
+    //   3. a QUOTE FETCHED NOW is through the recorded stop.
+    // (2) and (3) are separate sources that must agree, so neither a stale quote
+    // nor a misread error string can fire this on its own. Matching on the
+    // broker's wording alone was the tempting shortcut and is exactly the kind
+    // of string dependency that breaks silently when a vendor rewords an error.
+    //
+    // The placement itself is `placeLiveEquityTimeExitClose` unchanged — the
+    // same path the stagnation and end-of-day exits use. That is the point of
+    // reusing it: it cancels the resting legs first, prices a MARKETABLE LIMIT
+    // at the 0.5% buffer rather than sending a market order, runs the full
+    // guardrails (so the kill switch stops it), and already handles the
+    // ambiguous-placement case that stops a second close going out against a
+    // position whose first may have filled.
+    let breachClose: BracketProtectionOutcome['breachClose'];
+    if (
+      !rearmed &&
+      rearmNote !== null &&
+      heldQty !== null &&
+      heldQty > 0 &&
+      pos.stopPrice !== null &&
+      config.trading.placeEnabled &&
+      !pendingExitPositionIds.has(pos.id)
+    ) {
+      let last: number | null;
+      try {
+        const q = await getProvider().getQuote(symbol);
+        last = Number.isFinite(q.last) && q.last > 0 ? q.last : null;
+      } catch {
+        last = null; // no quote, no third fact — fall through to the page.
+      }
+      // Through the stop, in the direction the stop protects: at or below for a
+      // long, at or above for a short. Equality counts — a stop resting exactly
+      // at the market is the case the broker refuses.
+      const through = last !== null && (pos.side === 'long' ? last <= pos.stopPrice : last >= pos.stopPrice);
+      if (last !== null && through) {
+        const entryIntentId = entryIntentIdForPosition(pos);
+        const entryIntent = entryIntentId === null ? null : getIntent(entryIntentId);
+        // Every candidate reaching this loop was filtered on having a bracket
+        // entry intent, so this is defensive rather than expected.
+        if (entryIntent) {
+          const closed = await placeLiveEquityTimeExitClose(
+            pos,
+            accountId,
+            getLiveEntryOrderForPosition(pos.id)?.riskProfile ?? cfg.riskProfile,
+            entryIntent,
+            {
+              kind: 'unprotected_breach',
+              journal: {
+                recordedStop: pos.stopPrice,
+                lastPrice: last,
+                heldAtBroker: heldQty,
+                // WHY the stop could not simply be re-armed, carried into the
+                // one row this produces so the sequence reads without a join.
+                rearmOutcome: rearmNote,
+              },
+              notice: 'position was unprotected and already through its stop',
+            },
+          );
+          breachClose = {
+            requested: closed.requested,
+            lastPrice: last,
+            ...(closed.reason ? { reason: closed.reason } : {}),
+          };
+          outcome.breachClose = breachClose;
+          // A REQUESTED close is the answer; `live_time_exit_placed` with
+          // trigger 'unprotected_breach' is the record and is already wired into
+          // the failure alerting. A FAILED one leaves the position genuinely
+          // naked, so it falls through to the page below carrying its reason.
+          if (closed.requested) continue;
+        }
+      }
+    }
+
     // Still naked: either the re-arm was not attempted (unreadable account, no
-    // recorded stop, placement disabled) or it failed. NOW page a human.
+    // recorded stop, placement disabled) or it failed, and the position is not
+    // through its stop (or the close failed too). NOW page a human.
     // Once per position per ET day: this condition persists until a human acts,
     // so journaling every tick would bury it, and journaling once ever would let
     // it go quiet while the position is still naked.
@@ -3328,6 +3453,12 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
           // reader of this row now has.
           rearmAttempted: rearmNote !== null || rearmed,
           rearmOutcome: rearmed ? 'ok' : rearmNote,
+          // Present only when the position was ALSO through its stop, so the
+          // sweep tried to close it and could not. Its absence means the stop
+          // was still placeable and the re-arm failed for another reason.
+          ...(breachClose
+            ? { breachCloseFailed: breachClose.reason ?? 'unknown', lastPrice: breachClose.lastPrice }
+            : {}),
           reason:
             (restingLegs.length === 0
               ? 'This position was opened with a bracket, but the broker shows no resting ' +
@@ -3477,7 +3608,7 @@ function timeExitFailure(
  *  vocabulary). `journal` carries the trigger's numbers (heldMinutes,
  *  progressR) into the event detail. */
 export interface TimeExitTrigger {
-  kind: 'max_hold_days' | 'stagnation' | 'end_of_day';
+  kind: 'max_hold_days' | 'stagnation' | 'end_of_day' | 'unprotected_breach';
   journal: Record<string, unknown>;
   /** Human phrasing for the notification, e.g. "max hold time reached". */
   notice: string;

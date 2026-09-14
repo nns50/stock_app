@@ -60,6 +60,7 @@ import {
   getLiveEntryOrderForPosition,
   listPendingLiveOrders,
   countLiveAddOns,
+  recordLiveExitOrder,
   recordLiveOrder,
   setLiveOrderPositionId,
 } from '../src/db/autotradeLiveOrders';
@@ -2675,6 +2676,192 @@ describe('adoptOrphanedLivePositions', () => {
     const rearmed = listAutotradeEvents({ stage: 'execution', actions: ['live_bracket_rearmed'] });
     expect(rearmed).toHaveLength(1);
     expect(JSON.parse(rearmed[0].detail ?? '{}')).toMatchObject({ stopPrice: 95, quantity: 10 });
+  });
+
+  // -------------------------------------------------------------------------
+  // A STOP CANNOT BE PLACED WHERE THE MARKET HAS ALREADY BEEN (2026-09-15).
+  //
+  // On 2026-09-14 12:13 ET, BWIN was confirmed naked, the re-arm above was
+  // refused by the broker — "The stop price of the stop-loss order should be
+  // higher than the current market price" — and the whole response was to page
+  // a human. The position stayed unprotected through an afternoon, past the
+  // stop that was the decision. It closed near flat, which was luck.
+  //
+  // Three facts must hold before this sells anything: shares confirmed held,
+  // the re-arm ATTEMPTED AND REFUSED, and a quote fetched now through the
+  // recorded stop. Every case below moves exactly one of them.
+  // -------------------------------------------------------------------------
+  const closeOrders = () =>
+    mockPlaceOrder.mock.calls.filter(([, intent]) => (intent as { openClose?: string }).openClose === 'close');
+  /** The close goes through the shared guardrails, so a case that expects one
+   *  to reach the broker has to arm the live book — which is itself the proof
+   *  that the kill switch and the enable flag still gate this path. */
+  const armedForClose = () => {
+    setAutotradeConfig({ liveTradingEnabled: true, killSwitch: false });
+    // The close cancels the entry's bracket legs first, and that path reads the
+    // combo status to rule out a leg racing the fill. `found: false` is the
+    // ordinary answer for an order that has aged out of the broker's window.
+    mockOrderStatus.mockResolvedValue({ ok: true, found: false } as Awaited<ReturnType<typeof webullOrderStatus>>);
+  };
+
+  it('CLOSES a naked position whose stop the market has already passed, instead of paging', async () => {
+    await agedProtectionCandidate('AAPL', 10); // stop 95, target 110
+    vi.mocked(listWebullOpenOrders).mockResolvedValue({ ok: true, orders: [] });
+    // The broker refuses the stop for the real reason: price is through it.
+    vi.mocked(webullPlaceStandaloneBracket).mockResolvedValueOnce({
+      ok: false,
+      error: 'The stop price of the stop-loss order should be higher than the current market price.',
+    });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 94 }) as ReturnType<typeof getProvider>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-BREACH' });
+    armedForClose();
+
+    const outcomes = await checkLiveBracketProtection();
+
+    // A MARKETABLE LIMIT to sell, not a market order: 94 less the 0.5% buffer.
+    expect(closeOrders()).toHaveLength(1);
+    expect(closeOrders()[0][1]).toMatchObject({
+      symbol: 'AAPL',
+      side: 'sell',
+      openClose: 'close',
+      orderType: 'limit',
+      quantity: 10,
+      limitPrice: 93.53,
+    });
+    // Asserted at the CONSUMER — the outcome the loop reads, not the helper.
+    expect(outcomes[0]).toMatchObject({ breachClose: { requested: true, lastPrice: 94 } });
+    // One row tells the whole sequence, and nobody is paged.
+    const placed = listAutotradeEvents({ limit: 50 }).filter((e) => e.action === 'live_time_exit_placed');
+    expect(placed).toHaveLength(1);
+    expect(JSON.parse(placed[0].detail ?? '{}')).toMatchObject({
+      trigger: 'unprotected_breach',
+      recordedStop: 95,
+      lastPrice: 94,
+      heldAtBroker: 10,
+      rearmOutcome: 'The stop price of the stop-loss order should be higher than the current market price.',
+    });
+    expect(unprotectedEvents()).toHaveLength(0);
+  });
+
+  it('PAGES rather than closing when the stop is still placeable — the re-arm failed for another reason', async () => {
+    // The gate that keeps this from becoming "close any naked position". Price
+    // is comfortably above the stop, so the position needs its stop back, not
+    // an exit, and a re-arm that failed for some other reason is a human's
+    // problem exactly as it was before.
+    await agedProtectionCandidate('AAPL', 10);
+    vi.mocked(listWebullOpenOrders).mockResolvedValue({ ok: true, orders: [] });
+    vi.mocked(webullPlaceStandaloneBracket).mockResolvedValueOnce({ ok: false, error: 'Rate limited.' });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 96 }) as ReturnType<typeof getProvider>);
+
+    const outcomes = await checkLiveBracketProtection();
+
+    expect(closeOrders()).toHaveLength(0);
+    expect(outcomes[0].breachClose).toBeUndefined();
+    expect(unprotectedEvents()).toHaveLength(1);
+    const detail = JSON.parse(unprotectedEvents()[0].detail ?? '{}');
+    expect(detail).toMatchObject({ rearmOutcome: 'Rate limited.' });
+    // No close was attempted, so the page must not claim one failed.
+    expect(detail.breachCloseFailed).toBeUndefined();
+  });
+
+  it('never closes a position whose stop was successfully re-armed', async () => {
+    // Fact (2) removed. Even with price through the stop, a stop the broker
+    // ACCEPTED is protection, and selling on top of it would race its own fill.
+    await agedProtectionCandidate('AAPL', 10);
+    vi.mocked(listWebullOpenOrders).mockResolvedValue({ ok: true, orders: [] });
+    vi.mocked(webullPlaceStandaloneBracket).mockResolvedValueOnce({ ok: true, clientComboOrderId: 'GRP-OK' });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 94 }) as ReturnType<typeof getProvider>);
+
+    await checkLiveBracketProtection();
+
+    expect(closeOrders()).toHaveLength(0);
+    expect(unprotectedEvents()).toHaveLength(0);
+  });
+
+  it('never stacks a SECOND close on a position that already has one working', async () => {
+    // The guard that matters most, and the reason it reads the DB rather than
+    // an in-memory latch: a restart must not be able to sell the same shares
+    // twice. For a long, overselling means flipping short.
+    const pos = await agedProtectionCandidate('AAPL', 10);
+    const rec = createIntent(
+      {
+        symbol: 'AAPL',
+        assetKind: 'stock',
+        side: 'sell',
+        openClose: 'close',
+        quantity: 10,
+        orderType: 'limit',
+        limitPrice: 93,
+      },
+      'working-close-1',
+    );
+    recordLiveExitOrder({ intentId: rec.id, symbol: 'AAPL', riskProfile: 'MODERATE', positionId: pos.id });
+    vi.mocked(listWebullOpenOrders).mockResolvedValue({ ok: true, orders: [] });
+    vi.mocked(webullPlaceStandaloneBracket).mockResolvedValueOnce({ ok: false, error: 'stop through the market' });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 94 }) as ReturnType<typeof getProvider>);
+
+    await checkLiveBracketProtection();
+
+    expect(closeOrders()).toHaveLength(0);
+    // Still naked on paper, so the page stands — but nothing was sold twice.
+    expect(unprotectedEvents()).toHaveLength(1);
+  });
+
+  it('pages rather than guessing when the quote cannot be read', async () => {
+    // Fact (3) unavailable. Without a price there is no second source agreeing
+    // with the broker, and acting on the refusal alone is the string dependency
+    // this design exists to avoid.
+    await agedProtectionCandidate('AAPL', 10);
+    vi.mocked(listWebullOpenOrders).mockResolvedValue({ ok: true, orders: [] });
+    vi.mocked(webullPlaceStandaloneBracket).mockResolvedValueOnce({ ok: false, error: 'stop through the market' });
+    mockGetProvider.mockReturnValue(quoteReturning({}) as ReturnType<typeof getProvider>); // throws for AAPL
+
+    await checkLiveBracketProtection();
+
+    expect(closeOrders()).toHaveLength(0);
+    expect(unprotectedEvents()).toHaveLength(1);
+  });
+
+  it('the kill switch stops the close, and detection keeps running', async () => {
+    // The split this sweep's header now states: it RUNS regardless of the kill
+    // switch, because a halted account still needs to know a position is naked,
+    // but it cannot ACT — the close goes through the shared guardrails, which
+    // fail kill_switch. Pinned because it is the operator's one lever over a
+    // path that otherwise sells without them, and it was found by a test
+    // failing for this reason rather than by design.
+    await agedProtectionCandidate('AAPL', 10);
+    vi.mocked(listWebullOpenOrders).mockResolvedValue({ ok: true, orders: [] });
+    vi.mocked(webullPlaceStandaloneBracket).mockResolvedValueOnce({ ok: false, error: 'stop through the market' });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 94 }) as ReturnType<typeof getProvider>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-NOPE' });
+    armedForClose();
+    setAutotradeConfig({ killSwitch: true });
+
+    const outcomes = await checkLiveBracketProtection();
+
+    expect(closeOrders()).toHaveLength(0);
+    // Detected and reported, just not acted on.
+    expect(outcomes[0]).toMatchObject({ protectedAtBroker: false, heldAtBroker: 10 });
+    expect(unprotectedEvents()).toHaveLength(1);
+    expect(JSON.parse(unprotectedEvents()[0].detail ?? '{}').breachCloseFailed).toMatch(/kill_switch/);
+  });
+
+  it('still pages when the close itself is rejected — the position really is naked', async () => {
+    await agedProtectionCandidate('AAPL', 10);
+    vi.mocked(listWebullOpenOrders).mockResolvedValue({ ok: true, orders: [] });
+    vi.mocked(webullPlaceStandaloneBracket).mockResolvedValueOnce({ ok: false, error: 'stop through the market' });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 94 }) as ReturnType<typeof getProvider>);
+    mockPlaceOrder.mockResolvedValue({ ok: false, error: 'Broker said no' });
+    armedForClose();
+
+    const outcomes = await checkLiveBracketProtection();
+
+    expect(outcomes[0]).toMatchObject({ breachClose: { requested: false, lastPrice: 94 } });
+    expect(unprotectedEvents()).toHaveLength(1);
+    expect(JSON.parse(unprotectedEvents()[0].detail ?? '{}')).toMatchObject({
+      breachCloseFailed: expect.stringContaining('Broker said no'),
+      lastPrice: 94,
+    });
   });
 
   it('re-arms the STOP ALONE when the take-profit is still resting', async () => {

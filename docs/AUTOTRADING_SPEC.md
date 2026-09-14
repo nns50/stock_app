@@ -11144,3 +11144,74 @@ answer for that day, reached without a date literal anywhere.
 The general rule, which is the 2026-08-27 disease in the time dimension: **when
 a fact and its provenance are written at different moments, the provenance is a
 guess.** Write them together.
+
+## 2026-09-15 — a stop cannot be placed where the market has already been
+
+PR A's equity half committed to "a standalone protective bracket at the recorded
+stop (**or a marketable close if price is already through it**)". Only the first
+half was built, and the second half is the one that matters, because the first
+half *cannot* work in the case it describes.
+
+2026-09-14, BWIN, 12:13 ET: the position was confirmed naked (65 shares held at
+the broker, zero resting exit legs), the automatic re-arm fired, and the broker
+refused it — *"The stop price of the stop-loss order should be higher than the
+current market price."* Price was already through the recorded 31.16 stop. The
+sweep's entire response was `live_position_unprotected`, a page. The position
+stayed naked through the afternoon, past the stop that was the decision, and
+closed at −$0.65 on luck rather than design. At 2.5% risk, where one position is
+most of the account's notional, that is the largest uncontrolled exposure the
+system has.
+
+### Three independent facts, all required
+
+This is the only branch of the protection sweep that sells real shares with no
+human in the loop, so the gate is deliberately narrow:
+
+1. the broker confirms the shares are still held — the same read that tells a
+   naked position from a stop mid-fill (the SMCI case of 2026-09-08);
+2. the re-arm was **attempted and refused**;
+3. a quote **fetched at that moment** is through the recorded stop (at or below
+   for a long, at or above for a short — equality counts, since a stop resting
+   exactly at the market is what the broker refuses).
+
+(2) and (3) are separate sources that must agree. Acting on the broker's wording
+alone was the tempting shortcut and is exactly the kind of string dependency
+that breaks silently the day a vendor rewords an error; acting on the quote
+alone would close positions whose stop was merely unplaceable for some other
+reason.
+
+### What places the order
+
+`placeLiveEquityTimeExitClose`, unchanged — the same path the stagnation and
+end-of-day exits use. That reuse is the design, not a convenience: it cancels
+the resting legs first, prices a **marketable limit at the 0.5% buffer** rather
+than sending a market order, runs the full guardrails, and already handles the
+ambiguous-placement case that stops a second close going out against a position
+whose first may have filled. A new trigger kind, `unprotected_breach`, carries
+the recorded stop, the price read, the held quantity and the broker's re-arm
+refusal into the one `live_time_exit_placed` row the sequence produces.
+
+A double close is ruled out by the DB-backed pending-exit set rather than an
+in-memory latch — a restart must not be able to sell the same shares twice,
+which for a long means flipping short.
+
+### What it deliberately does not do
+
+- No quote, no action: without the third fact it pages, as before.
+- Price not through the stop: the position needs its stop back, not an exit.
+- Re-arm succeeded: a stop the broker accepted is protection.
+- **Kill switch engaged: no close.** The sweep still RUNS under the kill switch,
+  because a halted account still needs to know a position is naked, but the
+  close goes through the shared guardrails and fails `kill_switch`. Detection is
+  free and always on; placement is not. That split is the operator's one lever
+  over a path that otherwise acts without them, and it is pinned by a test.
+- A close that fails still pages, carrying `breachCloseFailed` — the position
+  really is unprotected.
+
+### And a header that had stopped being true
+
+The sweep's own doc comment still read *"Read-only: … it places, cancels and
+modifies nothing"* three days after the re-arm made it place a bracket. That is
+the comment class CLAUDE.md's own notes warn about — an assertion of a property
+the code no longer has, which is what stops the next reader looking. Rewritten
+to say what it now does and, more usefully, where the kill switch sits in it.
