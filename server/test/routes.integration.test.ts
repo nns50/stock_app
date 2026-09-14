@@ -678,6 +678,93 @@ describe('positions + journal routes (integration)', () => {
 // network call — sufficient to prove the route reaches closeLivePosition
 // without crashing.
 // ---------------------------------------------------------------------------
+// Recent activity, split by book (2026-09-14).
+//
+// The route is the consumer, and the thing worth asserting at it is the DEPTH
+// of the scan. The paper book writes a risk-check row per candidate per tick —
+// 4,983 on 2026-09-14 against four live entries — so a filter applied to the
+// newest page would return an empty Live tab and read as "the live book did
+// nothing today". Filtering has to reach past the paper noise, and how far it
+// reached has to be on the wire.
+// ---------------------------------------------------------------------------
+describe('GET /autotrade/events?book= (integration)', () => {
+  beforeEach(() => {
+    db.exec('DELETE FROM autotrade_events;');
+  });
+
+  const paperBlock = () =>
+    logAutotradeEvent({
+      symbol: 'NRG',
+      stage: 'risk_check',
+      action: 'blocked',
+      detail: { book: 'paper', openPositionsCount: 3, maxConcurrentPositions: 3, checks: [] },
+    });
+
+  it('reaches a live row buried under a wall of paper rows', async () => {
+    // The live entry first, then 400 paper refusals on top of it — the real
+    // shape of a session. A page-sized filter would never see LIVE.
+    logAutotradeEvent({ symbol: 'COIN', stage: 'execution', action: 'live_order_placed', detail: { quantity: 18 } });
+    for (let i = 0; i < 400; i++) paperBlock();
+
+    const all = (await getJson('/api/autotrade/events?limit=50')) as { events: { action: string }[] };
+    expect(all.events.every((e) => e.action === 'blocked')).toBe(true); // the wall
+
+    const live = (await getJson('/api/autotrade/events?book=live&limit=50')) as {
+      events: { action: string; symbol: string }[];
+      bookCounts: { live: number; paper: number; shared: number };
+      scannedRows: number;
+    };
+    expect(live.events).toHaveLength(1);
+    expect(live.events[0]).toMatchObject({ action: 'live_order_placed', symbol: 'COIN' });
+    // And the counts describe the window that was scanned, so the tab can show
+    // "Live 1 · Paper 400" rather than leaving the split a mystery.
+    expect(live.bookCounts).toMatchObject({ live: 1, paper: 400 });
+    expect(live.scannedRows).toBe(401);
+  });
+
+  it('says when the scan hit its cap, so a thin list reads as thin', async () => {
+    for (let i = 0; i < 1005; i++) paperBlock();
+    const out = (await getJson('/api/autotrade/events?book=live&limit=50')) as {
+      events: unknown[];
+      scanTruncated: boolean;
+      scannedRows: number;
+    };
+    expect(out.events).toHaveLength(0);
+    // Zero live rows here means "not in the last 1000", NOT "none exist" — and
+    // the flag is the only thing that can tell those apart.
+    expect(out.scanTruncated).toBe(true);
+    expect(out.scannedRows).toBe(1000);
+  });
+
+  it('separates the two books on the SAME action', async () => {
+    // `blocked` is written by both. Nothing but the detail can split it.
+    paperBlock();
+    logAutotradeEvent({
+      symbol: 'AAPL',
+      stage: 'risk_check',
+      action: 'live_risk_blocked',
+      detail: { failedRules: ['max_concurrent_positions'] },
+    });
+    const paper = (await getJson('/api/autotrade/events?book=paper')) as { events: { symbol: string }[] };
+    const live = (await getJson('/api/autotrade/events?book=live')) as { events: { symbol: string }[] };
+    expect(paper.events.map((e) => e.symbol)).toEqual(['NRG']);
+    expect(live.events.map((e) => e.symbol)).toEqual(['AAPL']);
+  });
+
+  it('keeps screening rows out of both books rather than picking one', async () => {
+    logAutotradeEvent({ symbol: 'TSLA', stage: 'screen', action: 'candidate_found', detail: { score: 80 } });
+    const shared = (await getJson('/api/autotrade/events?book=shared')) as { events: { action: string }[] };
+    expect(shared.events.map((e) => e.action)).toEqual(['candidate_found']);
+    expect(((await getJson('/api/autotrade/events?book=live')) as { events: unknown[] }).events).toHaveLength(0);
+    expect(((await getJson('/api/autotrade/events?book=paper')) as { events: unknown[] }).events).toHaveLength(0);
+  });
+
+  it('rejects a book nobody has', async () => {
+    expect((await fetch(`${base}/api/autotrade/events?book=nonsense`)).status).toBe(400);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // The declined-entry shadow through the real route (2026-09-14).
 //
 // The route is the consumer, and the thing worth asserting at it is that a row

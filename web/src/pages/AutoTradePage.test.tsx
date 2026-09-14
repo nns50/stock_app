@@ -12,6 +12,8 @@ import type {
   AutotradeGatedSwitch,
   MlRegimeReadiness,
   AutotradeDecideResponse,
+  AutotradeEvent,
+  AutotradeEventsResponse,
   AutotradeLivePosition,
   AutotradeRiskCheckResult,
   BacktestRunResponse,
@@ -338,6 +340,24 @@ function gatedSwitchesFixture(overrides: Partial<AutotradeGatedSwitch>[] = []): 
   return base.map((row, i) => ({ ...row, ...(overrides[i] ?? {}) }));
 }
 
+/** A complete /autotrade/events response. Every field, per CLAUDE.md: the
+ *  bookCounts/scannedRows/scanTruncated trio arrived 2026-09-14 and the
+ *  typecheck caught three fixtures that would otherwise have asserted against
+ *  a shape the API never returns. */
+function eventsFixture(events: AutotradeEvent[], overrides: Partial<AutotradeEventsResponse> = {}) {
+  return {
+    events,
+    bookCounts: {
+      live: events.filter((e) => e.action.startsWith('live_')).length,
+      paper: events.filter((e) => e.action.startsWith('paper_')).length,
+      shared: 0,
+    },
+    scannedRows: events.length,
+    scanTruncated: false,
+    ...overrides,
+  } satisfies AutotradeEventsResponse;
+}
+
 function dashboardFixture(overrides: Partial<AutotradeDashboard> = {}): AutotradeDashboard {
   return {
     enabled: false,
@@ -459,7 +479,7 @@ beforeEach(() => {
     exclusions: [{ symbol: 'VNQ', reason: 'Real estate ETF', source: 'default', createdAt: Date.now() }],
   });
   vi.spyOn(client, 'autotradeMacroEvents').mockResolvedValue({ events: [] });
-  vi.spyOn(client, 'autotradeEvents').mockResolvedValue({ events: [] });
+  vi.spyOn(client, 'autotradeEvents').mockResolvedValue(eventsFixture([]));
   vi.spyOn(client, 'events').mockResolvedValue({ events: [] });
   vi.spyOn(client, 'autotradePaperPositions').mockResolvedValue({ positions: [] });
   vi.spyOn(client, 'autotradeOptionsPaperPositions').mockResolvedValue({ positions: [] });
@@ -1939,9 +1959,83 @@ describe('AutoTradePage', () => {
     expect(await screen.findByText(/No signal — insufficient volatility history \(1\)/)).toBeInTheDocument();
   });
 
+  it('re-fetches from the SERVER when the book tab changes, rather than filtering the page', async () => {
+    // The whole point of the feature. The paper book writes a risk-check row
+    // per candidate per tick — 4,983 on 2026-09-14 against four live entries —
+    // so a client-side filter over the newest 50 rows would show an empty Live
+    // tab and read as "the live book did nothing today". The request has to
+    // carry the book so the server can scan past the paper wall.
+    const spy = vi.spyOn(client, 'autotradeEvents').mockResolvedValue(eventsFixture([]));
+    renderDashboard();
+    await screen.findByText('Recent activity');
+    expect(spy).toHaveBeenCalledWith(expect.objectContaining({ book: undefined }));
+
+    // Scoped to the filter group: the page has other buttons whose names start
+    // with "Live" (the Live trading card's own header among them).
+    const tabs = within(screen.getByRole('group', { name: 'Filter activity by book' }));
+    fireEvent.click(tabs.getByRole('button', { name: /^Live/ }));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith(expect.objectContaining({ book: 'live' })));
+  });
+
+  it('shows the book on each row and the per-book counts on the tabs', async () => {
+    vi.spyOn(client, 'autotradeEvents').mockResolvedValue(
+      eventsFixture(
+        [
+          {
+            id: 1,
+            symbol: 'COIN',
+            stage: 'execution',
+            action: 'live_order_placed',
+            riskProfile: 'MODERATE',
+            createdAt: Date.now(),
+            book: 'live',
+            detail: null,
+          },
+          {
+            id: 2,
+            symbol: 'NRG',
+            stage: 'risk_check',
+            action: 'blocked',
+            riskProfile: 'MODERATE',
+            createdAt: Date.now(),
+            book: 'paper',
+            detail: null,
+          },
+        ],
+        { bookCounts: { live: 1, paper: 400, shared: 12 }, scannedRows: 413 },
+      ),
+    );
+    renderDashboard();
+    await screen.findByText('Recent activity');
+    // The counts are what make the split legible: 1 live against 400 paper is
+    // the answer to "why does nothing seem to be happening in my account".
+    const tabs = within(screen.getByRole('group', { name: 'Filter activity by book' }));
+    expect(tabs.getByRole('button', { name: 'Live 1' })).toBeInTheDocument();
+    expect(tabs.getByRole('button', { name: 'Paper 400' })).toBeInTheDocument();
+    expect(tabs.getByRole('button', { name: 'Shared 12' })).toBeInTheDocument();
+    // And the row carries the server's own decision, not a re-derivation here.
+    expect(screen.getByText('COIN').closest('tr')?.textContent).toContain('Live');
+    expect(screen.getByText('NRG').closest('tr')?.textContent).toContain('Paper');
+  });
+
+  it('says an empty book view is a WINDOW limit, not an absence', async () => {
+    // Zero live rows in the newest 1000 means "not in this window", never "the
+    // live book did nothing" — and only the truncation flag can tell those
+    // apart. Reading it the wrong way is the exact confusion this feature was
+    // asked for.
+    vi.spyOn(client, 'autotradeEvents').mockResolvedValue(
+      eventsFixture([], { bookCounts: { live: 0, paper: 1000, shared: 0 }, scannedRows: 1000, scanTruncated: true }),
+    );
+    renderDashboard();
+    await screen.findByText('Recent activity');
+    const tabs = within(screen.getByRole('group', { name: 'Filter activity by book' }));
+    fireEvent.click(tabs.getByRole('button', { name: /^Live/ }));
+    expect(await screen.findByText(/older rows exist and are not shown/)).toBeInTheDocument();
+  });
+
   it('summarizes a risk-check event\'s nested checks array instead of rendering "[object Object]"', async () => {
-    vi.spyOn(client, 'autotradeEvents').mockResolvedValue({
-      events: [
+    vi.spyOn(client, 'autotradeEvents').mockResolvedValue(
+      eventsFixture([
         {
           id: 1,
           symbol: 'AAPL',
@@ -1949,6 +2043,7 @@ describe('AutoTradePage', () => {
           action: 'blocked',
           riskProfile: 'MODERATE',
           createdAt: Date.now(),
+          book: 'paper',
           detail: JSON.stringify({
             checks: [
               { rule: 'equity_configured', passed: true, detail: '$100,000.00' },
@@ -1957,8 +2052,8 @@ describe('AutoTradePage', () => {
             quantity: 0,
           }),
         },
-      ],
-    });
+      ]),
+    );
     renderDashboard();
     expect(await screen.findByText(/1\/2 failed: max_concurrent_positions/)).toBeInTheDocument();
     expect(screen.queryByText(/object Object/)).toBeNull();
@@ -4101,7 +4196,7 @@ describe('AutoTradePage', () => {
       // activity's was before this fix).
       const dash = vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(dashboardFixture());
       const positions = vi.spyOn(client, 'autotradePaperPositions').mockResolvedValue({ positions: [] });
-      const evts = vi.spyOn(client, 'autotradeEvents').mockResolvedValue({ events: [] });
+      const evts = vi.spyOn(client, 'autotradeEvents').mockResolvedValue(eventsFixture([]));
       renderDashboard();
       await screen.findByText('Monitoring');
       dash.mockClear();

@@ -10839,3 +10839,71 @@ that work, and the lever is `maxRiskAtrFraction` — an **exposure** change, so 
 waits for the operator under Workstream 7's table, with the replay's three
 caveats (not a P&L, not a fill, resolves ambiguity against the trade) quoted
 beside the number.
+
+## 2026-09-14 — Recent activity splits by book
+
+Asked for immediately after the slot confusion above, and for the same reason:
+the journal is one stream, the two books write into it at wildly different
+rates, and nothing on screen separated them. On 2026-09-14 the paper book wrote
+**4,983** risk-check refusals against **four** live entries, so the live book's
+whole day was invisible under the noise.
+
+`eventBook.ts` decides which book a row describes, `GET /api/autotrade/events`
+takes `?book=live|paper|shared` and returns the decision on every row, and the
+Auto page gets four tabs with per-book counts plus a badge per row.
+
+### It is not a name check, and that is the whole difficulty
+
+Of the 159 actions the loop can write, **86 carry neither prefix**, and they do
+not split the way the names suggest:
+
+```
+liveExecute.ts      risk_atr_unreachable_skipped, absorbed_price_skipped,
+                    entry_filled, exit_filled, level_veto, per_lot_*,
+                    entry_window_closed, equity_synced          -> LIVE
+optionsExecute.ts   options_paper_*                             -> PAPER
+liveOptionsExecute  finish_line_skipped, symbol_cooldown_skipped,
+                    options_probation_at_minimum                -> LIVE
+```
+
+A `startsWith` filter would have put dozens of live rows under Paper and vice
+versa — a worse failure than the ambiguity it set out to fix. **An unlabelled
+row makes you look it up; a mislabelled one makes you sure.**
+
+The rule, in order: an explicit `book` in the detail wins (the only thing that
+can separate `blocked`/`passed` and `entry_extension_shadow`, which BOTH books
+write); then the prefix; then an explicit table; then `shared`.
+
+### The guard found a real error in the first draft
+
+`eventBook.test.ts` re-derives each action's book from the **module that writes
+it** and asserts the classifier agrees. On its first run it failed on three
+actions — `short_dated_entry_window_closed`, `short_dated_options_exit`,
+`short_dated_position_already_open` — which were in `PAPER_ACTIONS` because
+`optionsExecute.ts` writes them. So does `liveOptionsExecute.ts`. Every LIVE
+options cutoff, exit and slot refusal would have been filed under Paper.
+
+They carry `book` now (two of the three live writers were missing it; the paper
+twins already had it) and resolve from the detail. With no stamp they read
+`shared`, which is the honest answer for a row whose book cannot be recovered —
+not a guess at the likelier sleeve.
+
+The guard also caught its own scanner: a tightened version that only read text
+near a `logAutotradeEvent(` call silently missed `entry_filled` and
+`exit_filled`, whose object literals are long. A scan that under-reads is the
+dangerous direction — it vouches for a table with a hole in it — so the loose
+scan stayed and its three false positives (`skip`, `hold`, `reanchor`, all
+discriminants of `ReanchorDecision`) are named explicitly.
+
+### The filter must run server-side, and say how deep it looked
+
+Filtering the newest page client-side would return an empty Live tab on a
+normal day. So `?book=` scans up to `ROW_CAP` rows, classifies with the one
+classifier, and returns `bookCounts`, `scannedRows` and `scanTruncated`. An
+empty list with `scanTruncated` true means "not in the last 1,000 rows", never
+"none happened", and the empty state says which — the same rule as
+`unscorableRows` and `journalSkipsTruncated` elsewhere in this file.
+
+The book rides on each returned row rather than being re-derived in the web: two
+copies of this classification would agree the day they were written and not for
+long, and this one has already been wrong once.
