@@ -10621,3 +10621,98 @@ the rows carry `relVolume` and `rangeAtrRatio` to re-fit them from. If it never
 fires again, that is the expected outcome of a rule built for a specific,
 uncommon shape — not evidence it is broken.
 
+
+## 2026-09-14 — the entry-extension reading was dividing two different moments
+
+`pctOfRange` was not a measurement yet, and the journal said so out loud. Five of
+the first 43 live `entry_extension_shadow` rows put the entry price **outside**
+the session range it was divided by:
+
+```
+                entry   session low   high    read
+FCX   09-08 09:47   77.19    75.63    76.83   130.0%
+FTFT  09-14 10:03    5.19     3.25     4.94   114.8%
+SMCI  09-08 09:36   40.90    39.68    40.78   110.9%
+BWIN  09-14 10:38   31.91    31.73    31.90   105.9%
+CHYM  09-09 09:36   34.24    34.26    35.55    -1.6%   (below its own low)
+```
+
+The mechanism is the one PR #595 fixed one layer over, on risk sizing. The
+numerator was `signal.entry` — the price the SCREEN saw, taken before a broker
+round-trip for every candidate ahead of this one — and the denominator was
+`sessionCtx.range`, built from 5-minute bars behind a 5-minute cache and fetched
+AFTER the placement. Neither describes the moment the order was priced. Three of
+the five land inside the first 20 minutes, where the range is small and one
+missing bar is most of it: the signature of a lag, not of bad data.
+
+**The visible rate is a floor, not the rate.** An error of the same size in the
+other direction simply reads "lower in the range" and cannot be detected at all.
+Only the tail that crosses 100 is observable.
+
+**So no gate could be cut from the first bucket read**, and not because n was
+small. FCX's entry sat 30 percentage points of range beyond its own high; bucket
+edges at 50/70/85 do not survive noise of that size. The non-monotonic shape the
+leak scan reported —
+
+```
+<50    n=10  -0.08R        70-85  n=5   -0.40R  CI [-0.80, -0.03]
+50-70  n=5   -0.11R        85+    n=16  +0.18R  CI [ 0.02,  0.35]
+```
+
+— needs no real effect to explain it. The reference rule (block above 60% of
+range) would have removed a net +$99 and kept a net -$63, which is the shape
+scrambled bucket assignment produces.
+
+### What changed
+
+1. **The price is the one the order was really priced at.** The live path passes
+   `riskBasisPrice(last)`, the placement quote the sizer already risks against;
+   the paper path passes its fill. Two derivations of one quantity agree by
+   construction or they disagree in production.
+2. **`rangeIncluding` widens the range to contain that price before dividing.**
+   A price that just printed in this session IS part of the session's range; a
+   range that does not contain it is simply behind. `0 <= pctOfRange <= 100` is
+   now a property of the function rather than a hope about its inputs, and "at a
+   new high of day" reads 100 with `extendedRange: 'above'` beside it instead of
+   an impossible 130.
+3. **The residual is counted, not assumed away.** The bars can still be one bar
+   plus one cache TTL behind, so a high printed above our own quote is invisible.
+   That biases a reading DOWN, where the old defect was two-sided and unbounded.
+   `extendedRange` counts how often the quote fell outside the bars at all.
+
+### The dimension could never have been confirmed either
+
+The scan will not call a bucket a leak unless the paper control's same bucket
+agrees in sign. The shadow was journaled on the **live entry path only**, so
+`attributesForPaperBook` filled `pctOfRange: null` for every paper row — the
+control did not exist and never would have, however many trades accumulated. It
+read "unconfirmed" for a structural reason wearing a statistical one's clothes.
+
+`execute.ts` now journals the same action for the paper book, measured at the
+paper fill. Both books enter the same symbol in the same tick and therefore the
+same minute, and the scan joins on symbol + minute, so the rows carry a `book`
+field and the index is keyed by it — without that the live row overwrites the
+paper one and the control becomes a copy of its own subject. Rows written before
+today carry no `book` and default to `live`, which is what they were.
+
+### Known-bad readings are dropped and COUNTED
+
+A `pctOfRange` outside 0..100 is a known-bad measurement, not an extreme one.
+Clamping it to 100 would invent a reading the data does not support; bucketing it
+puts a trade in a band chosen by measurement error. The attribute is dropped —
+the trade stays in every other dimension — and the scan's coverage carries
+`extensionQuality { measured, staleBars, unusable }`, because a report that
+silently discards 12% of its input is the failure this codebase keeps repeating.
+
+The tune advisor reads it: while `unusable > 0` in the window, a `pctOfRange` or
+`vwapExtension` leak is reported as `needs_data` rather than ranked as a cut,
+the same downgrade a truncated skip read already applies to `no_live_row`.
+
+### The pre-committed reading
+
+No new row can read outside 0..100, so `extensionQuality.unusable` falls to zero
+as the pre-fix rows age out of the 40-session window — at which point the
+extension dimension becomes rankable for the first time, with a real paper
+control beside it. `staleBars` is the number to watch meanwhile: if most
+readings are taken while the bars are behind, the 5-minute fetch is too coarse
+for this measurement and the next step is a finer bar, not a finer cut.

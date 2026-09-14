@@ -1030,9 +1030,17 @@ export async function attemptLiveEntry(
   // It changes nothing — the order is already placed by this line. Raw numbers
   // are recorded alongside the verdict so the cut can be re-chosen from the
   // journal without a deploy.
+  //
+  // Measured at `riskBasis`, the PLACEMENT quote, not at `signal.entry`
+  // (2026-09-14). The screener's price is older than the range it would be
+  // divided by by a broker round-trip per candidate ahead of this one, and
+  // dividing two different moments by each other put five of the first 43 rows
+  // outside their own range — FCX read 130% of it. Same price the sizer risks
+  // against, from the same quote, for the same reason: two derivations of one
+  // quantity agree by construction or they disagree in production.
   const extension = evaluateEntryExtension({
     side: isShort ? 'short' : 'long',
-    price: signal.entry,
+    price: riskBasis,
     vwap: sessionCtx.vwap,
     range: sessionCtx.range,
   });
@@ -1041,13 +1049,30 @@ export async function attemptLiveEntry(
     stage: 'execution',
     action: 'entry_extension_shadow',
     detail: {
+      // Which BOOK this reading belongs to. The paper path journals the same
+      // action in the same minute for the same symbol (execute.ts), and the
+      // leak scan joins on symbol + minute — without this the two collide and
+      // the paper control silently reads the live book's number.
+      book: 'live',
       side: isShort ? 'short' : 'long',
-      entry: signal.entry,
+      // The price actually measured, and the screen's price beside it, so a
+      // later reader can see the drift this row was computed despite.
+      price: riskBasis,
+      priceBasis: 'placement_quote',
+      signalEntry: signal.entry,
+      // Kept under its original name: rows written before 2026-09-14 carry
+      // `entry` as the measured price, and a reader of the old rows must not
+      // have to guess which field that was.
+      entry: riskBasis,
       vwap: sessionCtx.vwap,
       sessionHigh: sessionCtx.range?.high ?? null,
       sessionLow: sessionCtx.range?.low ?? null,
       vwapExtPct: extension.vwapExtPct,
       pctOfRange: extension.pctOfRange,
+      // Non-null means the quote printed outside the completed 5-minute bars,
+      // i.e. the bars were behind. The residual staleness this measure cannot
+      // remove, counted rather than assumed away.
+      extendedRange: extension.extendedRange,
       wouldBlock: extension.wouldBlock,
       reasons: extension.reasons,
       // Names the cut this verdict used, so a later journal read is not left

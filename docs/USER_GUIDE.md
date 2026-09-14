@@ -960,6 +960,15 @@ tabs of one **Analytics** button (top right) — pick a tab, the report loads on
   found because a person happened to look, and all of them were already sitting in
   journals the app was writing — see the Playbook's "The edge-leak scan" for the catalog,
   the bar and the pre-committed first reading.
+  Two of those cuts — VWAP extension and % of the session's range — measure an entry price
+  against the day's range so far, and since **2026-09-14** both books record their own
+  reading (before that only the live book did, so the paper control the bar needs did not
+  exist for them). The reading is taken at the price the order was really priced at, and
+  the range is widened to contain that price, so it can no longer fall outside 0-100% of
+  its own range the way five early rows did. Readings that predate the fix and do fall
+  outside are dropped rather than guessed at, and counted, so you can see how much of the
+  window is trustworthy; while any remain, the tune advisor will show an extension finding
+  as **needs data** instead of offering it as a cut.
 
 ### Benchmark
 

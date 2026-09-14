@@ -17,7 +17,7 @@ import { setAutotradeConfig } from '../src/db/autotradeConfig';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { hasOpenPaperPosition, listPaperPositions, openPaperPosition } from '../src/db/autotradePaperPositions';
 import { createPosition, addExit } from '../src/db/positions';
-import { etToday } from '../src/util/marketDate';
+import { etDateTimeToMs, etToday } from '../src/util/marketDate';
 import * as paperPositionsDb from '../src/db/autotradePaperPositions';
 import { attemptPaperEntry, checkPaperExits, runPaperExecution } from '../src/services/autotrading/execute';
 import { evaluateRiskCheck, RiskCheckResult } from '../src/services/autotrading/riskCheck';
@@ -99,6 +99,63 @@ describe('attemptPaperEntry', () => {
     expect(outcome.position!.status).toBe('open');
   });
 
+  it('journals the entry-extension shadow so the leak scan has a paper CONTROL', async () => {
+    // 2026-09-14. The shadow was journaled on the live path only, so every
+    // paper row in the leak scan carried a hardcoded null pctOfRange — and the
+    // scan will not call a bucket a leak unless the paper control's same
+    // bucket agrees in sign. The extension dimension was therefore permanently
+    // "unconfirmed" for a structural reason, not a statistical one.
+    //
+    // Measured at the paper FILL (101.5), the twin of the live path's
+    // placement quote, not at the signal's 100.
+    const barAt = etDateTimeToMs(etToday(Date.now()), '10:00') as number;
+    mockGetProvider.mockReturnValue({
+      getQuote: vi.fn(async (symbol: string) => ({ symbol, last: 101.5, timestamp: Date.now() })),
+      getCandles: vi.fn(async () => [{ time: barAt, open: 99, high: 103, low: 99, close: 102, volume: 10_000 }]),
+    } as never);
+
+    const outcome = await attemptPaperEntry(signal({ symbol: 'PEXT' }), okResult, 'MODERATE');
+    expect(outcome.ok, `expected a paper entry, got: ${outcome.reason}`).toBe(true);
+
+    const rows = listAutotradeEvents({ actions: ['entry_extension_shadow'] });
+    expect(rows).toHaveLength(1);
+    const detail = JSON.parse(rows[0].detail ?? '{}') as Record<string, unknown>;
+    // The discriminator: both books enter the same symbol in the same minute,
+    // and the scan joins on symbol + minute. Without it the live row overwrites
+    // this one and the control becomes a copy of its own subject.
+    expect(detail.book).toBe('paper');
+    expect(detail.price).toBe(101.5);
+    expect(detail.priceBasis).toBe('paper_fill');
+    expect(detail.signalEntry).toBe(100);
+    // (101.5 - 99) / (103 - 99) = 62.5% of the session range.
+    expect(detail.pctOfRange).toBe(62.5);
+    expect(detail.extendedRange).toBeNull();
+  });
+
+  it('records the paper entry even when the extension measurement cannot be taken', async () => {
+    // A measurement must never be able to fail an entry (vwap.ts's rule). The
+    // candles throw; the position still opens and simply has no reading.
+    mockGetProvider.mockReturnValue({
+      getQuote: vi.fn(async (symbol: string) => ({ symbol, last: 101.5, timestamp: Date.now() })),
+      getCandles: vi.fn(async () => {
+        throw new Error('provider unavailable');
+      }),
+    } as never);
+
+    const outcome = await attemptPaperEntry(signal({ symbol: 'PEXU' }), okResult, 'MODERATE');
+    expect(outcome.ok, `expected a paper entry, got: ${outcome.reason}`).toBe(true);
+    expect(outcome.position!.entryPrice).toBe(101.5);
+    // Unmeasured is a null reading, never an invented one — and the row is
+    // still written, so the journal says the entry was unmeasured rather than
+    // leaving a silent gap an asserter could mistake for a pass.
+    const rows = listAutotradeEvents({ actions: ['entry_extension_shadow'] });
+    expect(rows).toHaveLength(1);
+    const detail = JSON.parse(rows[0].detail ?? '{}') as Record<string, unknown>;
+    expect(detail.pctOfRange).toBeNull();
+    expect(detail.vwapExtPct).toBeNull();
+    expect(detail.wouldBlock).toBe(false);
+  });
+
   it('stamps the conviction grade plus at-entry context on the opened position (2026-07-26)', async () => {
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 101.5 }) as never);
     const outcome = await attemptPaperEntry(
@@ -172,8 +229,12 @@ describe('attemptPaperEntry', () => {
   it('journals a paper_order_placed event', async () => {
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 101.5 }) as never);
     await attemptPaperEntry(signal(), okResult, 'MODERATE');
-    const events = listAutotradeEvents({ stage: 'execution', symbol: 'AAPL' });
-    expect(events[0].action).toBe('paper_order_placed');
+    // Named, not positional: a paper entry writes more than one row now (the
+    // extension shadow rides the same path since 2026-09-14) and
+    // listAutotradeEvents orders newest first, so `events[0]` was an assertion
+    // about which row happened to be last rather than about this one.
+    const events = listAutotradeEvents({ stage: 'execution', symbol: 'AAPL', actions: ['paper_order_placed'] });
+    expect(events).toHaveLength(1);
     expect(events[0].riskProfile).toBe('MODERATE');
   });
 });

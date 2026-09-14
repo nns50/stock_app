@@ -3,6 +3,8 @@ import { Candle } from '../src/providers/types';
 import {
   computeSessionRange,
   evaluateEntryExtension,
+  rangeExtendedBy,
+  rangeIncluding,
   REFERENCE_MAX_PCT_OF_RANGE,
   REFERENCE_MAX_VWAP_EXT_PCT,
 } from '../src/services/autotrading/entryExtension';
@@ -118,5 +120,85 @@ describe('evaluateEntryExtension', () => {
     expect(e.pctOfRange).toBeLessThan(REFERENCE_MAX_PCT_OF_RANGE);
     expect(e.vwapExtPct).toBeGreaterThan(REFERENCE_MAX_VWAP_EXT_PCT);
     expect(e.wouldBlock).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The ratio is bounded BY CONSTRUCTION (2026-09-14).
+//
+// Before this, the numerator was the screener's price and the denominator a
+// range from 5-minute bars behind a 5-minute cache, so five of the first 43
+// live rows put the entry outside its own range. Each case below is one of
+// those rows, at its real numbers.
+// ---------------------------------------------------------------------------
+describe('rangeIncluding', () => {
+  it('widens the range upward when the price printed above the bars', () => {
+    // FCX 2026-09-08 09:47: entry 77.19, bars 75.63-76.83.
+    expect(rangeIncluding({ high: 76.83, low: 75.63 }, 77.19)).toEqual({ high: 77.19, low: 75.63 });
+  });
+
+  it('widens the range downward when the price printed below the bars', () => {
+    // CHYM 2026-09-09 09:36: entry 34.24, bars 34.26-35.55.
+    expect(rangeIncluding({ high: 35.55, low: 34.26 }, 34.24)).toEqual({ high: 35.55, low: 34.24 });
+  });
+
+  it('leaves a range that already contains the price alone', () => {
+    expect(rangeIncluding({ high: 42, low: 40 }, 41)).toEqual({ high: 42, low: 40 });
+  });
+
+  it('is null for a null range and unchanged for an unusable price', () => {
+    expect(rangeIncluding(null, 41)).toBeNull();
+    expect(rangeIncluding({ high: 42, low: 40 }, 0)).toEqual({ high: 42, low: 40 });
+  });
+});
+
+describe('rangeExtendedBy', () => {
+  it('names which side the price fell outside', () => {
+    expect(rangeExtendedBy({ high: 76.83, low: 75.63 }, 77.19)).toBe('above');
+    expect(rangeExtendedBy({ high: 35.55, low: 34.26 }, 34.24)).toBe('below');
+    expect(rangeExtendedBy({ high: 42, low: 40 }, 41)).toBeNull();
+    expect(rangeExtendedBy(null, 41)).toBeNull();
+  });
+});
+
+describe('evaluateEntryExtension is bounded to 0..100', () => {
+  // The five real rows that read impossibly, and what they read now. A long
+  // that printed a new session high IS at 100% of the range — the 130 was the
+  // bars being behind, not a price 30% past the top of the day.
+  const outside: [string, 'long' | 'short', number, { high: number; low: number }, number, 'above' | 'below'][] = [
+    ['FCX 130.0%', 'long', 77.19, { high: 76.83, low: 75.63 }, 100, 'above'],
+    ['FTFT 114.8%', 'long', 5.19, { high: 4.94, low: 3.25 }, 100, 'above'],
+    ['SMCI 110.9%', 'long', 40.9, { high: 40.78, low: 39.68 }, 100, 'above'],
+    ['BWIN 105.9%', 'long', 31.91, { high: 31.9, low: 31.73 }, 100, 'above'],
+    ['CHYM -1.6%', 'long', 34.24, { high: 35.55, low: 34.26 }, 0, 'below'],
+  ];
+  for (const [name, side, price, range, expected, flag] of outside) {
+    it(`reads ${name} inside the bounds and flags the stale bars`, () => {
+      const e = evaluateEntryExtension({ side, price, vwap: null, range });
+      expect(e.pctOfRange).toBe(expected);
+      expect(e.extendedRange).toBe(flag);
+    });
+  }
+
+  // The orientation flip has to survive the widening: a SHORT that printed a
+  // new session LOW is maximally extended, not minimally.
+  it('keeps the short orientation when the price extends the range', () => {
+    const e = evaluateEntryExtension({ side: 'short', price: 34.24, vwap: null, range: { high: 35.55, low: 34.26 } });
+    expect(e.pctOfRange).toBe(100);
+    expect(e.extendedRange).toBe('below');
+  });
+
+  it('is null-flagged when the price sat inside the bars', () => {
+    expect(
+      evaluateEntryExtension({ side: 'long', price: 41, vwap: 41, range: { high: 42, low: 40 } }).extendedRange,
+    ).toBeNull();
+  });
+
+  // A flat symbol whose quote has since moved is no longer unmeasurable: the
+  // session range genuinely is quote-to-bar, and the entry is at its top.
+  it('a degenerate range the price escapes becomes measurable', () => {
+    const e = evaluateEntryExtension({ side: 'long', price: 42, vwap: null, range: { high: 41, low: 41 } });
+    expect(e.pctOfRange).toBe(100);
+    expect(e.extendedRange).toBe('above');
   });
 });

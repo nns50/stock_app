@@ -92,6 +92,152 @@ describe('joinLeakTrades — one R basis, and the round assigned per symbol-day'
   });
 });
 
+describe('the entry-extension join — each book reads its OWN reading', () => {
+  // 2026-09-14. Two defects met here, and both were invisible from the
+  // producer's side:
+  //
+  //   1. The index was keyed by symbol and minute. Both books enter the same
+  //      symbol in the SAME tick, so the live row overwrote the paper one and
+  //      the "control" the scan requires to confirm a leak became a copy of the
+  //      thing it was controlling — a control that always agrees.
+  //   2. Before the paper path journaled at all, every paper row's pctOfRange
+  //      was a hardcoded null, so the dimension could never clear the bar
+  //      however many trades landed. It read "unconfirmed" for a structural
+  //      reason wearing a statistical one's clothes.
+  const shadow = (symbol: string, at: number, book: string | null, pctOfRange: number) =>
+    db
+      .prepare(
+        'INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) ' +
+          "VALUES (?,'execution','entry_extension_shadow',?,NULL,?)",
+      )
+      .run(symbol, JSON.stringify({ ...(book ? { book } : {}), pctOfRange, vwapExtPct: 1.5 }), at);
+
+  const seedPaperAt = (symbol: string, at: number, exitPrice: number) => {
+    const p = openPaperPosition({
+      symbol,
+      side: 'buy',
+      quantity: 10,
+      entryPrice: 100,
+      stopPrice: 95,
+      targetPrice: 110,
+      riskAmount: 50,
+      riskProfile: 'MODERATE',
+      rationale: 'fixture',
+    });
+    db.prepare('UPDATE autotrade_paper_positions SET entry_at = ? WHERE id = ?').run(at, p.id);
+    closePaperPosition(p.id, { exitPrice, exitReason: 'target' });
+  };
+
+  const NOW = Date.parse('2026-09-11T21:00:00Z');
+  const pctOf = (scan: ReturnType<typeof runEdgeLeakScanFromDb>, book: 'live' | 'paper') =>
+    scan.dimensions
+      .find((d) => d.id === 'pctOfRange')
+      ?.buckets.map((b) => ({
+        bucket: b.bucket,
+        n: book === 'live' ? b.n : (b.control?.n ?? 0),
+      }));
+
+  it('does not let the live row stand in for the paper control in the same minute', () => {
+    const at = etDateTimeToMs(SESSIONS[0], '09:35') as number;
+    seedClosedAutotradeSessions({
+      sessions: { [SESSIONS[0]]: [{ entryTime: '09:35', exitTime: '10:00', r: 1.4, symbol: 'NVDA' }] },
+    });
+    seedPaperAt('NVDA', at, 110);
+    // Same symbol, same minute, opposite ends of the range.
+    shadow('NVDA', at, 'live', 92);
+    shadow('NVDA', at + 400, 'paper', 12);
+
+    const scan = runEdgeLeakScanFromDb({ now: NOW });
+    // The live trade lands in 85+, the paper control in <50. Under the old key
+    // both read 92 and the control confirmed the live book's own number.
+    expect(pctOf(scan, 'live')).toEqual([{ bucket: '85+', n: 1 }]);
+    expect(pctOf(scan, 'paper')).toEqual([{ bucket: '85+', n: 0 }]);
+    const paperDim = scan.dimensions.find((d) => d.id === 'pctOfRange');
+    expect(paperDim?.buckets[0]?.control?.n ?? 0).toBe(0);
+  });
+
+  it('joins the paper book to its own reading, where before it joined to nothing', () => {
+    const at = etDateTimeToMs(SESSIONS[0], '10:15') as number;
+    seedClosedAutotradeSessions({
+      sessions: { [SESSIONS[0]]: [{ entryTime: '10:15', exitTime: '11:00', r: 0.5, symbol: 'AMD' }] },
+    });
+    seedPaperAt('AMD', at, 110);
+    shadow('AMD', at, 'live', 90);
+    shadow('AMD', at, 'paper', 90);
+
+    const scan = runEdgeLeakScanFromDb({ now: NOW });
+    const bucket = scan.dimensions.find((d) => d.id === 'pctOfRange')?.buckets.find((b) => b.bucket === '85+');
+    expect(bucket?.n).toBe(1);
+    // The control arm exists now — this is the field that was structurally
+    // null, and with it the dimension can be confirmed or refuted at all.
+    expect(bucket?.control?.n).toBe(1);
+  });
+
+  it('treats a row written before the book field as live, not as orphaned history', () => {
+    const at = etDateTimeToMs(SESSIONS[0], '11:20') as number;
+    seedClosedAutotradeSessions({
+      sessions: { [SESSIONS[0]]: [{ entryTime: '11:20', exitTime: '12:00', r: -0.4, symbol: 'HPQ' }] },
+    });
+    shadow('HPQ', at, null, 88);
+
+    const scan = runEdgeLeakScanFromDb({ now: NOW });
+    expect(scan.dimensions.find((d) => d.id === 'pctOfRange')?.buckets).toEqual([
+      expect.objectContaining({ bucket: '85+', n: 1 }),
+    ]);
+  });
+
+  it('counts the extension readings it could and could not trust', () => {
+    // A report that silently discards 12% of its input is the failure this
+    // codebase keeps repeating, so both counts travel with the scan: how many
+    // readings were dropped outright, and how many were usable but taken while
+    // the 5-minute bars were behind the price.
+    const at = etDateTimeToMs(SESSIONS[0], '09:45') as number;
+    seedClosedAutotradeSessions({
+      sessions: {
+        [SESSIONS[0]]: [
+          { entryTime: '09:45', exitTime: '10:15', r: 0.3, symbol: 'AAA' },
+          { entryTime: '09:46', exitTime: '10:15', r: 0.3, symbol: 'BBB' },
+          { entryTime: '09:47', exitTime: '10:15', r: 0.3, symbol: 'CCC' },
+        ],
+      },
+    });
+    db.prepare(
+      'INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) ' +
+        "VALUES (?,'execution','entry_extension_shadow',?,NULL,?)",
+    ).run('AAA', JSON.stringify({ book: 'live', pctOfRange: 40, extendedRange: null }), at);
+    db.prepare(
+      'INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) ' +
+        "VALUES (?,'execution','entry_extension_shadow',?,NULL,?)",
+    ).run('BBB', JSON.stringify({ book: 'live', pctOfRange: 100, extendedRange: 'above' }), at + 60_000);
+    db.prepare(
+      'INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) ' +
+        "VALUES (?,'execution','entry_extension_shadow',?,NULL,?)",
+    ).run('CCC', JSON.stringify({ book: 'live', pctOfRange: 130 }), at + 120_000);
+
+    const scan = runEdgeLeakScanFromDb({ now: NOW });
+    expect(scan.coverage.extensionQuality).toEqual({ measured: 2, staleBars: 1, unusable: 1 });
+  });
+
+  it('drops a pre-fix reading that fell outside its own range rather than bucketing it', () => {
+    // FCX 2026-09-08: entry 77.19 against bars topping at 76.83 — 130.0% of a
+    // range the price was above. Clamping it to 100 would invent a reading;
+    // bucketing it puts a trade in a band chosen by measurement error. The
+    // trade stays in every other dimension and is unmeasured in this one.
+    const at = etDateTimeToMs(SESSIONS[0], '12:40') as number;
+    seedClosedAutotradeSessions({
+      sessions: { [SESSIONS[0]]: [{ entryTime: '12:40', exitTime: '13:10', r: -0.2, symbol: 'FCX' }] },
+    });
+    shadow('FCX', at, 'live', 130);
+
+    const scan = runEdgeLeakScanFromDb({ now: NOW });
+    expect(scan.dimensions.find((d) => d.id === 'pctOfRange')?.buckets).toEqual([]);
+    // Still counted as a trade, and still measured on the dimensions whose
+    // inputs were never in doubt.
+    expect(scan.coverage.liveTrades).toBe(1);
+    expect(scan.dimensions.find((d) => d.id === 'vwapExtension')?.buckets.length).toBeGreaterThan(0);
+  });
+});
+
 describe('the options sleeve, which nothing else in the scan can see', () => {
   it('reports a sleeve that cannot size a contract, with the binding number', () => {
     // 2026-09-08..09 on the live book: 29 of 31 candidates refused with

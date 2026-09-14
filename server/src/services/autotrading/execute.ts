@@ -34,6 +34,8 @@ import { journalMethodMultipliers, methodOfEquitySignal } from './methodSizing';
 import { getProvider } from '../../providers';
 import { mapPool } from '../../util/async';
 import { evaluateEndOfDayFlatten } from './endOfDayFlatten';
+import { evaluateEntryExtension, REFERENCE_MAX_PCT_OF_RANGE, REFERENCE_MAX_VWAP_EXT_PCT } from './entryExtension';
+import { fetchTodaySessionContext } from './vwap';
 
 // ---------------------------------------------------------------------------
 // The Execution stage of the Phase 6 paper loop (docs/AUTOTRADING_SPEC.md —
@@ -196,6 +198,66 @@ export async function attemptPaperEntry(
     },
     riskProfile,
   });
+
+  // Entry-extension SHADOW for the PAPER book (2026-09-14).
+  //
+  // The live path has journaled this since 2026-09-04; paper never did, and
+  // that is not a cosmetic gap. The edge-leak scan will not call a bucket a
+  // leak unless the paper book's same bucket agrees in sign, and with no paper
+  // reading `attributesForPaperBook` filled `pctOfRange: null` for every row —
+  // so the extension dimension could not clear the scan's bar however many
+  // trades accumulated. It reported "unconfirmed" for a structural reason
+  // wearing a statistical one's clothes. Paper enters on the same signals in
+  // the same tick, which is exactly the control the bar asks for.
+  //
+  // Measured at `fillPrice` — the quote this paper trade actually filled at,
+  // the paper twin of the live path's placement quote. Same function, same
+  // rule, each book naming its own fill.
+  //
+  // AFTER the position is recorded, and non-fatal, for the reason vwap.ts
+  // gives: a measurement must never be able to fail an entry. The fetch is the
+  // same 5-minute cached one the live path uses, so a symbol both books enter
+  // in one tick costs one call, not two.
+  try {
+    const paperCtx = await fetchTodaySessionContext(signal.symbol);
+    const extension = evaluateEntryExtension({
+      side: signal.side === 'buy' ? 'long' : 'short',
+      price: fillPrice,
+      vwap: paperCtx.vwap,
+      range: paperCtx.range,
+    });
+    logAutotradeEvent({
+      symbol: signal.symbol,
+      stage: 'execution',
+      action: 'entry_extension_shadow',
+      detail: {
+        // The live row carries `book: 'live'`. The leak scan joins these rows
+        // on symbol + minute, and both books enter the same symbol in the same
+        // minute, so without this discriminator one book's reading overwrites
+        // the other's and the control becomes a copy of the thing it controls.
+        book: 'paper',
+        side: signal.side === 'buy' ? 'long' : 'short',
+        price: fillPrice,
+        priceBasis: 'paper_fill',
+        signalEntry: signal.entry,
+        entry: fillPrice,
+        vwap: paperCtx.vwap,
+        sessionHigh: paperCtx.range?.high ?? null,
+        sessionLow: paperCtx.range?.low ?? null,
+        vwapExtPct: extension.vwapExtPct,
+        pctOfRange: extension.pctOfRange,
+        extendedRange: extension.extendedRange,
+        wouldBlock: extension.wouldBlock,
+        reasons: extension.reasons,
+        referenceMaxPctOfRange: REFERENCE_MAX_PCT_OF_RANGE,
+        referenceMaxVwapExtPct: REFERENCE_MAX_VWAP_EXT_PCT,
+      },
+      riskProfile,
+    });
+  } catch {
+    // Unmeasured, never an invented reading and never a failed paper entry.
+  }
+
   return { symbol: signal.symbol, ok: true, position };
 }
 

@@ -51,7 +51,7 @@ import {
   AutotradeConfig,
 } from '../src/db/autotradeConfig';
 import { setTradingConfig } from '../src/db/trading';
-import { etToday } from '../src/util/marketDate';
+import { etDateTimeToMs, etToday } from '../src/util/marketDate';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { listPositions, createPosition, addExit } from '../src/db/positions';
 import * as positionsDb from '../src/db/positions';
@@ -1592,6 +1592,44 @@ describe('runLiveExecution — the entry is sized against the price it will pay'
 
     expect(placedIntent().quantity).toBe(nearQty);
     expect(listAutotradeEvents({ actions: ['live_entry_risk_resized'] })).toHaveLength(0);
+  });
+
+  it('measures the entry-extension shadow at the PLACEMENT quote, not the screen price', async () => {
+    // 2026-09-14. The shadow divided `signal.entry` — the price the screen saw
+    // — by a session range fetched after the placement, from 5-minute bars
+    // behind a 5-minute cache. Two different moments, divided by each other,
+    // and five of the first 43 live rows landed OUTSIDE their own range (FCX
+    // read 130.0% of it).
+    //
+    // The fixture is that shape at unambiguous numbers: the screen decided at
+    // 100, the placement quote is 104, and the session bars top out at 102.
+    // Measured at 100 the row reads 66.7% of range. Measured at the price the
+    // order was really priced at — which printed ABOVE the bars, so the bars
+    // are behind — it reads 100% with the staleness flagged beside it.
+    const today = etToday(Date.now());
+    const barAt = etDateTimeToMs(today, '10:00') as number;
+    mockGetProvider.mockReturnValue({
+      getQuote: vi.fn(async (symbol: string) => ({ symbol, last: 104, timestamp: Date.now() })),
+      getCandles: vi.fn(async () => [{ time: barAt, open: 96, high: 102, low: 96, close: 101, volume: 10_000 }]),
+    } as unknown as ReturnType<typeof getProvider>);
+
+    const outcomes = await runLiveExecution([{ signal: signal({ symbol: 'EXTN' }) }]);
+    expect(outcomes[0].ok, `expected an entry, got: ${outcomes[0].reason}`).toBe(true);
+
+    const rows = listAutotradeEvents({ actions: ['entry_extension_shadow'] });
+    expect(rows).toHaveLength(1);
+    const detail = JSON.parse(rows[0].detail ?? '{}') as Record<string, unknown>;
+    expect(detail.price).toBe(104);
+    expect(detail.priceBasis).toBe('placement_quote');
+    // Both prices on the row, so a later reader can see the drift it was
+    // computed despite rather than having to reconstruct it.
+    expect(detail.signalEntry).toBe(100);
+    // 66.7 is what the screen price would have read against these bars.
+    expect(detail.pctOfRange).toBe(100);
+    expect(detail.extendedRange).toBe('above');
+    // The discriminator the leak scan joins on: without it the paper row
+    // written in this same minute would overwrite this one.
+    expect(detail.book).toBe('live');
   });
 
   it('journals WHICH buying-power figure the sizer aimed at', async () => {
