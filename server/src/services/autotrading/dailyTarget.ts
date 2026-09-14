@@ -380,7 +380,10 @@ export function updateDailyTarget(now: number = Date.now()): DailyTargetStatus {
   }
 
   if (confirmed && baseline) {
-    markDailyTargetReached(now);
+    // 'strategy' because evaluateDailyTarget above measured the LOOP's own
+    // realized P&L. Stamped with the reach so the results row cannot later
+    // assert a basis the reach did not have.
+    markDailyTargetReached(now, 'strategy');
     status.reachedAt = now;
     logAutotradeEvent({
       stage: 'execution',

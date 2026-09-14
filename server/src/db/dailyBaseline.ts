@@ -1,4 +1,5 @@
 import { db } from './index';
+import type { GoalBasis } from './dailyResults';
 
 // ---------------------------------------------------------------------------
 // The account's equity at the start of the current ET day — the base the
@@ -38,6 +39,12 @@ export interface DailyBaseline {
   goalScale: number | null;
   /** Why (the trigger line), for the goal card and the journal. */
   goalScaleReason: string | null;
+  /** Which quantity stamped `reachedAt` — 'strategy' for the loop's own
+   *  realized P&L, 'account' for the whole brokerage account, null for a day
+   *  stamped before the basis was tracked. Written WITH the stamp, because the
+   *  basis belongs to the moment of the stamp and not to whatever code happens
+   *  to read the row afterwards. */
+  goalBasis: GoalBasis;
 }
 
 interface Row {
@@ -49,13 +56,14 @@ interface Row {
   reach_candidate_at: number | null;
   goal_scale: number | null;
   goal_scale_reason: string | null;
+  goal_basis: string | null;
 }
 
 export function getDailyBaseline(): DailyBaseline | null {
   const row = db
     .prepare(
       `SELECT et_date, equity_usd, reached_at, give_back_armed_at, give_back_halted_at, reach_candidate_at,
-              goal_scale, goal_scale_reason
+              goal_scale, goal_scale_reason, goal_basis
        FROM autotrade_daily_baseline WHERE id = 1`,
     )
     .get() as Row | undefined;
@@ -69,6 +77,9 @@ export function getDailyBaseline(): DailyBaseline | null {
     reachCandidateAt: row.reach_candidate_at,
     goalScale: row.goal_scale,
     goalScaleReason: row.goal_scale_reason,
+    // Anything unrecognised reads as null, the conservative side: null means
+    // "assume the old, account-derived basis" everywhere it is consumed.
+    goalBasis: row.goal_basis === 'strategy' || row.goal_basis === 'account' ? row.goal_basis : null,
   };
 }
 
@@ -81,7 +92,7 @@ export function saveDailyBaseline(etDate: string, equityUsd: number): DailyBasel
      VALUES (1, ?, ?, NULL, NULL, NULL)
      ON CONFLICT(id) DO UPDATE SET et_date = excluded.et_date, equity_usd = excluded.equity_usd,
        reached_at = NULL, give_back_armed_at = NULL, give_back_halted_at = NULL,
-       reach_candidate_at = NULL, goal_scale = NULL, goal_scale_reason = NULL`,
+       reach_candidate_at = NULL, goal_scale = NULL, goal_scale_reason = NULL, goal_basis = NULL`,
   ).run(etDate, equityUsd);
   return {
     etDate,
@@ -92,6 +103,7 @@ export function saveDailyBaseline(etDate: string, equityUsd: number): DailyBasel
     reachCandidateAt: null,
     goalScale: null,
     goalScaleReason: null,
+    goalBasis: null,
   };
 }
 
@@ -114,9 +126,20 @@ export function setDailyGoalScale(scale: number, reason: string | null): boolean
   return res.changes > 0;
 }
 
-/** Mark today's target reached (first time only — the caller checks). */
-export function markDailyTargetReached(reachedAt: number): void {
-  db.prepare('UPDATE autotrade_daily_baseline SET reached_at = ? WHERE id = 1 AND reached_at IS NULL').run(reachedAt);
+/**
+ * Mark today's target reached (first time only — the caller checks), recording
+ * WHICH QUANTITY reached it in the same statement.
+ *
+ * The basis is not optional and not inferred later. The daily-results recorder
+ * runs after the close and can only know the code IT is running; on 2026-09-14
+ * that was one deploy after the stamp, so the row claimed a strategy-basis goal
+ * day for a day the ACCOUNT had banked at +4.87% while the loop's own P&L was
+ * +2.01%. Written here, the basis cannot disagree with the stamp it describes.
+ */
+export function markDailyTargetReached(reachedAt: number, goalBasis: Exclude<GoalBasis, null>): void {
+  db.prepare(
+    'UPDATE autotrade_daily_baseline SET reached_at = ?, goal_basis = ? WHERE id = 1 AND reached_at IS NULL',
+  ).run(reachedAt, goalBasis);
 }
 
 /** Mark the give-back guard armed for today (first time only). */

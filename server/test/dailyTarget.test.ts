@@ -116,6 +116,9 @@ describe('evaluateDailyTarget (pure)', () => {
     reachCandidateAt: null,
     goalScale,
     goalScaleReason: goalScale === null ? null : 'ML regime High Volatility/Bearish (35% cut)',
+    // Null = stamped before the basis was tracked; a case about the basis
+    // itself sets it explicitly.
+    goalBasis: null,
   });
 
   it('is inactive with no target set — the calibration-only tune never halts anything', () => {

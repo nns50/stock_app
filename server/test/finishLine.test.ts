@@ -26,6 +26,7 @@ const BASELINE: DailyBaseline = {
   reachCandidateAt: null,
   goalScale: null,
   goalScaleReason: null,
+  goalBasis: null,
 };
 
 const dayOf = (loopPnlUsd: number, accountEquityUsd = 10_000 + loopPnlUsd): DailyTargetStatus =>

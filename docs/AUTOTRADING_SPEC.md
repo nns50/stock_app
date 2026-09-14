@@ -11105,3 +11105,42 @@ fails if any factor line interpolates the final percentage again — the
 per-line tests pin today's wording, the scan pins the shape.
 
 Reporting only. No sizing changed.
+
+## 2026-09-14 (same evening) — the goal basis belongs to the STAMP, not to the recorder
+
+The `goal_basis` column added hours earlier got its very first row wrong, which
+is the most useful kind of bug to find: the column exists precisely to keep an
+account-banked day out of the strategy goal rate, and its first row was an
+account-banked day labelled `strategy`.
+
+What happened on 2026-09-14, in order:
+
+1. 14:41:01 ET — the ACCOUNT crossed 3% (+4.87%, carried by a manual TSLA
+   options position) and the then-deployed evaluator stamped `reached_at`.
+2. ~16:30 ET — the loop's-own-P&L change deployed.
+3. 16:45 ET — the results recorder ran and wrote the row.
+
+`recordDailyResult` set `goalBasis: current ? 'strategy' : …` — "if this is
+today's baseline row, the basis is strategy". That asserts the basis of the code
+RUNNING NOW, and a recorder runs after the fact. The row read `goalReached:
+true`, `goalBasis: 'strategy'`, `strategyGainPct: 2.01` — a strategy-basis goal
+day at two-thirds of a 3% goal, which the review would have counted.
+
+(The loop's own day, for the record: +$117.79 on the stock sleeve, −$47.00 on
+the live options sleeve — two INTC 09/14 puts stopped out — so **+$70.79,
++2.01%**. It never reached 3%. The account's +4.87% did.)
+
+**The basis is now stamped with the reach**, on `autotrade_daily_baseline.
+goal_basis`, written in the same UPDATE as `reached_at` by
+`markDailyTargetReached(now, 'strategy')`. A basis written beside the thing it
+describes cannot disagree with it; one inferred later always can. The recorder
+reads the stamp instead of asserting one.
+
+2026-09-14's own row carries NULL — the column did not exist when its reach was
+stamped — and null reads as "the old, account-derived basis" everywhere
+downstream, so the review excludes it as a manual-trading day. That is the right
+answer for that day, reached without a date literal anywhere.
+
+The general rule, which is the 2026-08-27 disease in the time dimension: **when
+a fact and its provenance are written at different moments, the provenance is a
+guess.** Write them together.

@@ -610,7 +610,20 @@ CREATE TABLE IF NOT EXISTS autotrade_daily_baseline (
   -- the day banks, then frozen (setDailyGoalScale's WHERE). NULL reads as 1 = unscaled;
   -- both clear on the day roll.
   goal_scale           REAL,
-  goal_scale_reason    TEXT
+  goal_scale_reason    TEXT,
+  -- WHICH QUANTITY stamped reached_at (2026-09-14): 'strategy' for the loop's
+  -- own realized P&L, 'account' for the whole brokerage account, NULL on a day
+  -- stamped before this column existed.
+  --
+  -- It lives HERE, beside the stamp, and not on the daily-results row, because
+  -- the basis belongs to the MOMENT OF THE STAMP. The results recorder runs
+  -- after the close and can only report the code it is itself running; on
+  -- 2026-09-14 that was hours after the stamp and one deploy later, so the row
+  -- claimed a strategy-basis goal day for a day the ACCOUNT had banked at
+  -- +4.87% while the loop's own P&L was +2.01% — the exact contamination the
+  -- basis was added to exclude, on its first row. Written with the reach, it
+  -- cannot disagree with the reach.
+  goal_basis           TEXT
 );
 
 CREATE TABLE IF NOT EXISTS autotrade_exclusions (
@@ -1426,6 +1439,12 @@ function migrate(): void {
   }
   if (!dbCols.some((c) => c.name === 'goal_scale_reason')) {
     db.exec('ALTER TABLE autotrade_daily_baseline ADD COLUMN goal_scale_reason TEXT');
+  }
+  // 2026-09-14: which quantity stamped reached_at — see the column's own note
+  // in the schema above. A day already stamped stays NULL, which reads as the
+  // old, account-derived basis. That is right for 2026-09-14 itself.
+  if (!dbCols.some((c) => c.name === 'goal_basis')) {
+    db.exec('ALTER TABLE autotrade_daily_baseline ADD COLUMN goal_basis TEXT');
   }
   if (!hasOpp('underlying_at_entry')) {
     db.exec('ALTER TABLE autotrade_options_paper_positions ADD COLUMN underlying_at_entry REAL');

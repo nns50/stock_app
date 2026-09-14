@@ -2010,7 +2010,7 @@ describe('runAutotradeLoopTick', () => {
         accountEquityUsd: 2103.43,
       });
       saveDailyBaseline(etToday(), 2103.43);
-      markDailyTargetReached(Date.now()); // sticky: the day is banked
+      markDailyTargetReached(Date.now(), 'strategy'); // sticky: the day is banked
       armScreenAndDecide();
       mockExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);
       mockLiveExecute.mockResolvedValue([{ symbol: 'AAPL', ok: true }]);

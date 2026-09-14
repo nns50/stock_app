@@ -126,14 +126,36 @@ describe('recordDailyResult / recordTodayAfterClose', () => {
     expect(rows[0].accountGainPct).toBe(1.5);
   });
 
-  it('carries the day’s stamps: goal reached and the give-back halt', () => {
+  it('carries the day’s stamps: goal reached, its BASIS, and the give-back halt', () => {
     saveDailyBaseline(DAY, 10_000);
-    markDailyTargetReached(Date.now());
+    markDailyTargetReached(Date.now(), 'strategy');
     markGiveBackHalted(Date.now());
     setAutotradeConfig({ ...defaultAutotradeConfig(), accountEquityUsd: 10_300 });
     const r = recordDailyResult(DAY, 1);
     expect(r.goalReached).toBe(true);
     expect(r.giveBackHalted).toBe(true);
+    expect(r.goalBasis).toBe('strategy');
+  });
+
+  it('reports the basis the STAMP carried, not the one the recorder is running (2026-09-14)', () => {
+    // The recorder runs after the close, possibly a deploy later than the
+    // stamp. It said `current ? 'strategy' : …` for a few hours and got its
+    // first real row wrong: 2026-09-14's reach was stamped at 14:41 by the
+    // account-based evaluator, and the row claimed a strategy-basis goal day
+    // at +2.01% against a 3% goal — a day the ACCOUNT banked at +4.87%, which
+    // is precisely the contamination the basis exists to exclude.
+    //
+    // A day stamped before the basis column existed carries NULL, and null is
+    // read as "the old basis" everywhere downstream. Simulated by stamping the
+    // reach and then clearing the basis, which is exactly the state such a row
+    // is in.
+    saveDailyBaseline(DAY, 10_000);
+    markDailyTargetReached(Date.now(), 'strategy');
+    db.exec('UPDATE autotrade_daily_baseline SET goal_basis = NULL WHERE id = 1');
+    setAutotradeConfig({ ...defaultAutotradeConfig(), accountEquityUsd: 10_300 });
+    const r = recordDailyResult(DAY, 1);
+    expect(r.goalReached).toBe(true);
+    expect(r.goalBasis).toBeNull();
   });
 
   it('does nothing at all while the session is still open', () => {
