@@ -1391,6 +1391,8 @@ interface LiveTradingSectionProps {
   setLiveMaxOrdersPerDayDraft: (v: number | undefined) => void;
   liveFatFingerPctDraft: number | undefined;
   setLiveFatFingerPctDraft: (v: number | undefined) => void;
+  liveRefusalCeilingEnabledDraft: boolean;
+  setLiveRefusalCeilingEnabledDraft: (v: boolean) => void;
   liveAllowNakedShortDraft: boolean;
   setLiveAllowNakedShortDraft: (v: boolean) => void;
   liveProbationTradesDraft: number | undefined;
@@ -1514,7 +1516,7 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
           </Field>
           <Field
             label="Day buying power ($)"
-            hint="0 = use the broker's own figure. Webull reports the OVERNIGHT number, which refuses intraday entries the account can actually fund. Only safe because the loop flattens before the close."
+            hint="A CEILING on the broker's day figure, not a value: 0 = use the broker's own. It can only lower the DAY pool and never brings the figure below the overnight one, so it is not the lever when the broker refuses an order outright — see the refusal ceiling below."
           >
             <NumberInput
               value={p.liveDayBuyingPowerUsdDraft}
@@ -1566,6 +1568,22 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
             />
           </Field>
         </div>
+        <label className="flex items-center gap-2 text-sm mt-3">
+          <input
+            type="checkbox"
+            checked={p.liveRefusalCeilingEnabledDraft}
+            onChange={(e) => p.setLiveRefusalCeilingEnabledDraft(e.target.checked)}
+          />
+          Cap orders at what the broker accepts (recommended — leave checked)
+        </label>
+        <p className="text-[11px] text-slate-400 mt-1">
+          Reported buying power is not always what a broker checks when it accepts an opening order: the pool is spent
+          by purchases, and closing a position does not give it back. When an order is refused for insufficient buying
+          power, the app remembers that size for the rest of the day and sizes the next order between it and the largest
+          order that was accepted. Inert until a refusal happens, it only ever makes an order smaller, and it resets
+          overnight — so it cannot cost a fill that was going to happen. Each trim is journaled as
+          <code>live_entry_ceiling_resized</code> with both brackets.
+        </p>
         <label className="flex items-center gap-2 text-sm mt-3">
           <input
             type="checkbox"
@@ -3198,6 +3216,7 @@ export default function AutoTradePage() {
   const [liveMaxDailyLossUsdDraft, setLiveMaxDailyLossUsdDraft] = useState<number | undefined>();
   const [liveMaxOrdersPerDayDraft, setLiveMaxOrdersPerDayDraft] = useState<number | undefined>();
   const [liveFatFingerPctDraft, setLiveFatFingerPctDraft] = useState<number | undefined>();
+  const [liveRefusalCeilingEnabledDraft, setLiveRefusalCeilingEnabledDraft] = useState(true);
   const [liveAllowNakedShortDraft, setLiveAllowNakedShortDraft] = useState(false);
   const [liveProbationTradesDraft, setLiveProbationTradesDraft] = useState<number | undefined>();
   const [liveProbationSizeMultiplierDraft, setLiveProbationSizeMultiplierDraft] = useState<number | undefined>();
@@ -3342,6 +3361,7 @@ export default function AutoTradePage() {
     sync('liveMaxDailyLossUsd', setLiveMaxDailyLossUsdDraft);
     sync('liveMaxOrdersPerDay', setLiveMaxOrdersPerDayDraft);
     sync('liveFatFingerPct', setLiveFatFingerPctDraft);
+    sync('liveRefusalCeilingEnabled', setLiveRefusalCeilingEnabledDraft);
     sync('liveAllowNakedShort', setLiveAllowNakedShortDraft);
     sync('liveProbationTrades', setLiveProbationTradesDraft);
     sync('liveProbationSizeMultiplier', setLiveProbationSizeMultiplierDraft);
@@ -3650,6 +3670,7 @@ export default function AutoTradePage() {
         liveMaxDailyLossUsd: liveMaxDailyLossUsdDraft,
         liveMaxOrdersPerDay: liveMaxOrdersPerDayDraft,
         liveFatFingerPct: liveFatFingerPctDraft,
+        liveRefusalCeilingEnabled: liveRefusalCeilingEnabledDraft,
         liveAllowNakedShort: liveAllowNakedShortDraft,
         liveProbationTrades: liveProbationTradesDraft,
         liveProbationSizeMultiplier: liveProbationSizeMultiplierDraft,
@@ -6922,6 +6943,8 @@ export default function AutoTradePage() {
                 setLiveMaxOrdersPerDayDraft={setLiveMaxOrdersPerDayDraft}
                 liveFatFingerPctDraft={liveFatFingerPctDraft}
                 setLiveFatFingerPctDraft={setLiveFatFingerPctDraft}
+                liveRefusalCeilingEnabledDraft={liveRefusalCeilingEnabledDraft}
+                setLiveRefusalCeilingEnabledDraft={setLiveRefusalCeilingEnabledDraft}
                 liveAllowNakedShortDraft={liveAllowNakedShortDraft}
                 setLiveAllowNakedShortDraft={setLiveAllowNakedShortDraft}
                 liveProbationTradesDraft={liveProbationTradesDraft}

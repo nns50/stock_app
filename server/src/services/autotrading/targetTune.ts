@@ -831,6 +831,9 @@ export const NEVER_TUNED_KEYS = [
   // never granted.
   'liveMaxExposurePct',
   'liveDayBuyingPowerUsd',
+  // Whether to believe the broker's own refusals — a fact about the account,
+  // not a dial a daily-gain target gets to turn.
+  'liveRefusalCeilingEnabled',
   // A data-quality guard on the broker feed. Nothing about a target daily gain
   // implies how much a net-liquidation reading is allowed to jump.
   'equitySyncMaxJumpPct',

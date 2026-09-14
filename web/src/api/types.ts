@@ -1768,6 +1768,12 @@ export interface AutotradeConfig {
   optionsOwnExposurePool: boolean;
   equitySyncMaxJumpPct: number;
   liveDayBuyingPowerUsd: number;
+  /** Cap an opening order at what the broker has already shown it will accept
+   *  today, once it has refused one. The reported buying power overstates what
+   *  the broker will fund (measured 2026-09-14), so rather than guess its
+   *  formula the app bisects between the largest accepted and smallest refused
+   *  notional. Never raises a figure, and inert until a refusal happens. */
+  liveRefusalCeilingEnabled: boolean;
   liveProbationTrades: number;
   liveProbationSizeMultiplier: number;
   // --- Live scale-into-winners (nested under liveTradingEnabled) ---

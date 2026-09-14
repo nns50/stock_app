@@ -573,6 +573,7 @@ export const client = {
     optionsOwnExposurePool?: boolean;
     equitySyncMaxJumpPct?: number;
     liveDayBuyingPowerUsd?: number;
+    liveRefusalCeilingEnabled?: boolean;
     liveMaxDailyLossUsd?: number;
     liveMaxOrdersPerDay?: number;
     liveFatFingerPct?: number;

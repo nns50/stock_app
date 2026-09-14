@@ -1,5 +1,8 @@
 import { AutotradeConfig } from '../../db/autotradeConfig';
 import { webullAccountState } from '../../providers/webull/accountState';
+import { buyingPowerBasis } from './buyingPowerBasis';
+import { learnedOpenNotionalCeiling } from './buyingPowerRefusals';
+import { etToday } from '../../util/marketDate';
 
 /**
  * Best-effort live buying power for the tune preview's funding WARNING.
@@ -25,22 +28,21 @@ export async function tuneBuyingPower(cfg: AutotradeConfig): Promise<{ buyingPow
   if (!cfg.liveAccountId) return {};
   try {
     const acct = await webullAccountState(cfg.liveAccountId);
-    if (!acct.ok) return {};
-    // Day BP, not overnight: these caps gate intraday entries, and the day
-    // pool is what actually funds them (2026-08-27: $8,644.72 day vs
-    // $4,322.36 overnight). liveDayBuyingPowerUsd, when set, is the
-    // operator's own ceiling on that same number, so it applies here too.
-    const day = acct.state?.dayBuyingPowerUsd;
-    const equityBp = day !== undefined && day > 0 ? day : acct.state?.buyingPowerUsd;
-    const capped =
-      equityBp !== undefined && cfg.liveDayBuyingPowerUsd > 0
-        ? Math.min(equityBp, cfg.liveDayBuyingPowerUsd)
-        : equityBp;
+    if (!acct.ok || !acct.state) return {};
+    // ONE derivation, shared with the live sizer (2026-09-14). This used to
+    // pick the day figure itself and disagreed with buyingPowerBasis on all
+    // three of netting (it never subtracted exposure), precedence (it took day
+    // over overnight unconditionally rather than the larger) and the learned
+    // ceiling (it had none). So the warning judged a cap against a pool the
+    // broker does not honour: on 2026-09-14 it would have called $10,606.79
+    // fundable on a session where the broker refused $3,111.76.
+    //
     // Option BP is deliberately NOT returned: the options cap tracks the equity
     // cap on purpose (see deriveDollarCaps), so there is nothing here for it to
     // warn against — and returning it would invite someone to bind a cap to a
     // figure only one derivation path can see.
-    return capped !== undefined ? { buyingPowerUsd: capped } : {};
+    const learned = learnedOpenNotionalCeiling(cfg.liveAccountId, etToday());
+    return { buyingPowerUsd: buyingPowerBasis(acct.state, cfg, learned?.ceilingUsd).usedUsd };
   } catch {
     return {};
   }

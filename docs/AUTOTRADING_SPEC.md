@@ -10298,3 +10298,105 @@ order exceeds cash while sitting well inside the day figure, the hypothesis
 above is confirmed and the lever is the universe filter — `minPrice`, currently
 **$1** — not a buying-power cap. If instead cash is ample, the hypothesis is
 dead and the refusal is about something else again.
+
+## 2026-09-14 (third) — the pool is spent by purchases, and the app learns the ceiling from the broker
+
+The pre-committed reading above resolved on the first refusal after the
+instrumentation deployed. **10:51:36 ET, BWIN:**
+
+```
+buyingPower: { usedUsd: 7095.29, source: "day",
+               overnightUsd: 3658.24, brokerDayUsd: 10606.79,
+               ceilingUsd: null, exposureUsd: 3511.50,
+               cashBalanceUsd: 18.07 }
+orderNotionalUsd: 3111.76   -> refused by the broker
+```
+
+**And the cash reading it confirmed turned out to be the wrong conclusion.**
+The operator settled it against the account itself: margin is real here and had
+been used that same morning. COIN (18 x $184.00 = $3,312.00) and NOW (21 x
+$139.88 = $2,937.48) were held **together** — $6,249.48 against $3,497.62 of
+cash, **1.79x**. A cash bound would have refused NOW outright, which is worse
+than the bug. The small-cap reading in the section above was already dead
+(CRWD filled at $3,479.55 while BWIN was refused at $3,720.12 the same minute);
+the cash reading joins it. That is five wrong theories for one refusal — PDT
+status, unsettled proceeds, a static entitlement, non-marginable small caps,
+and a cash-only account.
+
+**What the data does establish.** Every order that session, with the notionals
+taken from the positions ledger rather than inferred from the journal:
+
+| time (ET) | symbol | qty × price | notional | exposure then | result |
+| --- | --- | --- | --- | --- | --- |
+| 09:37:21 | COIN | 18 × $184.00 | $3,312.00 | $0 | filled |
+| 09:37:24 | NOW | 21 × $139.88 | $2,937.48 | $0 | filled |
+| 09:57–10:38 | BWIN ×4, FTFT | — | up to $3,720.12 | $0 | **refused** |
+| 10:40:34 | CRWD | 15 × $231.97 | $3,479.55 | $0 | filled |
+| 10:44:40 | BWIN | — | $3,076.80 | $3,483.45 | **refused** |
+| 10:51:36 | BWIN | — | $3,111.76 | $3,511.50 | **refused** |
+
+At **09:57 the book was FLAT** — COIN and NOW had both been sold — so
+`exposureUsd` was back to 0 and the day branch handed the sizer the entire
+$13,990.49. The broker refused $3,720.12.
+
+**Closing a position returns the app's EXPOSURE to zero. It does not return the
+broker's pool**, which is spent by purchases. So `brokerDay - exposureUsd` is an
+upper bound the broker does not honour, and the two sides of that subtraction
+are not the same kind of thing: a live mark-to-market value against a pool
+debited at cost and not credited back on a sale. Fitting every row, the real
+ceiling on CUMULATIVE purchases sat between **$9,729.03 and $9,969.60**, against
+a reported `day_buying_power` of $13,990.49.
+
+**Why no formula is written down.** Ten orders do not determine the broker's
+rule, and each guess so far has cost a session. So the app does not model the
+broker — it **remembers** it.
+
+**What changed.**
+
+- New `buyingPowerRefusals.ts` (a leaf module, in-memory, per account per ET
+  day): the smallest opening notional the broker **refused** today and the
+  largest it **accepted**. The ceiling is the midpoint — a bisection that
+  converges in two or three attempts. With nothing accepted yet there is no
+  lower bracket, so it steps 10% below the refusal instead.
+- The clamp is applied to the **finished quantity** in `liveExecute`, after the
+  probation multiplier, and journals `live_entry_ceiling_resized` with both
+  brackets. Not to the buying-power figure: probation is applied after the
+  sizer, so bounding the pool would halve an order that was already trimmed to
+  fit and the book would walk itself down for no reason. `usedUsd` is dollars
+  of POOL; the ceiling is dollars of ORDER NOTIONAL — different quantities
+  judged at different points, which is why the basis only carries it.
+- `buyingPowerBasis` moved to its own leaf module, and `tuneFunding.ts` now
+  calls it instead of deriving the figure itself. The two disagreed on netting
+  (the tune never subtracted exposure) and precedence (it took day over
+  overnight unconditionally rather than the larger) — CLAUDE.md's "agree by
+  construction".
+- New `liveRefusalCeilingEnabled` (default **true**), on the Auto page beside
+  the day-buying-power field.
+
+**Why this is safe to leave on.** It is inert until the broker refuses
+something, it only ever lowers, and it resets overnight. It cannot cost a fill
+that was going to happen — it can only turn a refusal into a smaller order that
+fills. On 2026-09-14 that is five entries the book never got.
+
+**Also corrected here:** the note on `liveDayBuyingPowerUsd` is a *cap on the
+day branch only* — `buyingPowerBasis` returns `max(overnightUsd, brokerDay -
+exposure)`, so no value of it can bring the figure below the overnight one. It
+was never the lever for this.
+
+**The pre-committed check.** The next broker refusal should be followed by a
+`live_entry_ceiling_resized` row on the following candidate, carrying
+`refusedUsd` and a `toQuantity` below `fromQuantity` — and that order should be
+ACCEPTED. If the smaller order is refused too, the row after it should show the
+ceiling ratcheting down again. If refusals continue at every size, the ceiling
+is not a notional at all and the mechanism should be switched off.
+
+**What actually bounds trades per session (2026-09-14, measured).** Not buying
+power. Of 96 signals, 65 were SHORTS and shorts are off (87
+`live_short_skipped`); of the 11 long names, 10 fell under the
+`liveMinSignalScore` floor of 72 (PSKY 71.7, BBY 69.8, IT 68.7, **CRWD 68.0 at
+09:37:25**, HOOD 61.9, CRM 61.9, DFTX 61.3, PANW 60.8, WDAY 60.3, FTNT 60);
+the three that traded were then locked out by the 390-minute re-entry cooldown
+(107 skips). `live_risk_blocked` fired **zero** times all day. A further 120+
+names were removed upstream by the 1.5x relative-volume pace floor (AMAT
+1.42-1.48, BBY 1.20-1.29, BKR 1.13, ALB 1.06-1.10). CRWD was skipped at 09:37
+and only cleared the floor at 10:40, after the move.

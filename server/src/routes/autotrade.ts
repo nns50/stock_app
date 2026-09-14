@@ -307,6 +307,7 @@ const configBody = z.object({
   optionsOwnExposurePool: z.boolean().optional(),
   equitySyncMaxJumpPct: z.number().nonnegative().optional(),
   liveDayBuyingPowerUsd: z.number().nonnegative().optional(),
+  liveRefusalCeilingEnabled: z.boolean().optional(),
   liveMaxDailyLossUsd: z.number().nonnegative().optional(),
   liveMaxOrdersPerDay: z.number().int().nonnegative().optional(),
   liveFatFingerPct: z.number().min(0).max(100).optional(),
@@ -620,6 +621,7 @@ autotradeRouter.put(
     if (body.optionsOwnExposurePool !== undefined) patch.optionsOwnExposurePool = body.optionsOwnExposurePool;
     if (body.equitySyncMaxJumpPct !== undefined) patch.equitySyncMaxJumpPct = body.equitySyncMaxJumpPct;
     if (body.liveDayBuyingPowerUsd !== undefined) patch.liveDayBuyingPowerUsd = body.liveDayBuyingPowerUsd;
+    if (body.liveRefusalCeilingEnabled !== undefined) patch.liveRefusalCeilingEnabled = body.liveRefusalCeilingEnabled;
     if (body.liveMaxDailyLossUsd !== undefined) patch.liveMaxDailyLossUsd = body.liveMaxDailyLossUsd;
     if (body.liveMaxOrdersPerDay !== undefined) patch.liveMaxOrdersPerDay = body.liveMaxOrdersPerDay;
     if (body.liveFatFingerPct !== undefined) patch.liveFatFingerPct = body.liveFatFingerPct;

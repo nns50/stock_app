@@ -1,6 +1,7 @@
 import { beforeEach } from 'vitest';
 import { resetOncePerDayEvents } from '../src/services/autotrading/oncePerDayEvents';
 import { resetUnplaceableSymbols } from '../src/services/autotrading/unplaceableSymbols';
+import { resetBuyingPowerRefusals } from '../src/services/autotrading/buyingPowerRefusals';
 
 // ---------------------------------------------------------------------------
 // IN-MEMORY MODULE STATE IS RESET BEFORE EVERY TEST (2026-09-09, #43/#46).
@@ -34,6 +35,10 @@ import { resetUnplaceableSymbols } from '../src/services/autotrading/unplaceable
 // `unplaceableSymbols` both have zero imports. `resizeRetryLatch` imports a
 // type from providers/webull/orders, which several files mock, and is left out
 // for that reason alone rather than because its state is harmless.
+// `buyingPowerRefusals` (2026-09-14) qualifies on the same test: zero imports.
+// It had to go here rather than in one file's beforeEach — the ceiling it
+// learns is keyed by account and ET day, both of which every live-execution
+// file shares, so one file's refusal shrank the next file's orders.
 //
 // Everything else stays where it already is: a file that warms a heavy cache
 // resets it in its own `beforeEach` (autotradeScreen.test.ts does exactly
@@ -42,4 +47,5 @@ import { resetUnplaceableSymbols } from '../src/services/autotrading/unplaceable
 beforeEach(() => {
   resetOncePerDayEvents();
   resetUnplaceableSymbols();
+  resetBuyingPowerRefusals();
 });

@@ -2073,13 +2073,47 @@ because the loop is the only caller that is always flat by the bell, so it is
   nothing to go stale. Leave the setting at **0** to use whatever the broker reports;
   set a positive number to cap it — "never deploy more than $X intraday however much
   margin is extended". It only ever *raises* what the guardrail would otherwise have
-  used, so a cap can never block an order the account could already fund.
+  used, so a cap can never block an order the account could already fund. Note what
+  that also means: it can only lower the **day** pool, never the overnight one, so it
+  is not the lever for a shortfall below either — that is the cash bound below.
 
   This mattered more than it sounds: until 2026-08-27 the app read a `buying_power`
   key that the account **does not return**, silently fell back to the cash balance,
   and so reported roughly a quarter of the real capacity. Live entries were refused
   for funds that were sitting there — blocked against "$1,005.46 available" on a day
   the account had close to $4,000 of day buying power.
+
+  **Cap orders at what the broker accepts** is the other half of that story, and
+  it points the opposite way. On 2026-09-14 the broker refused five opening
+  orders with *"Buying power is insufficient"* while the app's own figure said
+  there was plenty. The row that named the cause came at 09:57: the book was
+  **flat** — both morning positions had been sold — so the app's exposure was
+  back to zero and it offered the sizer the full $13,990.49 intraday figure. The
+  broker refused $3,720.12.
+
+  Closing a position returns the app's *exposure* to zero. It does not return
+  the broker's pool, which is spent by purchases. So "day buying power minus
+  what I currently hold" is an upper bound your broker may not honour, and no
+  setting can correct it — the reported figure simply is not what the broker
+  checks.
+
+  Rather than guess your broker's formula, the app **remembers what it refused**.
+  For the rest of that day it keeps the smallest order the broker turned down and
+  the largest it accepted, and sizes the next one between them — a bisection that
+  settles in two or three attempts. Nothing accepted yet? It steps 10% below the
+  refusal instead. Each trim is journaled as `live_entry_ceiling_resized` with
+  both brackets, so you can see how it got to the number.
+
+  Leave this **on** (the default). It is inert until your broker actually refuses
+  something, it only ever makes an order smaller, and it resets overnight — so it
+  cannot cost you a fill that was going to happen. What it does is turn a refusal
+  into a smaller order that fills: on that one session, five entries the book
+  never got. Turn it off only if your broker's refusals turn out to mean
+  something other than "this order is too big".
+
+  Worth knowing: margin itself is real and is used. That same morning the account
+  held $6,249.48 of stock against $3,497.62 of cash — 1.79× — so this is not a
+  cash-account restriction, and the app does not treat it as one.
 
   A further setting guards the equity feed itself. **Max equity-sync jump (%)**
   refuses a synced net-liquidation reading that moves more than that from the last

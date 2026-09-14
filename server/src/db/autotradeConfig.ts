@@ -826,6 +826,22 @@ export interface AutotradeConfig {
    *  instead: useful for saying "never deploy more than $X intraday however
    *  much margin the broker extends", and inert at 0. */
   liveDayBuyingPowerUsd: number;
+  /** Cap an opening order at what the broker has already shown it will accept
+   *  today, once it has refused something (default true).
+   *
+   *  On 2026-09-14 the broker refused five opening orders for insufficient
+   *  buying power while the app's figure said there was plenty: the day pool is
+   *  consumed by purchases and closing a position does not give it back, but
+   *  the app nets it against CURRENT exposure, which does return to zero. See
+   *  buyingPowerRefusals.ts for the full record. Rather than guess the broker's
+   *  formula, the app bisects between the largest order it accepted today and
+   *  the smallest it refused.
+   *
+   *  Strictly a ceiling: it never raises a figure and never applies before a
+   *  refusal, so it cannot cost a fill that was going to happen. A flag, not a
+   *  constant, so a broker whose refusals turn out to mean something else is a
+   *  switch and not a deploy. */
+  liveRefusalCeilingEnabled: boolean;
   /** How many live trades (counted from liveEnabledAt) get an extra
    *  liveProbationSizeMultiplier size cut on top of the risk profile's normal
    *  sizing and any loss-streak step-down already active (Phase 8 Step B). */
@@ -1342,6 +1358,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     optionsOwnExposurePool: false,
     equitySyncMaxJumpPct: 5,
     liveDayBuyingPowerUsd: 0,
+    liveRefusalCeilingEnabled: true,
     liveMaxDailyLossUsd: 250,
     liveMaxOrdersPerDay: DEFAULT_LIVE_MAX_ORDERS_PER_DAY,
     liveFatFingerPct: 10,
@@ -1645,6 +1662,10 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
       typeof input.optionsOwnExposurePool === 'boolean' ? input.optionsOwnExposurePool : d.optionsOwnExposurePool,
     equitySyncMaxJumpPct: nonNeg(input.equitySyncMaxJumpPct, d.equitySyncMaxJumpPct),
     liveDayBuyingPowerUsd: nonNeg(input.liveDayBuyingPowerUsd, d.liveDayBuyingPowerUsd),
+    liveRefusalCeilingEnabled:
+      typeof input.liveRefusalCeilingEnabled === 'boolean'
+        ? input.liveRefusalCeilingEnabled
+        : d.liveRefusalCeilingEnabled,
     liveMaxDailyLossUsd: nonNeg(input.liveMaxDailyLossUsd, d.liveMaxDailyLossUsd),
     liveMaxOrdersPerDay: posInt(input.liveMaxOrdersPerDay, d.liveMaxOrdersPerDay),
     liveFatFingerPct: pct(input.liveFatFingerPct, d.liveFatFingerPct),
