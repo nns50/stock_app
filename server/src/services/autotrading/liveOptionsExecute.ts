@@ -1183,7 +1183,14 @@ export async function runLiveOptionsExecution(
       // flat premium is already -63% by 13:30 and -82% by 14:30. And the hard
       // 14:00 exit would close it almost immediately anyway.
       const reason = `${left}m to the close — past the ${cfg.optionsNoEntryMinutesBeforeClose}m short-dated entry cutoff`;
-      logAutotradeEvent({ stage: 'execution', action: 'short_dated_entry_window_closed', detail: { reason, left } });
+      logAutotradeEvent({
+        stage: 'execution',
+        action: 'short_dated_entry_window_closed',
+        // Both sleeves write this action, so without the book a live cutoff and
+        // a paper one are the same row (2026-09-14). Its twin in
+        // optionsExecute.ts already carried it.
+        detail: { book: 'live', reason, left },
+      });
       return candidates.map(({ signal }) => ({ symbol: signal.symbol.toUpperCase(), ok: false, reason }));
     }
   }
@@ -2437,6 +2444,10 @@ export async function checkLiveOptionsExits(): Promise<LiveOptionsExitCheckOutco
           action: 'short_dated_options_exit',
           detail: {
             positionId: pos.id,
+            // Both sleeves write this action; the paper twin already said which
+            // it was, and a live options exit reading as paper is exactly the
+            // confusion Recent activity's book split exists to remove.
+            book: 'live',
             rule: sd.rule,
             reason: sd.detail,
             premiumGainPct: sd.premiumGainPct,

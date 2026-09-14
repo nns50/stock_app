@@ -2087,6 +2087,10 @@ export interface AutotradeScreenResult {
 
 export type AutotradeStage = 'screen' | 'decision' | 'risk_check' | 'execution' | 'config';
 
+/** Which book a journal row describes. `shared` is screening, decisions and
+ *  config — things that happen once per tick, before or across both books. */
+export type AutotradeEventBook = 'live' | 'paper' | 'shared';
+
 export interface AutotradeEvent {
   id: number;
   symbol: string | null;
@@ -2095,6 +2099,24 @@ export interface AutotradeEvent {
   detail: string | null;
   riskProfile: string | null;
   createdAt: number;
+  /** Which book wrote it, decided SERVER-side (eventBook.ts). It rides on the
+   *  row rather than being re-derived here: the rule reads a detail field for
+   *  the actions both books write, and a second copy of it in TypeScript would
+   *  agree today and drift later. */
+  book: AutotradeEventBook;
+}
+
+export interface AutotradeEventsResponse {
+  events: AutotradeEvent[];
+  /** Per-book totals over the rows the server SCANNED — not over all history.
+   *  With a `book` filter the scan reaches far deeper than the returned page,
+   *  because the paper book can write thousands of rows for every live one. */
+  bookCounts: Record<AutotradeEventBook, number>;
+  scannedRows: number;
+  /** The scan hit its cap, so older rows of the requested book exist and are
+   *  not in `events`. An empty list with this true means "not in the window",
+   *  never "none happened". */
+  scanTruncated: boolean;
 }
 
 export type AutotradeSignalSide = 'buy' | 'sell';

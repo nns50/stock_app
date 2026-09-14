@@ -2401,7 +2401,24 @@ because the loop is the only caller that is always flat by the bell, so it is
   `max_concurrent_positions: 3 open vs cap 3` while the live account was flat — the paper
   book was at its cap, and nothing on the row said so. Paper's rows now carry
   `book: "paper"`, the manual risk-check preview carries `book: "preview"`, and the live
-  book already had its own action name (`live_risk_blocked` rather than `blocked`). The caps themselves
+  book already had its own action name (`live_risk_blocked` rather than `blocked`).
+  **Recent activity itself splits by book** (2026-09-14). Four tabs — **All**, **Live**,
+  **Paper**, **Shared** — each showing how many rows of that book are in the window, and
+  every row carries a book badge. *Shared* is screening, decisions and settings changes:
+  things that happen once per tick, before or across both books, so filing them under one
+  would claim an attribution that does not exist.
+  The filter runs on the **server**, over a deeper read than the page it returns, and this
+  matters: the paper book writes a risk-check row per candidate per tick (4,983 on
+  2026-09-14, against four live entries), so a filter applied to the newest 50 rows would
+  show an empty Live tab and read as "the live book did nothing today". When the scan hits
+  its 1,000-row ceiling and finds nothing for the book you picked, the empty state says so
+  — *"older rows exist and are not shown"* — because an empty list has to mean "not in this
+  window", never "none happened".
+  Which book a row belongs to is decided server-side, and it is **not** a name check: of
+  the 159 actions the loop can write, 86 carry neither a `live_` nor a `paper_` prefix, and
+  they do not split the way the names suggest (`risk_atr_unreachable_skipped` and
+  `entry_filled` are live; `options_paper_*` is paper; the three `short_dated_*` actions
+  are written by *both* options sleeves and are told apart only by the book on the row). The caps themselves
   *are* shared, so each is written once in the row header instead of three times across
   the row: **open positions** vs. the configured concurrent-position cap
   (Configuration's "max concurrent positions," not the risk profile — see above),

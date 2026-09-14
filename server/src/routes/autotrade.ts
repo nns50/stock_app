@@ -19,7 +19,9 @@ import {
   listAutotradeEvents,
   listKnownAutotradeEventActions,
   logAutotradeEvent,
+  ROW_CAP,
 } from '../db/autotradeEvents';
+import { eventBook } from '../services/autotrading/eventBook';
 import { runAutotradeScreen } from '../services/autotrading/screen';
 import { DecisionConfig, runAutotradeDecision } from '../services/autotrading/decide';
 import { OptionsDecisionConfig, runOptionsDecision } from '../services/autotrading/optionsDecide';
@@ -2253,6 +2255,8 @@ const eventsQuery = z.object({
   /** Epoch ms; only events at or after it. */
   since: z.coerce.number().int().nonnegative().optional(),
   limit: z.coerce.number().int().min(1).max(1000).optional(),
+  /** Which book's rows to return (eventBook.ts). Omit for all of them. */
+  book: z.enum(['live', 'paper', 'shared']).optional(),
 });
 /** Counts by ET date and action. The row endpoint below caps at 1000, which
  *  during market hours is ~3 hours of the busiest actions — so a multi-day
@@ -2300,15 +2304,47 @@ autotradeRouter.get(
 autotradeRouter.get(
   '/events',
   asyncHandler(async (req, res) => {
-    const { actions, ...q } = parseQuery(eventsQuery, req);
+    const { actions, book, ...q } = parseQuery(eventsQuery, req);
     const list = actions
       ? actions
           .split(',')
           .map((a) => a.trim())
           .filter(Boolean)
       : undefined;
+    const baseFilter = { ...q, ...(list ? { actions: list } : {}) };
+
+    // THE FILTER HAS TO RUN SERVER-SIDE, over a DEEPER read than the page it
+    // returns (2026-09-14). The paper book writes a risk-check row per
+    // candidate per tick — 4,983 on 2026-09-14 against 4 live entries — so a
+    // client filtering the newest 200 rows would show an EMPTY Live tab and
+    // look like the live book had done nothing all day. That is the same
+    // mistake, one layer up, as the unlabelled row this feature exists to fix.
+    //
+    // `book` is derived from the action plus the detail, not stored, so it
+    // cannot be a WHERE clause without a second derivation of the same rule
+    // (CLAUDE.md). One classifier, applied to a scan capped at ROW_CAP, and the
+    // depth reached is REPORTED: a thin Live list must read as thin, never as
+    // quiet.
+    const pageSize = q.limit ?? 200;
+    const scanned = listAutotradeEvents({ ...baseFilter, limit: book ? ROW_CAP : pageSize });
+    const counts = { live: 0, paper: 0, shared: 0 };
+    for (const e of scanned) counts[eventBook(e.action, e.detail)] += 1;
+    const page = book ? scanned.filter((e) => eventBook(e.action, e.detail) === book).slice(0, pageSize) : scanned;
+    // The book travels ON each row, so the UI renders what the server decided
+    // rather than re-deriving the rule in TypeScript beside it. Two derivations
+    // of one classification agree the day they are written and not for long
+    // (CLAUDE.md) — and this one already caught itself being wrong once.
+    const events = page.map((e) => ({ ...e, book: eventBook(e.action, e.detail) }));
+
     res.json({
-      events: listAutotradeEvents({ ...q, ...(list ? { actions: list } : {}) }),
+      events,
+      /** Per-book totals over the rows SCANNED, which is the page itself unless
+       *  `book` was given. Not a total over all history. */
+      bookCounts: counts,
+      scannedRows: scanned.length,
+      /** True when the scan hit its cap, so older rows of the requested book
+       *  exist and are not in `events`. */
+      scanTruncated: scanned.length >= (book ? ROW_CAP : pageSize),
       ...neverSeen(list),
     });
   }),

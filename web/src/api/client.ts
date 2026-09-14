@@ -96,7 +96,8 @@ import type {
   AutotradeOptionsSignal,
   AutotradeRiskCheckResult,
   AutotradeOptionsRiskCheckResult,
-  AutotradeEvent,
+  AutotradeEventBook,
+  AutotradeEventsResponse,
   AutotradeStage,
   BacktestRequest,
   BacktestRunResponse,
@@ -633,9 +634,15 @@ export const client = {
       '/autotrade/risk-check-options',
       post({ signals, equityResults }),
     ),
-  autotradeEvents: (params: { stage?: AutotradeStage; symbol?: string; limit?: number } = {}) => {
-    const qs = new URLSearchParams(params as Record<string, string>).toString();
-    return api<{ events: AutotradeEvent[] }>(`/autotrade/events${qs ? `?${qs}` : ''}`);
+  autotradeEvents: (
+    params: { stage?: AutotradeStage; symbol?: string; limit?: number; book?: AutotradeEventBook } = {},
+  ) => {
+    // Drop undefined rather than letting URLSearchParams stringify it: a
+    // `book=undefined` query is a 400 from the route's enum, which would turn
+    // "show me everything" into an error page.
+    const entries = Object.entries(params).filter(([, v]) => v !== undefined && v !== '');
+    const qs = new URLSearchParams(entries.map(([k, v]) => [k, String(v)])).toString();
+    return api<AutotradeEventsResponse>(`/autotrade/events${qs ? `?${qs}` : ''}`);
   },
   runAutotradeBacktest: (body: BacktestRequest) => api<BacktestRunResponse>('/autotrade/backtest', post(body)),
   runAutotradeWalkForward: (body: WalkForwardRequest) =>

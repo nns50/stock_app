@@ -30,6 +30,7 @@ import type {
   AutotradeEdgeLeakSummary,
   AutotradeGatedSwitch,
   AutotradeDashboard,
+  AutotradeEventBook,
   AutotradeDecideResponse,
   AutotradeLivePosition,
   AutotradeOptionsRiskCheckResult,
@@ -3054,11 +3055,49 @@ export function TuneFromTargetSection({
   );
 }
 
+/**
+ * Recent activity's book filter.
+ *
+ * `undefined` is "all", and it is FIRST because it is the page's default and
+ * the only view in which the Book column earns its place. Shared is its own tab
+ * rather than being folded into All: screening, decisions and config changes
+ * happen once per tick, before or across both books, and burying them under a
+ * book would claim an attribution that does not exist.
+ */
+const BOOK_TABS: { label: string; book: AutotradeEventBook | undefined; hint: string }[] = [
+  { label: 'All', book: undefined, hint: 'Every journal row, both books and the shared ones' },
+  { label: 'Live', book: 'live', hint: 'The real account: its entries, exits, refusals and broker truth' },
+  { label: 'Paper', book: 'paper', hint: 'The simulated control book — no real money, its own slots and caps' },
+  { label: 'Shared', book: 'shared', hint: 'Screening, decisions and settings — once per tick, before either book' },
+];
+
+const BOOK_LABEL: Record<AutotradeEventBook, string> = { live: 'Live', paper: 'Paper', shared: 'Shared' };
+
+/** Live is the one worth spotting in a mixed list, so it is the only one
+ *  coloured; a palette of three would make every row shout. */
+function BookBadge({ book }: { book: AutotradeEventBook }) {
+  return (
+    <span
+      className={`text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap ${
+        book === 'live' ? 'bg-bull/15 text-bull' : 'text-slate-500'
+      }`}
+    >
+      {BOOK_LABEL[book]}
+    </span>
+  );
+}
+
 export default function AutoTradePage() {
   const config = useAsync(() => client.autotradeConfig(), []);
   const exclusions = useAsync(() => client.autotradeExclusions(), []);
   const macroEvents = useAsync(() => client.autotradeMacroEvents(), []);
-  const events = useAsync(() => client.autotradeEvents({ limit: 50 }), []);
+  // Recent activity's book filter (2026-09-14). Server-side, and re-fetched on
+  // change rather than filtered here: the paper book writes a risk-check row
+  // per candidate per tick — 4,983 on the day this was asked for, against four
+  // live entries — so filtering the newest 50 client-side would show an empty
+  // Live tab and read as "the live book did nothing today".
+  const [eventBook, setEventBook] = useState<AutotradeEventBook | undefined>(undefined);
+  const events = useAsync(() => client.autotradeEvents({ limit: 50, book: eventBook }), [eventBook]);
   const paperPositions = useAsync(() => client.autotradePaperPositions({ limit: 100 }), []);
   const optionsPaperPositions = useAsync(() => client.autotradeOptionsPaperPositions({ limit: 100 }), []);
   const livePositions = useAsync(() => client.autotradeLivePositions({ limit: 100 }), []);
@@ -7208,21 +7247,57 @@ export default function AutoTradePage() {
           </CollapsibleCard>
 
           <DashSection title="History" hint="what it actually did, most recent first" />
-          <CollapsibleCard id="autotrade.recentActivity" title="Recent activity">
+          <CollapsibleCard
+            id="autotrade.recentActivity"
+            title="Recent activity"
+            action={
+              <div className="flex items-center gap-1" role="group" aria-label="Filter activity by book">
+                {BOOK_TABS.map((tab) => {
+                  const active = eventBook === tab.book;
+                  const n = tab.book ? (events.data?.bookCounts[tab.book] ?? null) : (events.data?.scannedRows ?? null);
+                  return (
+                    <button
+                      key={tab.label}
+                      type="button"
+                      onClick={() => setEventBook(tab.book)}
+                      aria-pressed={active}
+                      title={tab.hint}
+                      className={`px-2 py-1 rounded text-xs ${
+                        active ? 'bg-ink-600 text-slate-100' : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      {tab.label}
+                      {n === null ? '' : ` ${n}`}
+                    </button>
+                  );
+                })}
+              </div>
+            }
+          >
             {events.loading && !events.data ? (
               <Spinner />
             ) : events.error ? (
               <ErrorState error={events.error} onRetry={events.reload} />
             ) : eventRows.length === 0 ? (
               <EmptyState
-                title="No activity yet"
-                hint="Run a screen above, or change a setting, to see journal entries here."
+                title={
+                  eventBook ? `No ${BOOK_LABEL[eventBook].toLowerCase()} activity in this window` : 'No activity yet'
+                }
+                hint={
+                  eventBook
+                    ? events.data?.scanTruncated
+                      ? `Nothing from this book in the newest ${events.data.scannedRows} rows — the other books were busy ` +
+                        'enough to fill the window, so older rows exist and are not shown. Try All.'
+                      : 'The journal holds nothing from this book yet.'
+                    : 'Run a screen above, or change a setting, to see journal entries here.'
+                }
               />
             ) : (
               <table className="w-full">
                 <thead className="border-b border-ink-600/60">
                   <tr>
                     <th className="th">When</th>
+                    <th className="th">Book</th>
                     <th className="th">Stage</th>
                     <th className="th">Action</th>
                     <th className="th">Symbol</th>
@@ -7233,6 +7308,9 @@ export default function AutoTradePage() {
                   {eventRows.map((e) => (
                     <tr key={e.id} className="border-b border-ink-700/50">
                       <td className="td text-slate-500 text-xs whitespace-nowrap">{ago(e.createdAt)}</td>
+                      <td className="td">
+                        <BookBadge book={e.book} />
+                      </td>
                       <td className="td">
                         <Badge>{e.stage}</Badge>
                       </td>
