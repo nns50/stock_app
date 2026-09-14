@@ -173,12 +173,13 @@ export function recordDailyResult(etDate: string, now: number = Date.now()): Dai
       // fabrication this column exists to avoid.
       riskPerTradePct: current ? cfg.riskPerTradePct : (existing?.riskPerTradePct ?? null),
       goalReached: current ? current.reachedAt !== null : (existing?.goalReached ?? false),
-      // The stamp on today's baseline was made by evaluateDailyTarget, which
-      // has measured the LOOP's own realized P&L since 2026-09-14. A
-      // re-recording of a PAST date keeps whatever basis that day actually ran
-      // under, for the same reason it keeps that day's sizing: today's truth
-      // must not be written onto a session that did not live under it.
-      goalBasis: current ? 'strategy' : (existing?.goalBasis ?? null),
+      // READ from the stamp, never asserted from the code running now. This
+      // said `current ? 'strategy' : …` for a few hours on 2026-09-14 and got
+      // its very first row wrong: the reach was stamped at 14:41 by the
+      // account-based evaluator, one deploy earlier, and the row claimed a
+      // strategy-basis goal day at +2.01% against a 3% goal. A recorder runs
+      // after the fact; only the stamp knows what stamped it.
+      goalBasis: current ? current.goalBasis : (existing?.goalBasis ?? null),
       giveBackHalted: current ? current.giveBackHaltedAt !== null : (existing?.giveBackHalted ?? false),
       // The drawdown halt has no baseline stamp of its own; the journal is its
       // record, and the caller passes it through the same route that reads it.
