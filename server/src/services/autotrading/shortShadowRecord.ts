@@ -85,6 +85,25 @@ export interface ShortShadowRecord {
   byReason: Record<string, number>;
   /** Journaled rows that produced no trade, and why. */
   excluded: Record<ShadowSkipReason, number>;
+  /**
+   * The exit geometry these numbers were replayed under (2026-09-14).
+   *
+   * Every figure below — avgR, winRatePct, byReason, each trade's exitR — is a
+   * function of this, and it is read from LIVE config, so it moves when the
+   * book's exits are re-tuned. On 2026-09-14 three of its fields changed in one
+   * settings PUT: `targetR` 2 to 1, the scale-out off, and the stagnation timer
+   * 90 to 60 minutes. A reader comparing that evening's record against the
+   * previous one, with no way to see that, would have read a knob turn as the
+   * shorts getting better or worse.
+   *
+   * Replaying under TODAY's rules is the right question — "would shorts work
+   * under the exits we actually run" — and this is not a filter on which rows
+   * are eligible (that is `floorAtSkip`, which IS pinned to each row's own
+   * moment). It is provenance: the gate below puts real money on a threshold,
+   * and a threshold applied to a number whose basis can move silently is a
+   * decision nobody can audit. So the basis travels with the number.
+   */
+  exitRules: ExitRules;
   /** The three numbers task #21's rule reads, and whether each passes. */
   gate: {
     minTrades: number;
@@ -234,6 +253,7 @@ export async function buildShortShadowRecord(
     winRatePct,
     byReason,
     excluded,
+    exitRules: rules,
     gate: { ...g, passesN, passesAvgR, passesWinRate, passes: passesN && passesAvgR && passesWinRate },
   };
 }

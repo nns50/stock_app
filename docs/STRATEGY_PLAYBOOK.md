@@ -588,6 +588,17 @@ reads flat and one that reads slightly positive. What is still not modelled: the
 scale-out's scarcity gate and its cancel/replace mechanics. Those are execution
 questions, and this measures geometry.
 
+**And the geometry travels with the number** (2026-09-14). Reading the CURRENT rules is the
+right question — "would shorts work under the exits we actually run" — but it means every
+figure in the record moves when the book is re-tuned, and on 2026-09-14 three of those
+fields changed in one settings PUT: the target 2R to 1R, the scale-out off, the stagnation
+timer 90 to 60 minutes. Two evenings' readings were no longer comparable and nothing said
+so. The response carries `exitRules` now, so a reader can tell a knob turn from the shorts
+changing. This is the opposite end of the same rule as `floorAtSkip`: which rows are
+ELIGIBLE is pinned to each row's own moment, because that is history; which rules they are
+replayed UNDER is today's, because that is the decision — and both have to be visible or
+the gate is a threshold nobody can audit.
+
 Three things it is not, and each matters when quoting it:
 
 - **Not a P&L.** It ignores slots, aggregate-risk room and cooldowns, so it measures
