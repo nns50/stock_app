@@ -10907,3 +10907,49 @@ empty list with `scanTruncated` true means "not in the last 1,000 rows", never
 The book rides on each returned row rather than being re-derived in the web: two
 copies of this classification would agree the day they were written and not for
 long, and this one has already been wrong once.
+
+## 2026-09-14 — the real-estate bans are visible, and a hand exclusion stops reading as a REIT
+
+Two separate checks enforce the real-estate exclusion (screen.ts): the
+hand-maintained list, and the sector/industry classifier. The Auto page only
+ever showed the **first**. On 2026-09-14, of the 32 symbols refused:
+
+```
+29  sector classifier   AMT ARE AVB BXP CBRE CCI CPT CSGP DLR DOC EQIX EQR
+                        ESS EXR FRT HST INVH IRM KIM MAA O PLD PSA REG ...
+ 3  hand list           BWIN among them
+```
+
+Twenty-nine bans existed nowhere but `excluded_re` journal rows, one per symbol
+per ET day, and only for names a screen happened to reach.
+
+### The standing list is a read of two tables, not of the journal
+
+`listRealEstateBans()` answers "what is banned right now" from the universe
+table and `autotrade_sector_cache`, with no network. **Both stores are
+required**, and the reason is easy to miss: `classifySector` returns EARLY on a
+universe sector hit and never writes the cache, so a cache-only read would have
+missed all 29 of the above — every one of which was universe-sourced. Its test
+proves that premise rather than assuming it, by classifying a universe symbol
+and asserting the cache stays empty.
+
+`isRealEstateSector` is now shared by the live classification and the standing
+list, so the screen's decision and the page's audit of it cannot disagree about
+what counts.
+
+### A hand exclusion was being recorded as a real-estate ban
+
+`screen.ts` called `isExcluded(symbol)` and journaled a hardcoded
+`'On the real-estate exclusion list'`, discarding the reason stored on the row.
+The list is named for real estate and **is not real-estate-only in practice**:
+BWIN was added that morning for being a going-private buyout that had stopped
+moving, and was recorded — and displayed — as a REIT.
+
+The branch reads the row now (`getExclusion`) and journals the operator's own
+words plus `check: 'exclusion_list'`; the classifier branch carries
+`check: 'sector_classifier'`. The ACTION stays `excluded_re` for both: renaming
+it would make every existing reader of this book's history wrong in order to fix
+a label, which is the same trade the risk-check `book` field declined earlier
+the same day.
+
+A record that says the wrong thing is worse than one that says little.

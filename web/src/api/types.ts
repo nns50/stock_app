@@ -2085,6 +2085,18 @@ export interface AutotradeScreenResult {
   discovery: { universeCount: number; moversCount: number; scannedCount: number; moversError: string | null };
 }
 
+/** A symbol the SECTOR CHECK bans, and the string that banned it. Distinct
+ *  from the hand-maintained exclusion list, which is a different table and can
+ *  hold a name excluded for any reason at all. */
+export interface RealEstateBan {
+  symbol: string;
+  sector: string | null;
+  industry: string | null;
+  source: 'universe' | 'fundamentals';
+  /** When the fundamentals lookup was cached; null for a seeded universe row. */
+  classifiedAt: number | null;
+}
+
 export type AutotradeStage = 'screen' | 'decision' | 'risk_check' | 'execution' | 'config';
 
 /** Which book a journal row describes. `shared` is screening, decisions and

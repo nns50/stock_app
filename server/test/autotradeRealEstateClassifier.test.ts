@@ -27,7 +27,12 @@ vi.mock('yahoo-finance2', () => {
 });
 
 import { initDb, db } from '../src/db';
-import { classifySector, buildUniverseSectorMap } from '../src/services/autotrading/realEstateClassifier';
+import {
+  classifySector,
+  buildUniverseSectorMap,
+  isRealEstateSector,
+  listRealEstateBans,
+} from '../src/services/autotrading/realEstateClassifier';
 
 beforeAll(() => initDb());
 
@@ -140,5 +145,71 @@ describe('real estate sector/industry classifier', () => {
       const r = await classifySector('TECHX', map);
       expect(r).toMatchObject({ outcome: 'clear', source: 'fundamentals' });
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The standing ban list behind the Auto page's "Auto-classified" tab.
+// ---------------------------------------------------------------------------
+describe('listRealEstateBans', () => {
+  beforeAll(() => {
+    db.exec("DELETE FROM universe WHERE symbol LIKE 'BAN%'");
+    db.exec("DELETE FROM autotrade_sector_cache WHERE symbol LIKE 'BAN%'");
+  });
+
+  it('reads BOTH stores, because the universe path never writes the cache', async () => {
+    // The trap. classifySector returns EARLY on a universe sector hit and does
+    // not write autotrade_sector_cache, so a cache-only read would have missed
+    // all 29 names banned on 2026-09-14 — every one of them universe-sourced.
+    db.prepare(
+      "INSERT INTO universe (symbol, name, sector, added_at) VALUES ('BANU', 'Uni REIT', 'Real Estate', ?)",
+    ).run(Date.now());
+    db.prepare(
+      "INSERT INTO autotrade_sector_cache (symbol, outcome, sector, industry, updated_at) VALUES ('BANF', 'real_estate', 'Financials', 'REIT—Retail', ?)",
+    ).run(Date.now());
+
+    // Prove the premise rather than assuming it: classifying the universe name
+    // must leave the cache empty.
+    await classifySector('BANU');
+    expect(db.prepare("SELECT 1 FROM autotrade_sector_cache WHERE symbol = 'BANU'").get()).toBeUndefined();
+
+    const bans = listRealEstateBans().filter((b) => b.symbol.startsWith('BAN'));
+    expect(bans.map((b) => b.symbol)).toEqual(['BANF', 'BANU']);
+    expect(bans.find((b) => b.symbol === 'BANU')).toMatchObject({ source: 'universe', sector: 'Real Estate' });
+    expect(bans.find((b) => b.symbol === 'BANF')).toMatchObject({ source: 'fundamentals', industry: 'REIT—Retail' });
+  });
+
+  it('leaves out the names the check would clear', async () => {
+    db.prepare(
+      "INSERT INTO universe (symbol, name, sector, added_at) VALUES ('BANOK', 'Tech Co', 'Technology', ?)",
+    ).run(Date.now());
+    db.prepare(
+      "INSERT INTO autotrade_sector_cache (symbol, outcome, sector, industry, updated_at) VALUES ('BANCL', 'clear', 'Technology', 'Software', ?)",
+    ).run(Date.now());
+    const syms = listRealEstateBans().map((b) => b.symbol);
+    expect(syms).not.toContain('BANOK');
+    expect(syms).not.toContain('BANCL');
+  });
+
+  it('reports a symbol in both stores the way the SCREEN would see it', async () => {
+    // classifySector reads universe first, so that is the answer that governs.
+    db.prepare(
+      "INSERT INTO universe (symbol, name, sector, added_at) VALUES ('BANB', 'Both Co', 'Real Estate', ?)",
+    ).run(Date.now());
+    db.prepare(
+      "INSERT INTO autotrade_sector_cache (symbol, outcome, sector, industry, updated_at) VALUES ('BANB', 'real_estate', 'Financials', 'REIT—Office', ?)",
+    ).run(Date.now());
+    const row = listRealEstateBans().find((b) => b.symbol === 'BANB');
+    expect(row).toMatchObject({ source: 'universe', sector: 'Real Estate' });
+  });
+
+  it('shares ONE pattern test with the live classification', () => {
+    // Two copies of "what counts as real estate" would agree today and not for
+    // long, and the ban list is the thing an operator audits the screen by.
+    expect(isRealEstateSector('Real Estate')).toBe(true);
+    expect(isRealEstateSector(undefined, 'REIT—Retail')).toBe(true);
+    expect(isRealEstateSector('Financials', 'Real Estate Services')).toBe(true);
+    expect(isRealEstateSector('Technology', 'Software')).toBe(false);
+    expect(isRealEstateSector()).toBe(false);
   });
 });

@@ -43,12 +43,18 @@ export interface SectorClassification {
   source: 'universe' | 'fundamentals' | 'unknown';
 }
 
+/** The real-estate test itself, so the screen's live decision and the standing
+ *  list below can never disagree about what counts (CLAUDE.md). */
+export function isRealEstateSector(sector?: string, industry?: string): boolean {
+  return RE_PATTERN.test(sector ?? '') || RE_PATTERN.test(industry ?? '');
+}
+
 function classify(
   sector: string | undefined,
   industry: string | undefined,
   source: 'universe' | 'fundamentals',
 ): SectorClassification {
-  const hit = RE_PATTERN.test(sector ?? '') || RE_PATTERN.test(industry ?? '');
+  const hit = isRealEstateSector(sector, industry);
   return { outcome: hit ? 'real_estate' : 'clear', sector, industry, source };
 }
 
@@ -139,4 +145,59 @@ export async function classifySector(
     writeCache(upper, 'unknown');
     return { outcome: 'unknown', source: 'unknown' };
   }
+}
+
+/** A symbol the SECTOR CHECK bans, and the string that banned it. */
+export interface RealEstateBan {
+  symbol: string;
+  sector: string | null;
+  industry: string | null;
+  /** Which store the classification came from — the same two `classifySector`
+   *  reads, in the same precedence. */
+  source: 'universe' | 'fundamentals';
+  /** When the fundamentals lookup was cached. Null for a universe row, whose
+   *  sector is a seeded fact with no fetch behind it. */
+  classifiedAt: number | null;
+}
+
+/**
+ * Every symbol the sector/industry check would ban right now.
+ *
+ * WHY THIS IS NOT A JOURNAL READ (2026-09-14). The `excluded_re` rows say what
+ * was banned on a day a screen happened to look at it — one row per symbol per
+ * ET day, and nothing at all for a name the screen did not reach. The question
+ * "what is banned" is a standing fact about two tables, so it is answered from
+ * the tables. It also costs no network: `classifySector` only fetches for a
+ * symbol in neither store.
+ *
+ * BOTH STORES ARE NEEDED, and the reason is easy to miss: `classifySector`
+ * returns EARLY on a universe sector hit and never writes the cache. So the
+ * cache holds only names discovered by a fundamentals fetch, and reading it
+ * alone would have missed all 29 of the names banned on 2026-09-14 — every one
+ * of which came from the universe table.
+ *
+ * Precedence matches `classifySector`: universe first, then the cache, so a
+ * symbol in both is reported the way the screen would really see it.
+ */
+export function listRealEstateBans(): RealEstateBan[] {
+  const out = new Map<string, RealEstateBan>();
+  for (const u of listUniverse()) {
+    if (u.sector && isRealEstateSector(u.sector)) {
+      out.set(u.symbol, { symbol: u.symbol, sector: u.sector, industry: null, source: 'universe', classifiedAt: null });
+    }
+  }
+  const cached = db
+    .prepare("SELECT symbol, sector, industry, updated_at FROM autotrade_sector_cache WHERE outcome = 'real_estate'")
+    .all() as { symbol: string; sector: string | null; industry: string | null; updated_at: number }[];
+  for (const c of cached) {
+    if (out.has(c.symbol)) continue; // the universe answer is the one the screen uses
+    out.set(c.symbol, {
+      symbol: c.symbol,
+      sector: c.sector,
+      industry: c.industry,
+      source: 'fundamentals',
+      classifiedAt: c.updated_at,
+    });
+  }
+  return [...out.values()].sort((a, b) => a.symbol.localeCompare(b.symbol));
 }

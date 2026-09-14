@@ -38,6 +38,22 @@ export function isExcluded(symbol: string): boolean {
   return !!db.prepare('SELECT 1 FROM autotrade_exclusions WHERE symbol = ?').get(symbol.toUpperCase());
 }
 
+/**
+ * The exclusion row for `symbol`, reason included, or undefined.
+ *
+ * The screen used to call `isExcluded` and then journal a hardcoded "On the
+ * real-estate exclusion list", discarding the reason the operator had actually
+ * typed (2026-09-14). This list is not real-estate-only in practice: BWIN was
+ * added that same day for being a going-private buyout that had stopped
+ * moving, and the journal recorded it as a real-estate ban. Reading the row
+ * lets the screen say what is true.
+ */
+export function getExclusion(symbol: string): ExclusionRecord | undefined {
+  const row = db.prepare('SELECT * FROM autotrade_exclusions WHERE symbol = ?').get(symbol.toUpperCase()) as
+    Row | undefined;
+  return row ? map(row) : undefined;
+}
+
 /** Add (or update the reason on) a user-added exclusion. Re-adding an existing
  *  default entry updates its reason but leaves its `source` as 'default' — a
  *  user re-submitting a seeded symbol shouldn't reclassify its provenance. */

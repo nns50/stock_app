@@ -15,7 +15,7 @@ import {
   SymbolScore,
 } from '../../indicators/screener';
 import { listUniverseSymbols } from '../../db/universe';
-import { isExcluded } from '../../db/autotradeExclusions';
+import { getExclusion } from '../../db/autotradeExclusions';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { mapPool } from '../../util/async';
 import { etToday } from '../../util/marketDate';
@@ -498,8 +498,16 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
   const scoreSymbol = async (symbol: string): Promise<void> => {
     // Real-estate exclusion runs FIRST, before any scoring — a listed or
     // classified RE symbol never reaches Decision/Risk Check, per the spec.
-    if (isExcluded(symbol)) {
-      const reason = 'On the real-estate exclusion list';
+    const listed = getExclusion(symbol);
+    if (listed) {
+      // Say WHY, not just THAT (2026-09-14). This branch used to hardcode "On
+      // the real-estate exclusion list" and throw away the reason stored on the
+      // row — so BWIN, excluded that morning for being a going-private buyout
+      // that had stopped moving, was journaled and displayed as a real-estate
+      // ban. The list is named for real estate and is not real-estate-only in
+      // practice, and a record that says the wrong thing is worse than one that
+      // says little.
+      const reason = listed.reason ? `Excluded by hand: ${listed.reason}` : 'On the exclusion list (no reason given)';
       excluded.push({ symbol, reason });
       // Once per symbol per ET day — the classification is a standing fact and
       // every later tick's row was a copy of the first. See oncePerDayEvents.ts.
@@ -508,7 +516,11 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
           symbol,
           stage: 'screen',
           action: 'excluded_re',
-          detail: { reason, source: 'list', firstOfDay: true },
+          // `check` separates the hand list from the sector classifier. The
+          // action name cannot: it is `excluded_re` for both, and renaming it
+          // would make every reader of this book's history wrong to fix a
+          // label.
+          detail: { reason, source: 'list', check: 'exclusion_list', listReason: listed.reason, firstOfDay: true },
         });
       }
       return;
@@ -526,6 +538,7 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
           detail: {
             reason,
             source: classification.source,
+            check: 'sector_classifier',
             sector: classification.sector,
             industry: classification.industry,
             firstOfDay: true,

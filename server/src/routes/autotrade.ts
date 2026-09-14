@@ -22,6 +22,7 @@ import {
   ROW_CAP,
 } from '../db/autotradeEvents';
 import { eventBook } from '../services/autotrading/eventBook';
+import { listRealEstateBans } from '../services/autotrading/realEstateClassifier';
 import { runAutotradeScreen } from '../services/autotrading/screen';
 import { DecisionConfig, runAutotradeDecision } from '../services/autotrading/decide';
 import { OptionsDecisionConfig, runOptionsDecision } from '../services/autotrading/optionsDecide';
@@ -956,6 +957,15 @@ autotradeRouter.post(
 );
 
 // ---- Real-estate exclusion list --------------------------------------------
+
+// The names the SECTOR CHECK bans, which the hand list below has never shown
+// (2026-09-14). On the day it was asked for, 29 of the 32 symbols refused as
+// real estate came from this check and existed nowhere but journal rows —
+// AMT, PLD, EQIX, O, PSA and the rest of the REIT complex. A standing fact
+// about two tables, read from the tables, with no network.
+autotradeRouter.get('/real-estate-bans', (_req, res) => {
+  res.json({ bans: listRealEstateBans() });
+});
 
 autotradeRouter.get('/exclusions', (_req, res) => {
   res.json({ exclusions: listExclusions() });

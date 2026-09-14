@@ -2462,12 +2462,25 @@ because the loop is the only caller that is always flat by the bell, so it is
   soonest-first, so you can see an upcoming expiration (and the automated close-only exit
   that's coming for it) before it happens — a position within a week of expiring is
   flagged in red.
-- **Real-estate exclusion list** — real estate is a hard, permanent exclusion for this
-  strategy. A starter list of well-known real-estate ETFs ships seeded in; add or remove
-  symbols freely. This list is a backstop, not the only check — the screen (Dashboard
-  tab) also classifies every candidate by sector/industry, so REITs and real-estate operating
-  companies that aren't on the list (e.g. cell-tower or data-center REITs) still get
-  caught.
+- **Excluded symbols** — real estate is a hard, permanent exclusion for this strategy,
+  and two separate checks enforce it. The card has a tab for each, because they are not
+  the same thing (**2026-09-14**; it used to show only the first, which meant most of the
+  banned names were invisible — on that session **29 of the 32** symbols refused came from
+  the second check and appeared nowhere but journal rows).
+  **By hand** is the list you maintain. A starter list of well-known real-estate ETFs
+  ships seeded in, and you can add or remove anything. Despite the seeding it is **not a
+  real-estate-only list** — it holds whatever you have banned, for whatever reason, and
+  each row shows the reason you gave. (BWIN went on it on 2026-09-14 for being a
+  going-private buyout that had stopped moving, which is nothing to do with real estate.)
+  **Real estate** is the sector/industry check: it bans a symbol automatically on what its
+  sector string says, catching REITs and real-estate operating companies that were never on
+  your list — cell-tower and data-center REITs among them. Nothing to maintain, and nothing
+  to remove; the tab shows what is banned, the sector or industry string that banned it,
+  and whether that string came from the universe table or a cached fundamentals lookup.
+  One thing the journal used to get wrong and no longer does: a hand-excluded symbol was
+  recorded as *"On the real-estate exclusion list"* whatever your actual reason was, so
+  BWIN read as a REIT. The row now carries your own words and a `check` field saying which
+  of the two fired.
 - **Macro event blackout list** (2026-07-18) — the dates/times **macro event blackout
   (hours)** above checks against. Unlike the exclusion list above, nothing ships
   seeded in: add a **label** and **date & time** for each FOMC decision, CPI release,

@@ -3090,6 +3090,10 @@ function BookBadge({ book }: { book: AutotradeEventBook }) {
 export default function AutoTradePage() {
   const config = useAsync(() => client.autotradeConfig(), []);
   const exclusions = useAsync(() => client.autotradeExclusions(), []);
+  // The names the SECTOR CHECK bans — 29 of the 32 refused on 2026-09-14, and
+  // until now visible nowhere but journal rows.
+  const realEstateBans = useAsync(() => client.autotradeRealEstateBans(), []);
+  const [exclusionTab, setExclusionTab] = useState<'list' | 'classified'>('list');
   const macroEvents = useAsync(() => client.autotradeMacroEvents(), []);
   // Recent activity's book filter (2026-09-14). Server-side, and re-fetched on
   // change rather than filtered here: the paper book writes a risk-check row
@@ -3887,6 +3891,7 @@ export default function AutoTradePage() {
   };
 
   const exclusionRows = exclusions.data?.exclusions ?? [];
+  const reBanRows = realEstateBans.data?.bans ?? [];
   const macroEventRows = macroEvents.data?.events ?? [];
   const eventRows = events.data?.events ?? [];
   const screenResult = result?.screen;
@@ -7853,69 +7858,138 @@ export default function AutoTradePage() {
 
       {view === 'config' && (
         <>
-          <CollapsibleCard id="autotrade.realEstateExclusion" title="Real-estate exclusion list">
-            <div className="grid sm:grid-cols-4 gap-2 items-end mb-3">
-              <Field label="Symbol">
-                <input
-                  className="input"
-                  value={newSymbol}
-                  onChange={(e) => setNewSymbol(e.target.value.toUpperCase())}
-                  placeholder="O"
-                />
-              </Field>
-              <div className="sm:col-span-2">
-                <Field label="Reason (optional)">
-                  <input
-                    className="input"
-                    value={newReason}
-                    onChange={(e) => setNewReason(e.target.value)}
-                    placeholder="REIT"
-                  />
-                </Field>
+          <CollapsibleCard
+            id="autotrade.realEstateExclusion"
+            title="Excluded symbols"
+            action={
+              <div className="flex items-center gap-1" role="group" aria-label="Exclusion source">
+                {(
+                  [
+                    { key: 'list' as const, label: 'By hand', n: exclusionRows.length },
+                    { key: 'classified' as const, label: 'Real estate', n: reBanRows.length },
+                  ] satisfies { key: 'list' | 'classified'; label: string; n: number }[]
+                ).map((t) => (
+                  <button
+                    key={t.key}
+                    type="button"
+                    onClick={() => setExclusionTab(t.key)}
+                    aria-pressed={exclusionTab === t.key}
+                    className={`px-2 py-1 rounded text-xs ${
+                      exclusionTab === t.key ? 'bg-ink-600 text-slate-100' : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    {t.label} {t.n}
+                  </button>
+                ))}
               </div>
-              <button className="btn-primary" onClick={addExclusion}>
-                Add
-              </button>
-            </div>
-            {exclusions.loading && !exclusions.data ? (
-              <Spinner />
-            ) : exclusions.error ? (
-              <ErrorState error={exclusions.error} onRetry={exclusions.reload} />
-            ) : exclusionRows.length === 0 ? (
-              <EmptyState
-                title="No exclusions"
-                hint="Add a symbol above — the sector/industry classification check also catches unlisted REITs."
-              />
-            ) : (
-              <table className="w-full">
-                <thead className="border-b border-ink-600/60">
-                  <tr>
-                    <th className="th">Symbol</th>
-                    <th className="th">Reason</th>
-                    <th className="th">Source</th>
-                    <th className="th text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {exclusionRows.map((e) => (
-                    <tr key={e.symbol} className="border-b border-ink-700/50">
-                      <td className="td font-semibold">{e.symbol}</td>
-                      <td className="td text-slate-400">{e.reason || '—'}</td>
-                      <td className="td">
-                        <Badge color={e.source === 'default' ? 'slate' : 'blue'}>{e.source}</Badge>
-                      </td>
-                      <td className="td text-right">
-                        <button
-                          className="text-xs text-slate-500 hover:text-bear"
-                          onClick={() => removeExclusion(e.symbol)}
-                        >
-                          remove
-                        </button>
-                      </td>
+            }
+          >
+            <p className="text-xs text-slate-500 mt-0.5 mb-3 max-w-2xl">
+              Two separate checks, and the card is split because they are not the same thing. <strong>By hand</strong>{' '}
+              is the list you maintain — it is seeded with REITs but holds anything you have banned, for any reason.{' '}
+              <strong>Real estate</strong> is the sector/industry check, which bans a symbol automatically on what its
+              sector string says; nothing to maintain, and nothing to remove here.
+            </p>
+            {exclusionTab === 'classified' ? (
+              realEstateBans.loading && !realEstateBans.data ? (
+                <Spinner />
+              ) : realEstateBans.error ? (
+                <ErrorState error={realEstateBans.error} onRetry={realEstateBans.reload} />
+              ) : reBanRows.length === 0 ? (
+                <EmptyState
+                  title="Nothing classified as real estate"
+                  hint="The check reads the universe's own sector column first, then a cached fundamentals lookup for symbols outside it."
+                />
+              ) : (
+                <table className="w-full">
+                  <thead className="border-b border-ink-600/60">
+                    <tr>
+                      <th className="th">Symbol</th>
+                      <th className="th">Sector</th>
+                      <th className="th">Industry</th>
+                      <th className="th">Classified from</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {reBanRows.map((b) => (
+                      <tr key={b.symbol} className="border-b border-ink-700/50">
+                        <td className="td font-semibold">{b.symbol}</td>
+                        <td className="td text-slate-400">{b.sector || '—'}</td>
+                        <td className="td text-slate-400">{b.industry || '—'}</td>
+                        <td className="td">
+                          <Badge color={b.source === 'universe' ? 'slate' : 'blue'}>{b.source}</Badge>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )
+            ) : (
+              <>
+                <div className="grid sm:grid-cols-4 gap-2 items-end mb-3">
+                  <Field label="Symbol">
+                    <input
+                      className="input"
+                      value={newSymbol}
+                      onChange={(e) => setNewSymbol(e.target.value.toUpperCase())}
+                      placeholder="O"
+                    />
+                  </Field>
+                  <div className="sm:col-span-2">
+                    <Field label="Reason (optional)">
+                      <input
+                        className="input"
+                        value={newReason}
+                        onChange={(e) => setNewReason(e.target.value)}
+                        placeholder="REIT"
+                      />
+                    </Field>
+                  </div>
+                  <button className="btn-primary" onClick={addExclusion}>
+                    Add
+                  </button>
+                </div>
+                {exclusions.loading && !exclusions.data ? (
+                  <Spinner />
+                ) : exclusions.error ? (
+                  <ErrorState error={exclusions.error} onRetry={exclusions.reload} />
+                ) : exclusionRows.length === 0 ? (
+                  <EmptyState
+                    title="No exclusions"
+                    hint="Add a symbol above — the sector/industry classification check also catches unlisted REITs."
+                  />
+                ) : (
+                  <table className="w-full">
+                    <thead className="border-b border-ink-600/60">
+                      <tr>
+                        <th className="th">Symbol</th>
+                        <th className="th">Reason</th>
+                        <th className="th">Source</th>
+                        <th className="th text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {exclusionRows.map((e) => (
+                        <tr key={e.symbol} className="border-b border-ink-700/50">
+                          <td className="td font-semibold">{e.symbol}</td>
+                          <td className="td text-slate-400">{e.reason || '—'}</td>
+                          <td className="td">
+                            <Badge color={e.source === 'default' ? 'slate' : 'blue'}>{e.source}</Badge>
+                          </td>
+                          <td className="td text-right">
+                            <button
+                              className="text-xs text-slate-500 hover:text-bear"
+                              onClick={() => removeExclusion(e.symbol)}
+                            >
+                              remove
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </>
             )}
           </CollapsibleCard>
 
