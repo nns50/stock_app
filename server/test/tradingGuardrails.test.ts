@@ -325,6 +325,21 @@ describe('trading guardrails', () => {
     expect(check(r, 'daily_loss_halt').passed).toBe(true);
   });
 
+  // Same principle as max_orders_per_day below: a halted day must not strand a
+  // position. Refusing an entry limits risk; refusing the stagnation or
+  // end-of-day close lets the loss that tripped the halt keep running.
+  it('never halts a CLOSE on the daily loss limit, however deep the day', () => {
+    const r = evaluateGuardrails(
+      order({ openClose: 'close', side: 'sell' }),
+      acct({ realizedPnlTodayUsd: -5_000 }),
+      cfg(),
+    );
+    const c = check(r, 'daily_loss_halt');
+    expect(c.passed).toBe(true);
+    expect(c.detail).toContain('closing');
+    expect(failed(r)).not.toContain('daily_loss_halt');
+  });
+
   it('blocks once the daily order count is reached', () => {
     const r = evaluateGuardrails(order(), acct({ ordersToday: 10 }), cfg());
     expect(failed(r)).toContain('max_orders_per_day');

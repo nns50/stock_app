@@ -15,6 +15,7 @@ import { Position } from '../../db/positions';
 import { getPaperPortfolioSnapshot } from './execute';
 import { getOptionsPaperPortfolioSnapshot } from './optionsExecute';
 import { getLivePortfolioSnapshot, getProbationStatus, ProbationStatus } from './liveExecute';
+import { dayLossBudgetUsd, dayStartEquityUsd } from './dayLossBudget';
 import { listLiveOptionsPositions, LiveOptionsPosition } from '../../db/autotradeLiveOptionsPositions';
 import { getLiveOptionsPortfolioSnapshot, getOptionsProbationStatus } from './liveOptionsExecute';
 import { buildSectorOf } from './riskCheck';
@@ -479,7 +480,14 @@ export function getAutotradeDashboard(): AutotradeDashboard {
     maxSectorExposure: (config.maxSectorExposurePct / 100) * equity,
 
     dailyPnl: snapshot.dailyPnl + optionsSnapshot.dailyPnl,
-    dailyDrawdownHaltLevel: -(config.maxDailyDrawdownPct / 100) * equity,
+    // The level the risk checks actually halt at — the day's OPENING equity
+    // through the shared derivation, not this tick's reading (dayLossBudget.ts).
+    // The card and the halt must name the same number or the operator is shown
+    // a threshold the loop does not use.
+    dailyDrawdownHaltLevel: -dayLossBudgetUsd(
+      config.maxDailyDrawdownPct,
+      dayStartEquityUsd(getDailyBaseline(), etToday(), equity).usd,
+    ),
 
     tradesToday: snapshot.tradesToday + optionsSnapshot.tradesToday,
     maxTradesPerDay: config.maxTradesPerDay,

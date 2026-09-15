@@ -24,6 +24,9 @@ import {
   NEUTRAL,
   type SizingFactors,
 } from './effectiveRisk';
+import { dayLossBudgetUsd, dayStartEquityUsd } from './dayLossBudget';
+import { getDailyBaseline } from '../../db/dailyBaseline';
+import { etToday } from '../../util/marketDate';
 import { ML_REGIME_LABELS } from '../regimeModel';
 import { actionableRegime, peekMarketRegime } from '../mlRegime';
 
@@ -411,12 +414,14 @@ export function evaluateOptionsRiskCheck(signal: OptionsTradeSignal, ctx: RiskCh
   check('quantity', qtyOk, qtyDetail);
   if (!qtyOk) return blocked(sizing, stepDownActive, regimeActive);
 
-  const dailyHaltLevel = -(ctx.maxDailyDrawdownPct / 100) * ctx.equity;
+  // The day's OPENING equity, not this tick's — the equity twin's reasoning
+  // applies verbatim here (dayLossBudget.ts).
+  const dailyHaltLevel = -dayLossBudgetUsd(ctx.maxDailyDrawdownPct, ctx.dayStartEquityUsd);
   const haltOk = ctx.dailyPnl > dailyHaltLevel;
   check(
     'daily_drawdown_halt',
     haltOk,
-    `today ${usd(ctx.dailyPnl)} vs halt at ${usd(dailyHaltLevel)} (${ctx.maxDailyDrawdownPct}% of equity)`,
+    `today ${usd(ctx.dailyPnl)} vs halt at ${usd(dailyHaltLevel)} (${ctx.maxDailyDrawdownPct}% of the day's opening ${usd(ctx.dayStartEquityUsd)})`,
   );
 
   const tradesOk = ctx.tradesToday < ctx.maxTradesPerDay;
@@ -549,6 +554,8 @@ export async function runOptionsRiskCheck(
       priorSameDayExits: 0,
       repeatEntrySizeCutPct: 0,
       equity: snapshot.equity ?? 0,
+      // See riskCheck.ts's preview: the day's opening equity.
+      dayStartEquityUsd: dayStartEquityUsd(getDailyBaseline(), etToday(), snapshot.equity ?? 0).usd,
       dailyPnl: snapshot.dailyPnl,
       tradesToday: snapshot.tradesToday,
       consecutiveLosses: snapshot.consecutiveLosses,

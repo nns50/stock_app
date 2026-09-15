@@ -953,6 +953,10 @@ export function simulateBacktest(
         priorSameDayExits: 0,
         repeatEntrySizeCutPct: 0,
         equity,
+        // The day's OPENING equity, exactly: `equity` and `dailyPnl` are
+        // incremented by the same amounts on every close and `dailyPnl` resets
+        // each replayed day, so the difference is what the day started at.
+        dayStartEquityUsd: equity - dailyPnl,
         dailyPnl,
         // Trades actually filled today (step 1, above) — matches the live
         // system's getPortfolioSnapshot().tradesToday, which counts orders

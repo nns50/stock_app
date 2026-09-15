@@ -1,4 +1,6 @@
 import { getAutotradeConfig, RiskProfileName } from '../../db/autotradeConfig';
+import { getDailyBaseline } from '../../db/dailyBaseline';
+import { dayStartEquityUsd } from './dayLossBudget';
 import { TradeSignal, convictionGrade } from './decide';
 import {
   correlatedNotional,
@@ -483,6 +485,10 @@ export async function runPaperExecution(
       priorSameDayExits: 0,
       repeatEntrySizeCutPct: 0,
       equity,
+      // The account's opening equity for the day — the same denominator the
+      // live book's halt and the +3% goal use, so the control arm is halted on
+      // the same rule it is being compared against (dayLossBudget.ts).
+      dayStartEquityUsd: dayStartEquityUsd(getDailyBaseline(), etDateStr(), equity).usd,
       dailyPnl,
       tradesToday,
       consecutiveLosses,

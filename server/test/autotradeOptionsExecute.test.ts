@@ -118,6 +118,7 @@ beforeEach(() => {
 describe('attemptOptionsPaperEntry', () => {
   const okResult: OptionsRiskCheckResult = evaluateOptionsRiskCheck(optionSignal(), {
     equity: 100_000,
+    dayStartEquityUsd: 100_000,
     dailyPnl: 0,
     tradesToday: 0,
     consecutiveLosses: 0,
@@ -216,6 +217,7 @@ describe('attemptOptionsPaperEntry', () => {
   describe('debit spreads', () => {
     const spreadOkResult: OptionsRiskCheckResult = evaluateOptionsRiskCheck(spreadSignal(), {
       equity: 100_000,
+      dayStartEquityUsd: 100_000,
       dailyPnl: 0,
       tradesToday: 0,
       consecutiveLosses: 0,
@@ -1016,6 +1018,7 @@ describe('short-dated options — the paper book', () => {
     mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 0.41 } }) as never);
     const risk = evaluateOptionsRiskCheck(optionSignal({ underlyingPrice: 143.2 }), {
       equity: 100_000,
+      dayStartEquityUsd: 100_000,
       dailyPnl: 0,
       tradesToday: 0,
       consecutiveLosses: 0,

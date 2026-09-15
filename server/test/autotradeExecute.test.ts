@@ -61,6 +61,7 @@ beforeEach(() => {
 describe('attemptPaperEntry', () => {
   const okResult: RiskCheckResult = evaluateRiskCheck(signal(), {
     equity: 100_000,
+    dayStartEquityUsd: 100_000,
     dailyPnl: 0,
     tradesToday: 0,
     consecutiveLosses: 0,

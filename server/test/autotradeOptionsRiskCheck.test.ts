@@ -80,6 +80,7 @@ function equitySignal(overrides: Partial<TradeSignal> = {}): TradeSignal {
 function baseCtx(overrides: Partial<RiskCheckContext> = {}): RiskCheckContext {
   return {
     equity: 100_000,
+    dayStartEquityUsd: 100_000,
     dailyPnl: 0,
     tradesToday: 0,
     consecutiveLosses: 0,

@@ -52,6 +52,7 @@ import {
 } from '../src/db/autotradeConfig';
 import { setTradingConfig } from '../src/db/trading';
 import { etDateTimeToMs, etToday } from '../src/util/marketDate';
+import { saveDailyBaseline } from '../src/db/dailyBaseline';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { listPositions, createPosition, addExit } from '../src/db/positions';
 import * as positionsDb from '../src/db/positions';
@@ -147,6 +148,7 @@ const okAccountState = {
 function baseRiskCtx() {
   return {
     equity: 100_000,
+    dayStartEquityUsd: 100_000,
     dailyPnl: 0,
     tradesToday: 0,
     consecutiveLosses: 0,
@@ -276,7 +278,26 @@ describe('buildLiveTradingConfig', () => {
     setTradingConfig({ maxOrderUsd: 1_000, maxDailyLossUsd: 500 });
     const cfg = buildLiveTradingConfig(liveConfig({ liveMaxOrderUsd: 7_777, liveMaxDailyLossUsd: 333 }));
     expect(cfg.maxOrderUsd).toBe(7_777);
-    expect(cfg.maxDailyLossUsd).toBe(333);
+  });
+
+  // The day's loss budget, from maxDailyDrawdownPct over the day's OPENING
+  // equity — NOT the stored liveMaxDailyLossUsd, which re-derives from
+  // whatever net liquidation last re-anchored the caps. Both stored values
+  // below are deliberately wrong-on-purpose so a regression to either shows.
+  it('derives maxDailyLossUsd from the drawdown % and the day baseline, not the stored dollar cap', () => {
+    saveDailyBaseline(etToday(), 50_000);
+    const cfg = buildLiveTradingConfig(
+      liveConfig({ accountEquityUsd: 10_000, liveMaxDailyLossUsd: 333, maxDailyDrawdownPct: 7.5 }),
+    );
+    // 7.5% of the day's opening 50,000 — not 7.5% of the 10,000 reading, and
+    // not the stored 333.
+    expect(cfg.maxDailyLossUsd).toBe(3_750);
+  });
+
+  it('falls back to the current reading when the day has no baseline yet', () => {
+    db.prepare('DELETE FROM autotrade_daily_baseline').run();
+    const cfg = buildLiveTradingConfig(liveConfig({ accountEquityUsd: 10_000, maxDailyDrawdownPct: 7.5 }));
+    expect(cfg.maxDailyLossUsd).toBe(750);
   });
 
   it('falls back maxExposureUsd to 0 when equity is unset, failing closed', () => {
@@ -327,6 +348,7 @@ describe('getProbationStatus', () => {
     const cfg = liveConfig({ liveEnabledAt: enabledAt, liveProbationTrades: 5, liveProbationSizeMultiplier: 0.4 });
     const okResult = evaluateRiskCheck(signal(), {
       equity: 100_000,
+      dayStartEquityUsd: 100_000,
       dailyPnl: 0,
       tradesToday: 0,
       consecutiveLosses: 0,
@@ -488,6 +510,7 @@ describe('syncAccountEquityFromBroker', () => {
 describe('attemptLiveEntry', () => {
   const okResult: RiskCheckResult = evaluateRiskCheck(signal(), {
     equity: 100_000,
+    dayStartEquityUsd: 100_000,
     dailyPnl: 0,
     tradesToday: 0,
     consecutiveLosses: 0,
@@ -2404,6 +2427,7 @@ describe('runLiveExecution', () => {
 describe('adoptOrphanedLivePositions', () => {
   const okCtx = {
     equity: 100_000,
+    dayStartEquityUsd: 100_000,
     dailyPnl: 0,
     tradesToday: 0,
     consecutiveLosses: 0,
@@ -3458,6 +3482,7 @@ describe('reconcileLiveOrders', () => {
     const cfg = liveConfig();
     const okResult = evaluateRiskCheck(signal(), {
       equity: 100_000,
+      dayStartEquityUsd: 100_000,
       dailyPnl: 0,
       tradesToday: 0,
       consecutiveLosses: 0,
@@ -3535,6 +3560,7 @@ describe('reconcileLiveOrders', () => {
     mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-4' });
     const okResult = evaluateRiskCheck(signal(), {
       equity: 100_000,
+      dayStartEquityUsd: 100_000,
       dailyPnl: 0,
       tradesToday: 0,
       consecutiveLosses: 0,
@@ -3601,6 +3627,7 @@ describe('reconcileLiveOrders', () => {
   const entryResult = (): RiskCheckResult =>
     evaluateRiskCheck(signal(), {
       equity: 100_000,
+      dayStartEquityUsd: 100_000,
       dailyPnl: 0,
       tradesToday: 0,
       consecutiveLosses: 0,
@@ -3806,6 +3833,7 @@ describe('reconcileLiveOrders', () => {
     mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-PARTIAL-EXIT' });
     const res = evaluateRiskCheck(signal(), {
       equity: 100_000,
+      dayStartEquityUsd: 100_000,
       dailyPnl: 0,
       tradesToday: 0,
       consecutiveLosses: 0,
@@ -3875,6 +3903,7 @@ describe('reconcileLiveOrders', () => {
     mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-5' });
     const okResult = evaluateRiskCheck(signal(), {
       equity: 100_000,
+      dayStartEquityUsd: 100_000,
       dailyPnl: 0,
       tradesToday: 0,
       consecutiveLosses: 0,
@@ -3943,6 +3972,7 @@ describe('reconcileLiveOrders', () => {
     mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-7' });
     const okResult = evaluateRiskCheck(signal(), {
       equity: 100_000,
+      dayStartEquityUsd: 100_000,
       dailyPnl: 0,
       tradesToday: 0,
       consecutiveLosses: 0,
@@ -4010,6 +4040,7 @@ describe('reconcileLiveOrders', () => {
     mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-8' });
     const okResult = evaluateRiskCheck(signal(), {
       equity: 100_000,
+      dayStartEquityUsd: 100_000,
       dailyPnl: 0,
       tradesToday: 0,
       consecutiveLosses: 0,
@@ -4096,6 +4127,7 @@ describe('reconcileLiveOrders + adoptOrphanedLivePositions interaction', () => {
     mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-9' });
     const okResult = evaluateRiskCheck(signal(), {
       equity: 100_000,
+      dayStartEquityUsd: 100_000,
       dailyPnl: 0,
       tradesToday: 0,
       consecutiveLosses: 0,
@@ -4384,6 +4416,7 @@ describe('listPendingLiveOrders / terminal-state exclusion', () => {
     mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-6' });
     const okResult = evaluateRiskCheck(signal(), {
       equity: 100_000,
+      dayStartEquityUsd: 100_000,
       dailyPnl: 0,
       tradesToday: 0,
       consecutiveLosses: 0,
@@ -4452,6 +4485,7 @@ describe('listPendingLiveOrders / terminal-state exclusion', () => {
     mockPlaceOrder.mockResolvedValue({ ok: false, error: 'nope' });
     const okResult = evaluateRiskCheck(signal(), {
       equity: 100_000,
+      dayStartEquityUsd: 100_000,
       dailyPnl: 0,
       tradesToday: 0,
       consecutiveLosses: 0,
@@ -4507,6 +4541,7 @@ describe('checkLiveScaleIns', () => {
 
   const riskCtx = {
     equity: 100_000,
+    dayStartEquityUsd: 100_000,
     dailyPnl: 0,
     tradesToday: 0,
     consecutiveLosses: 0,
@@ -4726,6 +4761,7 @@ describe('reconcileLiveOrders — partial fills', () => {
     const cfg = liveConfig();
     const okResult = evaluateRiskCheck(signal(), {
       equity: 100_000,
+      dayStartEquityUsd: 100_000,
       dailyPnl: 0,
       tradesToday: 0,
       consecutiveLosses: 0,
@@ -4882,6 +4918,7 @@ describe('reconcileLiveOrders — booking and the materialization mark are atomi
     mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-ATOM' });
     const okResult = evaluateRiskCheck(signal(), {
       equity: 100_000,
+      dayStartEquityUsd: 100_000,
       dailyPnl: 0,
       tradesToday: 0,
       consecutiveLosses: 0,

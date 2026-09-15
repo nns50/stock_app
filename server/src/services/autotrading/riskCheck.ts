@@ -25,6 +25,8 @@ import { actionableRegime, peekMarketRegime } from '../mlRegime';
 import { computeGradeExpectancyMultipliers } from './expectancySizing';
 import { computeMethodMultipliers, methodOfEquitySignal } from './methodSizing';
 import { fundableMaxQuantity, isTooSmallToFund, MIN_FUNDED_SIZE_FRACTION } from './buyingPowerSizing';
+import { dayLossBudgetUsd, dayStartEquityUsd } from './dayLossBudget';
+import { getDailyBaseline } from '../../db/dailyBaseline';
 import { listLiveOptionsPositions } from '../../db/autotradeLiveOptionsPositions';
 import { TradeSignal, convictionGrade } from './decide';
 
@@ -371,6 +373,12 @@ export interface RiskCheckContext {
    *  AutotradeConfig's own doc comments for the full reasoning/defaults. */
   riskPerTradePct: number;
   maxDailyDrawdownPct: number;
+  /** The equity the DAY started at — what `maxDailyDrawdownPct` is a
+   *  percentage of. Required, not optional with a fallback to `equity`: a
+   *  caller that forgets it would silently keep the pre-2026-09-15 behaviour
+   *  of measuring the day's drawdown against the day's current value, which is
+   *  the bug (see dayLossBudget.ts). `dayStartEquityUsd()` produces it. */
+  dayStartEquityUsd: number;
   stepDownAfterLosses: number;
   stepDownSizeCutPct: number;
   maxAggregateOpenRiskPct: number;
@@ -781,12 +789,16 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
   );
   if (!qtyOk) return blocked(sizing, stepDownActive, regimeActive, equityCurveDeriskActive);
 
-  const dailyHaltLevel = -(ctx.maxDailyDrawdownPct / 100) * ctx.equity;
+  // Of the equity the DAY OPENED at, not of this tick's reading — the same
+  // denominator the +3% goal uses, so the two day-level rules are percentages
+  // of the same dollars. See dayLossBudget.ts for what they cost when they
+  // were not.
+  const dailyHaltLevel = -dayLossBudgetUsd(ctx.maxDailyDrawdownPct, ctx.dayStartEquityUsd);
   const haltOk = ctx.dailyPnl > dailyHaltLevel;
   check(
     'daily_drawdown_halt',
     haltOk,
-    `today ${usd(ctx.dailyPnl)} vs halt at ${usd(dailyHaltLevel)} (${ctx.maxDailyDrawdownPct}% of equity)`,
+    `today ${usd(ctx.dailyPnl)} vs halt at ${usd(dailyHaltLevel)} (${ctx.maxDailyDrawdownPct}% of the day's opening ${usd(ctx.dayStartEquityUsd)})`,
   );
 
   const tradesOk = ctx.tradesToday < ctx.maxTradesPerDay;
@@ -925,6 +937,10 @@ export async function runAutotradeRiskCheck(signals: TradeSignal[]): Promise<Ris
     );
     const ctx: RiskCheckContext = {
       equity: snapshot.equity ?? 0,
+      // The preview answers "would this be approved right now", so it reads the
+      // same day-start equity the live path does (dayLossBudget.ts), falling
+      // back to the snapshot's own equity before the day's baseline exists.
+      dayStartEquityUsd: dayStartEquityUsd(getDailyBaseline(), etDateStr(), snapshot.equity ?? 0).usd,
       dailyPnl: snapshot.dailyPnl,
       tradesToday: snapshot.tradesToday,
       consecutiveLosses: snapshot.consecutiveLosses,
