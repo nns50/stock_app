@@ -85,7 +85,12 @@ isn't the entry — it's that *you never enter without a written exit.*
 > chronically miss the target, lower the target or widen trade flow; don't raise risk.
 > The **give-back guard** (2026-08-22) extends the same rule to the day that *almost*
 > makes it: once the day has been up 2/3 of the goal, a fade back to 1/3 halts new
-> live entries too — keep most of a good day instead of round-tripping it. Its
+> live entries too — keep most of a good day instead of round-tripping it. **It needs a
+> day taller than one trade**, and since 2026-09-15 it is OFF, because at the trial's
+> sizing it is not: a 2.5% risk with a 1R target moves the day ±2.5 points against a
+> band one point wide, so a win and then a loss — the most ordinary two-trade sequence
+> there is — halts the book at flat. See the goal log for the arithmetic and the
+> condition for turning it back on. Its
 > companions attack the fade before it happens: **finish-line sizing** trims the
 > closing trade to just what banks the day (never sizes up — pressing a shortfall is
 > how accounts die), an **armed-day score bar** holds late entries to the highest

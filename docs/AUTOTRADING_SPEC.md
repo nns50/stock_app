@@ -11220,3 +11220,57 @@ modifies nothing"* three days after the re-arm made it place a bracket. That is
 the comment class CLAUDE.md's own notes warn about — an assertion of a property
 the code no longer has, which is what stops the next reader looking. Rewritten
 to say what it now does and, more usefully, where the kill switch sits in it.
+
+## 2026-09-15 — the give-back guard is off, because the band is narrower than one trade
+
+Applied to production on the operator's word: `giveBackArmPct` 2 → null,
+`giveBackFloorPct` 1 → null. The goal stays at 3%.
+
+**The arithmetic.** At 2.5% risk with a 1R target, one trade moves the day ±2.5
+points. The band from arm (+2%) to floor (+1%) is one point wide. So:
+
+```
+win  +2.5%  -> arms the guard (2%), does not bank (3%)
+lose -2.5%  -> day at 0%, below the 1% floor -> guard fires, entries halted
+```
+
+In R: the goal is 1.2R tall, the arm sits at 0.8R, the floor at 0.4R, the step
+is 1.00R. **No valid band exists** — the route requires floor ≥ 0 and arm <
+goal, and every band inside a 1.2R-tall day is crossed by a 1R step. The guard
+is either hair-trigger (as configured) or inert (arm just under the goal).
+
+**The cost, measured.** Live record: 75 trades over 12 sessions, 47% win rate,
+median 6 trades a session. Win-then-loss opened **2 of 10** sessions, and the
+sessions it truncates are the busiest ones (12, 11, 11, 9 trades). That attacks
+the FLOW term of `trades/session × risk% × edge R`, which is the term the 3%
+goal leans on hardest.
+
+**This is a defect the 2026-09-12 change set introduced, not a rule that was
+always wrong.** Under the pre-trial config the same 2/1 band was coherent:
+
+| | winner | loser | win-then-lose | fires? |
+|---|---|---|---|---|
+| before (1.25% risk, 2R target) | +2.5% | −1.25% | +1.25%, above the floor | no — took win-lose-lose |
+| after (2.5% risk, 1R target) | +2.5% | −2.5% | 0%, below the floor | **yes, after two trades** |
+
+Two changes compounded: risk doubled *and* the target halved, so the loser became
+the same size as the winner and both became large against a one-point band. The
+plan said "the daily target 3 / 2 / 1 stays" without noticing that halving the
+goal's height in R makes the band narrower than a trade.
+
+**What is lost, and why it is little.** At a 1.2R goal the guard was nearly
+redundant with the bank halt: the day banks at 1.2R, only 0.2R above where a
+single winner lands, so the window the guard polices is 0.2R wide. At the old
+2.4R goal that window was over a full trade wide, which is what the guard was
+designed for. `dayProtectiveStopEnabled` is already false, so nothing else rode
+on the arm flag.
+
+**What still limits a bad day:** the −7.5% drawdown halt (three full-size
+losers), the step-down after 2 consecutive losses (50% cut), one entry per symbol
+per session, the 60-minute stagnation exit, and the through-stop protective close.
+
+**Pre-committed:** revisit at the 10-session review. If the sizing reverts to
+1.25% / 2R, the 2/1 band is coherent again and the guard goes back on with it. If
+2.5% is kept, the guard cannot work at this goal height, and a give-back rule
+would need a floor **below zero** — a band at least one trade-step wide, which is
+a code change and a new decision, not a lever.
