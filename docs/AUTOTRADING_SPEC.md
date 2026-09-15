@@ -11335,3 +11335,59 @@ the PAPER control is negative over that window, the widening is not working and
 the biotech names come back out — a paper book that cannot make money on them is
 not a case for risking real money on them. No sizing, cap or floor changes with
 this.
+
+## 2026-09-15 — the shape of the day, sampled
+
+**The question that had no answer.** "We were over 3% for at least five minutes
+this morning, and now we're not." True, and unanswerable twenty minutes later:
+the app kept the day's OPENING equity (`autotrade_daily_baseline`) and overwrote
+the current figure every tick. Nothing recorded what happened in between.
+
+**Why not poll every second**, which is the obvious version of the fix. The
+account figure comes from the broker, and that API is rate-limited to roughly 2
+requests per 2 seconds **shared with the order paths** — polling it per second
+would starve placement and cancellation in order to watch a number. It is also
+unnecessary: the day is computable locally. Realized P&L comes from the ledger,
+and the mark needs one quote per open position, which the tick ALREADY fetches
+for the stop ratchet and the stagnation check. The provider caches quotes, so
+the sampler adds no provider calls in the ordinary case.
+
+60-second resolution is the cadence every other rule in the loop acts on, and it
+puts five samples inside a five-minute window.
+
+**Three series, because the whole point is that they differ.**
+`autotrade_day_marks`, one row per tick:
+
+| column | what it is | who decides on it |
+|---|---|---|
+| `realized_usd` | what the loop has BANKED | every day-level halt, since 2026-09-14 |
+| `unrealized_equity_usd` | the mark on the loop's own open STOCK positions | a flatten-at-goal rule, if built |
+| `account_equity_usd` | the broker's net liquidation | what the operator sees |
+
+On a session with no hand trading the first two sum to the third's move. The gap
+between the first two is exactly the open argument — whether reaching the goal
+should FLATTEN — and this table is its evidence rather than one morning's
+impression. Percentages are derived on read and never stored: a stored
+percentage is a second derivation of the same quantity waiting to disagree with
+the dollars beside it.
+
+**What the mark deliberately excludes.** Live OPTIONS positions: pricing a
+contract needs a chain fetch, far too expensive per tick. `open_options` records
+how many are excluded, so a reader can tell a complete mark from a partial one
+instead of assuming — which is why the column is `unrealized_EQUITY_usd` and not
+`unrealized_usd`. The same reasoning covers a quote that fails: that name drops
+out of the mark, the row still records how many positions were open, and a
+partial mark with a known position count beats no row at all.
+
+**The reading.** `GET /api/journal/day-marks?date=&goalPct=` returns the series
+plus a summary: peak and trough for each of the three, how many samples marked
+at or above the goal, and how long that ran — in minutes derived from the sample
+CADENCE, not from a wall clock, so a gap in the samples (a restart, a stalled
+tick) cannot read as time spent above the goal. `goalPct` defaults to the
+configured target but is overridable, because judging a past session by today's
+goal is the filter-history-by-live-config mistake.
+
+**What this is for.** Two weeks of it answers the question the flatten decision
+actually turns on: how often does a 3% MARK appear while the realized day never
+gets there, and how often does that mark survive to the close? Until then the
+day-level halts are unchanged — this records, it does not act.

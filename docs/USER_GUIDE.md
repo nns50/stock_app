@@ -1286,6 +1286,14 @@ equally-weighted cards in the order they happened to be built:
   caps derived from it. It takes **two** agreeing signals to declare a flow, so a
   genuinely large trading gain is never mistaken for one and re-based away. A reach you
   had already earned before the flow landed stays banked.
+  Since **2026-09-15** the app also records the **shape** of the day — one sample per
+  minute of what the loop has banked, what its open positions are marked at, and what the
+  whole account reads — so "we were over 3% for five minutes this morning" has an answer
+  afterwards instead of only in the moment. `GET /api/journal/day-marks` returns the series
+  and each one's high and low, plus how long the marked day spent at or above the goal.
+  It records only; no halt reads it. It samples once a minute rather than once a second
+  because the account figure comes from the broker, whose rate limit is shared with order
+  placement — the loop would be starving its own trading to watch a number.
   Since 2026-08-22 a **give-back guard** protects the day that _almost_ banks: applying
   a tune also stamps an **arm** level at 2/3 of the target and a **floor** at 1/3
   (`giveBackArmPct` / `giveBackFloorPct` — a 3% goal arms at +2%, floors at +1%). Once

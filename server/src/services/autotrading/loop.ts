@@ -44,6 +44,7 @@ import {
 import { maybeAlertLiveOrderFailures, maybeAlertLiveAmbiguity } from './liveFailureAlert';
 import { reanchorLiveCapsIfDrifted } from './liveCapsReanchor';
 import { recordTodayAfterClose } from './dailyResults';
+import { recordDayMark } from './dayMarks';
 import { runGatedSwitchesAfterClose } from './gatedSwitchesData';
 import { DailyTargetStatus, updateDailyGoalScale, updateDailyTarget } from './dailyTarget';
 import { hasExpiredLiveOptions, sweepExpiredLiveOptions } from './liveOptionsExpiry';
@@ -550,6 +551,17 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       recordTodayAfterClose();
     } catch (e) {
       journalStageFailure('daily result record', e);
+    }
+    // Sample the SHAPE of the day, in session and out (2026-09-15). The
+    // baseline row only ever held the day's opening equity, so "we were over 3%
+    // for five minutes this morning" was unanswerable twenty minutes later.
+    // Quotes come from the cache the stop-ratchet stage above already filled,
+    // so this adds no provider calls in the ordinary case — see dayMarks.ts for
+    // why it is not a one-second poll.
+    try {
+      await recordDayMark();
+    } catch (e) {
+      journalStageFailure('day mark', e);
     }
     // …and once it exists, evaluate the criteria-gated switches against it
     // (2026-09-12). Every SAFE rule starts in shadow — it journals what it
