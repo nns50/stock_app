@@ -25,6 +25,8 @@ import {
 import { validateExitTuneRules, type ValidationTrade } from '../services/autotrading/exitTuneValidation';
 import { buildShortShadowRecord, type SkippedShort } from '../services/autotrading/shortShadowRecord';
 import { parseDeclinedEntry, type DeclinedEntry } from '../services/autotrading/declinedEntry';
+import { readDay } from '../services/autotrading/dayMarks';
+import { listDayMarkDates } from '../db/dayMarks';
 import { buildDeclinedEntryShadow, SCORE_FLOOR_ACTIONS } from '../services/autotrading/declinedEntryShadow';
 import { listAutotradeEvents } from '../db/autotradeEvents';
 import type { Candle } from '../providers/types';
@@ -1023,5 +1025,33 @@ journalRouter.get(
     const applyScoreFloor = !SCORE_FLOOR_ACTIONS.has(action);
     const record = await buildDeclinedEntryShadow(getProvider(), rows, cfg, { applyScoreFloor });
     res.json({ action, since: from, journaledRows: journaled.length, unscorableRows, applyScoreFloor, ...record });
+  }),
+);
+
+/**
+ * The shape of one session's day (2026-09-15) — the series the baseline row
+ * never kept, so that "we were over 3% for five minutes" has an answer after
+ * the fact rather than only in the moment.
+ *
+ * `goal` defaults to the CONFIGURED target so the above-goal count means what
+ * the reader expects, but it is overridable: judging a past session by today's
+ * goal is the live-config-over-history mistake, and a caller reading an old day
+ * should pass the goal that day actually ran.
+ */
+const dayMarksQuery = z.object({
+  date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .optional(),
+  goalPct: z.coerce.number().positive().optional(),
+});
+journalRouter.get(
+  '/day-marks',
+  asyncHandler(async (req, res) => {
+    const { date, goalPct } = parseQuery(dayMarksQuery, req);
+    const etDate = date ?? etToday();
+    const goal = goalPct ?? getAutotradeConfig().targetDailyGainPct;
+    const { points, summary } = readDay(etDate, goal);
+    res.json({ etDate, goalPct: goal, samples: points.length, summary, points, dates: listDayMarkDates() });
   }),
 );

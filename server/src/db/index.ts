@@ -626,6 +626,42 @@ CREATE TABLE IF NOT EXISTS autotrade_daily_baseline (
   goal_basis           TEXT
 );
 
+-- The day's P&L SAMPLED THROUGH THE SESSION (2026-09-15, the operator's ask).
+--
+-- "We were over 3% for five minutes this morning" was unanswerable: the app
+-- kept the day's OPENING equity (autotrade_daily_baseline) and overwrote the
+-- current figure every tick, so nothing recorded the shape of the day in
+-- between. This is that series, one row per loop tick.
+--
+-- THREE QUANTITIES, RAW, because the whole point is that they differ:
+--   realized_usd            what the loop has BANKED -- the number every
+--                           day-level halt decides on since 2026-09-14.
+--   unrealized_equity_usd   the mark on the loop's own open STOCK positions.
+--   account_equity_usd      the broker's net liquidation, i.e. what the
+--                           operator sees on screen.
+-- On a session with no hand trading the first two sum to the third's move; the
+-- gap between "realized" and "realized + mark" is exactly the argument about
+-- whether reaching the goal should FLATTEN, and this table is the evidence for
+-- it. Percentages are derived on read, never stored: a stored percentage is a
+-- second derivation of the same quantity waiting to disagree.
+--
+-- NOT covered by the mark: live OPTIONS positions. Pricing one needs a chain
+-- fetch, which is far too expensive per tick, so open_options records how
+-- many were open instead -- a reader can then tell a complete mark from a
+-- partial one rather than assuming. This is why the column is named
+-- unrealized_EQUITY_usd and not unrealized_usd.
+CREATE TABLE IF NOT EXISTS autotrade_day_marks (
+  et_date               TEXT NOT NULL,       -- YYYY-MM-DD in America/New_York
+  at                    INTEGER NOT NULL,    -- epoch ms of the tick
+  baseline_equity_usd   REAL NOT NULL,       -- the day's opening equity (the denominator)
+  realized_usd          REAL NOT NULL,
+  unrealized_equity_usd REAL NOT NULL,
+  account_equity_usd    REAL,                -- NULL when the broker read failed
+  open_equity           INTEGER NOT NULL,    -- open live stock positions behind the mark
+  open_options          INTEGER NOT NULL,    -- open live options NOT in the mark
+  PRIMARY KEY (et_date, at)
+);
+
 CREATE TABLE IF NOT EXISTS autotrade_exclusions (
   symbol      TEXT PRIMARY KEY,
   reason      TEXT,
