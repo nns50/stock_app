@@ -124,20 +124,29 @@ function roundStop(price: number, side: 'long' | 'short'): number {
 }
 
 /**
- * The stop price at which a stop-out would leave the day exactly at its
- * give-back floor — or null when the rule does not apply.
+ * The stop price at which a stop-out would leave the day exactly at
+ * `dayProtectiveStopFloorPct` — or null when the rule does not apply.
  *
  * Null (does nothing) whenever: the feature is off, no floor is configured,
- * the day has no measurable equity, the guard has not ARMED, the position's
- * size is unknown, the day is already at or under the floor (nothing left to
- * protect — the guard itself handles that), the current stop is ALREADY safe,
- * or the required stop would sit closer to the price than
+ * the day has no measurable equity, the position's size is unknown, the day is
+ * already at or under the floor (nothing left to protect), the current stop is
+ * ALREADY safe, or the required stop would sit closer to the price than
  * DAY_PROTECTIVE_MIN_ROOM_R of the original risk.
  *
  * That last guard is the one that keeps this cheap: rather than squeezing a
  * position into a stop it cannot survive, the rule declines and leaves the
  * original stop alone. Protecting the day is not worth converting a live
  * trade into a coin flip on the next tick.
+ *
+ * KNOWN LIMIT — IT IS PER POSITION, AND THE HEADROOM IS NOT SHARED. Each open
+ * position is asked "can YOU alone cost the day?" against the WHOLE of
+ * `dayProtectiveHeadroomUsd`. Two positions sized to leave the day exactly at
+ * the floor therefore leave it at twice the distance below if both stop out
+ * together. The rule bounds a single trade's give-back, not the book's.
+ * Splitting the headroom by open position would bind far harder on every
+ * ordinary day — each position clamped to a fraction of the room — so this is
+ * a deliberate choice of the weaker guarantee, written down rather than left
+ * to be discovered from a day that ended under the floor with the rule on.
  */
 function dayProtectiveStop(
   pos: StopAdjustPosition,
