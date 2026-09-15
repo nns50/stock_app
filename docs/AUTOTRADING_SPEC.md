@@ -11274,3 +11274,64 @@ per session, the 60-minute stagnation exit, and the through-stop protective clos
 2.5% is kept, the guard cannot work at this goal height, and a give-back rule
 would need a floor **below zero** — a band at least one trade-step wide, which is
 a code change and a new decision, not a lever.
+
+## 2026-09-15 — the universe widens past the index: 29 liquid biotech names
+
+**Why.** The operator's observation — pharma has the big gainers — checked against
+the loop's own record, which supports it on a small sample. The edge-leak scan's
+sector dimension over 40 sessions:
+
+| sector | live n | mean R | paper control |
+|---|---|---|---|
+| Health Care | 4 | **+0.12** | n=5, +0.43 |
+| Industrials | 2 | +0.27 | n=9, +0.23 |
+| Information Technology | **34** | **+0.03** | n=33 |
+| Financials | 4 | −0.33 | n=6, +0.23 |
+
+Over half the live book is Information Technology, and it is flat. Health Care is
+among the best on BOTH books. n=4 is a hint, not evidence — the scan's own bar is
+n ≥ 15 — which is exactly why this is a widening to be measured rather than a
+sizing change.
+
+**What was added (29).** Every name verified against LIVE quotes at the time of
+the change, not from a remembered list, and every one clears the screener's own
+filters (`minPrice` 5, `minAvgVolume` 1,000,000):
+
+ACAD ALNY ARWR BEAM BMRN CORT CRSP CYTK DNLI HALO ILMN INSM IONS IOVA NBIX NTLA
+NVAX PCVX PTCT RARE RGEN ROIV RVMD SMMT SRPT TGTX TWST VCYT VKTX
+
+Universe 528 → **557**; Health Care 59 → **88**. Seven of the obvious large caps
+(AMGN, BIIB, GILD, INCY, MRNA, REGN, VRTX) were already in the index list, so the
+addition is genuinely additive.
+
+**What was excluded, and why the check paid for itself.**
+
+- **RXRX** — 18.8M shares/day, the most liquid name on the candidate list, and
+  **$3.41**: under the price floor. Liquid and still out.
+- **MDGL, KRYS, UTHR, AXSM, JAZZ, ARVN** — all under 1M average volume. MDGL at
+  $540 and KRYS at $340 trade 350–400k shares: high price, thin tape, and exactly
+  where a marketable limit gets a bad fill.
+- **APLS, BPMC, DVAX, EXAS, FOLD, NUVL, SAGE** — no quote returned. Likely
+  acquired or renamed; a symbol the provider cannot price does not go in.
+
+**The risk this does NOT take.** Small-cap catalyst biotech is the obvious way to
+get this wrong: a name at +40% on 20× volume scores near 100 on a momentum and
+relative-volume screener, and the loop would buy it after the move with a 2.5%
+stop, at roughly 100% of equity in notional. The filters above exclude most of
+that, and the end-of-day flatten (`endOfDayFlattenMinutes` 5, unconditional)
+means no position carries a biotech gap overnight. What remains is intraday: a
+halt with a resting bracket cannot be exited, and reopens through the stop. The
+`entry_extension_shadow` already measures the buying-the-spike half.
+
+**Scan budget.** +5.5% (528 → 557). Friday's rate-limit retry took `unscored`
+from 67-of-562 to **1-of-562**, so there is headroom; `screen_data_incomplete`
+is watched nightly by the routine and will show it if this eats the margin.
+
+**Pre-committed reading.** Live takes only what clears `liveMinSignalScore` 81;
+PAPER takes every signal at full size, which is the control arm that already
+exists. So the paper book builds the sector evidence first. At **n ≥ 15** Health
+Care trades since 2026-09-15 on either book, read the scan's sector bucket: if
+the PAPER control is negative over that window, the widening is not working and
+the biotech names come back out — a paper book that cannot make money on them is
+not a case for risking real money on them. No sizing, cap or floor changes with
+this.
