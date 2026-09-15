@@ -951,6 +951,10 @@ export const NEVER_TUNED_KEYS = [
   'liveScaleOutCancelReplaceEnabled',
   'liveTrailingEnabled',
   'dayProtectiveStopEnabled',
+  // Its floor is a protective PREFERENCE — how much of a good day you refuse
+  // to let one open trade take back — not a quantity derived from a target.
+  // The tune's own levels (giveBackFloorPct below) are derived; this is not.
+  'dayProtectiveStopFloorPct',
   'shortDatedOptionsEnabled',
   'optionsHardExitMinutesBeforeClose',
   'optionsNoEntryMinutesBeforeClose',

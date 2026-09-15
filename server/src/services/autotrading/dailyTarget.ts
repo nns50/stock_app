@@ -156,6 +156,13 @@ export interface DailyTargetStatus {
    *  itself off account equity would carry the operator's manual trading into
    *  where that stop goes. */
   headroomToFloorUsd?: number;
+  /** The day-protective stop's OWN effective floor (configured x goalScale)
+   *  and the loop dollars standing above it, present only when that rule is
+   *  enabled with a floor. Independent of the give-back guard since
+   *  2026-09-15: the rule used to borrow the guard's floor and fire only while
+   *  it was armed, so switching the guard off disabled this one too. */
+  dayProtectiveFloorPct?: number;
+  dayProtectiveHeadroomUsd?: number;
   /** THE flag the loop's live entry/scale-in gates read: the day is done for
    *  new real risk, either banked (reached) or protected (giveBackHalted). */
   entriesHalted: boolean;
@@ -169,6 +176,40 @@ const round4 = (n: number): number => Math.round(n * 10_000) / 10_000;
 export function goalScaleOf(baseline: Pick<DailyBaseline, 'goalScale'> | null): number {
   const s = baseline?.goalScale;
   return s !== null && s !== undefined && s > 0 && s < 1 ? s : 1;
+}
+
+/**
+ * How many loop dollars the day has above a level, where the level is a % of
+ * the day's OPENING equity (2026-09-15).
+ *
+ * ONE derivation, because two rules now aim at a day level and both set REAL
+ * stops or halts from the answer: the give-back guard's floor and the
+ * day-protective stop's own. Each computing its own `strategyPnl - baseline x
+ * pct` would be two expressions agreeing by coincidence, one edit apart — the
+ * disease CLAUDE.md names, and the exact shape of the 2026-09-08 bug where
+ * this rule read `cfg.giveBackFloorPct` while the guard read the status.
+ */
+function headroomToLevelUsd(strategyPnlUsd: number, baselineEquityUsd: number, levelPct: number): number {
+  return round2(strategyPnlUsd - baselineEquityUsd * (levelPct / 100));
+}
+
+/**
+ * The day-protective stop's own floor, scaled by the day's goal scale exactly
+ * as the goal and the guard's levels are.
+ *
+ * Scaled, not raw: on a regime-cut day the goal, the arm and the floor all
+ * shrink together so the day keeps its shape in R, and a protective floor left
+ * at its configured percentage would sit at a different height than everything
+ * around it. The give-back floor has been scaled since 2026-09-08 for this
+ * reason; this is the same rule, not a new one.
+ */
+function dayProtectiveFloor(
+  cfg: Pick<AutotradeConfig, 'dayProtectiveStopEnabled' | 'dayProtectiveStopFloorPct'>,
+  scale: number,
+): number | null {
+  const floor = cfg.dayProtectiveStopFloorPct;
+  if (!cfg.dayProtectiveStopEnabled || floor === null || !(floor >= 0)) return null;
+  return round4(floor * scale);
 }
 
 /** The guard needs BOTH levels, coherent: arm above floor, floor at or above
@@ -219,7 +260,15 @@ function giveBackLevels(
  * the halt lets open positions carry a loss a little past it.
  */
 export function evaluateDailyTarget(
-  cfg: Pick<AutotradeConfig, 'targetDailyGainPct' | 'accountEquityUsd' | 'giveBackArmPct' | 'giveBackFloorPct'>,
+  cfg: Pick<
+    AutotradeConfig,
+    | 'targetDailyGainPct'
+    | 'accountEquityUsd'
+    | 'giveBackArmPct'
+    | 'giveBackFloorPct'
+    | 'dayProtectiveStopEnabled'
+    | 'dayProtectiveStopFloorPct'
+  >,
   baseline: DailyBaseline | null,
   /** The loop's OWN realized P&L for this ET session, in dollars. Passed in
    *  rather than read here so this stays pure and one derivation
@@ -262,6 +311,7 @@ export function evaluateDailyTarget(
   // Sticky: a recorded reach holds for the day even if the book gives some back.
   const reached = baseline.reachedAt !== null || rawGainPct >= targetPct;
   const levels = giveBackLevels(cfg, goalScale);
+  const protectiveFloorPct = dayProtectiveFloor(cfg, goalScale);
   const giveBackArmed = baseline.giveBackArmedAt !== null || (levels !== null && rawGainPct >= levels.armPct);
   // Fires only on an armed, not-yet-banked day — once reached, entries are
   // already halted and a second halt would just double-journal the same day.
@@ -299,7 +349,13 @@ export function evaluateDailyTarget(
           // Loop dollars minus loop dollars: positive while the day still has
           // something above the floor to protect, and crossing zero on exactly
           // the tick `giveBackHalted` would fire.
-          headroomToFloorUsd: round2(strategyPnlUsd - baseline.equityUsd * (levels.floorPct / 100)),
+          headroomToFloorUsd: headroomToLevelUsd(strategyPnlUsd, baseline.equityUsd, levels.floorPct),
+        }
+      : {}),
+    ...(protectiveFloorPct !== null
+      ? {
+          dayProtectiveFloorPct: protectiveFloorPct,
+          dayProtectiveHeadroomUsd: headroomToLevelUsd(strategyPnlUsd, baseline.equityUsd, protectiveFloorPct),
         }
       : {}),
     giveBackHaltedAt: baseline.giveBackHaltedAt,

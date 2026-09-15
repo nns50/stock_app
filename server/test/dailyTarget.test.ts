@@ -95,11 +95,17 @@ describe('evaluateDailyTarget (pure)', () => {
     equity: number | null,
     arm: number | null = null,
     floor: number | null = null,
+    /** The day-protective stop's own floor — independent of the guard above
+     *  since 2026-09-15, so it is its own pair of arguments. */
+    protectiveFloor: number | null = null,
+    protectiveEnabled = protectiveFloor !== null,
   ) => ({
     targetDailyGainPct: target,
     accountEquityUsd: equity,
     giveBackArmPct: arm,
     giveBackFloorPct: floor,
+    dayProtectiveStopEnabled: protectiveEnabled,
+    dayProtectiveStopFloorPct: protectiveFloor,
   });
   const baseline = (
     equity: number,
@@ -202,6 +208,51 @@ describe('evaluateDailyTarget (pure)', () => {
     // Reached earlier today at some point; equity has since faded to +1%.
     const s = evalDay(cfg(3, 10_100), baseline(10_000, NOW - 60_000));
     expect(s).toMatchObject({ active: true, reached: true, reachedAt: NOW - 60_000, entriesHalted: true });
+  });
+
+  // The day-protective stop's own floor (2026-09-15). It used to borrow the
+  // give-back guard's, so switching that guard off — a decision about a
+  // different rule entirely — took this one with it.
+  describe('the day-protective floor stands on its own', () => {
+    it('is present with the guard switched OFF, and absent when the rule is', () => {
+      // arm/floor null (the guard off), the rule's own floor set: the shape
+      // production was actually in on 2026-09-15.
+      const withRule = evalDay(cfg(3, 10_150, null, null, 1), baseline(10_000));
+      expect(withRule.giveBackFloorPct).toBeUndefined();
+      expect(withRule.headroomToFloorUsd).toBeUndefined();
+      expect(withRule.dayProtectiveFloorPct).toBe(1);
+      // +$150 of loop P&L, floor at 1% of a 10,000 baseline = $100.
+      expect(withRule.dayProtectiveHeadroomUsd).toBe(50);
+
+      // The guard configured and the rule off: the mirror image.
+      const guardOnly = evalDay(cfg(3, 10_150, 2, 1), baseline(10_000));
+      expect(guardOnly.giveBackFloorPct).toBe(1);
+      expect(guardOnly.headroomToFloorUsd).toBe(50);
+      expect(guardOnly.dayProtectiveFloorPct).toBeUndefined();
+      expect(guardOnly.dayProtectiveHeadroomUsd).toBeUndefined();
+    });
+
+    it('needs its flag as well as its floor — either one absent disables it', () => {
+      expect(evalDay(cfg(3, 10_150, null, null, null, true), baseline(10_000)).dayProtectiveFloorPct).toBeUndefined();
+      expect(evalDay(cfg(3, 10_150, null, null, 1, false), baseline(10_000)).dayProtectiveFloorPct).toBeUndefined();
+    });
+
+    it('scales with the day, like the goal and the guard do', () => {
+      // A 35% regime cut: the goal reads 1.95 and this floor 0.65, so the day
+      // keeps its shape in R. A floor left at its configured 1% would sit at a
+      // different height than everything around it.
+      const s = evalDay(cfg(3, 10_150, null, null, 1), baseline(10_000, null, null, null, 0.65));
+      expect(s.targetPct).toBeCloseTo(1.95, 4);
+      expect(s.dayProtectiveFloorPct).toBeCloseTo(0.65, 4);
+      expect(s.dayProtectiveHeadroomUsd).toBe(85); // 150 - 10,000 x 0.65%
+    });
+
+    it('goes negative once the day is under its floor, rather than vanishing', () => {
+      // The consumer tests `> 0`; a missing field and a breached floor are
+      // different facts and the status says which.
+      const s = evalDay(cfg(3, 10_050, null, null, 1), baseline(10_000));
+      expect(s.dayProtectiveHeadroomUsd).toBe(-50);
+    });
   });
 
   describe('give-back guard', () => {
