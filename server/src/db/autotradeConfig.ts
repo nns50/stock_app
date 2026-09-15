@@ -473,9 +473,9 @@ export interface AutotradeConfig {
    *  through would have armed trailing stops on real money the moment this
    *  deployed, with nobody having chosen that. */
   liveTrailingEnabled: boolean;
-  /** Day-protective stop (services/autotrading/stopAdjust.ts): once the
-   *  give-back guard is ARMED, tighten a live position's stop just enough that
-   *  a stop-out cannot drop the day below giveBackFloorPct — and no further.
+  /** Day-protective stop (services/autotrading/stopAdjust.ts): tighten a live
+   *  position's stop just enough that a stop-out cannot drag the day below
+   *  `dayProtectiveStopFloorPct` — and no further.
    *
    *  Not a breakeven stop, on purpose. Breakeven scratches every trade that
    *  dips and recovers; this moves the stop only when the CURRENT one would
@@ -483,6 +483,18 @@ export interface AutotradeConfig {
    *  day it does nothing at all. See the module header for the trade that
    *  motivated it. Off by default: it changes where real stops sit. */
   dayProtectiveStopEnabled: boolean;
+  /** The day level, in % of the day's opening equity, that an open trade must
+   *  not be able to drag the day below. Null disables the rule as surely as the
+   *  flag does.
+   *
+   *  ITS OWN FIELD SINCE 2026-09-15, and the reason is a live incident. The
+   *  rule used to read the give-back guard's floor and fire only while that
+   *  guard was ARMED. On 2026-09-15 the guard was switched off — arm and floor
+   *  both to null, a deliberate decision about a different rule — and this one
+   *  silently became unreachable: no arm to wait for, no floor to aim at, and
+   *  `dayProtectiveStopEnabled` left describing behaviour that could no longer
+   *  happen at any setting. Two nets, one switch. They are independent now. */
+  dayProtectiveStopFloorPct: number | null;
   /** Master gate for the short-dated (0-2 DTE) options path — docs/SHORT_DATED_OPTIONS_SPEC.md. Off by default: it changes which contracts are bought AND how they are exited, and every parameter below is a Black-Scholes estimate rather than a measured value. */
   shortDatedOptionsEnabled: boolean;
   /** Hard flatten this many minutes before the 16:00 ET close. 120 = 14:00. Past roughly there a CORRECT thesis stops paying: a 0DTE whose underlying moved +1% is +15% at 13:30 and -15% at 14:30. Outranks every other exit rule. 0 disables. */
@@ -1325,6 +1337,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     liveScaleOutCancelReplaceEnabled: false,
     liveTrailingEnabled: false,
     dayProtectiveStopEnabled: false,
+    dayProtectiveStopFloorPct: null,
     shortDatedOptionsEnabled: false,
     optionsHardExitMinutesBeforeClose: 120,
     optionsNoEntryMinutesBeforeClose: 210,
@@ -1612,6 +1625,14 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
       typeof input.liveTrailingEnabled === 'boolean' ? input.liveTrailingEnabled : d.liveTrailingEnabled,
     dayProtectiveStopEnabled:
       typeof input.dayProtectiveStopEnabled === 'boolean' ? input.dayProtectiveStopEnabled : d.dayProtectiveStopEnabled,
+    dayProtectiveStopFloorPct:
+      input.dayProtectiveStopFloorPct === null
+        ? null
+        : typeof input.dayProtectiveStopFloorPct === 'number' &&
+            input.dayProtectiveStopFloorPct >= 0 &&
+            input.dayProtectiveStopFloorPct <= 1000
+          ? input.dayProtectiveStopFloorPct
+          : d.dayProtectiveStopFloorPct,
     shortDatedOptionsEnabled:
       typeof input.shortDatedOptionsEnabled === 'boolean' ? input.shortDatedOptionsEnabled : d.shortDatedOptionsEnabled,
     optionsHardExitMinutesBeforeClose: nonNeg(

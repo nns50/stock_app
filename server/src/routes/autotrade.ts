@@ -249,6 +249,7 @@ const configBody = z.object({
   liveScaleOutCancelReplaceEnabled: z.boolean().optional(),
   liveTrailingEnabled: z.boolean().optional(),
   dayProtectiveStopEnabled: z.boolean().optional(),
+  dayProtectiveStopFloorPct: z.number().min(0).max(1000).nullable().optional(),
   shortDatedOptionsEnabled: z.boolean().optional(),
   optionsHardExitMinutesBeforeClose: z.number().nonnegative().optional(),
   optionsNoEntryMinutesBeforeClose: z.number().nonnegative().optional(),
@@ -566,6 +567,7 @@ autotradeRouter.put(
       patch.liveScaleOutCancelReplaceEnabled = body.liveScaleOutCancelReplaceEnabled;
     if (body.liveTrailingEnabled !== undefined) patch.liveTrailingEnabled = body.liveTrailingEnabled;
     if (body.dayProtectiveStopEnabled !== undefined) patch.dayProtectiveStopEnabled = body.dayProtectiveStopEnabled;
+    if (body.dayProtectiveStopFloorPct !== undefined) patch.dayProtectiveStopFloorPct = body.dayProtectiveStopFloorPct;
     if (body.shortDatedOptionsEnabled !== undefined) patch.shortDatedOptionsEnabled = body.shortDatedOptionsEnabled;
     if (body.optionsHardExitMinutesBeforeClose !== undefined)
       patch.optionsHardExitMinutesBeforeClose = body.optionsHardExitMinutesBeforeClose;

@@ -11549,3 +11549,53 @@ exactly one `position_quantity_drift` row appears for it, carrying `brokerQty` a
 `journalQty`, and the journal row's `remainingQuantity` and `entryPrice` are unchanged.
 `GET /api/journal/tune-advice` returns a `review` object whose `meanRedDayPct` differs
 from the results calendar's on any day the account and the strategy diverge.
+
+---
+
+## 2026-09-15 (third) — one switch turned off two nets
+
+Turning the give-back guard off this morning disabled the **day-protective stop** as
+well, and nothing said so.
+
+The guard went off for reasons entirely its own: at 2.5% risk with a 1R target each
+trade moves the day ±2.5 points against a band one point wide, so a win then a loss
+halted the book after two trades. `giveBackArmPct` and `giveBackFloorPct` both went to
+null.
+
+`stopAdjust.ts`'s day-protective stop — which tightens a live position's stop just
+enough that a stop-out cannot drag the day below a floor, and no further — was gated on
+`dt.giveBackArmed` and took its floor from `dt.giveBackFloorPct`. With both null it can
+never fire, at any setting of its own flag. So `dayProtectiveStopEnabled` was left
+describing behaviour that had become impossible: a config field whose execution path no
+longer reads it, which is the disease CLAUDE.md's third guard exists for, arriving
+through a door that guard does not watch — the field IS read, by code that can no
+longer run.
+
+### What changed
+
+- **`dayProtectiveStopFloorPct`** (new, nullable): the day level, in % of the day's
+  opening equity, that no open trade may drag the day below. The rule reads its own
+  floor and no longer waits for any arm. Either net now works with the other off.
+- **`null` is the off switch, and the only one. `0` is a real floor** — "never let an
+  open trade take the day negative". The guard's floor could not express that: it must
+  satisfy `0 <= floor < arm`, so 0 read as unconfigured. One more reason the two should
+  never have shared a field.
+- **Scaled like everything else on the day.** `dayProtectiveFloorPct` on the status is
+  the configured value times the regime overlay's `goalScale`, so a 35% cut day
+  protects 0.65% where a full day protects 1% and the day keeps its shape in R. The
+  guard's floor has been scaled since 2026-09-08; this is the same rule, not a new one.
+- **One derivation of "dollars above a day level"**: `headroomToLevelUsd` in
+  `dailyTarget.ts` now produces both `headroomToFloorUsd` and
+  `dayProtectiveHeadroomUsd`. Two rules aiming at day levels, both setting real stops
+  from the answer, is exactly the shape that produced the 2026-09-08 bug where this
+  rule read `cfg.giveBackFloorPct` while the guard read the status.
+- The rule is still **off by default** and still changes where real stops sit, so it
+  stays behind its flag.
+
+### Pre-committed check
+
+With `giveBackArmPct` and `giveBackFloorPct` null and `dayProtectiveStopEnabled` true
+with a floor, `GET /autotrade/dashboard`'s `dailyTarget` carries
+`dayProtectiveFloorPct` and `dayProtectiveHeadroomUsd` while `giveBackFloorPct` and
+`headroomToFloorUsd` are both absent — and a live position whose stop would breach that
+floor gets a `live_stop_ratcheted` row naming it.

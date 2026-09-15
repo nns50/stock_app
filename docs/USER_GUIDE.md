@@ -1359,7 +1359,24 @@ equally-weighted cards in the order they happened to be built:
   and the day-protective stop read that distance off the same day the goal is banked
   on, so your own trading cannot make either of them act (before that the trim could
   read a green account as "already banked" and size the closing trade at full risk on
-  a day the loop had not earned). An **armed-day min signal score** holds
+  a day the loop had not earned).
+
+  > **The day-protective stop has its own floor (2026-09-15).** It used to read the
+  > give-back guard's floor and fire only while that guard was *armed*. When the guard
+  > was switched off on 2026-09-15 — a decision about the guard, whose band had become
+  > narrower than a single trade at the new sizing — this rule silently went with it:
+  > no arm to wait for, no floor to aim at, and its own toggle left describing
+  > behaviour that could not happen at any setting. One switch, two nets.
+  >
+  > It now has **`dayProtectiveStopFloorPct`**: the day level, in % of the day's
+  > opening equity, that no open trade may drag the day below. Either rule works with
+  > the other off. `null` is the off switch; **0 is a real setting** — "never let an
+  > open trade take the day negative" — which the guard's floor could not express,
+  > since it has to sit below the arm. Like the goal and the guard's levels, it is
+  > scaled by the regime overlay's cut, so a 35% cut day protects 0.65% where a full
+  > day protects 1% and the day keeps its shape in R.
+
+  An **armed-day min signal score** holds
   new live entries to a higher conviction bar while the guard is armed (0 = off).
   Beside it, a **live conviction floor** (`liveMinSignalScore`, 2026-09-06, 0 = off)
   applies the same idea on an ordinary day: a new **live equity** entry must clear

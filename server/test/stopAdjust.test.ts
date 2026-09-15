@@ -268,6 +268,13 @@ describe('day-protective stop', () => {
         accountEquityUsd: BASELINE_USD,
         giveBackArmPct: floorPct * 2,
         giveBackFloorPct: floorPct,
+        // The day-protective stop has its OWN floor since 2026-09-15 — it no
+        // longer borrows the guard's, and no longer waits for the guard to
+        // arm. These cases set the two to the same number so the pre-existing
+        // expectations still describe the same stop prices; the cases below
+        // drive them apart.
+        dayProtectiveStopEnabled: true,
+        dayProtectiveStopFloorPct: floorPct,
       },
       {
         etDate: '2026-09-14',
@@ -325,7 +332,14 @@ describe('day-protective stop', () => {
     // $60 behind. The stop must not move by a cent.
     const withAccount = (accountEquityUsd: number): DailyTargetStatus => ({
       ...evaluateDailyTarget(
-        { targetDailyGainPct: 3, accountEquityUsd, giveBackArmPct: 2, giveBackFloorPct: 1 },
+        {
+          targetDailyGainPct: 3,
+          accountEquityUsd,
+          giveBackArmPct: 2,
+          giveBackFloorPct: 1,
+          dayProtectiveStopEnabled: true,
+          dayProtectiveStopFloorPct: 1,
+        },
         {
           etDate: '2026-09-14',
           equityUsd: BASELINE_USD,
@@ -349,10 +363,49 @@ describe('day-protective stop', () => {
     expect(manualBehind.newStop).toBe(flat.newStop);
   });
 
-  it('does NOTHING while the give-back guard is unarmed — a normal day is untouched', () => {
-    // This is what keeps the rule near-free: on most days it never fires.
+  it('runs on an UNARMED day — it does not wait for the give-back guard (2026-09-15)', () => {
+    // It used to. On 2026-09-15 the guard was switched off for reasons of its
+    // own (its band had become narrower than one trade at the new sizing), and
+    // this rule went dark with it: gated on `giveBackArmed`, floored by
+    // `giveBackFloorPct`, both now null. One switch, two nets, and
+    // `dayProtectiveStopEnabled` left describing behaviour that could not
+    // happen at any setting. The rule owns its floor now.
     const d = evaluateStopAdjust(anf(), 146.5, dpCfg, day(1.6, false));
-    expect(d.adjust).toBe(false);
+    expect(d.adjust).toBe(true);
+    expect(d.newStop).toBeCloseTo(143.71, 2);
+  });
+
+  it('runs with the give-back guard switched off entirely — the 2026-09-15 regression', () => {
+    // The exact production shape: arm and floor both null, the rule's own
+    // floor set. Before the split this returned no adjustment at all.
+    const guardOff = evaluateDailyTarget(
+      {
+        targetDailyGainPct: 3,
+        accountEquityUsd: BASELINE_USD,
+        giveBackArmPct: null,
+        giveBackFloorPct: null,
+        dayProtectiveStopEnabled: true,
+        dayProtectiveStopFloorPct: 1,
+      },
+      {
+        etDate: '2026-09-14',
+        equityUsd: BASELINE_USD,
+        reachedAt: null,
+        giveBackArmedAt: null,
+        giveBackHaltedAt: null,
+        reachCandidateAt: null,
+        goalScale: null,
+        goalScaleReason: null,
+        goalBasis: null,
+      },
+      BASELINE_USD * 0.016,
+    );
+    expect(guardOff.giveBackFloorPct).toBeUndefined();
+    expect(guardOff.headroomToFloorUsd).toBeUndefined();
+    expect(guardOff.dayProtectiveFloorPct).toBe(1);
+    const d = evaluateStopAdjust(anf(), 146.5, dpCfg, guardOff);
+    expect(d.adjust).toBe(true);
+    expect(d.newStop).toBeCloseTo(143.71, 2);
   });
 
   it('does nothing when the existing stop is already safe', () => {
@@ -379,8 +432,24 @@ describe('day-protective stop', () => {
   it('is off unless its own flag is set, and needs a measurable day with a floor', () => {
     expect(evaluateStopAdjust(anf(), 146.5, cfg, day(1.6)).adjust).toBe(false); // flag off
     expect(evaluateStopAdjust(anf(), 146.5, dpCfg, undefined).adjust).toBe(false); // no day
-    expect(evaluateStopAdjust(anf(), 146.5, dpCfg, { ...day(1.6), giveBackFloorPct: undefined }).adjust).toBe(false);
-    expect(evaluateStopAdjust(anf(), 146.5, dpCfg, day(1.6, true, 0)).adjust).toBe(false);
+    // Its OWN floor is what it needs — the guard's presence or absence is
+    // nothing to it now.
+    expect(evaluateStopAdjust(anf(), 146.5, dpCfg, { ...day(1.6), dayProtectiveFloorPct: undefined }).adjust).toBe(
+      false,
+    );
+    expect(evaluateStopAdjust(anf(), 146.5, dpCfg, { ...day(1.6), giveBackFloorPct: undefined }).adjust).toBe(true);
+    // A floor of ZERO is a real setting, not "unconfigured": "never let an
+    // open trade take the day negative". `null` is the off switch, and it is
+    // the only one. The guard's own floor could not express this — it needs
+    // floor < arm and treated 0 as absent — which is one more reason the two
+    // no longer share a field.
+    const atZero = evaluateStopAdjust(anf(), 146.5, dpCfg, day(1.6, true, 0));
+    expect(atZero.adjust).toBe(true);
+    // Protecting 0% of a 2103.43 baseline leaves the whole +1.6% as headroom,
+    // so the stop it requires is looser than the 1% floor's 143.71 — and the
+    // rule takes the most favourable of {current, breakeven, trail, this}, so
+    // it declines to loosen and the 141.33 stop stands.
+    expect(atZero.newStop!).toBeLessThan(143.71);
   });
 
   it('protects the floor the DAY carries — a regime-scaled 0.65% floor, not the configured 1% (2026-09-08)', () => {

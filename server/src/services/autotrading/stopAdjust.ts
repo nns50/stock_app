@@ -58,7 +58,7 @@ export type StopAdjustConfig = Pick<
 // so the guard would only halt AFTER the damage. Three quarters of a banked
 // day risked to earn a tenth of one.
 //
-// The obvious fix is a breakeven stop once the day is armed. It is also the
+// The obvious fix is a breakeven stop once the day is up. It is also the
 // wrong one, because it is not free: a stop at entry scratches every trade
 // that dips and recovers, and those are winners you paid for.
 //
@@ -124,20 +124,29 @@ function roundStop(price: number, side: 'long' | 'short'): number {
 }
 
 /**
- * The stop price at which a stop-out would leave the day exactly at its
- * give-back floor — or null when the rule does not apply.
+ * The stop price at which a stop-out would leave the day exactly at
+ * `dayProtectiveStopFloorPct` — or null when the rule does not apply.
  *
  * Null (does nothing) whenever: the feature is off, no floor is configured,
- * the day has no measurable equity, the guard has not ARMED, the position's
- * size is unknown, the day is already at or under the floor (nothing left to
- * protect — the guard itself handles that), the current stop is ALREADY safe,
- * or the required stop would sit closer to the price than
+ * the day has no measurable equity, the position's size is unknown, the day is
+ * already at or under the floor (nothing left to protect), the current stop is
+ * ALREADY safe, or the required stop would sit closer to the price than
  * DAY_PROTECTIVE_MIN_ROOM_R of the original risk.
  *
  * That last guard is the one that keeps this cheap: rather than squeezing a
  * position into a stop it cannot survive, the rule declines and leaves the
  * original stop alone. Protecting the day is not worth converting a live
  * trade into a coin flip on the next tick.
+ *
+ * KNOWN LIMIT — IT IS PER POSITION, AND THE HEADROOM IS NOT SHARED. Each open
+ * position is asked "can YOU alone cost the day?" against the WHOLE of
+ * `dayProtectiveHeadroomUsd`. Two positions sized to leave the day exactly at
+ * the floor therefore leave it at twice the distance below if both stop out
+ * together. The rule bounds a single trade's give-back, not the book's.
+ * Splitting the headroom by open position would bind far harder on every
+ * ordinary day — each position clamped to a fraction of the room — so this is
+ * a deliberate choice of the weaker guarantee, written down rather than left
+ * to be discovered from a day that ended under the floor with the rule on.
  */
 function dayProtectiveStop(
   pos: StopAdjustPosition,
@@ -146,20 +155,29 @@ function dayProtectiveStop(
   initialStopDistance: number,
 ): number | null {
   if (!cfg.dayProtectiveStopEnabled) return null;
-  if (!dt || !dt.active || !dt.giveBackArmed) return null;
-  // Both the floor and the DISTANCE to it come from the day's STATUS — the
-  // guard's own effective level, scaled by the regime overlay together with the
-  // goal (dailyTarget.ts) — never from the raw config field and never
-  // re-derived here. Until 2026-09-08 this read cfg.giveBackFloorPct while the
-  // guard read the status: two derivations of one floor, agreeing by
-  // coincidence, one step apart the day the overlay scaled it (CLAUDE.md's
-  // 2026-08-27 disease). It then kept its OWN headroom — account equity minus a
-  // floor equity — which caught the same disease again on 2026-09-14, when the
-  // guard moved to the loop's realized P&L: an afternoon of manual trading
-  // would have set this position's stop from money the loop never made. The
-  // status owns both numbers now.
-  const floorPct = dt.giveBackFloorPct;
-  if (floorPct === undefined || !(floorPct > 0)) return null;
+  if (!dt || !dt.active) return null;
+  // ITS OWN FLOOR, AND NO ARM (2026-09-15). This used to read the give-back
+  // guard's floor and run only while that guard was ARMED. On 2026-09-15 the
+  // guard was switched off — arm and floor both to null, a deliberate decision
+  // about a different rule, taken because its band had become narrower than one
+  // trade — and this rule silently went with it: no arm to wait for, no floor
+  // to aim at, and `dayProtectiveStopEnabled` left describing behaviour that
+  // could not happen at any setting. One switch, two nets. They are separate
+  // settings now, and either can be on without the other.
+  //
+  // Both the floor and the DISTANCE to it still come from the day's STATUS —
+  // the effective level, scaled by the regime overlay together with the goal
+  // (dailyTarget.ts) — never from the raw config field and never re-derived
+  // here. Until 2026-09-08 this read cfg.giveBackFloorPct while the guard read
+  // the status: two derivations of one floor, agreeing by coincidence, one step
+  // apart the day the overlay scaled it (CLAUDE.md's 2026-08-27 disease). It
+  // then kept its OWN headroom — account equity minus a floor equity — which
+  // caught the same disease again on 2026-09-14, when the guard moved to the
+  // loop's realized P&L: an afternoon of manual trading would have set this
+  // position's stop from money the loop never made. The status owns both
+  // numbers, for both floors, through one function.
+  const floorPct = dt.dayProtectiveFloorPct;
+  if (floorPct === undefined) return null;
 
   const qty = pos.remainingQuantity;
   if (!(qty > 0)) return null;
@@ -167,7 +185,7 @@ function dayProtectiveStop(
   // How much this position may lose before the day breaches its floor.
   // Non-positive means the day is already at or below it, which is the
   // give-back guard's business, not this rule's.
-  const headroomUsd = dt.headroomToFloorUsd;
+  const headroomUsd = dt.dayProtectiveHeadroomUsd;
   if (headroomUsd === undefined || !(headroomUsd > 0)) return null;
 
   const perShare = headroomUsd / qty;

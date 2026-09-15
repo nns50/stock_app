@@ -31,7 +31,14 @@ const BASELINE: DailyBaseline = {
 
 const dayOf = (loopPnlUsd: number, accountEquityUsd = 10_000 + loopPnlUsd): DailyTargetStatus =>
   evaluateDailyTarget(
-    { targetDailyGainPct: 3, accountEquityUsd, giveBackArmPct: 2, giveBackFloorPct: 1 },
+    {
+      targetDailyGainPct: 3,
+      accountEquityUsd,
+      giveBackArmPct: 2,
+      giveBackFloorPct: 1,
+      dayProtectiveStopEnabled: false,
+      dayProtectiveStopFloorPct: null,
+    },
     BASELINE,
     loopPnlUsd,
   );
@@ -173,7 +180,14 @@ describe('the finish-line trim reasons about the risk the trade will really take
   // describe a day that can no longer exist.
   const dayWithGap = (gapUsd: number): DailyTargetStatus =>
     evaluateDailyTarget(
-      { targetDailyGainPct: 3, accountEquityUsd: EQUITY, giveBackArmPct: 2, giveBackFloorPct: 1 },
+      {
+        targetDailyGainPct: 3,
+        accountEquityUsd: EQUITY,
+        giveBackArmPct: 2,
+        giveBackFloorPct: 1,
+        dayProtectiveStopEnabled: false,
+        dayProtectiveStopFloorPct: null,
+      },
       { ...BASELINE, equityUsd: EQUITY },
       EQUITY * 0.03 - gapUsd,
     );
