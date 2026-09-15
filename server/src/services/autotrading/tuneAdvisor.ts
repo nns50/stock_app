@@ -156,6 +156,22 @@ export interface TuneAdvice {
   /** Said plainly when the answer is "nothing here will get you there" — a
    *  recommender that never says so is one nobody should trust. */
   headline: string;
+  /**
+   * The pre-committed review's own inputs (Decisions 7 and 9), carried on the
+   * response (2026-09-15).
+   *
+   * It was built here and consumed here and reached no caller, so the two
+   * numbers Decision 9's bar is WRITTEN IN — "mean red day <= -1.5%", in
+   * percent — could not be read from any endpoint. The nightly review had to
+   * recompute them by hand from the results calendar, whose same-named
+   * `meanRedDayPct` is a different quantity: account-first by design, and on
+   * 2026-09-15 it read -20.84% against this series' -1.96%, because the
+   * account carries the operator's own trading and this one does not. Two
+   * fields, one name, a 10x difference, and the readable one was the wrong one
+   * for the rule. A value computed where nothing can consume it is the same
+   * defect as one nothing reads at all.
+   */
+  review: SizingReview;
 }
 
 /** Below this many sessions since the sizing change, a recommendation that
@@ -668,7 +684,13 @@ export function buildTuneAdvice(input: TuneAdvisorInput): TuneAdvice {
     ...goalRecommendations(input, gap),
   ].sort(rank);
 
-  return { asOf: input.asOf, gap, recommendations, headline: headlineFor(gap, recommendations, input) };
+  return {
+    asOf: input.asOf,
+    gap,
+    recommendations,
+    headline: headlineFor(gap, recommendations, input),
+    review: input.review,
+  };
 }
 
 /**

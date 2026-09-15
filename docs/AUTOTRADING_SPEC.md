@@ -11472,3 +11472,80 @@ On the next session the risk-check journal's `daily_drawdown_halt` line reads
 `-(maxDailyDrawdownPct/100) x baselineEquityUsd`. If a hand trade is closed at a loss
 that day, `strategyPnlUsd` and the halt's "today" figure stay equal to each other and
 unaffected by it.
+
+---
+
+## 2026-09-15 (second) — three things the app knew and could not say
+
+Not one defect but one shape: a fact the app had, computed correctly, that reached
+nobody. Each was found by a question nobody could answer from the record.
+
+### 1. A broker holding that grew after import drifts forever, silently
+
+`importFromPreview` matches an incoming broker position to an open journal row by
+CONTRACT — symbol, type, strike, expiration — and, on a match, counts it `skipped`.
+Quantity is never compared. So a position imported at 7 contracts stays at 7 however
+many the operator adds afterwards.
+
+Found on 2026-09-15: the broker held **129** SPY 755P contracts against the journal's
+**7**, an 18x gap, discovered only because someone went looking for why net liquidation
+had fallen 84% in a session.
+
+**The missing edit is not the defect.** The sync only ever ADDS a position the journal
+lacks and CLOSES one the broker no longer shows, deliberately: a row carries one
+`entryPrice`, so raising its quantity to match a later add would invent an average
+nobody paid and would overwrite a journal entry a human may have written. The defect is
+that the disagreement produced no trace.
+
+`comparePositionsToBroker` was built for exactly this question and was an on-demand POST
+nothing called on a schedule — "visible the moment you look" only helps someone looking.
+It is now split into a pure `comparePreviewToJournal(preview, journal)`, which the sync
+runs on the preview it already has (no extra broker call), AFTER the close and import
+passes so a just-imported contract does not read as drift. Every mismatch journals
+`position_quantity_drift` with both quantities, once per contract per ET day.
+
+### 2. Decision 9's yardstick was computed where nothing could read it
+
+`SizingReview.meanRedDayPct` and `worstDayPct` are the two numbers Decision 9's bar is
+written in — "mean red day <= -1.5%", in percent, off the strategy series. They were
+built in `gatedSwitchesData.ts`, consumed inside the advisor, and carried on no response
+body. The nightly review is instructed to quote them and had to recompute them by hand.
+
+What IS readable is the results calendar's field of the same name — and it is a
+different quantity. `dayPctOf` is `accountGainPct ?? strategyGainPct`, account-first by
+design, because that page answers "how am I doing". On 2026-09-15 it read **-20.84%**
+against this series' **-1.96%**, because the account carries the operator's own trading
+and the strategy series does not. Two fields, one name, a tenfold difference, and the
+readable one was the wrong one for the rule.
+
+`TuneAdvice` now carries `review`. **A value computed where nothing can consume it is
+the same defect as one nothing reads at all** — the guards in CLAUDE.md stop at config
+fields and function parameters; this one was a struct built and dropped at the route
+boundary.
+
+### 3. The equity guard sees jumps, not slides
+
+`evaluateEquitySync` compares each reading to the last ACCEPTED one. That is right for
+what it does — it REJECTS, and a slow decline is usually real, so rejecting one would
+freeze equity at a stale figure. But it leaves the session's own shape unrecorded, and a
+feed fault arriving in sub-threshold steps is exactly as damaging as one arriving in a
+single lurch while producing no row at all.
+
+On 2026-09-15 net liquidation went $3,699.78 -> $591.81, **-84%**, in steps of 5.4%,
+7.5%, 14.8% and 11.4% — every one inside the 25% guard. The only trace was 143
+`live_caps_reanchored` rows, which record the CONSEQUENCE one step at a time and never
+the move.
+
+`equity_moved_far_from_open` now journals once per ET day when net liquidation is more
+than `equitySyncMaxJumpPct` from the day's opening baseline, carrying `marketValueUsd`,
+`cashBalanceUsd` and `brokerDayPnlUsd`. It rejects nothing and holds no cap — the split
+is the point: a real move shows up in positions or cash, and a feed contradicting itself
+does not.
+
+### Pre-committed check
+
+On the next session with a hand-held position whose quantity differs from the journal's,
+exactly one `position_quantity_drift` row appears for it, carrying `brokerQty` and
+`journalQty`, and the journal row's `remainingQuantity` and `entryPrice` are unchanged.
+`GET /api/journal/tune-advice` returns a `review` object whose `meanRedDayPct` differs
+from the results calendar's on any day the account and the strategy diverge.

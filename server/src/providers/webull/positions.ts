@@ -16,6 +16,7 @@ import { etToday } from '../../util/marketDate';
 import { webullClient, webullConfigured } from './account';
 import { bumpMissStreak, clearMissStreak, MISS_CONFIRM_THRESHOLD } from '../../db/webullMissStreak';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
+import { claimOncePerDay } from '../../services/autotrading/oncePerDayEvents';
 import { listPendingLiveOrders } from '../../db/autotradeLiveOrders';
 import { getIntent } from '../../db/orders';
 import { isTerminal } from '../../services/trading/orderLifecycle';
@@ -1040,6 +1041,7 @@ export async function runWebullPositionsSync(accountId: string): Promise<WebullS
   }
   const closeResult = await closePositionsFromPreview(preview);
   const importResult = importFromPreview(accountId, preview);
+  reportQuantityDrift(accountId, preview);
   return {
     ok: true,
     accountId,
@@ -1049,6 +1051,58 @@ export async function runWebullPositionsSync(accountId: string): Promise<WebullS
     skipped: importResult.skipped,
     unmapped: preview.unmapped,
   };
+}
+
+/**
+ * Journal any contract whose broker quantity and journal quantity disagree,
+ * once per contract per ET day (2026-09-15).
+ *
+ * WHY THIS IS A REPORT AND NOT A REPAIR. The sync only ever ADDS a missing
+ * position and CLOSES one the broker no longer shows; it never edits an
+ * existing row, and that is deliberate — a row carries one `entryPrice`, so
+ * silently raising its quantity to match a later add would invent an average
+ * the operator never paid and overwrite a journal entry they may have written
+ * by hand. The defect was never the missing edit. It was that the
+ * disagreement produced no trace at all: `importFromPreview` matches on
+ * CONTRACT, counts the row `skipped`, and moves on.
+ *
+ * Found on 2026-09-15: the broker held 129 SPY 755P contracts against the
+ * journal's 7 — an 18x gap that had been sitting there since the first 7 were
+ * imported, and that surfaced only because someone went looking for why net
+ * liquidation had fallen 84%.
+ *
+ * Runs AFTER the close and import passes, so a position that was just created
+ * or just closed is already reconciled and does not read as drift. Costs no
+ * broker call — it reuses the preview those passes were given.
+ */
+function reportQuantityDrift(accountId: string, preview: PositionsPreview): void {
+  const journal = listPositions({ status: 'open', accountId, includeUnassignedAccount: true });
+  for (const row of comparePreviewToJournal(preview, journal)) {
+    if (row.matches) continue;
+    // Keyed by contract, not by account: the same contract drifting in two
+    // accounts is two facts, but `contractKey` already spells the contract and
+    // the account is in the detail.
+    const subject = `${accountId}|${contractKey(row)}`;
+    if (!claimOncePerDay('position_quantity_drift', subject)) continue;
+    logAutotradeEvent({
+      symbol: row.symbol,
+      stage: 'execution',
+      action: 'position_quantity_drift',
+      detail: {
+        accountId,
+        assetType: row.assetType,
+        optionType: row.optionType,
+        strike: row.strike,
+        expiration: row.expiration,
+        brokerQty: row.brokerQty,
+        journalQty: row.journalQty,
+        note:
+          'The broker and the journal disagree on how much of this contract is held. The sync never edits an ' +
+          'existing entry (a row has one entry price, so raising its quantity would invent an average nobody ' +
+          'paid) — so this is reported, not repaired. Reconcile it by hand on the Positions page.',
+      },
+    });
+  }
 }
 
 interface ContractInfo {
@@ -1098,7 +1152,30 @@ export interface PositionComparison {
 export async function comparePositionsToBroker(accountId: string): Promise<PositionComparison> {
   const preview = await previewWebullPositions(accountId);
   if (!preview.ok) return { ok: false, accountId, rows: [], error: preview.error };
+  return {
+    ok: true,
+    accountId,
+    rows: comparePreviewToJournal(
+      preview,
+      listPositions({ status: 'open', accountId, includeUnassignedAccount: true }),
+    ),
+  };
+}
 
+/**
+ * The comparison itself, over a preview the caller already has (2026-09-15).
+ *
+ * Split out so the SYNC can run it without a second broker call. Until now the
+ * only caller re-fetched, which made this an on-demand answer to a question
+ * nobody was asking on a schedule — and the gap it exists to catch went
+ * unreported for as long as nobody looked. The live case: the broker held 129
+ * SPY 755P contracts while the journal said 7, because `importFromPreview`
+ * matches on CONTRACT and then only counts the row as `skipped` — quantity is
+ * never compared. That is deliberate (an import must never rewrite a human's
+ * journal entry, and a later add has a different price the row cannot
+ * represent), so the defect was never the missing edit. It was the silence.
+ */
+export function comparePreviewToJournal(preview: PositionsPreview, journal: Position[]): PositionComparisonRow[] {
   const brokerQtyByKey = new Map<string, number>();
   const infoByKey = new Map<string, ContractInfo>();
   for (const p of preview.positions) {
@@ -1107,7 +1184,6 @@ export async function comparePositionsToBroker(accountId: string): Promise<Posit
     if (!infoByKey.has(key)) infoByKey.set(key, contractInfoOf(p));
   }
 
-  const journal = listPositions({ status: 'open', accountId, includeUnassignedAccount: true });
   const journalQtyByKey = new Map<string, number>();
   for (const p of journal) {
     const key = contractKey(p);
@@ -1116,11 +1192,9 @@ export async function comparePositionsToBroker(accountId: string): Promise<Posit
   }
 
   const keys = new Set([...brokerQtyByKey.keys(), ...journalQtyByKey.keys()]);
-  const rows: PositionComparisonRow[] = Array.from(keys, (key) => {
+  return Array.from(keys, (key) => {
     const brokerQty = brokerQtyByKey.get(key) ?? 0;
     const journalQty = journalQtyByKey.get(key) ?? 0;
     return { ...infoByKey.get(key)!, brokerQty, journalQty, matches: Math.abs(brokerQty - journalQty) < 1e-9 };
   }).sort((a, b) => a.symbol.localeCompare(b.symbol));
-
-  return { ok: true, accountId, rows };
 }

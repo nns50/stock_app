@@ -461,6 +461,45 @@ describe('syncAccountEquityFromBroker', () => {
     expect(listAutotradeEvents({ actions: ['equity_sync_rejected'] }).length).toBeGreaterThan(1);
   });
 
+  // The slide the per-tick guard cannot see. Every step below 25%, the whole
+  // day 84% — on 2026-09-15 that produced 143 `live_caps_reanchored` rows and
+  // not one line saying the account had moved.
+  it('journals once a day when net liquidation is a long way from where the day opened', async () => {
+    saveDailyBaseline(etToday(), 3_699.78);
+    setAutotradeConfig({ liveAccountId: 'ACC1', accountEquityUsd: 720.81, equitySyncMaxJumpPct: 25 });
+    // Inside the per-tick guard (720.81 -> 591.81 is -17.9%), far outside the
+    // day (-84%).
+    mockAccountState.mockResolvedValue({ ...okAccountState, netLiquidationUsd: 591.81 });
+
+    await syncAccountEquityFromBroker();
+
+    // Not rejected: the reading is real and is written.
+    expect(getAutotradeConfig().accountEquityUsd).toBe(591.81);
+    expect(listAutotradeEvents({ actions: ['equity_sync_rejected'] })).toHaveLength(0);
+
+    const moved = listAutotradeEvents({ actions: ['equity_moved_far_from_open'] });
+    expect(moved).toHaveLength(1);
+    expect(JSON.parse(moved[0].detail!)).toMatchObject({
+      openingEquityUsd: 3_699.78,
+      currentEquityUsd: 591.81,
+      movePct: -84.0,
+      maxJumpPct: 25,
+    });
+
+    // Once a day, not once a tick — 180 ticks would otherwise bury it.
+    await syncAccountEquityFromBroker();
+    await syncAccountEquityFromBroker();
+    expect(listAutotradeEvents({ actions: ['equity_moved_far_from_open'] })).toHaveLength(1);
+  });
+
+  it('says nothing when the day has moved a normal amount', async () => {
+    saveDailyBaseline(etToday(), 10_000);
+    setAutotradeConfig({ liveAccountId: 'ACC1', accountEquityUsd: 10_000, equitySyncMaxJumpPct: 25 });
+    mockAccountState.mockResolvedValue({ ...okAccountState, netLiquidationUsd: 10_900 });
+    await syncAccountEquityFromBroker();
+    expect(listAutotradeEvents({ actions: ['equity_moved_far_from_open'] })).toHaveLength(0);
+  });
+
   it('starts the corroboration count over after a reset — the seam is load-bearing', async () => {
     // The guard promotes an out-of-band level after THREE consecutive readings
     // near it. That counter is module state with no table behind it, so before

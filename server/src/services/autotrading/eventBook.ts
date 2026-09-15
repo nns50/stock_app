@@ -62,6 +62,7 @@ export const LIVE_ACTIONS = new Set([
   'bracket_groups_observed',
   'entry_filled',
   'entry_window_closed',
+  'equity_moved_far_from_open',
   'equity_sync_rejected',
   'equity_synced',
   'exit_filled',
@@ -84,6 +85,7 @@ export const LIVE_ACTIONS = new Set([
   // liveCapsReanchor.ts — the live dollar caps
   'equity_read_suspect',
   // The broker's own truth about REAL positions. Paper has no broker.
+  'position_quantity_drift',
   'position_reconcile_skipped',
   'position_reconciled_from_broker',
   'webull_sync_failed',

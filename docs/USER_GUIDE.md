@@ -553,6 +553,16 @@ verified **fails closed**.
 > read as yours. Closes are never halted by the day at all, on either path: refusing
 > an exit does not limit a loss, it leaves one running.
 
+> **A big move from the day's open is called out (2026-09-15).** The sanity guard above
+> compares each reading to the previous one, so it sees *jumps* — and a decline that
+> arrives in small steps slips past every check while still moving every cap. Once net
+> liquidation is further from the day's opening equity than the same jump percentage, the
+> loop journals `equity_moved_far_from_open` once for that day, with the account's market
+> value, cash balance and broker day P&L beside it. It refuses nothing and holds no cap;
+> the split is there so you can tell what moved. On 2026-09-15 the account fell 84%
+> intraday in steps of 5.4%, 7.5%, 14.8% and 11.4% — all inside the 25% guard — and the
+> only record was 143 cap re-anchor rows.
+
 > **The day's loss budget is fixed at the opening bell (2026-09-15).** "Halt at 7.5%"
 > means 7.5% of the equity **the day started at** — the same denominator the +3% goal
 > is a percentage of — so the goal and the halt always stand in the ratio you chose
@@ -2780,6 +2790,17 @@ come.
 
 `GET /api/journal/tune-advice`, and reported by the post-close routine each weekday.
 
+> **The response also carries `review` (2026-09-15)** — the pre-committed review's own
+> inputs: `activeSessionsSinceChange`, `meanDayPct`, `goalRatePct`, `meanRedDayPct`,
+> `worstDayPct`, `haltsMaxIn5`. These are the numbers the sizing review turns on, in the
+> unit its rules are written in (percent of the day's opening equity), off the **strategy**
+> series. They were built and used internally and returned by nothing, so the one field
+> anybody could read was the Results calendar's same-named `meanRedDayPct` — which is a
+> different quantity, account-first by design, because that page answers "how am I doing".
+> On 2026-09-15 the two read **-20.84%** and **-1.96%** on the same window: the account
+> carries hand trading, the strategy series does not. Quote whichever the rule you are
+> applying is written in, and the review's rules are written in this one.
+
 Everything the app collects gets synthesised into one ranked list: what to change next,
 which part of the goal equation it moves, and **how many percentage points of the
 expected day it is estimated to add**. The equation is the app's own —
@@ -3077,6 +3098,18 @@ One home (⚙ or `⌘K → Settings`) for everything:
   > flagging any mismatch. Unlike a sync, it writes nothing and reports *everything*,
   > matches included, so drift is visible the moment you check rather than only inferable
   > later from the P&L or open quantity looking wrong.
+  >
+  > **The sync now reports drift by itself (2026-09-15).** "Visible the moment you check"
+  > only helps someone checking. The background sync runs that same comparison on every
+  > pass — no extra broker call, it reuses what it already fetched — and journals
+  > `position_quantity_drift` to Recent activity for any contract where the two disagree,
+  > once per contract per day, with both quantities. It still **reports rather than
+  > repairs**: a journal row carries one entry price, so raising its quantity to match
+  > shares you bought later would invent an average you never paid and overwrite an entry
+  > you may have written by hand. Reconcile it yourself from the position's journal
+  > dialog. What prompted it: on 2026-09-15 the broker held **129** SPY 755 puts against
+  > the journal's **7** — imported when the position was 7 contracts and never revisited —
+  > and it surfaced only because someone went looking for something else.
   >
   > **Multiple real accounts (2026-07-17).** Every synced position (and every live position
   > the Auto-Trade page itself opens) now remembers which Webull account it actually came
