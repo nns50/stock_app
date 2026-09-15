@@ -11391,3 +11391,84 @@ goal is the filter-history-by-live-config mistake.
 actually turns on: how often does a 3% MARK appear while the realized day never
 gets there, and how often does that mark survive to the close? Until then the
 day-level halts are unchanged — this records, it does not act.
+
+---
+
+## 2026-09-15 — the day's loss budget is one number, fixed at the open, and it is the loop's own day
+
+`maxDailyDrawdownPct` is one rule: stop opening live positions once the loop has lost
+this much of a session. It had **four** implementations, and on a live account they
+disagreed by 6x.
+
+| where | numerator | denominator | on 2026-09-15 |
+| --- | --- | --- | --- |
+| `riskCheck.daily_drawdown_halt` | the loop's realized day | `accountEquityUsd` — this tick's net liquidation | -$44.39 |
+| `optionsRiskCheck.daily_drawdown_halt` | the options book's day | same | -$44.39 |
+| `liveExecute`'s scale-in gate | the loop's realized day | same, inline | -$44.39 |
+| `guardrails.daily_loss_halt` | **the whole ACCOUNT's** realized day | `liveMaxDailyLossUsd` — the cap ANCHOR equity | -$44 |
+| (`dailyTarget`, for the +3% goal) | the loop's realized day | the day's OPENING baseline | +$110.83 at 3% |
+
+Both halves were wrong, and the fifth row is how you can tell.
+
+**The denominator.** A drawdown is measured *from* somewhere. Putting the current value
+in the denominator puts the quantity being limited on both sides of the comparison, so
+the allowance chases the loss down and the effective budget depends on the path the day
+took. It also has to be the denominator the GOAL uses, or the two day-level rules are
+percentages of different dollars — which is what happened: a 3% goal worth $110.83
+against a 7.5% halt worth $44.39, a session the loop had to win by more than it was
+allowed to lose first. No edge repairs that.
+
+The $591.81 reading was real, and that is the point: the account held 129 operator-bought
+SPY 0DTE puts decaying from $0.29 to $0.035 (-90.2% on the day, -$3,288.50 unrealized),
+which took net liquidation from $3,699.78 at 09:38 ET to $591.81 at 15:01 ET in steps of
+exactly $129 — 12,900 shares-equivalent moving a cent at a time. Every percentage-of-
+equity number the loop uses followed it down: `liveMaxOrderUsd` $5,550 -> $888,
+`liveMaxDailyLossUsd` $277 -> $44.
+
+**The numerator.** `AccountState.realizedPnlTodayUsd` is deliberately account-wide (the
+worse of the broker's day-minus-unrealized and every exit the journal dates today,
+`webull`-tagged operator rows included). That is right for a hand-placed order on the
+Trade page and wrong for the loop: an operator's own realized loss halts the loop's
+entries. This is verbatim the correction PR #610 made to `dailyTarget` on 2026-09-14 —
+its note says "a manual LOSS could halt the book just as easily" — which checked
+`riskCheck`'s percentage halt, found it already loop-scoped, and never looked at the
+dollar twin. The dollar twin is the TIGHTER of the two, so it is the one that decides.
+**That is the gap, and it is the "assert at the CONSUMER" rule again: the audit stopped
+at the two implementations it knew about.**
+
+### What changed
+
+- `services/autotrading/dayLossBudget.ts` (new, pure): `dayLossBudgetUsd(pct,
+  dayStartEquityUsd)` and `dayStartEquityUsd(baseline, etDate, currentEquityUsd)`. One
+  derivation; every row of the table above calls it.
+- `RiskCheckContext.dayStartEquityUsd` is **required**, not optional-with-a-fallback: a
+  caller that forgot it would silently keep the old behaviour, which is the bug. Ten
+  call sites each had to decide. The three backtests pass `equity - dailyPnl`, which is
+  the replayed day's opening equity exactly (both are incremented by the same amounts
+  and the day's P&L resets per day); the live, paper and preview paths pass the
+  baseline row, falling back to the current reading before the day's first tick.
+- `buildLiveTradingConfig` sets `maxDailyLossUsd` from the same budget, not from the
+  stored `liveMaxDailyLossUsd`. `liveCaps.ts` has always described the two as agreeing
+  "exactly"; they did not. The stored cap keeps its other jobs (the human path, the cap
+  card, the tuner's suggestion), and nothing is loosened that `maxDailyDrawdownPct` did
+  not already permit — `riskCheck`'s percentage halt reads the same budget and blocks
+  first.
+- The loop's guardrail account state carries the LOOP's realized day
+  (`withLoopRealizedToday` -> `strategyDayFor`, the derivation `dailyTarget` and the
+  results calendar already share). The human Trade page is untouched.
+- `guardrails.daily_loss_halt` gates **opens only**, like `max_orders_per_day` beside
+  it. A halted day used to refuse the stagnation and end-of-day closes too — the same
+  shape as the 80 `live_time_exit_blocked` rows the order cap produced on 2026-08-24/25
+  before it was given this rule. Refusing an exit does not limit a loss; it leaves one
+  running.
+- The dashboard's `dailyDrawdownHaltLevel` reads the same function, so the card and the
+  halt name the same number.
+
+### Pre-committed check
+
+On the next session the risk-check journal's `daily_drawdown_halt` line reads
+"...% of the day's opening $X" where X is `dailyTarget.baselineEquityUsd` — not
+`currentEquityUsd` — and `dailyDrawdownHaltLevel` on the dashboard equals
+`-(maxDailyDrawdownPct/100) x baselineEquityUsd`. If a hand trade is closed at a loss
+that day, `strategyPnlUsd` and the halt's "today" figure stay equal to each other and
+unaffected by it.

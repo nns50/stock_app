@@ -1351,6 +1351,37 @@ tracks your booked loss and trade count and turns red when you hit a limit — y
 close the laptop. Tilt and revenge-trading happen *after* a bad morning; a pre-committed
 daily stop is the cheapest protection against turning a small red day into a disaster.
 
+### The day's loss budget is fixed at the opening bell (2026-09-15)
+
+A daily stop is only pre-committed if it is decided before the day starts. Measure it
+against the equity showing *right now* and it is not: the loss you are limiting is also
+in the denominator, so the allowance shrinks as the day goes against you and the
+effective stop depends on the path the session took rather than on the number you chose.
+
+The rule this app now enforces, in both books: **the day's budget is
+`maxDailyDrawdownPct` of the equity the day OPENED at**, and the day's goal is
+`targetDailyGainPct` of the same figure. One denominator, so the two stand in whatever
+ratio you set them — at 3% and 7.5% the book may lose 2.5x its target before it stops.
+
+The reason it is written down here rather than left as an implementation detail: when
+the two drifted apart, the arithmetic stopped supporting any edge at all. On 2026-09-15
+the loop's account opened at $3,694.39 and its net liquidation read $591.81 by the
+afternoon — not from trading, but from an operator-held 0DTE put decaying in the same
+account. The goal stayed a percentage of the opening figure ($110.83) while the halt
+followed the tick ($44.39). **A book that must make $110 and is stopped after losing $44
+needs a win rate no edge on this record produces.** Check the ratio, not just the two
+percentages: if your halt is not a comfortable multiple of your goal, the settings are
+asking for a strategy you do not have.
+
+Two corollaries that follow from the same reasoning:
+
+- **A halt stops entries, never exits.** Refusing a close does not limit a loss, it
+  leaves one running, on precisely the session where that costs the most.
+- **Whose day is it?** If you trade by hand in the same account the loop trades, the
+  loop's day-level rules must read the loop's own realized P&L. Otherwise your worst
+  morning halts a strategy that had nothing to do with it — and the strategy's losses
+  read as yours in the numbers you review it by.
+
 **"Can this kill my account?" → Risk of ruin (Journal → Analytics).**
 Set your per-trade risk and a "ruin" drawdown threshold (say 30–50%); the Monte Carlo
 sim runs thousands of trade sequences drawn from your edge and reports the **% that hit

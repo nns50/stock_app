@@ -1106,6 +1106,8 @@ export async function simulateOptionsBacktest(
         priorSameDayExits: 0,
         repeatEntrySizeCutPct: 0,
         equity,
+        // See backtest.ts: `equity` and `dailyPnl` move together within a day.
+        dayStartEquityUsd: equity - dailyPnl,
         dailyPnl,
         tradesToday: filledToday,
         consecutiveLosses,

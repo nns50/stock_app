@@ -1,5 +1,6 @@
 import { config } from '../../config';
 import { strategyDayFor } from './dailyResults';
+import { dayLossBudgetUsd, dayStartEquityUsd } from './dayLossBudget';
 import { db } from '../../db';
 import { AutotradeConfig, getAutotradeConfig, setAutotradeConfig } from '../../db/autotradeConfig';
 import { getTradingConfig } from '../../db/trading';
@@ -208,6 +209,29 @@ function withDayBuyingPower(state: AccountState, cfg: AutotradeConfig, accountId
   return { ...state, buyingPowerUsd: buyingPowerBasis(state, cfg, learned?.ceilingUsd).usedUsd };
 }
 
+/**
+ * Re-point the guardrail layer's daily-loss input at the LOOP's own realized
+ * day (2026-09-15).
+ *
+ * `AccountState.realizedPnlTodayUsd` is deliberately account-wide — the worse
+ * of the broker's day-minus-unrealized and EVERY exit our journal dates today,
+ * `webull`-tagged operator rows included. That is the right input for a hand
+ * order on the Trade page, which is why it stays that way there, and the wrong
+ * one for `daily_loss_halt` on this path: it lets a trade the operator placed
+ * themselves halt the loop's entries. Exactly the correction PR #610 made to
+ * dailyTarget on 2026-09-14 — whose note checked riskCheck's percentage halt
+ * and found it already loop-scoped, and never looked at this dollar twin, the
+ * TIGHTER of the two and therefore the one that decides.
+ *
+ * `strategyDayFor` is the one derivation dailyTarget and the results calendar
+ * already share (live stock closes + live options closes, autotrade-tagged),
+ * so all three now halt on the same number rather than on three readings that
+ * agree by coincidence.
+ */
+export function withLoopRealizedToday(state: AccountState, now: number = Date.now()): AccountState {
+  return { ...state, realizedPnlTodayUsd: strategyDayFor(etToday(now)).pnlUsd };
+}
+
 /** Combine the autotrade-specific live caps with BOTH kill switches — the
  *  human Trade page's own (since live orders share the same real broker
  *  account) and autotrade's own. Either being engaged, or either "enabled"
@@ -216,6 +240,7 @@ function withDayBuyingPower(state: AccountState, cfg: AutotradeConfig, accountId
  *  safety layer" resolved decision in the spec. */
 export function buildLiveTradingConfig(autotradeCfg: AutotradeConfig): TradingConfig {
   const humanCfg = getTradingConfig();
+  const dayStart = dayStartEquityUsd(getDailyBaseline(), etToday(), autotradeCfg.accountEquityUsd ?? 0).usd;
   return {
     enabled: humanCfg.enabled && autotradeCfg.liveTradingEnabled,
     killSwitch: humanCfg.killSwitch || autotradeCfg.killSwitch,
@@ -235,7 +260,20 @@ export function buildLiveTradingConfig(autotradeCfg: AutotradeConfig): TradingCo
     // rather than silently allowing anything through.
     maxExposureUsd: ((autotradeCfg.accountEquityUsd ?? 0) * autotradeCfg.liveMaxExposurePct) / 100,
     maxOrdersPerDay: autotradeCfg.liveMaxOrdersPerDay,
-    maxDailyLossUsd: autotradeCfg.liveMaxDailyLossUsd,
+    // The day's loss budget, derived from the SAME function and the SAME
+    // day-opening equity `riskCheck`'s percentage halt and the +3% goal use —
+    // not the stored `liveMaxDailyLossUsd`, which is re-derived from whatever
+    // net liquidation last re-anchored the caps. liveCaps.ts has always
+    // described the two as agreeing "exactly"; they did not, and the stored
+    // cap was the tighter, so it was the one that decided. On 2026-09-15 the
+    // goal was 3% of a $3,694.39 baseline ($110.83) while this cap was $44 —
+    // a day the loop could not win without first being stopped.
+    //
+    // `liveMaxDailyLossUsd` keeps its other jobs (the human Trade page's cap,
+    // the dashboard, the tuner's suggestion). Nothing is loosened that
+    // `maxDailyDrawdownPct` did not already permit: the percentage halt in
+    // riskCheck reads the same budget and blocks first.
+    maxDailyLossUsd: dayLossBudgetUsd(autotradeCfg.maxDailyDrawdownPct, dayStart),
     fatFingerPct: autotradeCfg.liveFatFingerPct,
     allowNakedShort: autotradeCfg.liveAllowNakedShort,
   };
@@ -989,10 +1027,8 @@ export async function attemptLiveEntry(
   if (!acct.ok || !acct.state) {
     return { symbol, ok: false, reason: acct.error ?? 'Could not load account state' };
   }
-  const accountState: AccountState = withDayBuyingPower(
-    { ...acct.state, ordersToday: countTodaysOrders() },
-    autotradeCfg,
-    accountId,
+  const accountState: AccountState = withLoopRealizedToday(
+    withDayBuyingPower({ ...acct.state, ordersToday: countTodaysOrders() }, autotradeCfg, accountId),
   );
   const guardrails = evaluateGuardrails(intent, accountState, liveCfg, { marketOpen: marketOpenContext(intent) });
   // Only matters for a permitted short entry (allowNakedShort — naked_short
@@ -1313,6 +1349,10 @@ export async function runLiveExecution(
 ): Promise<LiveExecutionOutcome[]> {
   const cfg = getAutotradeConfig();
   const equity = cfg.accountEquityUsd ?? 0;
+  // The day's opening equity, for the drawdown halt only — sizing below stays
+  // on the CURRENT reading, which is what risk per trade should be a fraction
+  // of. See dayLossBudget.ts for why the halt must not use the same number.
+  const dayStart = dayStartEquityUsd(getDailyBaseline(), etToday(), equity).usd;
 
   const snapshot = getLivePortfolioSnapshot();
   const dailyPnl = snapshot.dailyPnl + optionsSeed.dailyPnl;
@@ -1879,6 +1919,7 @@ export async function runLiveExecution(
       priorSameDayExits,
       repeatEntrySizeCutPct: cfg.repeatEntrySizeCutPct,
       equity,
+      dayStartEquityUsd: dayStart,
       dailyPnl,
       tradesToday,
       consecutiveLosses,
@@ -4764,7 +4805,13 @@ async function placeLiveScaleInAddOn(
   const equity = cfg.accountEquityUsd ?? 0;
   const addRisk = orderRiskAmount(limitPrice, add.newStopPrice, add.addQty);
   const dailyPnl = getLivePortfolioSnapshot().dailyPnl;
-  const dailyHaltLevel = -(cfg.maxDailyDrawdownPct / 100) * equity;
+  // Through dayLossBudgetUsd and the day's OPENING equity, like every other
+  // copy of this rule — an add-on that re-derived it from the current reading
+  // would halt at a different level than the entry it is adding to.
+  const dailyHaltLevel = -dayLossBudgetUsd(
+    cfg.maxDailyDrawdownPct,
+    dayStartEquityUsd(getDailyBaseline(), etToday(), equity).usd,
+  );
   if (!(dailyPnl > dailyHaltLevel)) {
     logAutotradeEvent({
       symbol,
@@ -4813,7 +4860,7 @@ async function placeLiveScaleInAddOn(
   if (!acct.ok || !acct.state) {
     return { symbol, positionId: pos.id, requested: false, reason: acct.error ?? 'Could not load account state' };
   }
-  const accountState: AccountState = { ...acct.state, ordersToday: countTodaysOrders() };
+  const accountState: AccountState = withLoopRealizedToday({ ...acct.state, ordersToday: countTodaysOrders() });
   const guardrails = evaluateGuardrails(intent, accountState, liveCfg, { marketOpen: marketOpenContext(intent) });
   const isShort = wouldOpenShort(intent, accountState);
 
@@ -5313,7 +5360,7 @@ export async function checkLivePerLotSecondLots(): Promise<LivePerLotOutcome[]> 
         });
         continue;
       }
-      const accountState: AccountState = { ...acct.state, ordersToday: countTodaysOrders() };
+      const accountState: AccountState = withLoopRealizedToday({ ...acct.state, ordersToday: countTodaysOrders() });
       const guardrails = evaluateGuardrails(intent, accountState, liveCfg, { marketOpen: marketOpenContext(intent) });
       const isShort = wouldOpenShort(intent, accountState);
 

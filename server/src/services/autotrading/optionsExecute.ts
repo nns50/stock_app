@@ -1,4 +1,6 @@
 import { AutotradeConfig, getAutotradeConfig, RiskProfileName } from '../../db/autotradeConfig';
+import { getDailyBaseline } from '../../db/dailyBaseline';
+import { dayStartEquityUsd } from './dayLossBudget';
 import { convictionGrade } from './decide';
 import { OptionsTradeSignal } from './optionsDecide';
 import {
@@ -620,6 +622,8 @@ export async function runOptionsPaperExecution(
       priorSameDayExits: 0,
       repeatEntrySizeCutPct: 0,
       equity,
+      // See execute.ts: the day's opening equity, not this tick's.
+      dayStartEquityUsd: dayStartEquityUsd(getDailyBaseline(), etDateStr(), equity).usd,
       dailyPnl,
       tradesToday,
       consecutiveLosses,

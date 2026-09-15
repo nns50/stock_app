@@ -1,6 +1,7 @@
 import { config } from '../../config';
 import { etToday } from '../../util/marketDate';
 import { strategyDayFor } from './dailyResults';
+import { dayStartEquityUsd } from './dayLossBudget';
 import { getProvider } from '../../providers';
 import { db } from '../../db';
 import { AutotradeConfig, getAutotradeConfig, RiskProfileName } from '../../db/autotradeConfig';
@@ -613,6 +614,11 @@ async function loadAccountAndGuardrails(
   const accountState: AccountState = {
     ...acct.state,
     ...(acct.optionBuyingPowerUsd !== undefined ? { buyingPowerUsd: acct.optionBuyingPowerUsd } : {}),
+    // The LOOP's realized day, not the account's — see withLoopRealizedToday in
+    // liveExecute.ts. This helper is shared by entry and exit; only the entry
+    // consults daily_loss_halt (guardrails.ts gates it on openClose 'open'),
+    // and the exit ignores the field rather than being handed a different one.
+    realizedPnlTodayUsd: strategyDayFor(etToday()).pnlUsd,
     ordersToday: countTodaysOrders(),
     accountType,
     ...(currentPositionQtyOverride !== undefined ? { currentPositionQty: currentPositionQtyOverride } : {}),
@@ -1308,6 +1314,9 @@ export async function runLiveOptionsExecution(
       priorSameDayExits: 0,
       repeatEntrySizeCutPct: 0,
       equity,
+      // See dayLossBudget.ts: the halt's denominator is the day's opening
+      // equity; sizing above still uses the current reading.
+      dayStartEquityUsd: dayStartEquityUsd(getDailyBaseline(), etToday(), equity).usd,
       dailyPnl,
       tradesToday,
       consecutiveLosses,

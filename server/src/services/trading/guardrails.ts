@@ -495,13 +495,25 @@ export function evaluateGuardrails(
   // The broker's raw day figure includes unrealized marks and is NOT used here:
   // an open gain would mask a real realized loss and fail this halt open.
   const dailyLoss = Math.max(0, -account.realizedPnlTodayUsd);
-  block(
-    'daily_loss_halt',
-    dailyLoss < config.maxDailyLossUsd,
-    dailyLoss < config.maxDailyLossUsd
-      ? `${usd(dailyLoss)} loss vs ${usd(config.maxDailyLossUsd)} limit`
-      : `daily loss ${usd(dailyLoss)} hit the ${usd(config.maxDailyLossUsd)} limit — halted`,
-  );
+  // Like the daily ORDER cap below, this gates OPENS only. The halt exists to
+  // stop a bad day getting worse, and a bad day gets worse when an exit is
+  // refused: the loss it would have stopped keeps running, on exactly the
+  // session where that costs the most. Refusing an entry limits risk; refusing
+  // a close strands you in one. (Before 2026-09-15 a halted day blocked the
+  // stagnation and end-of-day closes too — the same shape as the 80
+  // `live_time_exit_blocked` rows the order cap produced on 2026-08-24/25
+  // before it was given this rule.)
+  if (intent.openClose === 'open') {
+    block(
+      'daily_loss_halt',
+      dailyLoss < config.maxDailyLossUsd,
+      dailyLoss < config.maxDailyLossUsd
+        ? `${usd(dailyLoss)} loss vs ${usd(config.maxDailyLossUsd)} limit`
+        : `daily loss ${usd(dailyLoss)} hit the ${usd(config.maxDailyLossUsd)} limit — halted`,
+    );
+  } else {
+    block('daily_loss_halt', true, 'n/a (closing is never halted by the day)');
+  }
   // A CLOSE is never blocked by the daily order cap. The cap is a runaway-loop
   // backstop, and a runaway loop places entries; refusing an exit does not limit
   // risk, it strands you in a position. Live evidence two days running: GRMN

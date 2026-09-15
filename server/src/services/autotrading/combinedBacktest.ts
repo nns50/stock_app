@@ -1025,6 +1025,10 @@ export async function simulateCombinedBacktest(
         priorSameDayExits: 0,
         repeatEntrySizeCutPct: 0,
         equity,
+        // See backtest.ts: `equity` and the day's P&L move together, and here
+        // `dailyPnl` sums BOTH books — which is right, because `equity` is the
+        // one account both books trade.
+        dayStartEquityUsd: equity - dailyPnl,
         dailyPnl,
         tradesToday,
         consecutiveLosses,
@@ -1265,6 +1269,10 @@ export async function simulateCombinedBacktest(
         priorSameDayExits: 0,
         repeatEntrySizeCutPct: 0,
         equity,
+        // See backtest.ts: `equity` and the day's P&L move together, and here
+        // `dailyPnl` sums BOTH books — which is right, because `equity` is the
+        // one account both books trade.
+        dayStartEquityUsd: equity - dailyPnl,
         dailyPnl,
         tradesToday,
         consecutiveLosses,

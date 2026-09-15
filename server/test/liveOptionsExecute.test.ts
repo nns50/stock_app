@@ -221,6 +221,7 @@ function liveConfig(overrides: Partial<AutotradeConfig> = {}): AutotradeConfig {
 const okResult = (signal: SingleLegOptionsSignal | DebitSpreadOptionsSignal): OptionsRiskCheckResult =>
   evaluateOptionsRiskCheck(signal, {
     equity: 100_000,
+    dayStartEquityUsd: 100_000,
     dailyPnl: 0,
     tradesToday: 0,
     consecutiveLosses: 0,

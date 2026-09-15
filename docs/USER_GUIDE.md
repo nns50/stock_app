@@ -545,6 +545,24 @@ verified **fails closed**.
 > don't count as "lost" — but a real realized loss can no longer hide behind an open
 > winner. The two estimates cover each other's blind spots; when they disagree, the
 > halt believes the worse one.
+>
+> **For an order YOU place, that account-wide figure is the right one** and is what
+> this page uses. **Auto-trading's own live entries are halted on the loop's own
+> realized day instead (2026-09-15)** — the same number the goal card's "today" shows.
+> A trade you place by hand no longer stops the loop, and the loop's losses no longer
+> read as yours. Closes are never halted by the day at all, on either path: refusing
+> an exit does not limit a loss, it leaves one running.
+
+> **The day's loss budget is fixed at the opening bell (2026-09-15).** "Halt at 7.5%"
+> means 7.5% of the equity **the day started at** — the same denominator the +3% goal
+> is a percentage of — so the goal and the halt always stand in the ratio you chose
+> (here 2.5 : 1) and neither moves during the session. It used to be 7.5% of whatever
+> net liquidation read on the current tick, which is circular: the loss being limited
+> was also in the denominator, so the allowance chased the day down. On 2026-09-15 that
+> put the day's goal at $110.83 and its halt at $44.39 on the same account — a session
+> the loop had to win by more than it was allowed to lose first. The stored **max daily
+> loss $** cap keeps its other jobs (your own orders, the cap card, the tuner's
+> suggestion) but no longer gates the loop.
 
 ---
 
