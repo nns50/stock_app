@@ -16,6 +16,7 @@ import { createIntent } from '../src/db/orders';
 import { addExit, createPosition } from '../src/db/positions';
 import { getAutotradeConfig } from '../src/db/autotradeConfig';
 import { setAutotradeConfig } from '../src/db/autotradeConfig';
+import { saveDailyResult } from '../src/db/dailyResults';
 import { openPaperPosition } from '../src/db/autotradePaperPositions';
 import { openOptionsPaperPosition } from '../src/db/autotradeOptionsPaperPositions';
 import { createLiveOptionsPosition } from '../src/db/autotradeLiveOptionsPositions';
@@ -911,6 +912,46 @@ describe('GET /journal/tune-advice (integration)', () => {
     // No scan has been persisted, so it says so rather than ranking nothing.
     expect(advice.headline).toMatch(/No edge-leak scan has run yet/);
     expect(advice.recommendations).toEqual([]);
+  });
+
+  // Decision 9's yardstick is written in PERCENT ("mean red day <= -1.5%") and
+  // was computed where no caller could read it. The calendar's same-named
+  // field is a different quantity — account-first — so the number that WAS
+  // readable was the wrong one for the rule. This pins the one on the wire to
+  // the STRATEGY series.
+  it('carries the pre-committed review, off the strategy series and not the account one', async () => {
+    setAutotradeConfig({ riskPerTradePct: 2.5, targetDailyGainPct: 3 });
+    const row = (etDate: string, accountGainPct: number, strategyGainPct: number) =>
+      saveDailyResult({
+        etDate,
+        baselineEquityUsd: 10_000,
+        closeEquityUsd: 10_000 * (1 + accountGainPct / 100),
+        accountGainPct,
+        strategyPnlUsd: strategyGainPct * 100,
+        strategyGainPct,
+        liveTrades: 3,
+        paperPnlUsd: 0,
+        goalReached: false,
+        giveBackHalted: false,
+        drawdownHalted: false,
+        manualTrading: true,
+        recordedAt: Date.now(),
+        riskPerTradePct: 2.5,
+        goalBasis: 'strategy',
+      });
+    // The 2026-09-15 shape: the account took a large hit by hand while the
+    // loop's own day was small.
+    row('2026-09-14', -31.32, -1.96);
+    row('2026-09-15', -10.36, -0.5);
+
+    const advice = (await getJson('/api/journal/tune-advice')) as {
+      review: { meanDayPct: number | null; meanRedDayPct: number | null; worstDayPct: number | null };
+    };
+    expect(advice.review).toBeDefined();
+    // Strategy: mean of -1.96 and -0.5; NOT the account's mean of -20.84.
+    expect(advice.review.meanDayPct).toBeCloseTo(-1.23, 2);
+    expect(advice.review.meanRedDayPct).toBeCloseTo(-1.23, 2);
+    expect(advice.review.worstDayPct).toBeCloseTo(-1.96, 2);
   });
 
   it('rejects a nonsense window', async () => {

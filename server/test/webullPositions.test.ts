@@ -1678,3 +1678,86 @@ describe('syncClosedWebullPositions vs an autotrade close already in flight', ()
     expect(closed.exits[0].exitReason).toBe('manual');
   });
 });
+
+// ---------------------------------------------------------------------------
+// The drift the sync used to swallow (2026-09-15). `importFromPreview` matches
+// on CONTRACT and then counts the row `skipped` — a broker holding that GREW
+// since the import never reaches the journal and never produced a trace. Live
+// case: 129 SPY 755P contracts against the journal's 7, found only because
+// someone went looking for why net liquidation had fallen 84%.
+// ---------------------------------------------------------------------------
+describe('runWebullPositionsSync — quantity drift is reported, never repaired', () => {
+  const spyPut = (quantity: string) => ({
+    symbol: 'SPY',
+    asset_type: 'OPTION',
+    option_type: 'PUT',
+    strike_price: '755',
+    option_expire_date: '2030-01-18',
+    quantity,
+    cost_price: '0.29',
+  });
+
+  const journalPut = (quantity: number) =>
+    createPosition({
+      assetType: 'option',
+      symbol: 'SPY',
+      side: 'long',
+      optionType: 'put',
+      strike: 755,
+      expiration: '2030-01-18',
+      multiplier: 100,
+      quantity,
+      entryPrice: 0.7,
+      entryDate: '2026-09-15',
+      tags: ['webull'],
+      accountId: 'ACC1',
+    });
+
+  const driftRows = () => listAutotradeEvents({ limit: 50 }).filter((e) => e.action === 'position_quantity_drift');
+
+  it('journals the gap with both quantities, and leaves the journal row untouched', async () => {
+    const p = journalPut(7);
+    mockPositions([spyPut('129')]);
+
+    await runWebullPositionsSync('ACC1');
+
+    expect(driftRows()).toHaveLength(1);
+    expect(JSON.parse(driftRows()[0].detail ?? '{}')).toMatchObject({
+      accountId: 'ACC1',
+      brokerQty: 129,
+      journalQty: 7,
+      strike: 755,
+      optionType: 'put',
+    });
+    // The whole point: it REPORTS. A row with one entry price cannot absorb a
+    // later add without inventing an average nobody paid.
+    expect(getPosition(p.id)!.remainingQuantity).toBe(7);
+    expect(getPosition(p.id)!.entryPrice).toBe(0.7);
+  });
+
+  it('is silent when the two agree', async () => {
+    journalPut(129);
+    mockPositions([spyPut('129')]);
+    await runWebullPositionsSync('ACC1');
+    expect(driftRows()).toHaveLength(0);
+  });
+
+  it('does not fire for a position the same pass just imported', async () => {
+    mockPositions([spyPut('129')]);
+    const r = await runWebullPositionsSync('ACC1');
+    expect(r.imported).toBe(1);
+    // The import ran BEFORE the drift check, so the contract already
+    // reconciles — reporting it here would be a false positive on every new
+    // holding.
+    expect(driftRows()).toHaveLength(0);
+  });
+
+  it('journals once per contract per day, however many ticks run', async () => {
+    journalPut(7);
+    mockPositions([spyPut('129')]);
+    await runWebullPositionsSync('ACC1');
+    await runWebullPositionsSync('ACC1');
+    await runWebullPositionsSync('ACC1');
+    expect(driftRows()).toHaveLength(1);
+  });
+});

@@ -13,7 +13,7 @@ import {
   wouldOpenShort,
 } from '../trading/guardrails';
 import { marketOpenContext, minutesIntoSession } from '../trading/marketHours';
-import { webullAccountState } from '../../providers/webull/accountState';
+import { webullAccountState, type WebullAccountStateResult } from '../../providers/webull/accountState';
 import {
   newClientOrderId,
   webullPlaceOrder,
@@ -673,6 +673,61 @@ export function resetEquitySyncGuardState(): void {
   equityGuard = freshEquityGuardState();
 }
 
+/**
+ * One journal line a day when net liquidation has moved a long way from where
+ * the day OPENED, with the cash/positions split that says which it was
+ * (2026-09-15).
+ *
+ * The guard above compares each reading to the LAST ACCEPTED one, so it sees
+ * jumps and not slides — which is right for what it does (it rejects, and a
+ * slow decline is usually real, so rejecting one would freeze equity at a
+ * stale figure). But it leaves the session's own shape unrecorded, and a feed
+ * fault that arrives in sub-threshold steps is exactly as damaging as one that
+ * arrives in a single lurch, while producing no row at all.
+ *
+ * On 2026-09-15 net liquidation went $3,699.78 -> $591.81, an 84% fall, in
+ * steps of 5.4%, 7.5%, 14.8%, 11.4% — every one of them inside the 25% guard.
+ * Nothing said so. The only trace was 143 `live_caps_reanchored` rows, which
+ * record the CONSEQUENCE one step at a time and never the move.
+ *
+ * It does not reject anything and does not touch the caps: the reading is
+ * written exactly as before. `marketValueUsd` / `cashBalanceUsd` are the whole
+ * point — a real move shows up in one of them, and a feed contradicting itself
+ * does not.
+ */
+const round2 = (n: number): number => Math.round(n * 100) / 100;
+
+function reportCumulativeEquityMove(acct: WebullAccountStateResult, maxJumpPct: number): void {
+  const netLiq = acct.netLiquidationUsd;
+  if (!(maxJumpPct > 0) || netLiq === undefined || !(netLiq > 0)) return;
+  const baseline = getDailyBaseline();
+  const today = etToday();
+  if (!baseline || baseline.etDate !== today || !(baseline.equityUsd > 0)) return;
+
+  const movePct = ((netLiq - baseline.equityUsd) / baseline.equityUsd) * 100;
+  if (Math.abs(movePct) <= maxJumpPct) return;
+  if (!claimOncePerDay('equity_moved_far_from_open', today)) return;
+
+  logAutotradeEvent({
+    stage: 'config',
+    action: 'equity_moved_far_from_open',
+    detail: {
+      etDate: today,
+      openingEquityUsd: round2(baseline.equityUsd),
+      currentEquityUsd: round2(netLiq),
+      movePct: round2(movePct),
+      maxJumpPct,
+      marketValueUsd: acct.state ? round2(acct.state.exposureUsd) : null,
+      cashBalanceUsd: acct.state?.cashBalanceUsd ?? null,
+      brokerDayPnlUsd: acct.realizedToday?.brokerDayPnlUsd ?? null,
+      note:
+        'Net liquidation is a long way from where the day opened. The per-tick guard only sees JUMPS, so a ' +
+        'move that arrives in small steps leaves no trace — this is that trace. Positions or cash will show ' +
+        'which it was; if neither moved, suspect the feed. Nothing was rejected and no cap was held.',
+    },
+  });
+}
+
 export async function syncAccountEquityFromBroker(opts?: { log?: boolean }): Promise<EquitySyncResult> {
   const cfg = getAutotradeConfig();
   const accountId = cfg.liveAccountId;
@@ -720,6 +775,8 @@ export async function syncAccountEquityFromBroker(opts?: { log?: boolean }): Pro
       config: cfg,
     };
   }
+
+  reportCumulativeEquityMove(acct, cfg.equitySyncMaxJumpPct);
 
   const next = setAutotradeConfig({ accountEquityUsd: acct.netLiquidationUsd });
 
