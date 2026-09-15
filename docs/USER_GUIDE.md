@@ -194,7 +194,12 @@ Your at-a-glance morning screen.
 Rank a universe of symbols by a transparent, fully configurable rule set. **Nothing is
 a black box** — every score can be traced to a formula. The universe ships seeded with
 the full S&P 500 (500+ symbols); use **Manage universe** to add or remove symbols —
-this is the same persistent list Auto-Trade's screener draws from.
+this is the same persistent list Auto-Trade's screener draws from. On **2026-09-15** it
+was widened past the index for the first time: 29 liquid biotech names were added, taking
+it to 557 and Health Care from 59 to 88. Each one clears the screener's own filters on
+live data (above the $5 minimum price, above the 1,000,000-share minimum average volume),
+so this is more candidates rather than looser ones — see the spec's dated section for what
+was excluded and why.
 
 ### Running it
 
