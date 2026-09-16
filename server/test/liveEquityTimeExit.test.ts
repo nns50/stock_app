@@ -1682,6 +1682,11 @@ describe('checkLiveEquityStopAdjusts', () => {
 
     const blocked = listAutotradeEvents({ limit: 50 }).find((e) => e.action === 'live_stop_adjust_blocked');
     expect(String(JSON.parse(blocked?.detail ?? '{}').reason)).toContain('[?/LIMIT, NORMAL/?]');
+    // WHICH rule wanted the move (2026-09-15). A blocked ratchet is a decision
+    // that never reached the broker, so without this a day-protective move
+    // that never landed reads exactly like a trail that never landed — and the
+    // day-protective rule's whole watch is "did it work".
+    expect(JSON.parse(blocked?.detail ?? '{}').kind).toBeTruthy();
   });
 
   it('does not let the fallback create an ambiguity combo_type had resolved', async () => {

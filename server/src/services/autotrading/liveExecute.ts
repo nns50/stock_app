@@ -5196,7 +5196,13 @@ export async function checkLiveEquityStopAdjusts(): Promise<LiveStopAdjustOutcom
         symbol,
         stage: 'execution',
         action: 'live_stop_adjust_blocked',
-        detail: { positionId: pos.id, reason: found.reason, wanted: decision.newStop },
+        // `kind` says WHICH rule wanted the move, and it matters most here
+        // rather than on the success row: a blocked ratchet is a decision that
+        // did not reach the broker, and without this a day-protective move
+        // that never landed is indistinguishable from a trail that never
+        // landed. The success row has carried `kind` since the ratchet
+        // shipped; the failure row is where a reader actually needs it.
+        detail: { positionId: pos.id, reason: found.reason, wanted: decision.newStop, kind: decision.kind },
         riskProfile: cfg.riskProfile,
       });
       outcomes.push({ symbol, positionId: pos.id, adjusted: false, reason: found.reason });
