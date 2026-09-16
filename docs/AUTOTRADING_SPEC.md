@@ -11599,3 +11599,86 @@ with a floor, `GET /autotrade/dashboard`'s `dailyTarget` carries
 `dayProtectiveFloorPct` and `dayProtectiveHeadroomUsd` while `giveBackFloorPct` and
 `headroomToFloorUsd` are both absent — and a live position whose stop would breach that
 floor gets a `live_stop_ratcheted` row naming it.
+
+## 2026-09-16 — the goal rate could only ever drop the MISSES
+
+Prompted by one answer from the operator: *"No manual trading today."*
+
+2026-09-16's results row was flagged `manualTrading` on a day neither book
+traded. The day-marks series settles what happened, because it samples all three
+series once a tick:
+
+| ET | account equity | realized | unrealized | open positions |
+| --- | --- | --- | --- | --- |
+| 00:00:29 | 30,204.81 | 0 | 0 | 0 |
+| **04:03:42** | **30,011.31** | 0 | 0 | 0 |
+| 04:06:53 | 30,011.30 | 0 | 0 | 0 |
+
+One −$193.50 step at 04:03 ET — hours before the open — then flat for all 798
+samples. No loop entry (391 `live_risk_blocked`, every one on buying power), no
+hand trade, nothing open to mark. It is the broker settling the previous day's
+option expiry into an account whose baseline had already been captured at ET
+midnight. The flag fired at 0.64% against its 0.5% threshold and named a cause
+that did not exist.
+
+### The flag is not the bug. What reads it is.
+
+`buildSizingReview` judges its goal rate over
+
+```ts
+sessions.filter((r) => r.goalBasis === 'strategy' || !r.manualTrading)
+```
+
+and `goal_basis` was written by **exactly one function**,
+`markDailyTargetReached`. So the column existed only on days the goal was
+REACHED, and every MISS was null forever. Read the filter against that:
+
+- a **reach** under the current evaluator carries `'strategy'` and is kept by the
+  first clause, whatever the flag says;
+- a **miss** has no basis, falls to the second clause, and is **dropped** the
+  moment the divergence flag fires.
+
+Numerator protected, denominator leaking, in one direction, on the number
+Decision 7 keeps or reverts the trial by. One reach plus one flagged miss reads
+**100%**. And the flag fires on days nobody traded, so this was routine rather
+than a corner. The note in the code claimed "the exclusion retires itself once
+the window holds no pre-change rows"; it could never retire, because misses were
+always pre-change rows by construction.
+
+**The unit test for this filter passed from the day it was written.** It asserts
+the right verdict on a miss carrying basis `'strategy'` — a fixture the producer
+could not emit. CLAUDE.md's rule is "assert at the CONSUMER, not the producer";
+this is its mirror image, a consumer asserted against an input that never
+arrives. Testing the filter proved nothing about what reached it.
+
+### The basis describes the EVALUATOR, so every session has one
+
+`recordGoalBasis` writes the basis once per session from `updateDailyTarget`,
+first-write-wins so a reach's own stamp is never clobbered. Both writers take it
+from one exported constant, `DAILY_TARGET_BASIS`, so the two places that record
+the same quantity cannot disagree — they do not each decide it. A missed session
+now carries `'strategy'` and is counted; the null case stays exactly what it
+always meant, a session that ran before the basis was tracked.
+
+History is **not** backfilled. The sessions already on the book (2026-09-11,
+-14, -15, -16) ran across the evaluator's own changeover, and "unknown is not a
+match" is the same rule `risk_per_trade_pct` already follows — inventing a basis
+for them is the 2026-09-14 mistake with a different column. They stay out of the
+rate; the stamp accumulates forward.
+
+### A rate now reports its denominator
+
+`SizingReview.goalRateJudgedSessions` sits beside `goalRatePct`, because a rate
+with an unstated denominator is what hid this: "100%" over a silently halved
+window reads exactly like 100% over the whole one. Compare it against
+`activeSessionsSinceChange` and any future exclusion has to show itself.
+
+### Pre-committed check
+
+On the first session after this deploys, the baseline row carries
+`goal_basis = 'strategy'` **before** any reach — and if the day ends without
+one, `GET /api/journal/daily-results` shows that date with
+`goalBasis: 'strategy'` and `goalReached: false`. On the current book
+`goalRatePct` is `null` over `goalRateJudgedSessions: 0`; it must stay null
+until a stamped session lands, and must never read 100% off a single reach while
+misses sit in the same window.

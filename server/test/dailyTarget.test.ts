@@ -11,6 +11,8 @@ import {
   updateDailyGoalScale,
   updateDailyTarget,
 } from '../src/services/autotrading/dailyTarget';
+import { recordDailyResult } from '../src/services/autotrading/dailyResults';
+import { buildSizingReview } from '../src/services/autotrading/gatedSwitchesData';
 import { etToday } from '../src/util/marketDate';
 import { importPositions } from '../src/db/positions';
 
@@ -410,7 +412,11 @@ describe('updateDailyTarget (DB + journal)', () => {
         // The day is the LOOP's realized P&L now, so a position left behind by
         // one case is a gain the next case never traded for. Every one of these
         // cases passed alone and six failed together without this.
-        'DELETE FROM position_exits; DELETE FROM positions;',
+        'DELETE FROM position_exits; DELETE FROM positions; ' +
+        // This block records results rows now (the basis cases below drive the
+        // real recorder), so it clears them too rather than leaving them for
+        // whoever reads the table next.
+        'DELETE FROM autotrade_daily_results;',
     ),
   );
 
@@ -462,6 +468,66 @@ describe('updateDailyTarget (DB + journal)', () => {
     expect(events).toHaveLength(1);
     const detail = JSON.parse(events[0].detail!) as { targetPct: number; baselineEquityUsd: number; gainPct: number };
     expect(detail).toMatchObject({ targetPct: 3, baselineEquityUsd: 10_000, gainPct: 4 });
+  });
+
+  describe('the basis is stamped on every session, not only on a reach (2026-09-16)', () => {
+    // WHY THIS IS AN END-TO-END CASE AND NOT A UNIT ONE.
+    //
+    // gatedSwitchesData.test.ts already asserted the review's goal rate counts
+    // a MISSED session carrying basis 'strategy', and it passed from the day it
+    // was written. It was fiction: `goalBasis` was written by exactly one
+    // function, `markDailyTargetReached`, so the only rows that ever carried it
+    // were rows that REACHED the goal. Production could not produce the fixture
+    // the test asserted on, so the filter was proven against an input that did
+    // not exist while the real input — a null-basis miss — was being dropped
+    // from the denominator whenever the divergence flag fired.
+    //
+    // So these cases drive the real producer, store through the real recorder,
+    // and read the real consumer. Nothing hands anybody a goalBasis.
+    it('a session that never reaches the goal still records what it was measured on', () => {
+      setAutotradeConfig({ ...defaultAutotradeConfig(), accountEquityUsd: 10_000, targetDailyGainPct: 3 });
+      updateDailyTarget(NOW);
+      seedLoopPnl(-50); // a red day: the goal is never reached, and never will be
+      const s = updateDailyTarget(NOW + 60_000);
+      expect(s.reached).toBe(false);
+      expect(getDailyBaseline()).toMatchObject({ reachedAt: null, goalBasis: 'strategy' });
+
+      // …and it survives into the row the review actually reads.
+      const row = recordDailyResult(TODAY, NOW + 120_000);
+      expect(row).toMatchObject({ goalReached: false, goalBasis: 'strategy' });
+    });
+
+    it('stamps once per session and never clobbers the stamp a reach wrote', () => {
+      setAutotradeConfig({ ...defaultAutotradeConfig(), accountEquityUsd: 10_000, targetDailyGainPct: 3 });
+      updateDailyTarget(NOW);
+      seedLoopPnl(400); // +4%, past the goal
+      updateDailyTarget(NOW + 60_000);
+      const banked = updateDailyTarget(NOW + 120_000);
+      expect(banked.reached).toBe(true);
+      const after = getDailyBaseline();
+      expect(after?.goalBasis).toBe('strategy');
+      // The reach's timestamp is the one on the row — the per-session write
+      // must not have replaced it, nor re-stamped a different basis.
+      expect(after?.reachedAt).toBe(NOW + 120_000);
+    });
+
+    it('a flagged MISS is in the goal rate now that it carries a basis', () => {
+      // The exact shape of 2026-09-16: no hand trading, no loop trading, and a
+      // -$193.50 broker settlement step before the open that trips the
+      // divergence flag all on its own.
+      setAutotradeConfig({ ...defaultAutotradeConfig(), accountEquityUsd: 10_000, targetDailyGainPct: 3 });
+      updateDailyTarget(NOW);
+      seedLoopPnl(-20);
+      updateDailyTarget(NOW + 60_000);
+      setAutotradeConfig({ accountEquityUsd: 9_800 }); // -2% on the account, -0.2% to the loop
+      const miss = recordDailyResult(TODAY, NOW + 120_000);
+      expect(miss).toMatchObject({ goalReached: false, manualTrading: true, goalBasis: 'strategy' });
+
+      // One reach and one miss is 50%, not the 100% a dropped denominator read.
+      const reached = { ...miss, etDate: '2026-08-20', goalReached: true };
+      const review = buildSizingReview([reached, miss], null);
+      expect(review.goalRatePct).toBe(50);
+    });
   });
 
   describe('two-tick confirmation before banking the day (2026-08-27)', () => {

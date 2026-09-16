@@ -141,6 +141,24 @@ export function buildSizingReview(
   // recorded (null) keeps the old exclusion, because for it the old charge is
   // still true. No date literal, and the exclusion retires itself once the
   // window holds no pre-change rows.
+  //
+  // THE EXCLUSION COULD NOT ACTUALLY RETIRE UNTIL 2026-09-16, and this line was
+  // biased in one direction the whole time. `goalBasis` was written by exactly
+  // one function — `markDailyTargetReached` — so it existed only on days the
+  // goal was REACHED, and every MISS was null forever. Read that against the
+  // filter: a reach under this evaluator is kept by the first clause, while a
+  // miss falls to the second and is DROPPED the moment the divergence flag
+  // fires. Numerator protected, denominator leaking, on the number Decision 7
+  // keeps or reverts the trial by. And the flag fires on days nobody traded —
+  // 2026-09-16 was one -$193.50 broker settlement step at 04:03 ET with both
+  // books flat all session — so the leak was routine, not a corner. One reach
+  // plus one flagged miss read 100%.
+  //
+  // The unit test at gatedSwitchesData.test.ts asserted the right verdict on a
+  // MISS carrying basis 'strategy' and passed throughout, because the fixture
+  // handed it a shape the producer could not emit. Testing this filter proves
+  // nothing about what reaches it; `recordGoalBasis` now stamps every session,
+  // and the end-to-end test in dailyTarget.test.ts is the one that says so.
   const judged = sessions.filter((r) => r.goalBasis === 'strategy' || !r.manualTrading);
   let haltsMaxIn5 = 0;
   for (let i = 0; i < sessions.length; i++) {
@@ -154,6 +172,7 @@ export function buildSizingReview(
     goalRatePct: judged.length
       ? Math.round((judged.filter((r) => r.goalReached).length / judged.length) * 1000) / 10
       : null,
+    goalRateJudgedSessions: judged.length,
     // Decision 9's numbers, in Decision 9's unit. Same series as the mean, so
     // "the mean day" and "the mean red day" cannot disagree about which
     // sessions or which percentage they are talking about.

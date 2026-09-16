@@ -35,10 +35,18 @@ export interface DailyResult {
    *  makes it usable as the review's window test: a null cannot be mistaken
    *  for "this session ran the current sizing". */
   riskPerTradePct: number | null;
-  /** Which quantity stamped `goalReached` (2026-09-14). 'strategy' is the
-   *  loop's own realized P&L; 'account' the whole brokerage account, which a
-   *  deposit or a hand trade could move. Null means "recorded before the basis
-   *  was tracked" — read as the old, account-derived behaviour. */
+  /** Which quantity this session's daily-target evaluator MEASURED
+   *  (2026-09-14; every session, not only reached ones, since 2026-09-16).
+   *  'strategy' is the loop's own realized P&L; 'account' the whole brokerage
+   *  account, which a deposit or a hand trade could move. Null means "ran
+   *  before the basis was tracked" — read as the old, account-derived
+   *  behaviour.
+   *
+   *  It describes the evaluator rather than the outcome, so a MISSED session
+   *  carries it too. That is load-bearing: the review's goal rate uses it to
+   *  decide which sessions its denominator may trust, and while it existed
+   *  only on reached days that denominator dropped misses and kept reaches.
+   *  See `recordGoalBasis`. */
   goalBasis: GoalBasis;
 }
 
