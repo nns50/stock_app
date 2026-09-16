@@ -9,6 +9,7 @@ import {
   markGiveBackArmed,
   markGiveBackHalted,
   rebaseDailyBaseline,
+  recordGoalBasis,
   saveDailyBaseline,
 } from '../../db/dailyBaseline';
 import { detectExternalCashFlow } from './externalCashFlow';
@@ -224,6 +225,15 @@ function giveBackLevels(
   return { armPct: round4(arm * scale), floorPct: round4(floor * scale) };
 }
 
+/**
+ * Which quantity `evaluateDailyTarget` measures, as one constant rather than a
+ * literal repeated at each writer. Two places record the basis — the
+ * per-session stamp and the reach's own stamp — and this is why they cannot
+ * disagree: they do not each decide it, they both read it from here. Change
+ * the evaluator's input below and this moves with it.
+ */
+export const DAILY_TARGET_BASIS = 'strategy' as const;
+
 /** Pure evaluation — all I/O stays in updateDailyTarget. */
 /**
  * WHAT THE DAY IS MEASURED ON (2026-09-14, the operator's call).
@@ -394,6 +404,16 @@ export function updateDailyTarget(now: number = Date.now()): DailyTargetStatus {
   // stays pure and every caller below gets the same number.
   const status = evaluateDailyTarget(cfg, baseline, strategyDayFor(today).pnlUsd);
 
+  // Record WHAT WE JUST MEASURED, on every session and not only on the ones
+  // that reach the goal. A missed session is exactly as much a session under
+  // this evaluator as a reached one, and the review's goal rate needs to know
+  // that about its DENOMINATOR — see `recordGoalBasis`. Guarded on the
+  // in-memory null so this is one UPDATE a session, not one a tick.
+  if (baseline && baseline.goalBasis === null) {
+    recordGoalBasis(DAILY_TARGET_BASIS);
+    baseline.goalBasis = DAILY_TARGET_BASIS;
+  }
+
   // Two-tick confirmation before the FIRST bank of the day. Banking is
   // irreversible for the session, so it must not rest on one instantaneous
   // reading: on 2026-08-27 a single spurious net-liquidation tick banked a
@@ -436,10 +456,10 @@ export function updateDailyTarget(now: number = Date.now()): DailyTargetStatus {
   }
 
   if (confirmed && baseline) {
-    // 'strategy' because evaluateDailyTarget above measured the LOOP's own
-    // realized P&L. Stamped with the reach so the results row cannot later
-    // assert a basis the reach did not have.
-    markDailyTargetReached(now, 'strategy');
+    // The basis comes from the constant the evaluator itself is described by,
+    // never a literal re-typed here. Stamped WITH the reach so the results row
+    // cannot later assert a basis the reach did not have.
+    markDailyTargetReached(now, DAILY_TARGET_BASIS);
     status.reachedAt = now;
     logAutotradeEvent({
       stage: 'execution',

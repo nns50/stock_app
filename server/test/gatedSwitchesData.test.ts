@@ -159,6 +159,29 @@ describe('the review window', () => {
     expect(buildSizingReview(mixed, null).goalRatePct).toBe(100);
   });
 
+  it('reports the DENOMINATOR the rate was computed over, not only the rate', () => {
+    // A rate with an unstated denominator hid the 2026-09-16 bug for two days:
+    // `goalBasis` existed only on REACHED days, so the exclusion below could
+    // only ever drop misses, and "100%" over a silently-halved window read
+    // exactly like 100% over the whole one. The two numbers are reported side
+    // by side now, so a shrinking window is visible on its face.
+    const rows = [
+      result('2026-09-10', { goalReached: true, goalBasis: 'strategy' }),
+      result('2026-09-11', { goalReached: false, manualTrading: true, goalBasis: null }),
+    ];
+    const review = buildSizingReview(rows, null);
+    expect(review.activeSessionsSinceChange).toBe(2);
+    expect(review.goalRateJudgedSessions).toBe(1); // the null-basis miss is dropped
+    expect(review.goalRatePct).toBe(100); // …which is why this reads 100 on a 1-of-2 book
+
+    // Every row carrying a basis is the world after the fix: nothing is dropped
+    // and the rate is over the whole window.
+    const stamped = rows.map((r) => ({ ...r, goalBasis: 'strategy' as const }));
+    const after = buildSizingReview(stamped, null);
+    expect(after.goalRateJudgedSessions).toBe(2);
+    expect(after.goalRatePct).toBe(50);
+  });
+
   // DECISION 9'S NUMBERS, IN DECISION 9'S UNIT (2026-09-12).
   //
   // "Mean red day <= -1.5%" is the pre-committed bar, and until now the only

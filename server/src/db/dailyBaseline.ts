@@ -39,11 +39,17 @@ export interface DailyBaseline {
   goalScale: number | null;
   /** Why (the trigger line), for the goal card and the journal. */
   goalScaleReason: string | null;
-  /** Which quantity stamped `reachedAt` — 'strategy' for the loop's own
-   *  realized P&L, 'account' for the whole brokerage account, null for a day
-   *  stamped before the basis was tracked. Written WITH the stamp, because the
-   *  basis belongs to the moment of the stamp and not to whatever code happens
-   *  to read the row afterwards. */
+  /** Which quantity this session's daily-target evaluator MEASURES — 'strategy'
+   *  for the loop's own realized P&L, 'account' for the whole brokerage
+   *  account, null for a session that ran before the basis was tracked.
+   *
+   *  Written on every session by `recordGoalBasis` and again, with the stamp,
+   *  by `markDailyTargetReached` — both from `DAILY_TARGET_BASIS`, so the two
+   *  writers cannot disagree. It describes the evaluator, so it is knowable
+   *  whether or not the goal is reached; tying it to the reach alone left
+   *  every missed day null and biased the review's goal rate (see
+   *  `recordGoalBasis`). A stamped day still carries the basis the stamp had,
+   *  never one asserted later by whatever code reads the row. */
   goalBasis: GoalBasis;
 }
 
@@ -140,6 +146,34 @@ export function markDailyTargetReached(reachedAt: number, goalBasis: Exclude<Goa
   db.prepare(
     'UPDATE autotrade_daily_baseline SET reached_at = ?, goal_basis = ? WHERE id = 1 AND reached_at IS NULL',
   ).run(reachedAt, goalBasis);
+}
+
+/**
+ * Record which quantity THIS SESSION's daily-target evaluator measures, on a
+ * day that has not reached the goal and may never reach it. First write wins,
+ * so a reach's own stamp is never clobbered and the two writers cannot
+ * disagree (they take the basis from the same constant).
+ *
+ * WHY A SESSION NEEDS THIS AND NOT ONLY A REACH (2026-09-16). The basis used
+ * to be written in one place — `markDailyTargetReached` — so it existed only
+ * on days the goal was REACHED. Every MISSED day was null forever. The review
+ * then judged its goal rate over `goalBasis === 'strategy' || !manualTrading`,
+ * which kept every reach under the current evaluator and dropped any miss that
+ * happened to trip the divergence flag: the numerator was protected and the
+ * denominator leaked, in one direction, on the exact number Decision 7's
+ * keep/revert rule reads. The flag fires on days nobody traded — 2026-09-16
+ * was a single -$193.50 broker settlement step at 04:03 ET with both books
+ * flat — so this was not a rare corner.
+ *
+ * The basis is a property of the EVALUATOR, not of the outcome, so it is
+ * knowable on every session and is written on every session. Returns whether
+ * a row was written.
+ */
+export function recordGoalBasis(goalBasis: Exclude<GoalBasis, null>): boolean {
+  const res = db
+    .prepare('UPDATE autotrade_daily_baseline SET goal_basis = ? WHERE id = 1 AND goal_basis IS NULL')
+    .run(goalBasis);
+  return res.changes > 0;
 }
 
 /** Mark the give-back guard armed for today (first time only). */

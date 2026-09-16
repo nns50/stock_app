@@ -106,7 +106,8 @@ export interface RecordDailyResultInput {
    *  the sizing changed" off this rather than off a journal row, because the
    *  journal row did not exist for the trial that needed it. */
   riskPerTradePct: number | null;
-  /** Which quantity stamped `goalReached` — see DailyResult.goalBasis. */
+  /** Which quantity this session's daily-target evaluator measured — see
+   *  DailyResult.goalBasis. Present on a missed session too, on purpose. */
   goalBasis: GoalBasis;
 }
 

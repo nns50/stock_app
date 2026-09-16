@@ -2808,8 +2808,9 @@ come.
 `GET /api/journal/tune-advice`, and reported by the post-close routine each weekday.
 
 > **The response also carries `review` (2026-09-15)** — the pre-committed review's own
-> inputs: `activeSessionsSinceChange`, `meanDayPct`, `goalRatePct`, `meanRedDayPct`,
-> `worstDayPct`, `haltsMaxIn5`. These are the numbers the sizing review turns on, in the
+> inputs: `activeSessionsSinceChange`, `meanDayPct`, `goalRatePct`,
+> `goalRateJudgedSessions`, `meanRedDayPct`, `worstDayPct`, `haltsMaxIn5`. These are the
+> numbers the sizing review turns on, in the
 > unit its rules are written in (percent of the day's opening equity), off the **strategy**
 > series. They were built and used internally and returned by nothing, so the one field
 > anybody could read was the Results calendar's same-named `meanRedDayPct` — which is a
@@ -2817,6 +2818,13 @@ come.
 > On 2026-09-15 the two read **-20.84%** and **-1.96%** on the same window: the account
 > carries hand trading, the strategy series does not. Quote whichever the rule you are
 > applying is written in, and the review's rules are written in this one.
+>
+> **Read `goalRatePct` next to `goalRateJudgedSessions` (2026-09-16), always.** The rate is
+> computed only over sessions whose goal stamp can be trusted, so its denominator can be
+> smaller than `activeSessionsSinceChange`. It used to be able to shrink in one direction
+> only — dropping missed sessions while keeping reached ones — which reads as a high goal
+> rate on a book that missed. A rate over a denominator you have not looked at is not a
+> rate you can act on.
 
 Everything the app collects gets synthesised into one ranked list: what to change next,
 which part of the goal equation it moves, and **how many percentage points of the

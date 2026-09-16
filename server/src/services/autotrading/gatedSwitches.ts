@@ -274,9 +274,20 @@ export interface SizingReview {
    *  opposite until 2026-09-12, one line away from the number Decision 7's
    *  revert turns on.) */
   meanDayPct: number | null;
-  /** Goal-hit rate over those sessions, in % — manual-trading days excluded,
-   *  because the flag they are excluded for is account-derived. */
+  /** Goal-hit rate over those sessions, in % — computed over
+   *  `goalRateJudgedSessions`, not over all of them. */
   goalRatePct: number | null;
+  /** How many of `activeSessionsSinceChange` the rate was actually computed
+   *  over. A rate is a fraction and a fraction has a denominator, so the
+   *  denominator is reported next to it.
+   *
+   *  Not cosmetic. Until 2026-09-16 the exclusion that shrinks this number
+   *  could only ever drop MISSES — `goalBasis` existed solely on days the goal
+   *  was reached — so the rate was biased upward by exactly the sessions this
+   *  field would have shown going missing, on the number Decision 7 keeps or
+   *  reverts the trial by. A denominator nobody prints is a denominator nobody
+   *  checks; compare the two and a future exclusion cannot hide. */
+  goalRateJudgedSessions: number;
   /** Decision 9's two "red days stay small" numbers, in the SAME unit as its
    *  bar (% of equity, not R).
    *
