@@ -11730,6 +11730,27 @@ counted whatever this flag says.
 
 After the deploy, `GET /api/journal/daily-results` returns
 `accountStrategyDiverged` with `divergenceUsd` on every row that has account
-figures, and 2026-09-16 re-recorded (`POST …/record?date=2026-09-16`) reads
-`divergenceUsd: -193.51` with `preOpenMoveUsd: -193.5` — the two agreeing to a
-cent is the check, since they come from different tables.
+figures.
+
+**Verified on the deployed box the same evening.** 2026-09-16 reads
+
+```json
+{ "accountStrategyDiverged": true, "divergenceUsd": -193.51, "preOpenMoveUsd": -193.51,
+  "strategyPnlUsd": 0, "liveTrades": 0, "goalBasis": "strategy", "goalReached": false }
+```
+
+The two figures come from different tables — `divergence_usd` from the results
+row's own equities, `pre_open_move_usd` from the day-marks samples — and on this
+day they agree EXACTLY rather than approximately. That is not a coincidence and
+it is the substance of the check: they can only be equal when the loop realized
+nothing (so the account's whole move is the divergence) AND nothing moved after
+the opening bell (so the whole divergence is the pre-open step). Equality is
+therefore the proof that the session itself was flat and the money left
+overnight. On any ordinary trading day the two will differ, and the gap between
+them is what the session did.
+
+A note against a wrong expectation, since this section is what a later reader
+checks against: the pre-open window ends at the BELL, not at the last step in
+the series. 2026-09-16's account equity moved at 04:03 and again at 04:06 and
+then held 30,011.30 until 09:29, so the pre-open move is measured to that last
+09:29 reading (-193.51) and not to the 04:03 one (-193.50).

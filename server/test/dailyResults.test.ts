@@ -106,7 +106,7 @@ describe('the two percentages', () => {
 
   it('reproduces 2026-09-16: flagged on a day with no trade in either book', () => {
     const r = buildDailyResult(
-      { ...base, baselineEquityUsd: 30_204.81, closeEquityUsd: 30_011.3, preOpenMoveUsd: -193.5 },
+      { ...base, baselineEquityUsd: 30_204.81, closeEquityUsd: 30_011.3, preOpenMoveUsd: -193.51 },
       { pnlUsd: 0, trades: 0 },
       0,
     );
@@ -116,8 +116,13 @@ describe('the two percentages', () => {
     expect(r.accountStrategyDiverged).toBe(true);
     expect(r.divergenceUsd).toBe(-193.51);
     // …and the whole of it predates the opening bell, which is what makes the
-    // "hand trading" reading impossible rather than merely unproven.
-    expect(r.preOpenMoveUsd).toBe(-193.5);
+    // "hand trading" reading impossible rather than merely unproven. The two
+    // figures come from different tables and agree EXACTLY here, which they can
+    // only do when the loop realized nothing and nothing moved after the bell —
+    // so the equality IS the evidence that the session was flat. Verified
+    // against the deployed row on 2026-09-16.
+    expect(r.preOpenMoveUsd).toBe(r.divergenceUsd);
+    expect(r.preOpenMoveUsd).toBe(-193.51);
   });
 });
 
