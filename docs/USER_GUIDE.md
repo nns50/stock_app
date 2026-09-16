@@ -2932,9 +2932,14 @@ on **Auto-Trade**, with a link through to the full calendar.
   tuning plan uses: a position-derived series carries no flows).
 
 The toggle switches which one the tiles show; the tooltip always names both. A day where
-they disagree by more than **0.5% of equity** is marked **M** — 2026-09-11 is the
-canonical example: the account read −31% across the afternoon while the loop's own book
-had not lost a cent, because the account was being traded by hand.
+they disagree by more than **0.5% of equity** is marked **D**, and the badge says THAT they
+differ, never why — 2026-09-11 is one canonical example (the account read −31% across the
+afternoon while the loop's own book had not lost a cent, because the account was being
+traded by hand) and 2026-09-16 is the other (a −$193.50 broker settlement posted at
+04:03 ET on a day neither book traded at all). The badge was called **M** for "manual
+trading" until that second day proved the label was a guess; it now quotes the gap in
+dollars and, where the samples can say, how much of it landed **before the opening bell**
+— which is what tells settlement, fees and transfers apart from anything the session did.
 
 **Reading a tile.** The big number is the chosen percentage with an explicit `+`/`−`
 (the sign never depends on color alone); the small number under it is the strategy's
@@ -2942,7 +2947,7 @@ realized **dollars**. The tile's tint and border carry magnitude against the **s
 daily goal** — a day that reaches the goal is full strength, half the goal is the middle
 step — so the whole calendar re-scales itself when the goal or the risk % changes. Badges
 are letters, not colored dots: **G** goal reached, **B** the give-back guard halted the
-day, **H** the drawdown halt tripped, **M** account and strategy disagree.
+day, **H** the drawdown halt tripped, **D** account and strategy diverged.
 
 **A dash is not a zero.** Sessions before the daily-baseline record existed have no
 opening equity anywhere, so no account figure exists for them and the cell says so. The
@@ -2961,9 +2966,18 @@ review — the one that decides whether to revert the trial — reads the **stra
 instead, because that asks what the *loop* did, and the strategy column is realized P&L on
 the loop's own positions and so carries no deposits, no hand trading and no unrealized mark
 on anything still open. Where the two disagree by more than 0.5% of the day's opening
-equity the day is badged **M**; the review still counts that day's strategy figure in its
-mean (the contamination is not in that column) but does not let it count toward the goal
-rate, because a day is marked "goal reached" off the account equity crossing the target.
+equity the day is badged **D**; the review still counts that day's strategy figure in its
+mean, because the contamination is not in that column.
+
+The goal rate used to drop that day too, and since 2026-09-16 it does not. Every session
+now records WHICH quantity its daily-target evaluator measured, so a diverged day whose
+goal was judged on the loop's own realized P&L is counted whatever the badge says — only a
+row from before that basis was tracked is still set aside. This matters more than it
+sounds: the basis used to be written only when a goal was REACHED, so the exclusion could
+drop a MISS and never a reach, and a book that hit one session in three could report a 100%
+goal rate. The review therefore reports `goalRateJudgedSessions` beside the rate; read them
+together, and if the denominator is smaller than the active-session count, ask why before
+acting on the percentage.
 
 **Why the mean red day is there.** "Red days as small as possible" is one of the two
 stated objectives, and the worst day cannot measure it: one −3% day among small ones and

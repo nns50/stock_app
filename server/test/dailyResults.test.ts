@@ -4,13 +4,15 @@ import { defaultAutotradeConfig, setAutotradeConfig } from '../src/db/autotradeC
 import { markDailyTargetReached, markGiveBackHalted, saveDailyBaseline } from '../src/db/dailyBaseline';
 import { closePaperPosition, openPaperPosition } from '../src/db/autotradePaperPositions';
 import { listDailyResults } from '../src/db/dailyResults';
+import { DayMark } from '../src/db/dayMarks';
 import {
   backfillDailyResults,
   buildDailyResult,
   buildDailyResultsReport,
   dayPctOf,
   isoWeekKey,
-  MANUAL_TRADING_DIVERGENCE_PCT,
+  ACCOUNT_STRATEGY_DIVERGENCE_PCT,
+  preOpenMoveUsdFor,
   recordDailyResult,
   recordTodayAfterClose,
   strategyDayFor,
@@ -47,6 +49,9 @@ describe('the two percentages', () => {
     drawdownHalted: false,
     riskPerTradePct: 2.5,
     goalBasis: 'strategy' as const,
+    // No day-marks samples in a pure case: null is "the samples cannot say",
+    // which is exactly the state a hand-built input is in.
+    preOpenMoveUsd: null,
     recordedAt: 1,
   };
 
@@ -57,7 +62,7 @@ describe('the two percentages', () => {
     expect(r.liveTrades).toBe(3);
     expect(r.paperPnlUsd).toBe(40);
     // A 0.2 point gap is ordinary mark-to-market on an open position.
-    expect(r.manualTrading).toBe(false);
+    expect(r.accountStrategyDiverged).toBe(false);
   });
 
   it('flags the day the account and the strategy disagree — a deposit, or hand trading', () => {
@@ -65,8 +70,8 @@ describe('the two percentages', () => {
     const r = buildDailyResult({ ...base, closeEquityUsd: 8_900 }, { pnlUsd: 0, trades: 0 }, 0);
     expect(r.accountGainPct).toBe(-11);
     expect(r.strategyGainPct).toBe(0);
-    expect(r.manualTrading).toBe(true);
-    expect(Math.abs(r.accountGainPct! - r.strategyGainPct!)).toBeGreaterThan(MANUAL_TRADING_DIVERGENCE_PCT);
+    expect(r.accountStrategyDiverged).toBe(true);
+    expect(Math.abs(r.accountGainPct! - r.strategyGainPct!)).toBeGreaterThan(ACCOUNT_STRATEGY_DIVERGENCE_PCT);
   });
 
   it('never invents an account figure without an opening equity', () => {
@@ -81,7 +86,80 @@ describe('the two percentages', () => {
     expect(r.strategyPnlUsd).toBe(120);
     // With nothing to compare, the day is not "clean" — it is unknown, and a
     // false flag would read as a claim.
-    expect(r.manualTrading).toBe(false);
+    expect(r.accountStrategyDiverged).toBe(false);
+    expect(r.divergenceUsd).toBeNull();
+  });
+
+  // THE FLAG SAYS THAT THEY DIFFER, NEVER WHY (2026-09-16).
+  //
+  // It was called `manualTrading`, and on 2026-09-16 it fired on a session
+  // neither book traded: the broker settled the previous day's option expiry
+  // for -$193.50 at 04:03 ET, against a baseline captured at ET midnight. The
+  // operator confirmed no hand trade. A name that asserts a cause the row
+  // cannot establish is a claim, not a measurement.
+  it('carries the gap in DOLLARS, which is the unit its causes are spoken of in', () => {
+    const r = buildDailyResult({ ...base, closeEquityUsd: 10_200 }, { pnlUsd: 180, trades: 3 }, 0);
+    // account moved +$200, the loop realized +$180 → $20 unexplained.
+    expect(r.divergenceUsd).toBe(20);
+    expect(r.accountStrategyDiverged).toBe(false); // 0.2% of equity, under the bar
+  });
+
+  it('reproduces 2026-09-16: flagged on a day with no trade in either book', () => {
+    const r = buildDailyResult(
+      { ...base, baselineEquityUsd: 30_204.81, closeEquityUsd: 30_011.3, preOpenMoveUsd: -193.5 },
+      { pnlUsd: 0, trades: 0 },
+      0,
+    );
+    expect(r.accountGainPct).toBe(-0.64);
+    expect(r.strategyGainPct).toBe(0);
+    expect(r.liveTrades).toBe(0);
+    expect(r.accountStrategyDiverged).toBe(true);
+    expect(r.divergenceUsd).toBe(-193.51);
+    // …and the whole of it predates the opening bell, which is what makes the
+    // "hand trading" reading impossible rather than merely unproven.
+    expect(r.preOpenMoveUsd).toBe(-193.5);
+  });
+});
+
+describe('preOpenMoveUsdFor — what happened before the bell', () => {
+  // 2026-09-16 ET, as epoch ms. The loop ticks from ET midnight, so a whole
+  // overnight sits inside the session's own date.
+  const at = (hhmm: string) => Date.parse(`2026-09-16T${hhmm}:00-04:00`);
+  const mark = (hhmm: string, equity: number | null): DayMark => ({
+    etDate: '2026-09-16',
+    at: at(hhmm),
+    baselineEquityUsd: 30_204.81,
+    realizedUsd: 0,
+    unrealizedEquityUsd: 0,
+    accountEquityUsd: equity,
+    openEquity: 0,
+    openOptions: 0,
+  });
+
+  it('measures the settlement step and stops at the bell', () => {
+    const move = preOpenMoveUsdFor([
+      mark('00:00', 30_204.81),
+      mark('04:03', 30_011.31),
+      mark('09:00', 30_011.3),
+      // Anything from the session itself must not be counted.
+      mark('10:30', 29_800),
+      mark('15:59', 29_500),
+    ]);
+    expect(move).toBe(-193.51);
+  });
+
+  it('is null when the samples cannot answer — never 0, which would assert a quiet night', () => {
+    expect(preOpenMoveUsdFor([])).toBeNull();
+    // A loop that started mid-session never saw the window.
+    expect(preOpenMoveUsdFor([mark('10:30', 30_000), mark('11:30', 30_100)])).toBeNull();
+    // One pre-open sample is a reading, not a move.
+    expect(preOpenMoveUsdFor([mark('04:03', 30_011.31), mark('10:30', 29_800)])).toBeNull();
+    // Failed equity reads carry no number to difference.
+    expect(preOpenMoveUsdFor([mark('00:00', null), mark('04:03', null)])).toBeNull();
+  });
+
+  it('reports a quiet night as 0 once there are samples to prove it', () => {
+    expect(preOpenMoveUsdFor([mark('00:00', 30_204.81), mark('09:00', 30_204.81)])).toBe(0);
   });
 });
 
@@ -235,7 +313,9 @@ describe('aggregates', () => {
     goalReached: false,
     giveBackHalted: false,
     drawdownHalted: false,
-    manualTrading: false,
+    accountStrategyDiverged: false,
+    divergenceUsd: 0,
+    preOpenMoveUsd: null,
     riskPerTradePct: 2.5,
     goalBasis: 'strategy' as const,
     recordedAt: 1,

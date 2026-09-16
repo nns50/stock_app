@@ -2960,8 +2960,18 @@ export interface DailyResult {
   goalReached: boolean;
   giveBackHalted: boolean;
   drawdownHalted: boolean;
-  /** The two percentages disagree by more than 0.5% of equity. */
-  manualTrading: boolean;
+  /** The two percentages disagree by more than 0.5% of equity — THAT they
+   *  differ, never why. A deposit, a withdrawal, hand trading, fees, interest,
+   *  overnight settlement and the mark on anything open at the close all land
+   *  here. Called `manualTrading` until 2026-09-16, when it named a hand trade
+   *  on a day neither book traded. */
+  accountStrategyDiverged: boolean;
+  /** The gap in dollars: the account's move minus the loop's realized P&L. */
+  divergenceUsd: number | null;
+  /** How much of the account's move happened before the opening bell — the
+   *  usual innocent explanation, since settlement posts overnight while the
+   *  day's baseline is already captured. Null when there are no samples. */
+  preOpenMoveUsd: number | null;
   recordedAt: number;
   /** The risk % in force on this session; null on a row recorded before the
    *  column existed or filled by the backfill. The review counts "sessions

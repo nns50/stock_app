@@ -159,7 +159,7 @@ export function buildSizingReview(
   // handed it a shape the producer could not emit. Testing this filter proves
   // nothing about what reaches it; `recordGoalBasis` now stamps every session,
   // and the end-to-end test in dailyTarget.test.ts is the one that says so.
-  const judged = sessions.filter((r) => r.goalBasis === 'strategy' || !r.manualTrading);
+  const judged = sessions.filter((r) => r.goalBasis === 'strategy' || !r.accountStrategyDiverged);
   let haltsMaxIn5 = 0;
   for (let i = 0; i < sessions.length; i++) {
     const window = sessions.slice(Math.max(0, i - HALT_WINDOW + 1), i + 1);

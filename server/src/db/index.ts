@@ -513,8 +513,14 @@ CREATE TABLE IF NOT EXISTS gated_switch_state (
 --                       baseline. This is the number a strategy decision is
 --                       made on (docs/OPTIONS_TUNING_PLAN.md's data-quality
 --                       rule: a position-derived series carries no flows).
--- manual_trading flags the days they disagree by more than 0.5% of equity, so
--- a reader is never left comparing two numbers without being told they differ.
+-- account_strategy_diverged flags the days they disagree by more than 0.5% of
+-- equity, so a reader is never left comparing two numbers without being told
+-- they differ. It was called manual_trading until 2026-09-16, which named ONE
+-- of its causes as though it were the measurement: on that date it fired on a
+-- day neither book traded, against a -$193.50 broker settlement posted at
+-- 04:03 ET. divergence_usd carries the size of the gap and pre_open_move_usd
+-- how much of the account's move happened before the opening bell, so the
+-- common innocent cause is legible instead of being guessed at.
 --
 -- Columns are nullable where the record genuinely cannot answer: the account
 -- figures are NULL for every session before the baseline row existed, and the
@@ -531,7 +537,18 @@ CREATE TABLE IF NOT EXISTS autotrade_daily_results (
   goal_reached        INTEGER NOT NULL,
   give_back_halted    INTEGER NOT NULL,
   drawdown_halted     INTEGER NOT NULL,
-  manual_trading      INTEGER NOT NULL,
+  account_strategy_diverged INTEGER NOT NULL,
+  -- Signed dollars: the account's move for the day minus the loop's realized
+  -- P&L. The flag is this figure against a threshold; carrying it means a
+  -- reader can see whether a flagged day is off by a rounding error or by a
+  -- deposit. NULL when either side of the subtraction is unknown.
+  divergence_usd      REAL,
+  -- How much of the account's move landed BEFORE the opening bell, from the
+  -- day-marks series. Settlement, fees and interest post overnight while the
+  -- day's baseline is already captured, so this separates "yesterday finished
+  -- clearing" from "something happened during the session". NULL for a session
+  -- with no samples (before day-marks existed, or a day the loop did not run).
+  pre_open_move_usd   REAL,
   recorded_at         INTEGER NOT NULL,
   -- The risk % IN FORCE on this session (2026-09-12). Null on a row recorded
   -- before this column existed, and on every backfilled historical row.
@@ -1248,6 +1265,26 @@ function migrate(): void {
   // the schema above. Existing rows stay NULL, which reads as "the old basis".
   if (!dailyResultCols.some((c) => c.name === 'goal_basis')) {
     db.exec('ALTER TABLE autotrade_daily_results ADD COLUMN goal_basis TEXT');
+  }
+  // 2026-09-16: the flag named one of its causes ("manual_trading") rather than
+  // what it measures. Renamed in place so the stored history is kept — every
+  // past flag is still a real divergence, it was only ever the LABEL that
+  // claimed to know why.
+  if (
+    dailyResultCols.some((c) => c.name === 'manual_trading') &&
+    !dailyResultCols.some((c) => c.name === 'account_strategy_diverged')
+  ) {
+    db.exec('ALTER TABLE autotrade_daily_results RENAME COLUMN manual_trading TO account_strategy_diverged');
+  }
+  // The size of the gap, and how much of it predates the opening bell. Existing
+  // rows stay NULL: neither is recoverable after the fact for a day whose
+  // equity readings are gone, and re-deriving them from today's numbers is the
+  // fabrication the account columns already refuse.
+  if (!dailyResultCols.some((c) => c.name === 'divergence_usd')) {
+    db.exec('ALTER TABLE autotrade_daily_results ADD COLUMN divergence_usd REAL');
+  }
+  if (!dailyResultCols.some((c) => c.name === 'pre_open_move_usd')) {
+    db.exec('ALTER TABLE autotrade_daily_results ADD COLUMN pre_open_move_usd REAL');
   }
 
   const paperPosCols = db.prepare('PRAGMA table_info(autotrade_paper_positions)').all() as { name: string }[];

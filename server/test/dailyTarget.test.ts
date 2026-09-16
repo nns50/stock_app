@@ -521,7 +521,7 @@ describe('updateDailyTarget (DB + journal)', () => {
       updateDailyTarget(NOW + 60_000);
       setAutotradeConfig({ accountEquityUsd: 9_800 }); // -2% on the account, -0.2% to the loop
       const miss = recordDailyResult(TODAY, NOW + 120_000);
-      expect(miss).toMatchObject({ goalReached: false, manualTrading: true, goalBasis: 'strategy' });
+      expect(miss).toMatchObject({ goalReached: false, accountStrategyDiverged: true, goalBasis: 'strategy' });
 
       // One reach and one miss is 50%, not the 100% a dropped denominator read.
       const reached = { ...miss, etDate: '2026-08-20', goalReached: true };

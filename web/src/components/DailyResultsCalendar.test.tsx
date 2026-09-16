@@ -23,7 +23,9 @@ function day(etDate: string, over: Partial<DailyResult> = {}): DailyResult {
     goalReached: false,
     giveBackHalted: false,
     drawdownHalted: false,
-    manualTrading: false,
+    accountStrategyDiverged: false,
+    divergenceUsd: 0,
+    preOpenMoveUsd: null,
     riskPerTradePct: 2.5,
     goalBasis: 'strategy',
     recordedAt: 1,
@@ -94,7 +96,7 @@ describe('rendering a month', () => {
     render(
       <DailyResultsCalendar
         month="2026-09"
-        rows={[day('2026-09-01', { goalReached: true, drawdownHalted: true, manualTrading: true })]}
+        rows={[day('2026-09-01', { goalReached: true, drawdownHalted: true, accountStrategyDiverged: true })]}
         metric="account"
         goalPct={3}
       />,
@@ -102,7 +104,49 @@ describe('rendering a month', () => {
     const tile = screen.getByTestId('results-day-2026-09-01');
     expect(within(tile).getByTitle('Daily goal reached')).toHaveTextContent('G');
     expect(within(tile).getByTitle('Daily drawdown halt')).toHaveTextContent('H');
-    expect(within(tile).getByTitle(/disagree by more than 0\.5%/)).toHaveTextContent('M');
+    expect(within(tile).getByTitle(/The account moved/)).toHaveTextContent('D');
+  });
+
+  // THE BADGE STOPPED NAMING A CAUSE (2026-09-16). It read "a deposit, a
+  // withdrawal, or manual trading" — a list of three that happened to exclude
+  // what actually occurred that day, and the operator confirmed they had not
+  // traded by hand. Three causes out of seven reads as a diagnosis.
+  it('states the gap and what predates the bell, and never asserts hand trading', () => {
+    render(
+      <DailyResultsCalendar
+        month="2026-09"
+        rows={[
+          day('2026-09-01', {
+            accountGainPct: -0.64,
+            strategyGainPct: 0,
+            accountStrategyDiverged: true,
+            divergenceUsd: -193.51,
+            preOpenMoveUsd: -193.5,
+          }),
+        ]}
+        metric="account"
+        goalPct={3}
+      />,
+    );
+    const badge = within(screen.getByTestId('results-day-2026-09-01')).getByText('D');
+    const title = badge.getAttribute('title') ?? '';
+    expect(title).toMatch(/-\$193\.51/);
+    expect(title).toMatch(/before the opening bell/);
+    expect(title).not.toMatch(/manual trading/);
+  });
+
+  it('falls back to the causes it cannot rule out when there are no samples', () => {
+    render(
+      <DailyResultsCalendar
+        month="2026-09"
+        rows={[day('2026-09-01', { accountStrategyDiverged: true, divergenceUsd: 420, preOpenMoveUsd: null })]}
+        metric="account"
+        goalPct={3}
+      />,
+    );
+    const title = within(screen.getByTestId('results-day-2026-09-01')).getByText('D').getAttribute('title') ?? '';
+    expect(title).toMatch(/\+\$420/);
+    expect(title).toMatch(/cash flow, hand trading, fees or open marks/);
   });
 
   it('switches which percentage the tile shows without touching the dollars', () => {
