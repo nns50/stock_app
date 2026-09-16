@@ -11682,3 +11682,54 @@ one, `GET /api/journal/daily-results` shows that date with
 `goalRatePct` is `null` over `goalRateJudgedSessions: 0`; it must stay null
 until a stamped session lands, and must never read 100% off a single reach while
 misses sit in the same window.
+
+## 2026-09-16 (second) — the flag named one of its causes
+
+The same day's row, from the other end. `manual_trading` asserted a cause the
+data cannot establish, and on 2026-09-16 it asserted the wrong one: the operator
+confirmed no hand trade, and the day-marks series shows the whole −$193.50
+arriving at 04:03 ET with both books flat.
+
+Everything that crosses the 0.5% line: a deposit, a withdrawal, hand trading,
+commissions and fees, margin interest, overnight settlement of the previous
+session, and the unrealized mark on anything still open at the close (options
+are deliberately not flattened, so a single open contract can cross it alone).
+Seven causes, one boolean, and a name that picked one of them.
+
+**Now:** `account_strategy_diverged`, which is what the comparison measures. The
+column is renamed in place, so every stored flag is kept — each of those days
+really did diverge; only the label claimed to know why. Two figures join it:
+
+- `divergence_usd` — the gap in dollars (the account's move minus the loop's
+  realized P&L), because "a $30,000 deposit" and "a −$193.50 settlement" are
+  spoken of in dollars and a percentage against a threshold is not enough to
+  tell a rounding-width gap from a transfer.
+- `pre_open_move_usd` — how much of the account's move landed BEFORE the
+  opening bell, from the day-marks samples. This is the one split the data can
+  actually make. The loop ticks from ET midnight and the day's baseline is
+  captured before the broker has finished clearing the previous session, so
+  settlement, fees and interest post *inside* a session the loop had not begun
+  to trade. Null when the samples cannot say, never 0 — a loop that started
+  mid-session never saw the window, and 0 would assert a quiet night.
+
+`isBeforeSessionOpen` mirrors `isAfterSessionClose` (false on weekends and
+holidays for the same reason: "the market is shut" and "today's session is still
+ahead" are different facts).
+
+The calendar's badge is **D** rather than **M**, and it states the gap and the
+pre-open share instead of listing three causes out of seven. Its tooltip read "a
+deposit, a withdrawal, or manual trading" — a list that excluded what actually
+happened.
+
+**Not changed:** the 0.5% threshold, and which column any rule reads. This is
+what the record SAYS, not what it decides. The goal rate's use of the flag is
+the subject of the section above, and after that change a strategy-basis row is
+counted whatever this flag says.
+
+### Pre-committed check
+
+After the deploy, `GET /api/journal/daily-results` returns
+`accountStrategyDiverged` with `divergenceUsd` on every row that has account
+figures, and 2026-09-16 re-recorded (`POST …/record?date=2026-09-16`) reads
+`divergenceUsd: -193.51` with `preOpenMoveUsd: -193.5` — the two agreeing to a
+cent is the check, since they come from different tables.

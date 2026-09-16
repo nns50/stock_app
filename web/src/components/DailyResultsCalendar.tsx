@@ -103,6 +103,24 @@ export function buildMonthGrid(month: string, byDate: Map<string, DailyResult>):
 
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
 
+/**
+ * What the divergence badge says, which is deliberately NOT a cause.
+ *
+ * It read "a deposit, a withdrawal, or manual trading" until 2026-09-16 — a
+ * list that happened to exclude what actually happened that day: the broker
+ * settled the previous session's option expiry for -$193.50 at 04:03 ET,
+ * before the market opened, on a day neither book traded. Naming three causes
+ * out of seven reads as a diagnosis. So the badge states the gap, and then the
+ * one split the data can actually make: how much of it predates the bell.
+ */
+function divergenceTitle(r: DailyResult): string {
+  const gap = r.divergenceUsd === null ? 'by more than 0.5% of equity' : `by ${fmtSignedUsd(r.divergenceUsd)}`;
+  const base = `The account moved ${gap} against what the loop realized`;
+  if (r.preOpenMoveUsd === null || r.preOpenMoveUsd === 0)
+    return `${base} — cash flow, hand trading, fees or open marks`;
+  return `${base} — ${fmtSignedUsd(r.preOpenMoveUsd)} of it before the opening bell (settlement, fees or a transfer)`;
+}
+
 function Badges({ r }: { r: DailyResult }) {
   // Letters, not colored dots: a badge that only exists as a hue is invisible
   // to a colorblind reader and to a black-and-white printout.
@@ -116,11 +134,11 @@ function Badges({ r }: { r: DailyResult }) {
   if (r.drawdownHalted) {
     items.push({ key: 'h', label: 'H', title: 'Daily drawdown halt', className: 'text-bear' });
   }
-  if (r.manualTrading) {
+  if (r.accountStrategyDiverged) {
     items.push({
-      key: 'm',
-      label: 'M',
-      title: 'The account and the strategy disagree by more than 0.5% — a deposit, a withdrawal, or manual trading',
+      key: 'd',
+      label: 'D',
+      title: divergenceTitle(r),
       className: 'text-slate-400',
     });
   }
@@ -153,7 +171,7 @@ function Tile({ cell, metric, goalPct }: { cell: CalendarCell; metric: ResultsMe
           : `${metric} ${pct > 0 ? '+' : ''}${fmtNum(pct, 2)}%`,
         `strategy ${fmtSignedUsd(r.strategyPnlUsd)} over ${r.liveTrades} live trade${r.liveTrades === 1 ? '' : 's'}`,
         `paper ${fmtSignedUsd(r.paperPnlUsd)}`,
-        r.manualTrading ? 'account and strategy disagree — deposit, withdrawal or manual trading' : '',
+        r.accountStrategyDiverged ? divergenceTitle(r) : '',
       ]
         .filter(Boolean)
         .join(' · ')

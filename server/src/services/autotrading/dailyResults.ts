@@ -7,9 +7,10 @@ import { getDailyBaseline } from '../../db/dailyBaseline';
 import { getAutotradeConfig } from '../../db/autotradeConfig';
 import { DailyResult, GoalBasis, listDailyResults, saveDailyResult } from '../../db/dailyResults';
 import { realizedPnlOf } from '../pnl';
+import { DayMark, listDayMarks } from '../../db/dayMarks';
 import { etToday } from '../../util/marketDate';
 import { isTradingSession } from '../trading/marketCalendar';
-import { isAfterSessionClose } from '../trading/marketHours';
+import { isAfterSessionClose, isBeforeSessionOpen } from '../trading/marketHours';
 
 // ---------------------------------------------------------------------------
 // The day's result, kept (2026-09-12, operator's ask).
@@ -38,8 +39,18 @@ import { isAfterSessionClose } from '../trading/marketHours';
  *  opening equity, before the day is flagged. 0.5% is comfortably above
  *  mark-to-market on open positions (the account figure is net liquidation, the
  *  strategy figure is realized only) and well below any real deposit or an
- *  afternoon of hand trading. */
-export const MANUAL_TRADING_DIVERGENCE_PCT = 0.5;
+ *  afternoon of hand trading.
+ *
+ *  It flags a DISAGREEMENT and names no cause. It was called
+ *  MANUAL_TRADING_DIVERGENCE_PCT until 2026-09-16, when it fired on a session
+ *  with no trade in either book: the broker posted -$193.50 settling the
+ *  previous day's option expiry at 04:03 ET, against a baseline captured at ET
+ *  midnight, and the day's row asserted hand trading that never happened.
+ *  Deposits, withdrawals, hand trades, fees, interest, overnight settlement and
+ *  the unrealized mark on anything still open at the close all cross this line,
+ *  and nothing in the row distinguishes them — so `preOpenMoveUsd` reports the
+ *  one split the data CAN make, and the label stopped guessing. */
+export const ACCOUNT_STRATEGY_DIVERGENCE_PCT = 0.5;
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
 
@@ -109,6 +120,10 @@ export interface RecordDailyResultInput {
   /** Which quantity this session's daily-target evaluator measured — see
    *  DailyResult.goalBasis. Present on a missed session too, on purpose. */
   goalBasis: GoalBasis;
+  /** The pre-open share of the account's move, from `preOpenMoveUsdFor`, or
+   *  null when the samples cannot answer. Passed in rather than read here so
+   *  this stays pure. */
+  preOpenMoveUsd: number | null;
 }
 
 /** Pure: the row a set of readings implies. Split out so the two percentages,
@@ -122,10 +137,15 @@ export function buildDailyResult(input: RecordDailyResultInput, strategy: Strate
   // Both percentages are of the SAME baseline, so the difference between them
   // is itself a percentage of equity and can be compared to the threshold
   // directly — no unit change between the two sides of this comparison.
-  const manualTrading =
+  const accountStrategyDiverged =
     accountGainPct !== null && strategyGainPct !== null
-      ? Math.abs(accountGainPct - strategyGainPct) > MANUAL_TRADING_DIVERGENCE_PCT
+      ? Math.abs(accountGainPct - strategyGainPct) > ACCOUNT_STRATEGY_DIVERGENCE_PCT
       : false;
+  // The same gap in DOLLARS, which is the unit the flag's causes are spoken of
+  // in ("a $30,000 deposit", "a -$193.50 settlement"). Derived from the account
+  // move rather than from the percentages, so rounding to 2dp twice cannot make
+  // the money disagree with itself.
+  const divergenceUsd = haveAccount ? round2(closeEquityUsd - baselineEquityUsd - strategy.pnlUsd) : null;
   return {
     etDate: input.etDate,
     baselineEquityUsd,
@@ -140,9 +160,39 @@ export function buildDailyResult(input: RecordDailyResultInput, strategy: Strate
     goalBasis: input.goalBasis,
     giveBackHalted: input.giveBackHalted,
     drawdownHalted: input.drawdownHalted,
-    manualTrading,
+    accountStrategyDiverged,
+    divergenceUsd,
+    preOpenMoveUsd: input.preOpenMoveUsd,
     recordedAt: input.recordedAt,
   };
+}
+
+/**
+ * How much of a session's account move landed BEFORE the opening bell, from
+ * the day-marks series — or null when the samples cannot answer.
+ *
+ * The loop ticks from ET midnight, so a whole overnight sits inside a session's
+ * own date, and the day's baseline is captured before the broker has finished
+ * clearing the previous one. Settlement, fees and interest therefore post
+ * INSIDE a session the loop had not begun to trade. 2026-09-16 is the worked
+ * example: -$193.50 at 04:03 ET, flat for the remaining 798 samples, and a row
+ * that called it manual trading.
+ *
+ * Measured against the day's FIRST sample rather than the stored baseline, so
+ * this is the account's own move over the pre-open window and cannot inherit a
+ * re-baselining that happened later in the day (`rebaseDailyBaseline` moves the
+ * baseline on a real cash flow; the samples keep their own history).
+ */
+export function preOpenMoveUsdFor(marks: DayMark[]): number | null {
+  const withEquity = marks.filter((m) => m.accountEquityUsd !== null);
+  if (withEquity.length === 0) return null;
+  const preOpen = withEquity.filter((m) => isBeforeSessionOpen(m.at));
+  // No pre-open sample is not the same as no pre-open move: a loop that started
+  // mid-session simply never saw the window, and 0 would assert it was quiet.
+  if (preOpen.length < 2) return null;
+  const first = preOpen[0].accountEquityUsd as number;
+  const last = preOpen[preOpen.length - 1].accountEquityUsd as number;
+  return round2(last - first);
 }
 
 /**
@@ -181,6 +231,9 @@ export function recordDailyResult(etDate: string, now: number = Date.now()): Dai
       // strategy-basis goal day at +2.01% against a 3% goal. A recorder runs
       // after the fact; only the stamp knows what stamped it.
       goalBasis: current ? current.goalBasis : (existing?.goalBasis ?? null),
+      // From the samples of the date being recorded, so a correction for a past
+      // day reads that day's own overnight rather than tonight's.
+      preOpenMoveUsd: preOpenMoveUsdFor(listDayMarks(etDate)),
       giveBackHalted: current ? current.giveBackHaltedAt !== null : (existing?.giveBackHalted ?? false),
       // The drawdown halt has no baseline stamp of its own; the journal is its
       // record, and the caller passes it through the same route that reads it.
@@ -250,6 +303,9 @@ export function backfillDailyResults(from: string, now: number = Date.now()): { 
           // `goalReached` is hard false above — a historical session has no
           // stamp at all — so there is no basis to name.
           goalBasis: null,
+          // A backfilled session predates the day-marks table by definition, so
+          // there is nothing to read and null is the honest answer.
+          preOpenMoveUsd: null,
           recordedAt: now,
         },
         strategyDayFor(etDate),

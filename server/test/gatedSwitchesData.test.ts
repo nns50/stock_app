@@ -47,7 +47,9 @@ function result(etDate: string, over: Partial<DailyResult> = {}): DailyResult {
     goalReached: false,
     giveBackHalted: false,
     drawdownHalted: false,
-    manualTrading: false,
+    accountStrategyDiverged: false,
+    divergenceUsd: 0,
+    preOpenMoveUsd: null,
     // The sizing this session ran under. Defaults to the TRIAL sizing these
     // tests configure (2.5), so a row counts toward the review window; a test
     // about the window itself overrides it.
@@ -103,7 +105,7 @@ describe('the review window', () => {
     // opened and closed. This review is a strategy decision.
     const rows = [
       result('2026-09-10', { accountGainPct: 4, strategyGainPct: 1 }),
-      result('2026-09-11', { accountGainPct: -31.32, strategyGainPct: -1.96, manualTrading: true }),
+      result('2026-09-11', { accountGainPct: -31.32, strategyGainPct: -1.96, accountStrategyDiverged: true }),
     ];
     const review = buildSizingReview(rows, null);
     expect(review.activeSessionsSinceChange).toBe(2);
@@ -119,7 +121,7 @@ describe('the review window', () => {
     // flag a perfectly clean day.
     const rows = [
       result('2026-09-10', { strategyGainPct: 2 }),
-      result('2026-09-11', { strategyGainPct: 1, manualTrading: true }),
+      result('2026-09-11', { strategyGainPct: 1, accountStrategyDiverged: true }),
     ];
     expect(buildSizingReview(rows, null).meanDayPct).toBe(1.5);
   });
@@ -132,7 +134,7 @@ describe('the review window', () => {
     // STRATEGY reached the goal, so it is counted neither way.
     const rows = [
       result('2026-09-10', { goalReached: false }),
-      result('2026-09-11', { goalReached: true, manualTrading: true }),
+      result('2026-09-11', { goalReached: true, accountStrategyDiverged: true }),
     ];
     const review = buildSizingReview(rows, null);
     expect(review.activeSessionsSinceChange).toBe(2); // still a session
@@ -147,14 +149,14 @@ describe('the review window', () => {
     // the CONSUMER: what changes is the rate the review reports, not a field.
     const rows = [
       result('2026-09-10', { goalReached: false, goalBasis: 'strategy' }),
-      result('2026-09-11', { goalReached: true, manualTrading: true, goalBasis: 'strategy' }),
+      result('2026-09-11', { goalReached: true, accountStrategyDiverged: true, goalBasis: 'strategy' }),
     ];
     expect(buildSizingReview(rows, null).goalRatePct).toBe(50);
     // Mixed window: the pre-change row is still dropped, so the rate is over
     // the one row whose stamp can be trusted. No date literal decides this.
     const mixed = [
-      result('2026-09-10', { goalReached: true, manualTrading: true, goalBasis: 'strategy' }),
-      result('2026-09-11', { goalReached: true, manualTrading: true, goalBasis: null }),
+      result('2026-09-10', { goalReached: true, accountStrategyDiverged: true, goalBasis: 'strategy' }),
+      result('2026-09-11', { goalReached: true, accountStrategyDiverged: true, goalBasis: null }),
     ];
     expect(buildSizingReview(mixed, null).goalRatePct).toBe(100);
   });
@@ -167,7 +169,7 @@ describe('the review window', () => {
     // by side now, so a shrinking window is visible on its face.
     const rows = [
       result('2026-09-10', { goalReached: true, goalBasis: 'strategy' }),
-      result('2026-09-11', { goalReached: false, manualTrading: true, goalBasis: null }),
+      result('2026-09-11', { goalReached: false, accountStrategyDiverged: true, goalBasis: null }),
     ];
     const review = buildSizingReview(rows, null);
     expect(review.activeSessionsSinceChange).toBe(2);
@@ -195,7 +197,7 @@ describe('the review window', () => {
       result('2026-09-08', { strategyGainPct: 2.4 }),
       result('2026-09-09', { strategyGainPct: -1.2 }),
       result('2026-09-10', { strategyGainPct: -2.6 }),
-      result('2026-09-11', { strategyGainPct: 0.4, manualTrading: true }),
+      result('2026-09-11', { strategyGainPct: 0.4, accountStrategyDiverged: true }),
     ];
     const review = buildSizingReview(rows, null);
     expect(review.meanRedDayPct).toBe(-1.9); // (-1.2 + -2.6) / 2 — greens excluded
@@ -361,7 +363,12 @@ describe('the sizing revert, over real rows', () => {
     // stay silent.
     setAutotradeConfig({ ...defaultAutotradeConfig(), riskPerTradePct: 2.5 });
     saveDailyResult(
-      result('2026-09-01', { accountGainPct: -31, strategyGainPct: -2, manualTrading: true, riskPerTradePct: 1.25 }),
+      result('2026-09-01', {
+        accountGainPct: -31,
+        strategyGainPct: -2,
+        accountStrategyDiverged: true,
+        riskPerTradePct: 1.25,
+      }),
     );
     for (let i = 2; i <= 10; i++) {
       const day = String(i).padStart(2, '0');

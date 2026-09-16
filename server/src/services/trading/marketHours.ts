@@ -97,6 +97,39 @@ export function isAfterSessionClose(now: Date | number = new Date()): boolean {
 }
 
 /**
+ * Whether `now` is a trading day whose session has NOT STARTED yet.
+ *
+ * The mirror of `isAfterSessionClose`, and false for the same reasons on a
+ * weekend or a holiday: "the market is shut" and "today's session is still
+ * ahead" are different facts, and only the second one makes a reading
+ * attributable to the previous day rather than to this one.
+ *
+ * The loop ticks from ET midnight, so a whole overnight sits inside a session's
+ * own date. On 2026-09-16 the broker posted -$193.50 of expiry settlement at
+ * 04:03 ET, nearly six hours before the open, against a baseline captured at
+ * 00:00 — and the day's account figure carried it as if the session had lost
+ * the money. This is how a reading gets attributed to the night it happened in.
+ */
+export function isBeforeSessionOpen(now: Date | number = new Date()): boolean {
+  const at = typeof now === 'number' ? new Date(now) : now;
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(at);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
+
+  const weekday = get('weekday');
+  if (weekday === 'Sat' || weekday === 'Sun') return false;
+  if (isMarketHoliday(at)) return false;
+
+  const hour = Number(get('hour')) % 24;
+  return hour * 60 + Number(get('minute')) < OPEN_MINUTES;
+}
+
+/**
  * The `marketOpen` flag to feed the guardrails for THIS order. Only meaningful
  * for orders that target regular hours: every option, and any core-session
  * stock order. For an explicitly extended/overnight stock order the trader has

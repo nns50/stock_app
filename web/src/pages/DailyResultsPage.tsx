@@ -88,7 +88,9 @@ function toCsv(rows: DailyResult[]): string {
     'goal_reached',
     'give_back_halted',
     'drawdown_halted',
-    'manual_trading',
+    'account_strategy_diverged',
+    'divergence_usd',
+    'pre_open_move_usd',
   ];
   const body = rows.map((r) =>
     [
@@ -101,7 +103,9 @@ function toCsv(rows: DailyResult[]): string {
       r.goalReached ? 1 : 0,
       r.giveBackHalted ? 1 : 0,
       r.drawdownHalted ? 1 : 0,
-      r.manualTrading ? 1 : 0,
+      r.accountStrategyDiverged ? 1 : 0,
+      r.divergenceUsd ?? '',
+      r.preOpenMoveUsd ?? '',
     ].join(','),
   );
   return [head.join(','), ...body].join('\n');
@@ -232,7 +236,7 @@ export default function DailyResultsPage() {
                           r.goalReached ? 'goal' : '',
                           r.giveBackHalted ? 'give-back' : '',
                           r.drawdownHalted ? 'halt' : '',
-                          r.manualTrading ? 'manual' : '',
+                          r.accountStrategyDiverged ? 'diverged' : '',
                         ]
                           .filter(Boolean)
                           .join(', ') || '—'}

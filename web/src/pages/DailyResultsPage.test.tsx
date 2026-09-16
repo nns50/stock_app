@@ -18,7 +18,9 @@ function day(etDate: string, over: Partial<DailyResult> = {}): DailyResult {
     goalReached: false,
     giveBackHalted: false,
     drawdownHalted: false,
-    manualTrading: false,
+    accountStrategyDiverged: false,
+    divergenceUsd: 0,
+    preOpenMoveUsd: null,
     riskPerTradePct: 2.5,
     goalBasis: 'strategy',
     recordedAt: 1,
@@ -32,7 +34,7 @@ const REPORT: DailyResultsReport = {
     day('2026-09-02', { accountGainPct: -2.2, strategyGainPct: -2.2, drawdownHalted: true, strategyPnlUsd: -220 }),
     // Pre-go-live: the strategy dollars are exact, the account figure does not exist.
     day('2026-09-03', { accountGainPct: null, strategyGainPct: null, baselineEquityUsd: null, closeEquityUsd: null }),
-    day('2026-09-04', { accountGainPct: 0.4, strategyGainPct: 0.05, manualTrading: true }),
+    day('2026-09-04', { accountGainPct: 0.4, strategyGainPct: 0.05, accountStrategyDiverged: true }),
   ],
   weekly: [
     {
@@ -100,7 +102,7 @@ describe('DailyResultsPage', () => {
     // The pre-go-live day says it has no account figure rather than showing 0.
     expect(within(screen.getByTestId('results-day-2026-09-03')).getByText('—')).toBeTruthy();
     // A manual-trading day is flagged, not averaged away.
-    expect(within(screen.getByTestId('results-day-2026-09-04')).getByTitle(/disagree by more than 0\.5%/)).toBeTruthy();
+    expect(within(screen.getByTestId('results-day-2026-09-04')).getByTitle(/The account moved/)).toBeTruthy();
   });
 
   it('summarises the month and says the current run', async () => {
@@ -137,6 +139,6 @@ describe('DailyResultsPage', () => {
     expect(within(table).getByText('2026-09-01')).toBeTruthy();
     expect(within(table).getByText('goal')).toBeTruthy();
     expect(within(table).getByText('halt')).toBeTruthy();
-    expect(within(table).getByText('manual')).toBeTruthy();
+    expect(within(table).getByText('diverged')).toBeTruthy();
   });
 });

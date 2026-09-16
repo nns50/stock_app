@@ -26,9 +26,26 @@ export interface DailyResult {
   goalReached: boolean;
   giveBackHalted: boolean;
   drawdownHalted: boolean;
-  /** The account and the strategy disagree by more than 0.5% of equity — a
-   *  deposit, a withdrawal, or trading by hand. */
-  manualTrading: boolean;
+  /** The account and the strategy disagree by more than 0.5% of equity.
+   *
+   *  It says THAT they disagree, never why. Called `manualTrading` until
+   *  2026-09-16, when it fired on a day neither book traded: a -$193.50 broker
+   *  settlement of the previous day's option expiry, posted at 04:03 ET into a
+   *  day whose baseline was captured at ET midnight. A deposit, a withdrawal,
+   *  hand trading, fees, interest, overnight settlement and the unrealized
+   *  mark on anything still open at the close all land here, and the row
+   *  cannot tell them apart — so it no longer claims to. */
+  accountStrategyDiverged: boolean;
+  /** Signed dollars: the account's move for the day minus the loop's realized
+   *  P&L. The flag above is this figure against a threshold; without it a
+   *  reader cannot tell a rounding-width gap from a deposit. Null when either
+   *  side is unknown. */
+  divergenceUsd: number | null;
+  /** How much of the account's move landed BEFORE the opening bell, from the
+   *  day-marks series — the single most common innocent explanation, because
+   *  settlement and fees post overnight while the day's baseline is already
+   *  captured. Null for a session with no samples. */
+  preOpenMoveUsd: number | null;
   recordedAt: number;
   /** The risk % in force on this session. Null on a row recorded before the
    *  column existed and on every backfilled historical row — which is what
@@ -62,7 +79,9 @@ interface Row {
   goal_reached: number;
   give_back_halted: number;
   drawdown_halted: number;
-  manual_trading: number;
+  account_strategy_diverged: number;
+  divergence_usd: number | null;
+  pre_open_move_usd: number | null;
   recorded_at: number;
   risk_per_trade_pct: number | null;
   goal_basis: string | null;
@@ -80,7 +99,9 @@ const map = (r: Row): DailyResult => ({
   goalReached: r.goal_reached === 1,
   giveBackHalted: r.give_back_halted === 1,
   drawdownHalted: r.drawdown_halted === 1,
-  manualTrading: r.manual_trading === 1,
+  accountStrategyDiverged: r.account_strategy_diverged === 1,
+  divergenceUsd: r.divergence_usd,
+  preOpenMoveUsd: r.pre_open_move_usd,
   recordedAt: r.recorded_at,
   riskPerTradePct: r.risk_per_trade_pct,
   // Anything unrecognised reads as null — the conservative side, since null
@@ -100,8 +121,9 @@ export function saveDailyResult(r: DailyResult): void {
     `INSERT INTO autotrade_daily_results
        (et_date, baseline_equity_usd, close_equity_usd, account_gain_pct, strategy_pnl_usd,
         strategy_gain_pct, live_trades, paper_pnl_usd, goal_reached, give_back_halted,
-        drawdown_halted, manual_trading, recorded_at, risk_per_trade_pct, goal_basis)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        drawdown_halted, account_strategy_diverged, divergence_usd, pre_open_move_usd,
+        recorded_at, risk_per_trade_pct, goal_basis)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
      ON CONFLICT(et_date) DO UPDATE SET
        baseline_equity_usd = excluded.baseline_equity_usd,
        close_equity_usd = excluded.close_equity_usd,
@@ -113,7 +135,9 @@ export function saveDailyResult(r: DailyResult): void {
        goal_reached = excluded.goal_reached,
        give_back_halted = excluded.give_back_halted,
        drawdown_halted = excluded.drawdown_halted,
-       manual_trading = excluded.manual_trading,
+       account_strategy_diverged = excluded.account_strategy_diverged,
+       divergence_usd = excluded.divergence_usd,
+       pre_open_move_usd = excluded.pre_open_move_usd,
        recorded_at = excluded.recorded_at,
        risk_per_trade_pct = excluded.risk_per_trade_pct,
        goal_basis = excluded.goal_basis`,
@@ -129,7 +153,9 @@ export function saveDailyResult(r: DailyResult): void {
     r.goalReached ? 1 : 0,
     r.giveBackHalted ? 1 : 0,
     r.drawdownHalted ? 1 : 0,
-    r.manualTrading ? 1 : 0,
+    r.accountStrategyDiverged ? 1 : 0,
+    r.divergenceUsd,
+    r.preOpenMoveUsd,
     r.recordedAt,
     r.riskPerTradePct,
     r.goalBasis,
