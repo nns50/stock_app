@@ -1289,6 +1289,32 @@ counted on in sizing or in a plan until the broker has been seen to accept it.
 
 ---
 
+### The paper book, and the distribution behind the tuner (2026-09-17)
+
+Two things the excursion read could not do until now, and one it never should:
+
+- **It never saw the paper book.** The MAE/MFE report, the exit tuner and its
+  walk-forward validation all ran over the journal's own ledger. The paper book is the
+  larger sample (141 closed trades to live's ~85 when this landed) and the one where a
+  rule's absence can be watched, and it maps onto the same input — `?book=paper` on the
+  excursions route measures it with the same candle walk, and the Excursions tab of the
+  Journal analytics panel switches between the two books. Any number quoted from it says
+  which book it came from.
+- **It reported an average where the question is a threshold.** What a tighter stop
+  costs is the share of winners whose worst dip crossed it before they won, so the report
+  now carries winners' heat as **p50 / p75 / p90** (the p90 is what the tuner sizes
+  from) and losers' MFE the same way. On the paper record, winners reached +0.25R in a
+  median 12 minutes while losers took a median 275 minutes to travel the full 2.5% to the
+  stop — the stop is sized for a move the edge never needs to survive. The reading that
+  decides whether it can be tighter is the winners' heat p90 against 1.0R, on the intraday
+  rows, on both books.
+- **What it must not become:** a sum over trades of "if the stop had sat at *f* × today's
+  distance, each trade whose MAE crossed it loses *f*R instead." That peak-minus-distance
+  model reports every tightening as an improvement, because it charges a tighter stop for
+  nothing a real order pays — the fills it does not get, the size it cannot fund, the
+  order in which a bar's high and low arrived. `exitTuneValidation.ts` discarded it for
+  the honest path replay, and that replay is the only thing a stop change is decided on.
+
 ## Reducing slippage with execution quality
 
 Every live trade has two prices: the one you **intended** (your order's limit) and the

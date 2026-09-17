@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import { client } from '../api/client';
-import { useAsync } from '../lib/hooks';
+import { useAsync, type AsyncState } from '../lib/hooks';
 import { cx, fmtDate, fmtNum, fmtPct, fmtSignedUsd, fmtUsd } from '../lib/format';
 import { EmptyState, ErrorState, Field, Modal, NumberInput, Segmented, Spinner, StatTile } from './ui';
-import type { RuinResult } from '../api/types';
+import type { ExcursionReport, RuinResult } from '../api/types';
 
 type Tab = 'excursions' | 'slippage' | 'overrun' | 'tighten' | 'ruin';
 
@@ -50,8 +50,35 @@ export function JournalAnalyticsModal({ open, onClose }: { open: boolean; onClos
 /** MAE/MFE excursion analysis: how far each closed stock trade ran for/against you
  *  over its holding period (in R), and how much of the favorable move you kept. */
 function ExcursionsPanel({ active }: { active: boolean }) {
-  const data = useAsync(() => (active ? client.journalExcursions() : Promise.resolve(null)), [active]);
+  // The paper book is the control arm — no re-entry cooldown, no stagnation
+  // exit, a partial at 0.25R — and the same measurement over it is what the
+  // live book's exits are read against. Until 2026-09-17 it was reachable only
+  // through the route; a comparison nobody can see is not one.
+  const [book, setBook] = useState<ExcursionReport['book']>('live');
+  const data = useAsync(() => (active ? client.journalExcursions(book) : Promise.resolve(null)), [active, book]);
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <Segmented
+          value={book}
+          onChange={setBook}
+          options={[
+            { value: 'live', label: 'Live' },
+            { value: 'paper', label: 'Paper' },
+          ]}
+        />
+        {book === 'paper' && (
+          <span className="text-[11px] text-slate-500">
+            Autotrade paper book — the unconstrained control arm, measured the same way.
+          </span>
+        )}
+      </div>
+      <ExcursionsBody data={data} />
+    </div>
+  );
+}
 
+function ExcursionsBody({ data }: { data: AsyncState<ExcursionReport | null> }) {
   if (data.loading) return <Spinner label="Fetching candles per trade…" />;
   if (data.error) return <ErrorState error={data.error} onRetry={data.reload} />;
   if (!data.data || data.data.trades === 0) {
@@ -136,6 +163,30 @@ function ExcursionsPanel({ active }: { active: boolean }) {
           <span className="tabular-nums text-slate-300">{r(data.data.byResolution.daily.avgMfeR)}</span> over{' '}
           {data.data.byResolution.daily.trades}. Compare R against the intraday figure; the daily one is an upper bound,
           not a bigger sample of the same thing.
+        </p>
+      )}
+      {data.data.byResolution?.intraday.winnerHeatR != null && (
+        // The stop question is a threshold question, and an average cannot
+        // answer it: what a tighter stop costs is the share of winners whose
+        // worst dip crossed it before they won. So this is the distribution,
+        // not the mean — intraday rows only, because a daily bar's low is the
+        // whole day's, not the trade's.
+        <p className="text-[11px] text-slate-500">
+          Room a winner needed (worst dip, intraday): median{' '}
+          <span className="tabular-nums text-slate-300">{r(data.data.byResolution.intraday.winnerHeatR.p50)}</span>, p90{' '}
+          <span className="tabular-nums text-slate-300">{r(data.data.byResolution.intraday.winnerHeatR.p90)}</span> over{' '}
+          {data.data.byResolution.intraday.winnerHeatR.n} winners — a stop tighter than the p90 stops out one winner in
+          ten before it wins.
+          {data.data.byResolution.intraday.loserMfeR != null && (
+            <>
+              {' '}
+              Losers got as far as median{' '}
+              <span className="tabular-nums text-slate-300">
+                {r(data.data.byResolution.intraday.loserMfeR.p50)}
+              </span>{' '}
+              before losing, over {data.data.byResolution.intraday.loserMfeR.n}.
+            </>
+          )}
         </p>
       )}
       <div className="overflow-x-auto">

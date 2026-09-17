@@ -438,7 +438,7 @@ export function hasOpenPaperPosition(symbol: string): boolean {
 
 /** Paper trade history (open + closed), newest first — for the Auto-Trade
  *  page's paper-journal view. */
-export function listPaperPositions(filter: ListPaperPositionsFilter = {}): PaperPosition[] {
+function paperWhere(filter: Pick<ListPaperPositionsFilter, 'status' | 'symbol'>): { where: string; params: unknown[] } {
   const clauses: string[] = [];
   const params: unknown[] = [];
   if (filter.status) {
@@ -449,7 +449,23 @@ export function listPaperPositions(filter: ListPaperPositionsFilter = {}): Paper
     clauses.push('symbol = ?');
     params.push(filter.symbol.toUpperCase());
   }
-  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  return { where: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '', params };
+}
+
+/** How many rows match — the listing below clamps at 1,000, so a population
+ *  read off `listPaperPositions(...).length` stops growing there. A coverage
+ *  line ("measured 250 of N") needs N itself, not the page. Same predicate as
+ *  the listing, by construction. */
+export function countPaperPositions(filter: Pick<ListPaperPositionsFilter, 'status' | 'symbol'> = {}): number {
+  const { where, params } = paperWhere(filter);
+  const row = db.prepare(`SELECT COUNT(*) AS n FROM autotrade_paper_positions ${where}`).get(...params) as {
+    n: number;
+  };
+  return row.n;
+}
+
+export function listPaperPositions(filter: ListPaperPositionsFilter = {}): PaperPosition[] {
+  const { where, params } = paperWhere(filter);
   const limit = Math.min(Math.max(filter.limit ?? 200, 1), 1000);
   const rows = db
     .prepare(`SELECT * FROM autotrade_paper_positions ${where} ORDER BY id DESC LIMIT ?`)

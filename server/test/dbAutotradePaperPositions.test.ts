@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { initDb, db } from '../src/db';
 import {
   closePaperPosition,
+  countPaperPositions,
   countTightenedClosedPaperPositions,
   hasOpenPaperPosition,
   listOpenPaperPositions,
@@ -103,6 +104,23 @@ describe('autotradePaperPositions', () => {
     expect(listPaperPositions({ symbol: 'PPGGG' }).map((p) => p.status)).toEqual(['closed']);
     const openOnly = listPaperPositions({ status: 'open' }).filter((p) => p.symbol.startsWith('PP'));
     expect(openOnly.map((p) => p.symbol)).toEqual(['PPHHH']);
+  });
+
+  it('countPaperPositions counts the population the listing pages — same predicate, no clamp', () => {
+    // The listing clamps at 1,000 rows, so a population read off its length
+    // stops growing there; the excursions coverage line needs the count.
+    const a = openPaperPosition(input({ symbol: 'PPCNT' }));
+    const b = openPaperPosition(input({ symbol: 'PPCNT' }));
+    openPaperPosition(input({ symbol: 'PPCNT' }));
+    closePaperPosition(a.id, { exitPrice: 51, exitReason: 'target' });
+    closePaperPosition(b.id, { exitPrice: 47, exitReason: 'stop' });
+    expect(countPaperPositions({ symbol: 'PPCNT' })).toBe(3);
+    expect(countPaperPositions({ status: 'closed', symbol: 'PPCNT' })).toBe(2);
+    expect(countPaperPositions({ status: 'open', symbol: 'PPCNT' })).toBe(1);
+    expect(countPaperPositions({ status: 'closed', symbol: 'ppcnt' })).toBe(2); // same normalisation as the listing
+    expect(countPaperPositions({ status: 'closed', symbol: 'PPCNT' })).toBe(
+      listPaperPositions({ status: 'closed', symbol: 'PPCNT', limit: 1000 }).length,
+    );
   });
 
   it('listPaperPositions returns newest first', () => {

@@ -359,7 +359,7 @@ export const client = {
   // --- journal ---
   journalStats: () => api<JournalStats>('/journal/stats'),
   journalAutoTuneEfficacy: () => api<{ adjustments: AutoTuneRiskAdjustmentEfficacy[] }>('/journal/auto-tune-efficacy'),
-  journalExcursions: () => api<ExcursionReport>('/journal/excursions'),
+  journalExcursions: (book: 'live' | 'paper' = 'live') => api<ExcursionReport>(`/journal/excursions?book=${book}`),
   journalBenchmark: (accountSize?: number, symbol = 'SPY') => {
     const qs = new URLSearchParams({ symbol });
     if (accountSize) qs.set('accountSize', String(accountSize));
