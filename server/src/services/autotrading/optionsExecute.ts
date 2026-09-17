@@ -32,6 +32,15 @@ import { defaultExitConfig, evaluateExit, unrealizedReturnPct } from '../../opti
 import { evaluateShortDatedExit } from './shortDatedOptionsExit';
 import { minutesUntilClose } from './endOfDayFlatten';
 import { getProvider } from '../../providers';
+import { validPremium } from '../trading/optionTick';
+import {
+  resolveExitQuote,
+  sellableExitLimit,
+  sellableSpreadExitLimit,
+  type ExitPriceBasis,
+  type SellableExitLimit,
+} from './optionsExitPricing';
+import { etToday } from '../../util/marketDate';
 import { mapPool } from '../../util/async';
 
 // ---------------------------------------------------------------------------
@@ -234,9 +243,11 @@ function entryFailure(symbol: string, riskProfile: RiskProfileName, reason: stri
   return { symbol, ok: false, reason };
 }
 
-export function validPremium(v: number): boolean {
-  return Number.isFinite(v) && v > 0;
-}
+// validPremium moved beside the tick grid it guards (trading/optionTick.ts,
+// 2026-09-17) so the exit pricing both books share can import it without
+// importing either executor. Re-exported so nothing that reads it from here
+// has to move.
+export { validPremium };
 
 /**
  * Attempt to open an options paper position for an approved (already
@@ -701,6 +712,9 @@ export async function runOptionsPaperExecution(
 export interface OptionsExitCheckOutcome {
   symbol: string;
   closed: boolean;
+  /** A rule fired this tick and the close is resting until the next one —
+   *  see "HOW A PAPER EXIT IS PRICED" below. Not closed, not idle. */
+  pending?: boolean;
   reason?: string;
   position?: OptionsPaperPosition;
 }
@@ -721,19 +735,296 @@ function exitReasonFor(activeRule: string): OptionsPaperExitReason {
   }
 }
 
-/** Fetches the fresh mark(s) needed to price a close, single-leg or spread.
- *  Shared by the up-front fetch (only attempted when a price-based rule is
- *  actually configured — see checkOptionsPaperExits) and the on-trigger
- *  fetch (the original design's "quote only once we know we're closing"). */
-async function fetchExitMarks(pos: OptionsPaperPosition): Promise<{ exitPrice: number; shortExitPrice?: number }> {
+// ---------------------------------------------------------------------------
+// HOW A PAPER EXIT IS PRICED (2026-09-17).
+//
+// It used to fill at the chain's midpoint, instantly, on the tick a rule
+// fired. That is not a price anyone would have paid, twice over:
+//
+//   1. The midpoint is an average of a price nobody is offering and one nobody
+//      is bidding. A real close goes out at the BID (or 5% under the mark when
+//      there is none) — liveOptionsExecute.ts has priced that way since PR A,
+//      through sellableExitLimit. Paper now prices through the same function.
+//   2. A rule fires on the tick the mark is at an extreme, by construction: a
+//      take-profit fires on the spike. On 2026-09-11 the paper book booked
+//      HOOD 260911C116 at 1.48, +72% in three minutes, while the live order at
+//      1.40 against that same 1.47 mark never filled and the contract expired
+//      worthless. Filling on the deciding tick is filling on the spike.
+//
+// So a rule-driven exit is DECIDED on tick N at the sellable price s_N and
+// FILLED on tick N+1 at min(s_N, s_N+1) — which is exactly what a resting sell
+// limit chased downward does: it fills at its own price if the market held or
+// rose, and at the re-priced level if the market left. An up-spike that
+// reverses fills at the post-spike price; a down-spike fills at the low
+// (the limit placed there filled at once), which is the honest asymmetry of a
+// resting sell. Clock-driven exits (the 14:00 hard time, the DTE time-exit,
+// the stagnation cut) are not selected on the mark, so they fill on their own
+// tick at s_N.
+//
+// The pending decision lives in memory, like liveOptionsExecute's chase state:
+// a restart forgets it, the rule re-fires on the next tick, and the fill is
+// one tick later than it would have been. Harmless, and self-healing.
+//
+// Over the 26 paper trades on the book when this landed, "at the mark" read
+// +16.4% of premium per trade, "at the sellable price" +10.6%, and +8.5%
+// without the HOOD fill. The take-profit level and the second live slot were
+// both decided on the first figure. Rows closed before this date are priced
+// the old way and say so through a null exit_fill_basis; a comparison across
+// the boundary must not treat the two as one series.
+// ---------------------------------------------------------------------------
+
+interface ExitQuotes {
+  /** The marks the exit RULES evaluate — the ladder's levels are defined on
+   *  the mark and do not move. Long leg, and the short leg for a spread. */
+  exitPrice: number;
+  shortExitPrice?: number;
+  /** What the close can be SOLD at right now: the bid when there is one, else
+   *  the buffered mark; the spread's NET for a debit spread. */
+  sellable: SellableExitLimit;
+  /** The short leg's own sell-side price this tick (its ask, else its mark) —
+   *  what a net fill is split against so the two stored legs reproduce the
+   *  net by construction (optionsPnl and the partial-close SQL both read
+   *  `exit − short_exit`). Spreads only. */
+  shortLegFillPrice?: number;
+  source: 'opra' | 'chain';
+}
+
+/** Both books' quote resolver, with this book's chain fetch as the fallback:
+ *  the real-time OPRA snapshot when the account carries the entitlement and
+ *  the print is fresh, else the (delayed) chain. Single-leg or spread. */
+async function fetchExitQuotes(pos: OptionsPaperPosition): Promise<ExitQuotes> {
+  const longQ = resolveExitQuote(pos.contractSymbol, () =>
+    fetchContractQuote(pos.symbol, pos.expiration, pos.strike, pos.side),
+  );
   if (pos.kind === 'debit_spread') {
-    const [exitPrice, shortExitPrice] = await Promise.all([
-      fetchContractMark(pos.symbol, pos.expiration, pos.strike, pos.side),
-      fetchContractMark(pos.symbol, pos.expiration, pos.shortStrike!, pos.side),
+    const [l, sh] = await Promise.all([
+      longQ,
+      resolveExitQuote(pos.shortContractSymbol, () =>
+        fetchContractQuote(pos.symbol, pos.expiration, pos.shortStrike!, pos.side),
+      ),
     ]);
-    return { exitPrice, shortExitPrice };
+    return {
+      exitPrice: l.mark,
+      shortExitPrice: sh.mark,
+      sellable: sellableSpreadExitLimit({
+        longBid: l.bid,
+        shortAsk: sh.ask,
+        longMark: l.mark,
+        shortMark: sh.mark,
+        fromLastTrade: l.fromLastTrade || sh.fromLastTrade,
+      }),
+      shortLegFillPrice: sh.ask ?? sh.mark,
+      source: l.source,
+    };
   }
-  return { exitPrice: await fetchContractMark(pos.symbol, pos.expiration, pos.strike, pos.side) };
+  const l = await longQ;
+  return {
+    exitPrice: l.mark,
+    sellable: sellableExitLimit({ bid: l.bid, mark: l.mark, fromLastTrade: l.fromLastTrade }),
+    source: l.source,
+  };
+}
+
+/** A rule that fires on the CLOCK rather than on the mark. Its tick is not
+ *  selected for an extreme price, so there is nothing to wait out. */
+const isClockDrivenRule = (rule: string): boolean =>
+  rule === 'hard_time' || rule === 'stagnation' || rule === 'time-exit';
+
+type PaperExitJournalAction = 'short_dated_options_exit' | 'options_paper_position_closed';
+
+interface PaperExitMeta {
+  /** The precise rule (`take_profit`, `underlying_stop`, `stop-loss`, …). */
+  rule: string;
+  exitReason: OptionsPaperExitReason;
+  journalAction: PaperExitJournalAction;
+  /** Rule-specific detail carried onto the close row's journal entry. */
+  extra: Record<string, unknown>;
+}
+
+interface PendingPaperExit extends PaperExitMeta {
+  etDate: string;
+  decidedAt: number;
+  /** The resting sell limit — the sellable price on the tick the rule fired. */
+  restingLimit: number;
+  basis: ExitPriceBasis;
+  decisionMark: number;
+  decisionShortMark?: number;
+  shortLegFillPrice?: number;
+  source: 'opra' | 'chain';
+}
+
+const pendingPaperExits = new Map<number, PendingPaperExit>();
+
+/** Test seam: a position id's pending decision, if any. */
+export function pendingOptionsPaperExit(positionId: number): { rule: string; restingLimit: number } | null {
+  const p = pendingPaperExits.get(positionId);
+  return p ? { rule: p.rule, restingLimit: p.restingLimit } : null;
+}
+
+/** Test seam (and the restart model): forget every pending decision. */
+export function resetOptionsPaperPendingExits(): void {
+  pendingPaperExits.clear();
+}
+
+/** The two stored leg prices for a NET fill. Single leg: the net is the price.
+ *  Spread: the short leg at its own sell-side price and the long leg at
+ *  net + short, so `exit − short_exit` is the net exactly. */
+function legPricesForNetFill(
+  pos: OptionsPaperPosition,
+  netPrice: number,
+  shortLegFillPrice: number | undefined,
+): { exitPrice: number; shortExitPrice?: number } {
+  if (pos.kind !== 'debit_spread') return { exitPrice: netPrice };
+  const shortExitPrice = shortLegFillPrice ?? pos.shortEntryPrice ?? 0;
+  return { exitPrice: netPrice + shortExitPrice, shortExitPrice };
+}
+
+type FilledOn = 'same_tick' | 'next_tick' | 'next_tick_unquoted' | 'next_session';
+
+function closePaperExitAndJournal(
+  pos: OptionsPaperPosition,
+  meta: PaperExitMeta,
+  fill: {
+    decidedAt: number;
+    decisionMark: number;
+    decisionShortMark?: number;
+    restingLimit: number;
+    fillPrice: number;
+    basis: ExitPriceBasis;
+    source: 'opra' | 'chain';
+    filledOn: FilledOn;
+    shortLegFillPrice?: number;
+  },
+): OptionsExitCheckOutcome {
+  const legs = legPricesForNetFill(pos, fill.fillPrice, fill.shortLegFillPrice);
+  const closed = closeOptionsPaperPosition(pos.id, {
+    exitPrice: legs.exitPrice,
+    shortExitPrice: legs.shortExitPrice,
+    exitReason: meta.exitReason,
+    exitDecidedAt: fill.decidedAt,
+    exitDecisionMark: fill.decisionMark,
+    exitFillBasis: fill.basis,
+  });
+  if (closed) {
+    logAutotradeEvent({
+      symbol: pos.symbol,
+      stage: 'execution',
+      action: meta.journalAction,
+      detail: {
+        ...meta.extra,
+        exitReason: meta.exitReason,
+        exitPrice: legs.exitPrice,
+        shortExitPrice: legs.shortExitPrice,
+        // Whole trade, banked partials included — not the final leg.
+        pnl: optionsPnl(pos, legs.exitPrice, legs.shortExitPrice ?? null) + pos.realizedPartialPnl,
+        realizedPartialPnl: pos.realizedPartialPnl,
+        // What the rule saw versus what the close got. The gap between
+        // decisionMark and fillPrice is the spike this pricing exists to
+        // stop booking; restingLimit is the order that was "out there".
+        decisionMark: fill.decisionMark,
+        decisionShortMark: fill.decisionShortMark,
+        restingLimit: fill.restingLimit,
+        fillPrice: fill.fillPrice,
+        fillBasis: fill.basis,
+        quoteSource: fill.source,
+        filledOn: fill.filledOn,
+        decidedAt: fill.decidedAt,
+      },
+      riskProfile: pos.riskProfile,
+    });
+  }
+  return { symbol: pos.symbol, closed: !!closed, position: closed ?? undefined };
+}
+
+/** A rule fired. Clock-driven: fill now at the sellable price. Otherwise
+ *  record the decision and let the next tick fill it. */
+function decideOrFillPaperExit(
+  pos: OptionsPaperPosition,
+  quotes: ExitQuotes,
+  meta: PaperExitMeta,
+  now: number,
+): OptionsExitCheckOutcome {
+  if (!validPremium(quotes.sellable.limitPrice)) {
+    return { symbol: pos.symbol, closed: false, reason: 'No usable exit quote — nothing to price the close off' };
+  }
+  const base = {
+    decidedAt: now,
+    decisionMark: quotes.exitPrice,
+    decisionShortMark: quotes.shortExitPrice,
+    restingLimit: quotes.sellable.limitPrice,
+    basis: quotes.sellable.basis,
+    source: quotes.source,
+    shortLegFillPrice: quotes.shortLegFillPrice,
+  };
+  if (isClockDrivenRule(meta.rule)) {
+    return closePaperExitAndJournal(pos, meta, {
+      ...base,
+      fillPrice: quotes.sellable.limitPrice,
+      filledOn: 'same_tick',
+    });
+  }
+  pendingPaperExits.set(pos.id, { ...meta, ...base, etDate: etToday(now) });
+  logAutotradeEvent({
+    symbol: pos.symbol,
+    stage: 'execution',
+    action: 'options_paper_exit_decided',
+    detail: {
+      positionId: pos.id,
+      rule: meta.rule,
+      exitReason: meta.exitReason,
+      decisionMark: quotes.exitPrice,
+      decisionShortMark: quotes.shortExitPrice,
+      restingLimit: quotes.sellable.limitPrice,
+      basis: quotes.sellable.basis,
+      quoteSource: quotes.source,
+    },
+    riskProfile: pos.riskProfile,
+  });
+  return {
+    symbol: pos.symbol,
+    closed: false,
+    pending: true,
+    reason: `${meta.rule} decided — close resting at ${quotes.sellable.limitPrice.toFixed(2)} (${quotes.sellable.basis}), fills next tick at the lower of that and the then-sellable price`,
+  };
+}
+
+/** The tick after a decision: the resting order either filled at its own
+ *  price (the market held or rose) or was chased down to what is sellable
+ *  now. A quote that cannot be had leaves the resting price standing, and a
+ *  decision left over from a previous session fills at its DAY limit — both
+ *  labelled, so a reader can see which fills were priced blind. */
+async function fillPendingPaperExit(pos: OptionsPaperPosition, pending: PendingPaperExit, now: number) {
+  let quotes: ExitQuotes | null = null;
+  let filledOn: FilledOn;
+  if (pending.etDate !== etToday(now)) {
+    filledOn = 'next_session';
+  } else {
+    try {
+      quotes = await fetchExitQuotes(pos);
+      filledOn = 'next_tick';
+    } catch {
+      filledOn = 'next_tick_unquoted';
+    }
+  }
+  // The chase re-prices only DOWN: the resting limit stands unless what is
+  // sellable now is lower. Whichever price filled is the one whose basis and
+  // source the row records — a fill at the re-priced level came from this
+  // tick's quote, a fill at the resting limit from the deciding tick's.
+  const rePriced =
+    !!quotes && validPremium(quotes.sellable.limitPrice) && quotes.sellable.limitPrice < pending.restingLimit;
+  const chased = rePriced ? quotes!.sellable.limitPrice : pending.restingLimit;
+  pendingPaperExits.delete(pos.id);
+  return closePaperExitAndJournal(pos, pending, {
+    decidedAt: pending.decidedAt,
+    decisionMark: pending.decisionMark,
+    decisionShortMark: pending.decisionShortMark,
+    restingLimit: pending.restingLimit,
+    fillPrice: chased,
+    basis: rePriced ? quotes!.sellable.basis : pending.basis,
+    source: rePriced ? quotes!.source : pending.source,
+    filledOn,
+    shortLegFillPrice: quotes?.shortLegFillPrice ?? pending.shortLegFillPrice,
+  });
 }
 
 /**
@@ -779,17 +1070,23 @@ export async function checkOptionsPaperExits(): Promise<OptionsExitCheckOutcome[
     // measuring the wrong thing.
     cfg.shortDatedOptionsEnabled;
   return mapPool(open, 6, async (pos): Promise<OptionsExitCheckOutcome> => {
-    let marks: { exitPrice: number; shortExitPrice?: number } | undefined;
+    const now = Date.now();
+    // A decision from the previous tick fills first and skips every rule: the
+    // order is out there, and the decision that placed it stands.
+    const pending = pendingPaperExits.get(pos.id);
+    if (pending) return fillPendingPaperExit(pos, pending, now);
+
+    let quotes: ExitQuotes | undefined;
     if (priceRulesActive) {
-      marks = await fetchExitMarks(pos).catch(() => undefined);
+      quotes = await fetchExitQuotes(pos).catch(() => undefined);
     }
 
     const entryBasis = pos.kind === 'debit_spread' ? pos.entryPrice - (pos.shortEntryPrice ?? 0) : pos.entryPrice;
-    const currentBasis = !marks
+    const currentBasis = !quotes
       ? null
       : pos.kind === 'debit_spread'
-        ? marks.exitPrice - (marks.shortExitPrice ?? 0)
-        : marks.exitPrice;
+        ? quotes.exitPrice - (quotes.shortExitPrice ?? 0)
+        : quotes.exitPrice;
     // The take-profit this position exits on is the one tightened by the ML
     // regime overlay for the regime STAMPED on it at entry (regimeTargets.ts)
     // — the same rule the live book applies, so a High-Vol entry keeps its
@@ -836,11 +1133,11 @@ export async function checkOptionsPaperExits(): Promise<OptionsExitCheckOutcome[
         // once more before giving up: being stuck in a decaying contract past
         // 14:00 because a mark was momentarily unavailable is the exact
         // failure this rule exists to prevent.
-        let exitMarks = marks;
-        if (!exitMarks) {
-          exitMarks = await fetchExitMarks(pos).catch(() => undefined);
+        let exitQuotes = quotes;
+        if (!exitQuotes) {
+          exitQuotes = await fetchExitQuotes(pos).catch(() => undefined);
         }
-        if (!exitMarks) {
+        if (!exitQuotes) {
           return { symbol: pos.symbol, closed: false, reason: 'Quote fetch failed pricing a short-dated exit' };
         }
         // The six rules collapse onto this table's four stored reasons; the
@@ -852,17 +1149,14 @@ export async function checkOptionsPaperExits(): Promise<OptionsExitCheckOutcome[
             : sd.rule === 'underlying_stop' || sd.rule === 'disaster_stop'
               ? 'stop_loss'
               : 'time_exit';
-        const sdClosed = closeOptionsPaperPosition(pos.id, {
-          exitPrice: exitMarks.exitPrice,
-          shortExitPrice: exitMarks.shortExitPrice,
-          exitReason: sdReason,
-        });
-        if (sdClosed) {
-          logAutotradeEvent({
-            symbol: pos.symbol,
-            stage: 'execution',
-            action: 'short_dated_options_exit',
-            detail: {
+        return decideOrFillPaperExit(
+          pos,
+          exitQuotes,
+          {
+            rule: sd.rule!,
+            exitReason: sdReason,
+            journalAction: 'short_dated_options_exit',
+            extra: {
               positionId: pos.id,
               book: 'paper',
               rule: sd.rule,
@@ -876,17 +1170,10 @@ export async function checkOptionsPaperExits(): Promise<OptionsExitCheckOutcome[
               peakPremium: sd.peakPremium,
               underlyingMovePct: sd.underlyingMovePct,
               expiration: pos.expiration,
-              exitReason: sdReason,
-              exitPrice: exitMarks.exitPrice,
-              shortExitPrice: exitMarks.shortExitPrice,
-              // Whole trade, banked partials included — not the final leg.
-              pnl: optionsPnl(pos, exitMarks.exitPrice, exitMarks.shortExitPrice ?? null) + pos.realizedPartialPnl,
-              realizedPartialPnl: pos.realizedPartialPnl,
             },
-            riskProfile: pos.riskProfile,
-          });
-        }
-        return { symbol: pos.symbol, closed: !!sdClosed, position: sdClosed ?? undefined };
+          },
+          now,
+        );
       }
     }
 
@@ -925,8 +1212,8 @@ export async function checkOptionsPaperExits(): Promise<OptionsExitCheckOutcome[
       // Needs a fresh mark, same as the trigger check above; a cycle whose
       // fetch failed (or wasn't attempted) just skips management this time,
       // retried next cycle.
-      if (marks && currentBasis !== null) {
-        applyOptionsPositionManagement(pos, entryBasis, currentBasis, marks, cfg);
+      if (quotes && currentBasis !== null) {
+        applyOptionsPositionManagement(pos, entryBasis, currentBasis, quotes, cfg);
       }
       return { symbol: pos.symbol, closed: false };
     }
@@ -934,40 +1221,25 @@ export async function checkOptionsPaperExits(): Promise<OptionsExitCheckOutcome[
     // Triggered without an up-front fetch (priceRulesActive was false, or it
     // failed) -- fetch now, exactly like the original design's "quote only
     // once we know we're closing."
-    if (!marks) {
+    if (!quotes) {
       try {
-        marks = await fetchExitMarks(pos);
+        quotes = await fetchExitQuotes(pos);
       } catch (err) {
         return { symbol: pos.symbol, closed: false, reason: `Quote fetch failed: ${(err as Error).message}` };
       }
     }
 
-    const exitReason = exitReasonFor(ev.activeRule!);
-    const closed = closeOptionsPaperPosition(pos.id, {
-      exitPrice: marks.exitPrice,
-      shortExitPrice: marks.shortExitPrice,
-      exitReason,
-    });
-    if (closed) {
-      // Whole trade, banked partials included — not the final leg.
-      const pnl = optionsPnl(pos, marks.exitPrice, marks.shortExitPrice ?? null) + pos.realizedPartialPnl;
-      logAutotradeEvent({
-        symbol: pos.symbol,
-        stage: 'execution',
-        action: 'options_paper_position_closed',
-        detail: {
-          exitReason,
-          exitPrice: marks.exitPrice,
-          shortExitPrice: marks.shortExitPrice,
-          pnl,
-          realizedPartialPnl: pos.realizedPartialPnl,
-          dte: ev.dte,
-          unrealizedPct: ev.unrealizedPct,
-        },
-        riskProfile: pos.riskProfile,
-      });
-    }
-    return { symbol: pos.symbol, closed: !!closed, position: closed ?? undefined };
+    return decideOrFillPaperExit(
+      pos,
+      quotes,
+      {
+        rule: ev.activeRule!,
+        exitReason: exitReasonFor(ev.activeRule!),
+        journalAction: 'options_paper_position_closed',
+        extra: { dte: ev.dte, unrealizedPct: ev.unrealizedPct },
+      },
+      now,
+    );
   });
 }
 
@@ -988,7 +1260,7 @@ function applyOptionsPositionManagement(
   pos: OptionsPaperPosition,
   entryBasis: number,
   currentBasis: number,
-  marks: { exitPrice: number; shortExitPrice?: number },
+  quotes: ExitQuotes,
   cfg: ReturnType<typeof getAutotradeConfig>,
 ): void {
   const gainPct = unrealizedReturnPct(entryBasis, currentBasis, 'long');
@@ -1000,10 +1272,15 @@ function applyOptionsPositionManagement(
   if (cfg.optionsPartialExitTriggerPct > 0 && !pos.partialExitTaken && gainPct >= cfg.optionsPartialExitTriggerPct) {
     const closeQty = Math.floor(pos.quantity * (cfg.optionsPartialExitPct / 100));
     if (closeQty > 0 && closeQty < pos.quantity) {
+      // Priced at what can be SOLD, like every other exit here — but on its
+      // own tick: a partial is a slice, not a decision, and a pending slice
+      // would need its own resting order to model. The residual optimism is
+      // one tick of spike on a fraction of the position.
+      const partialLegs = legPricesForNetFill(pos, quotes.sellable.limitPrice, quotes.shortLegFillPrice);
       const updated = partialCloseOptionsPaperPosition(pos.id, {
         quantity: closeQty,
-        exitPrice: marks.exitPrice,
-        shortExitPrice: marks.shortExitPrice,
+        exitPrice: partialLegs.exitPrice,
+        shortExitPrice: partialLegs.shortExitPrice,
       });
       if (updated) {
         // Read what the row banked rather than deriving the same dollars a
@@ -1016,8 +1293,10 @@ function applyOptionsPositionManagement(
           action: 'options_paper_partial_exit',
           detail: {
             quantity: closeQty,
-            exitPrice: marks.exitPrice,
-            shortExitPrice: marks.shortExitPrice,
+            exitPrice: partialLegs.exitPrice,
+            shortExitPrice: partialLegs.shortExitPrice,
+            decisionMark: quotes.exitPrice,
+            fillBasis: quotes.sellable.basis,
             pnl,
             gainPct,
           },

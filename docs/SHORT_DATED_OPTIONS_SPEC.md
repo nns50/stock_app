@@ -385,6 +385,18 @@ closed a trade. **Always dedupe on book + positionId before applying an L-rule.*
 5. Judge the accumulated picture at the 2026-09-05 review.
 6. Only then consider live, and with probation at 0.5× for 10 trades.
 
+**How the paper book prices its exits (2026-09-17).** Until this date the
+paper ladder filled at the chain's midpoint on the tick a rule fired — the
+spike, by construction, and a price nobody was bidding. It now prices through
+the same `sellableExitLimit` (bid, else 5% under the mark) and the same
+OPRA-first quote resolver as the live path, and a rule-driven exit is decided
+on one tick and filled on the next at the lower of the resting price and what
+is then sellable; `hard_time` and `stagnation` fill on their own tick. Every
+number in this document measured on paper before 2026-09-17 is on the old
+series (null `exit_fill_basis`); the HOOD +72% that the 2026-09-11 A1 report
+turns on was such a fill. See `docs/AUTOTRADING_SPEC.md` (2026-09-17) and the
+decision log in `docs/OPTIONS_TUNING_PLAN.md`.
+
 ---
 
 ## Honest assessment

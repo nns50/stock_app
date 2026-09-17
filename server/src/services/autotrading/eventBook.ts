@@ -106,6 +106,7 @@ export const LIVE_ACTIONS = new Set([
 export const PAPER_ACTIONS = new Set([
   // optionsExecute.ts — the paper options sleeve
   'options_paper_entry_failed',
+  'options_paper_exit_decided',
   'options_paper_order_placed',
   'options_paper_partial_exit',
   'options_paper_position_closed',

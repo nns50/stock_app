@@ -74,12 +74,24 @@ export interface OpenOptionsPaperPositionInput {
   underlyingAtEntry?: number | null;
 }
 
+/** Where a close's FILL price came from — the bid, the buffered mark, or a
+ *  buffered last trade. Null on a row closed before fills were priced this
+ *  way (2026-09-17), which is how a reader tells the two series apart. */
+export type OptionsPaperFillBasis = 'bid' | 'mark' | 'last';
+
 export interface CloseOptionsPaperPositionInput {
   /** The long leg's exit premium for a debit spread. */
   exitPrice: number;
   /** The short leg's exit premium — debit spreads only. */
   shortExitPrice?: number;
   exitReason: OptionsPaperExitReason;
+  /** When the rule fired. `exit_at` is when the close FILLED, which since
+   *  2026-09-17 is a tick later for a rule-driven exit. */
+  exitDecidedAt?: number | null;
+  /** The mark the rule saw when it fired — against `exit_price`, the spike
+   *  this book used to bank. Long leg for a spread. */
+  exitDecisionMark?: number | null;
+  exitFillBasis?: OptionsPaperFillBasis | null;
 }
 
 export interface OptionsPaperPosition {
@@ -104,6 +116,11 @@ export interface OptionsPaperPosition {
   shortExitPrice: number | null;
   exitAt: number | null;
   exitReason: OptionsPaperExitReason | null;
+  /** See CloseOptionsPaperPositionInput. All three null on a row closed
+   *  before 2026-09-17, and on an open row. */
+  exitDecidedAt: number | null;
+  exitDecisionMark: number | null;
+  exitFillBasis: OptionsPaperFillBasis | null;
   /** Running peak of (mark − short mark) since entry, for the trailing
    *  calculation. Null only for a row that predates this feature or hasn't
    *  been checked even once yet. */
@@ -165,6 +182,9 @@ interface Row {
   short_exit_price: number | null;
   exit_at: number | null;
   exit_reason: OptionsPaperExitReason | null;
+  exit_decided_at: number | null;
+  exit_decision_mark: number | null;
+  exit_fill_basis: string | null;
   best_basis_since_entry: number | null;
   stop_floor_pct: number | null;
   partial_exit_taken: number;
@@ -204,6 +224,12 @@ function map(r: Row): OptionsPaperPosition {
     shortExitPrice: r.short_exit_price,
     exitAt: r.exit_at,
     exitReason: r.exit_reason,
+    exitDecidedAt: r.exit_decided_at ?? null,
+    exitDecisionMark: r.exit_decision_mark ?? null,
+    exitFillBasis:
+      r.exit_fill_basis === 'bid' || r.exit_fill_basis === 'mark' || r.exit_fill_basis === 'last'
+        ? r.exit_fill_basis
+        : null,
     bestBasisSinceEntry: r.best_basis_since_entry,
     stopFloorPct: r.stop_floor_pct,
     partialExitTaken: r.partial_exit_taken === 1,
@@ -284,10 +310,21 @@ export function closeOptionsPaperPosition(
   const info = db
     .prepare(
       `UPDATE autotrade_options_paper_positions
-       SET status = 'closed', exit_price = ?, short_exit_price = ?, exit_at = ?, exit_reason = ?, updated_at = ?
+       SET status = 'closed', exit_price = ?, short_exit_price = ?, exit_at = ?, exit_reason = ?,
+           exit_decided_at = ?, exit_decision_mark = ?, exit_fill_basis = ?, updated_at = ?
        WHERE id = ? AND status = 'open'`,
     )
-    .run(input.exitPrice, input.shortExitPrice ?? null, now, input.exitReason, now, id);
+    .run(
+      input.exitPrice,
+      input.shortExitPrice ?? null,
+      now,
+      input.exitReason,
+      input.exitDecidedAt ?? null,
+      input.exitDecisionMark ?? null,
+      input.exitFillBasis ?? null,
+      now,
+      id,
+    );
   // The WHERE clause makes this UPDATE conditional, but a conditional UPDATE
   // that matches zero rows still "succeeds" — checking `changes` (not just
   // re-SELECTing) is what actually distinguishes "closed just now" from

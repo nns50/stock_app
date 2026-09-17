@@ -46,6 +46,15 @@ export function optionTickUsd(price: number): number {
   return Math.abs(price) < OPTION_PENNY_THRESHOLD_USD ? 0.05 : 0.01;
 }
 
+/** A premium that can be traded at all: finite and strictly positive. The
+ *  guard every price on the option grid passes through before it is rounded,
+ *  compared or sent — lives here, beside the grid, so the pricing helpers both
+ *  books share (autotrading/optionsExitPricing.ts) need nothing from either
+ *  executor. */
+export function validPremium(v: number): boolean {
+  return Number.isFinite(v) && v > 0;
+}
+
 /** Which way to snap. 'up' for a BUY limit, 'down' for a SELL limit — always
  *  toward filling, never away from it. */
 export type OptionTickDirection = 'up' | 'down';
