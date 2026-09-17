@@ -11754,3 +11754,85 @@ checks against: the pre-open window ends at the BELL, not at the last step in
 the series. 2026-09-16's account equity moved at 04:03 and again at 04:06 and
 then held 30,011.30 until 09:29, so the pre-open move is measured to that last
 09:29 reading (-193.51) and not to the 04:03 one (-193.50).
+
+## 2026-09-17 — the paper options book fills the way live prices an order
+
+Found while reading the unconstrained paper book for lessons the live rules do
+not already encode. The stock side gave two (the slow-bleed shape of the
+full-size loser, and the stop pinned at the 2.5% cap on 77 of 85 entries). The
+options side gave a measurement bug in the control arm itself.
+
+### What the paper book was booking
+
+A paper options exit filled at the chain's **midpoint**, **instantly**, on the
+tick a rule fired. Both halves are prices nobody would have paid:
+
+1. The midpoint is an average of a price nobody is offering and one nobody is
+   bidding. Since PR A the live close goes out at the **bid** (OPRA, then the
+   chain's bid, then 5% under the mark) — `sellableExitLimit`. Paper priced
+   nowhere near it.
+2. A rule fires on the tick the mark is at an extreme, by construction: a
+   take-profit fires *on the spike*. On 2026-09-11 the paper book booked HOOD
+   260911C116 at 1.48 — +72% in three minutes — while the live order at 1.40
+   against that same 1.47 mark never filled and the contract expired
+   worthless. Filling on the deciding tick is filling on the spike.
+
+Over the 26 paper trades on the book:
+
+| exit-fill assumption | mean % of premium |
+| --- | --- |
+| at the mark (what paper did) | **+16.4%** |
+| at mark × 0.95 (live's own buffer) | +10.6% |
+| …and without the HOOD fill live provably could not get | **+8.5%** |
+
+Six of the ten paper take-profits are ≥ +60% inside 90 minutes. The decision
+to keep `optionsTakeProfitPct` at 60 and the widening to two live slots both
+rest on the +16.4% figure.
+
+### Now
+
+- **One pricing, two callers.** `sellableExitLimit`, its spread twin, the
+  marketable buffer and the OPRA-first resolver moved out of
+  `liveOptionsExecute.ts` into `optionsExitPricing.ts`, a leaf that imports
+  only the tick grid and the two read-only Webull providers; the chain fallback
+  each book prefers is passed in. Neither executor imports the other. The live
+  file re-exports the names so its tests and callers read as before.
+- **Decided, then filled.** A rule-driven paper exit is decided on tick N at
+  the sellable price s_N and filled on tick N+1 at `min(s_N, s_N+1)` — what a
+  resting sell limit chased downward does: it fills at its own price if the
+  market held or rose, and at the re-priced level if the market left. An
+  up-spike that reverses fills at the post-spike price; a down-spike fills at
+  the low, because a limit placed there filled at once — the honest asymmetry
+  of a resting sell. Clock-driven exits (`hard_time`, `stagnation`, the DTE
+  time-exit) are not selected on the mark and fill on their own tick.
+- **The pending decision lives in memory**, like the live chase state. A
+  restart forgets it; the rule re-fires next tick; the fill lands a tick later
+  than it would have. Self-healing, and not worth a column for a state the
+  loop re-derives in a minute.
+- **The row says what happened.** `exit_decided_at` (the rule), `exit_at`
+  (the fill), `exit_decision_mark` (what the rule saw) against `exit_price`
+  (what the close got), and `exit_fill_basis` (`bid` / `mark` / `last`). The
+  journal gains `options_paper_exit_decided`, and the close rows carry
+  `decisionMark`, `restingLimit`, `fillPrice`, `fillBasis`, `filledOn`
+  (`same_tick` / `next_tick` / `next_tick_unquoted` / `next_session`).
+- **The paper executor prices nothing of its own.** `optionTick.test.ts`'s
+  rounding guard now scans both the live file and the shared module (the same
+  three rounding sites, split 2 + 1) and adds a second check: no
+  `roundOptionPrice(` and no `× 0.95` arithmetic in `optionsExecute.ts`.
+
+### Two series, not one
+
+Rows closed before this date filled at the mark and carry a null
+`exit_fill_basis`. Every read of the sleeve that spans the boundary — the mean
+% of premium, rule L5, the 60/40/30 take-profit comparison — must say which
+series it is on. The take-profit level is re-scored on the new series only,
+once it holds ~20 trades, and not before.
+
+### Pre-committed check
+
+The first `options_paper_exit_decided` in production is followed one tick
+later by a close row whose `fillPrice ≤ restingLimit ≤ decisionMark × 0.95`,
+with `filledOn: 'next_tick'`. On the first take-profit that fires on a spike,
+`fillPrice` sits well under `decisionMark` — that gap is the number this
+change exists to stop booking.
+

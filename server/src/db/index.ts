@@ -841,6 +841,15 @@ CREATE TABLE IF NOT EXISTS autotrade_options_paper_positions (
   short_exit_price       REAL,                 -- short leg's premium per share at exit (debit spreads only)
   exit_at                INTEGER,
   exit_reason            TEXT CHECK(exit_reason IN ('time_exit','stop_loss','take_profit','manual') OR exit_reason IS NULL),
+  -- How the close was PRICED (2026-09-17). exit_at is when it filled;
+  -- exit_decided_at is when the rule fired, a tick earlier for a rule-driven
+  -- exit; exit_decision_mark is the mark the rule saw, against exit_price the
+  -- fill. exit_fill_basis names the price the fill came from ('bid', 'mark',
+  -- 'last'). All NULL on rows closed before this date, which filled at the mark
+  -- on the deciding tick -- the two series must not be read as one.
+  exit_decided_at        INTEGER,
+  exit_decision_mark     REAL,
+  exit_fill_basis        TEXT,
   best_basis_since_entry REAL,                 -- running peak of (mark - short mark); null pre-feature or unchecked
   stop_floor_pct         REAL,                 -- ratcheted minimum acceptable gain %; null until first ratcheted
   partial_exit_taken     INTEGER NOT NULL DEFAULT 0,
@@ -1486,6 +1495,10 @@ function migrate(): void {
   // stop_floor_pct is a % floor, not a price).
   if (!hasOpp('best_basis_since_entry')) {
     db.exec('ALTER TABLE autotrade_options_paper_positions ADD COLUMN best_basis_since_entry REAL');
+  }
+  // 2026-09-17: how a close was priced — see the column notes in the schema.
+  for (const col of ['exit_decided_at INTEGER', 'exit_decision_mark REAL', 'exit_fill_basis TEXT']) {
+    if (!hasOpp(col.split(' ')[0])) db.exec(`ALTER TABLE autotrade_options_paper_positions ADD COLUMN ${col}`);
   }
   if (!hasOpp('stop_floor_pct')) {
     db.exec('ALTER TABLE autotrade_options_paper_positions ADD COLUMN stop_floor_pct REAL');

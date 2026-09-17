@@ -2777,7 +2777,15 @@ because the loop is the only caller that is always flat by the bell, so it is
   the options backtest results below. These two price rules apply to **live**
   options as well (since 2026-07-26 — see "Live options trading" above), unlike
   the equity trailing-stop/breakeven fields below, which are still paper and
-  backtest only. Shows the same
+  backtest only. **A paper close is priced the way a live order is** (2026-09-17):
+  at the contract's bid when the quote carries one, else 5% under the mark, rounded
+  down to the option tick — and a price-rule exit (take-profit, stop, the short-dated
+  ladder's give-back and underlying stop) is *decided* on one loop tick and *filled*
+  on the next, at the lower of that resting price and whatever is sellable then,
+  because a rule fires on the tick the mark is at its extreme and a real order does
+  not get that print. Clock-driven exits fill at once. The closed row shows the mark
+  the rule saw beside the price the close got, and which price it came from; rows
+  closed before this date filled at the mark and show no basis. Shows the same
   open/closed counts, realized/unrealized P&L, and full trade history (contract,
   strike/expiration, entry, a live **Current $** for open positions from a fresh
   contract quote, exit, reason, contracts, P&L, R) as equity's own paper trading above.

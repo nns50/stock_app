@@ -20,8 +20,11 @@ import {
   getOptionsPaperPortfolioSnapshot,
   optionsSeedForEquity,
   runOptionsPaperExecution,
+  pendingOptionsPaperExit,
+  resetOptionsPaperPendingExits,
 } from '../src/services/autotrading/optionsExecute';
 import { evaluateOptionsRiskCheck, OptionsRiskCheckResult } from '../src/services/autotrading/optionsRiskCheck';
+import { sellableExitLimit } from '../src/services/autotrading/optionsExitPricing';
 import { DebitSpreadOptionsSignal, SingleLegOptionsSignal } from '../src/services/autotrading/optionsDecide';
 
 const mockGetProvider = vi.mocked(getProvider);
@@ -73,7 +76,7 @@ function spreadSignal(overrides: Partial<DebitSpreadOptionsSignal> = {}): DebitS
   };
 }
 
-type ContractFixture = { side: 'call' | 'put'; strike: number; mark: number };
+type ContractFixture = { side: 'call' | 'put'; strike: number; mark: number; bid?: number; ask?: number };
 
 /** Mock provider serving one chain per underlying symbol. Each symbol maps to
  *  either a single contract fixture (the common case) or an array of them
@@ -91,6 +94,8 @@ function chainsFor(fixtures: Record<string, ContractFixture | ContractFixture[]>
         type: f.side,
         strike: f.strike,
         mark: f.mark,
+        bid: f.bid,
+        ask: f.ask,
         expiration,
       }));
       return {
@@ -113,7 +118,24 @@ beforeEach(() => {
   );
   setAutotradeConfig({ accountEquityUsd: 100_000, riskProfile: 'MODERATE' });
   mockGetProvider.mockReset();
+  // A decision left resting by one case must not fill in the next.
+  resetOptionsPaperPendingExits();
 });
+
+/** What a close can be SOLD at off a chain that carries no bid: the mark
+ *  buffered 5% and rounded down to the option tick — the same function the
+ *  executor prices through, so these cases assert that it is CONSUMED there
+ *  (the arithmetic itself is pinned in liveOptionsExecute.test.ts and in the
+ *  pricing cases below with literal numbers). */
+const sell = (mark: number): number => sellableExitLimit({ mark, fromLastTrade: false }).limitPrice;
+
+/** A rule-driven exit is decided on one tick and filled on the next — see
+ *  "HOW A PAPER EXIT IS PRICED" in optionsExecute.ts. Two checks, one result. */
+async function decideThenFill() {
+  const decided = await checkOptionsPaperExits();
+  expect(decided[0]).toMatchObject({ closed: false, pending: true });
+  return checkOptionsPaperExits();
+}
 
 describe('attemptOptionsPaperEntry', () => {
   const okResult: OptionsRiskCheckResult = evaluateOptionsRiskCheck(optionSignal(), {
@@ -517,7 +539,10 @@ describe('checkOptionsPaperExits', () => {
     const outcomes = await checkOptionsPaperExits();
     expect(outcomes[0].closed).toBe(true);
     expect(outcomes[0].position!.exitReason).toBe('time_exit');
-    expect(outcomes[0].position!.exitPrice).toBe(1.1);
+    // The clock fired, not the mark, so it fills on its own tick — at what
+    // the contract can be sold for, never at the midpoint.
+    expect(outcomes[0].position!.exitPrice).toBe(sell(1.1));
+    expect(outcomes[0].position!.exitFillBasis).toBe('mark');
   });
 
   it('leaves a position open when comfortably outside the time-exit window', async () => {
@@ -534,7 +559,7 @@ describe('checkOptionsPaperExits', () => {
     mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'put', strike: 100, mark: 0.5 } }) as never);
     const outcomes = await checkOptionsPaperExits();
     expect(outcomes[0].closed).toBe(true);
-    expect(outcomes[0].position!.exitPrice).toBe(0.5);
+    expect(outcomes[0].position!.exitPrice).toBe(sell(0.5));
   });
 
   it('does not close, and reports the reason, when the quote fetch fails after the trigger fires', async () => {
@@ -552,8 +577,16 @@ describe('checkOptionsPaperExits', () => {
     await checkOptionsPaperExits();
     const events = listAutotradeEvents({ stage: 'execution', symbol: 'AAPL' });
     const closedEvent = events.find((e) => e.action === 'options_paper_position_closed')!;
-    // (1 - 3) * 2 * 100 = -400
-    expect(JSON.parse(closedEvent.detail!)).toMatchObject({ exitReason: 'time_exit', exitPrice: 1, pnl: -400 });
+    // (0.95 - 3) * 2 * 100 = -410: the fill is the sellable 0.95, the row
+    // also says what the rule SAW (the 1.00 mark) and how it filled.
+    expect(JSON.parse(closedEvent.detail!)).toMatchObject({
+      exitReason: 'time_exit',
+      exitPrice: sell(1),
+      pnl: (sell(1) - 3) * 200,
+      decisionMark: 1,
+      fillBasis: 'mark',
+      filledOn: 'same_tick',
+    });
   });
 
   it('returns an empty array when nothing is open', async () => {
@@ -566,17 +599,17 @@ describe('checkOptionsPaperExits', () => {
       setAutotradeConfig({ optionsStopLossPct: 50 });
       openPos({ expiration: '2024-07-15', entryPrice: 3 }); // ~44 days out -- time-exit can't fire
       mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 1.4 } }) as never); // -53%
-      const outcomes = await checkOptionsPaperExits();
+      const outcomes = await decideThenFill();
       expect(outcomes[0].closed).toBe(true);
       expect(outcomes[0].position!.exitReason).toBe('stop_loss');
-      expect(outcomes[0].position!.exitPrice).toBe(1.4);
+      expect(outcomes[0].position!.exitPrice).toBe(sell(1.4));
     });
 
     it('closes via take-profit once unrealized gain reaches the configured %, well outside the time-exit window', async () => {
       setAutotradeConfig({ optionsTakeProfitPct: 50 });
       openPos({ expiration: '2024-07-15', entryPrice: 3 });
       mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4.6 } }) as never); // +53%
-      const outcomes = await checkOptionsPaperExits();
+      const outcomes = await decideThenFill();
       expect(outcomes[0].closed).toBe(true);
       expect(outcomes[0].position!.exitReason).toBe('take_profit');
     });
@@ -586,7 +619,7 @@ describe('checkOptionsPaperExits', () => {
       setAutotradeConfig({ optionsTakeProfitPct: 50, mlRegimeEnabled: true, mlRegimeTargetTightenPct: 30 });
       openPos({ expiration: '2024-07-15', entryPrice: 3, mlRegime: 'high_vol_bearish' });
       mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4.2 } }) as never); // +40%
-      const tightened = await checkOptionsPaperExits();
+      const tightened = await decideThenFill();
       expect(tightened[0].closed).toBe(true);
       expect(tightened[0].position!.exitReason).toBe('take_profit');
 
@@ -594,7 +627,8 @@ describe('checkOptionsPaperExits', () => {
       db.exec('DELETE FROM autotrade_options_paper_positions');
       openPos({ expiration: '2024-07-15', entryPrice: 3, mlRegime: 'sideways' });
       const untouched = await checkOptionsPaperExits();
-      expect(untouched[0].closed).toBe(false);
+      expect(untouched[0]).toMatchObject({ closed: false });
+      expect(untouched[0].pending).toBeFalsy();
     });
 
     it('does not close when unrealized P&L is inside both configured bands', async () => {
@@ -699,7 +733,7 @@ describe('checkOptionsPaperExits', () => {
       await checkOptionsPaperExits();
 
       mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 3.5 } }) as never); // ~+16.7%, below the 20% floor
-      const outcomes = await checkOptionsPaperExits();
+      const outcomes = await decideThenFill();
       expect(outcomes[0].closed).toBe(true);
       expect(outcomes[0].position!.exitReason).toBe('stop_loss');
     });
@@ -718,10 +752,11 @@ describe('checkOptionsPaperExits', () => {
 
       const events = listAutotradeEvents({ symbol: 'AAPL', stage: 'execution' });
       const partial = events.find((e) => e.action === 'options_paper_partial_exit')!;
-      // (3.6 - 3) * 1 * 100 = 60
+      // A slice sells at what the contract can be sold for, on its own tick:
+      // (3.42 - 3) * 1 * 100 = 42, not the 60 the 3.6 midpoint would claim.
       const detail = JSON.parse(partial.detail!);
-      expect(detail).toMatchObject({ quantity: 1, exitPrice: 3.6 });
-      expect(detail.pnl).toBeCloseTo(60, 5);
+      expect(detail).toMatchObject({ quantity: 1, exitPrice: sell(3.6), decisionMark: 3.6, fillBasis: 'mark' });
+      expect(detail.pnl).toBeCloseTo((sell(3.6) - 3) * 100, 5);
     });
 
     it('does not re-fire the partial exit on a later cycle once already taken', async () => {
@@ -746,6 +781,10 @@ describe('checkOptionsPaperExits', () => {
       });
       openPos({ expiration: '2024-07-15' });
       mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4.5 } }) as never); // +50% -- past every trigger
+      const decided = await checkOptionsPaperExits();
+      expect(decided[0]).toMatchObject({ closed: false, pending: true });
+      // Decided, not managed: no partial fired underneath the resting close.
+      expect(listOptionsPaperPositions({ symbol: 'AAPL' })[0].quantity).toBe(2);
       const outcomes = await checkOptionsPaperExits();
       expect(outcomes[0].closed).toBe(true);
       expect(outcomes[0].position!.exitReason).toBe('take_profit');
@@ -774,7 +813,7 @@ describe('checkOptionsPaperExits', () => {
       });
     }
 
-    it('closes both legs together at freshly-fetched marks once the trigger fires', async () => {
+    it('closes both legs together at the sellable NET once the trigger fires', async () => {
       openSpreadPos({ expiration: '2024-06-05' });
       mockGetProvider.mockReturnValue(
         chainsFor({
@@ -786,7 +825,15 @@ describe('checkOptionsPaperExits', () => {
       );
       const outcomes = await checkOptionsPaperExits();
       expect(outcomes[0].closed).toBe(true);
-      expect(outcomes[0].position).toMatchObject({ exitReason: 'time_exit', exitPrice: 8, shortExitPrice: 0.5 });
+      // The net (8 - 0.5) buffered 5% is 7.125; roundOptionPrice settles the
+      // half-cent to the nearest cent FIRST (sub-cent noise is not a price
+      // choice — see optionTick.ts) and only snaps to the nickel below $3, so
+      // the sellable net is 7.13. The short leg is stored at its own price and
+      // the long at net + short, so the row's exit - shortExit IS the net —
+      // one derivation, not two.
+      const pos = outcomes[0].position!;
+      expect(pos).toMatchObject({ exitReason: 'time_exit', shortExitPrice: 0.5 });
+      expect(pos.exitPrice! - pos.shortExitPrice!).toBeCloseTo(7.13, 6);
     });
 
     it('journals the correct net-debit-based pnl for a closed spread', async () => {
@@ -804,7 +851,9 @@ describe('checkOptionsPaperExits', () => {
       await checkOptionsPaperExits();
       const events = listAutotradeEvents({ stage: 'execution', symbol: 'AAPL' });
       const closedEvent = events.find((e) => e.action === 'options_paper_position_closed')!;
-      expect(JSON.parse(closedEvent.detail!)).toMatchObject({ pnl: 1100 });
+      // Net credit at exit is the SELLABLE net, 7.13 (see the case above):
+      // (7.13 - 2) * 2 * 100 = 1026, not the 1100 the midpoints would claim.
+      expect(JSON.parse(closedEvent.detail!).pnl).toBeCloseTo(1026, 6);
     });
 
     it('leaves the whole spread open when only the short leg fails to quote at the trigger', async () => {
@@ -830,7 +879,7 @@ describe('checkOptionsPaperExits', () => {
           ],
         }) as never,
       );
-      const outcomes = await checkOptionsPaperExits();
+      const outcomes = await decideThenFill();
       expect(outcomes[0].closed).toBe(true);
       expect(outcomes[0].position!.exitReason).toBe('take_profit');
     });
@@ -853,6 +902,205 @@ describe('checkOptionsPaperExits', () => {
       await checkOptionsPaperExits();
       const after = listOptionsPaperPositions({ symbol: 'AAPL' }).find((p) => p.id === pos.id)!;
       expect(after.stopFloorPct).toBeCloseTo(75, 5); // 85 - 10
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // HOW A PAPER EXIT IS PRICED (2026-09-17). The HOOD 0DTE call of 2026-09-11
+  // is the worked example throughout: the ladder saw a 1.47 mark, the live
+  // order at 1.40 never filled, the paper book booked +72% at 1.48. These cases
+  // pin the fill model with LITERAL numbers on purpose — the `sell()` helper
+  // above proves the executor consumes the shared pricing; these prove what
+  // that pricing is.
+  // -------------------------------------------------------------------------
+  describe('how a paper exit is priced (2026-09-17)', () => {
+    const hood = () =>
+      openPos({ symbol: 'HOOD', contractSymbol: 'HOOD-0dte', expiration: '2024-07-15', entryPrice: 0.86, quantity: 1 });
+    const chain = (mark: number, bid?: number, ask?: number) =>
+      mockGetProvider.mockReturnValue(chainsFor({ HOOD: { side: 'call', strike: 100, mark, bid, ask } }) as never);
+
+    it('the HOOD shape: a take-profit on a spike fills at the POST-spike price, not the spike', async () => {
+      setAutotradeConfig({ optionsTakeProfitPct: 60 });
+      const pos = hood();
+      chain(1.47); // +71% on the mark — the ladder fires
+      const decided = await checkOptionsPaperExits();
+      expect(decided[0]).toMatchObject({ symbol: 'HOOD', closed: false, pending: true });
+      // 1.47 × 0.95 = 1.3965 → 1.40 to the cent → 1.40 sits on the nickel grid.
+      expect(pendingOptionsPaperExit(pos.id)).toEqual({ rule: 'take-profit', restingLimit: 1.4 });
+      expect(hasOpenOptionsPaperPosition('HOOD')).toBe(true);
+      const decidedEv = listAutotradeEvents({ symbol: 'HOOD' }).find((e) => e.action === 'options_paper_exit_decided')!;
+      expect(JSON.parse(decidedEv.detail!)).toMatchObject({ decisionMark: 1.47, restingLimit: 1.4, basis: 'mark' });
+
+      // Next tick the spike is gone: mark 0.95, bid 0.90. The resting 1.40
+      // could not have filled; the chase re-prices to the bid.
+      vi.setSystemTime(Date.now() + 60_000);
+      chain(0.95, 0.9, 1.0);
+      const filled = await checkOptionsPaperExits();
+      expect(filled[0].closed).toBe(true);
+      const row = filled[0].position!;
+      expect(row).toMatchObject({
+        exitReason: 'take_profit',
+        exitPrice: 0.9,
+        exitDecisionMark: 1.47,
+        exitFillBasis: 'bid',
+      });
+      expect(row.exitDecidedAt).toBeLessThan(row.exitAt!);
+      const closedEv = listAutotradeEvents({ symbol: 'HOOD' }).find(
+        (e) => e.action === 'options_paper_position_closed',
+      )!;
+      // +4.7% of premium, not +72%.
+      const detail = JSON.parse(closedEv.detail!);
+      expect(detail).toMatchObject({
+        decisionMark: 1.47,
+        restingLimit: 1.4,
+        fillPrice: 0.9,
+        fillBasis: 'bid',
+        filledOn: 'next_tick',
+      });
+      expect(detail.pnl).toBeCloseTo(4, 6); // (0.90 - 0.86) x 100
+      expect(pendingOptionsPaperExit(pos.id)).toBeNull();
+    });
+
+    it('a market that held or rose fills the resting limit, never a better price it did not have', async () => {
+      setAutotradeConfig({ optionsTakeProfitPct: 60 });
+      hood();
+      chain(1.47);
+      await checkOptionsPaperExits();
+      chain(1.6, 1.55, 1.65); // the move was real — but the order was out at 1.40
+      const filled = await checkOptionsPaperExits();
+      expect(filled[0].position!.exitPrice).toBe(1.4);
+      expect(
+        JSON.parse(
+          listAutotradeEvents({ symbol: 'HOOD' }).find((e) => e.action === 'options_paper_position_closed')!.detail!,
+        ),
+      ).toMatchObject({ filledOn: 'next_tick', fillPrice: 1.4 });
+    });
+
+    it('a stop-loss on a down-spike fills at the low — a limit placed there filled at once', async () => {
+      setAutotradeConfig({ optionsStopLossPct: 50 });
+      openPos({ expiration: '2024-07-15', entryPrice: 3 });
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 1.4 } }) as never); // -53%
+      await checkOptionsPaperExits();
+      mockGetProvider.mockReturnValue(
+        chainsFor({ AAPL: { side: 'call', strike: 100, mark: 2.0, bid: 1.95 } }) as never,
+      ); // recovered
+      const filled = await checkOptionsPaperExits();
+      // min(1.33 → 1.30 on the nickel, 1.95) — the honest asymmetry of a resting sell.
+      expect(filled[0].position!.exitPrice).toBe(sell(1.4));
+    });
+
+    it('a quote that cannot be had on the fill tick leaves the resting price standing, and says so', async () => {
+      setAutotradeConfig({ optionsTakeProfitPct: 60 });
+      hood();
+      chain(1.47);
+      await checkOptionsPaperExits();
+      mockGetProvider.mockReturnValue({ getOptionsChain: vi.fn().mockRejectedValue(new Error('timeout')) } as never);
+      const filled = await checkOptionsPaperExits();
+      expect(filled[0].closed).toBe(true);
+      expect(filled[0].position!.exitPrice).toBe(1.4);
+      expect(
+        JSON.parse(
+          listAutotradeEvents({ symbol: 'HOOD' }).find((e) => e.action === 'options_paper_position_closed')!.detail!,
+        ),
+      ).toMatchObject({ filledOn: 'next_tick_unquoted' });
+    });
+
+    it('a decision left over from a previous session fills at its DAY limit, labelled', async () => {
+      setAutotradeConfig({ optionsTakeProfitPct: 60 });
+      hood();
+      chain(1.47);
+      await checkOptionsPaperExits();
+      vi.setSystemTime(Date.parse('2024-06-03T15:00:00Z')); // the next ET session
+      chain(0.2, 0.15, 0.25); // whatever the morning says is not what that order saw
+      const filled = await checkOptionsPaperExits();
+      expect(filled[0].position!.exitPrice).toBe(1.4);
+      expect(
+        JSON.parse(
+          listAutotradeEvents({ symbol: 'HOOD' }).find((e) => e.action === 'options_paper_position_closed')!.detail!,
+        ),
+      ).toMatchObject({ filledOn: 'next_session' });
+    });
+
+    it("uses the chain's bid when it carries one, for a clock-driven exit too", async () => {
+      openPos({ expiration: '2024-06-05' }); // inside the 7-day window: the DTE clock fires
+      mockGetProvider.mockReturnValue(
+        chainsFor({ AAPL: { side: 'call', strike: 100, mark: 1.1, bid: 1.05, ask: 1.15 } }) as never,
+      );
+      const out = await checkOptionsPaperExits();
+      expect(out[0].closed).toBe(true);
+      expect(out[0].position).toMatchObject({ exitPrice: 1.05, exitFillBasis: 'bid' });
+      expect(
+        JSON.parse(
+          listAutotradeEvents({ symbol: 'AAPL' }).find((e) => e.action === 'options_paper_position_closed')!.detail!,
+        ),
+      ).toMatchObject({ filledOn: 'same_tick', fillBasis: 'bid' });
+    });
+
+    it('a pending close skips the rules on the fill tick — the decision that placed it stands', async () => {
+      setAutotradeConfig({ optionsTakeProfitPct: 60, optionsStopLossPct: 50 });
+      hood();
+      chain(1.47); // take-profit decided
+      await checkOptionsPaperExits();
+      chain(0.3, 0.25, 0.35); // -65%: the stop-loss would fire now — but the close is already out there
+      const filled = await checkOptionsPaperExits();
+      expect(filled[0].position!.exitReason).toBe('take_profit');
+      expect(filled[0].position!.exitPrice).toBe(0.25);
+    });
+
+    it('forgets a pending decision on restart and simply decides again one tick later', async () => {
+      setAutotradeConfig({ optionsTakeProfitPct: 60 });
+      const pos = hood();
+      chain(1.47);
+      await checkOptionsPaperExits();
+      resetOptionsPaperPendingExits(); // the process died
+      const again = await checkOptionsPaperExits();
+      expect(again[0]).toMatchObject({ closed: false, pending: true });
+      expect(pendingOptionsPaperExit(pos.id)).toEqual({ rule: 'take-profit', restingLimit: 1.4 });
+      const filled = await checkOptionsPaperExits();
+      expect(filled[0].closed).toBe(true);
+    });
+
+    it('a debit spread sells its long leg into the bid and buys the short back at the ask', async () => {
+      setAutotradeConfig({ optionsTakeProfitPct: 50 });
+      openOptionsPaperPosition({
+        symbol: 'AAPL',
+        side: 'call',
+        kind: 'debit_spread',
+        contractSymbol: 'AAPL-long',
+        strike: 100,
+        shortContractSymbol: 'AAPL-short',
+        shortStrike: 110,
+        shortEntryPrice: 1,
+        expiration: '2024-07-15',
+        quantity: 2,
+        entryPrice: 3,
+        riskAmount: 400,
+        riskProfile: 'MODERATE',
+        rationale: 'fixture',
+      });
+      const both = () =>
+        mockGetProvider.mockReturnValue(
+          chainsFor({
+            AAPL: [
+              { side: 'call', strike: 100, mark: 5, bid: 4.9, ask: 5.1 },
+              { side: 'call', strike: 110, mark: 1, bid: 0.9, ask: 1.1 },
+            ],
+          }) as never,
+        );
+      both();
+      await checkOptionsPaperExits(); // net mark 4 vs entry 2: +100%, decided
+      both();
+      const filled = await checkOptionsPaperExits();
+      const pos = filled[0].position!;
+      // Net = 4.9 - 1.1 = 3.8; stored as short 1.1 and long 3.8 + 1.1 = 4.9.
+      expect(pos.shortExitPrice).toBeCloseTo(1.1, 6);
+      expect(pos.exitPrice! - pos.shortExitPrice!).toBeCloseTo(3.8, 6);
+      expect(pos.exitFillBasis).toBe('bid');
+      expect(
+        JSON.parse(
+          listAutotradeEvents({ symbol: 'AAPL' }).find((e) => e.action === 'options_paper_position_closed')!.detail!,
+        ).pnl,
+      ).toBeCloseTo((3.8 - 2) * 200, 6);
     });
   });
 });
@@ -1110,7 +1358,7 @@ describe('short-dated options — the paper book', () => {
         withQuote(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 0.24 } }), 99.4) as never,
       );
 
-      const out = await checkOptionsPaperExits();
+      const out = await decideThenFill();
 
       expect(out[0]!.position!.exitReason).toBe('stop_loss');
       const ev = listAutotradeEvents({}).find((e) => e.action === 'short_dated_options_exit')!;
@@ -1129,7 +1377,7 @@ describe('short-dated options — the paper book', () => {
         withQuote(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 0.24 } }), 99.4) as never,
       );
 
-      await checkOptionsPaperExits();
+      await decideThenFill();
 
       const ev = listAutotradeEvents({}).find((e) => e.action === 'short_dated_options_exit')!;
       const detail = JSON.parse(ev.detail!) as { peakGainPct: number | null; peakPremium: number | null };
@@ -1162,7 +1410,7 @@ describe('short-dated options — the paper book', () => {
         withQuote(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 0.5 } }), 100.4) as never,
       );
 
-      const out = await checkOptionsPaperExits();
+      const out = await decideThenFill();
 
       expect(out[0]!.position!.exitReason).toBe('take_profit');
       const ev = listAutotradeEvents({}).find((e) => e.action === 'short_dated_options_exit')!;
@@ -1237,7 +1485,7 @@ describe('short-dated options — the paper book', () => {
         withQuote(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 0.2 } }), 100) as never,
       );
 
-      const out = await checkOptionsPaperExits();
+      const out = await decideThenFill();
 
       expect(out[0]!.position!.exitReason).toBe('stop_loss');
     });
