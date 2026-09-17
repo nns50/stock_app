@@ -11902,3 +11902,43 @@ dozens. The reading for task #59 is then the winners' heat p90 against the
 `maxRiskAtrFraction` to bind harder or the cap to move, and it goes to the
 replay before it goes to the config.
 
+### First reading (2026-09-17, deployed at 17:44 UTC)
+
+Both identities hold exactly: paper 142 measured + 0 undated + 0 over cap + 1
+unavailable = 143 closed; live 118 + 26 + 0 + 6 = 150.
+
+| intraday rows | n   | winners | heat p50 / p75 / p90 | winners a stop at 0.5R / 0.75R / 1.0R stops first | losers | losers' MFE p50 / p90 |
+| ------------- | --- | ------- | -------------------- | ------------------------------------------------- | ------ | --------------------- |
+| paper         | 98  | 65      | 0.23 / 0.50 / 0.85   | 17 / 9 / 2 of 65                                  | 32     | 0.18 / 0.80           |
+| live          | 78  | 26      | 0.09 / 0.18 / 0.32   | 1 / 1 / 0 of 26                                   | 34     | 0.17 / 0.65           |
+
+The two books disagree, and the disagreement is the finding. The pre-committed
+case for a tighter stop was "a p90 well under 1.0 on both books"; the live book
+reads 0.32 and the paper book 0.85, and on room the paper book is the one to
+believe, because the live book's exit rules choose who counts as a winner. With
+the scale-out off (and, before 2026-09-14, mostly refused by the broker) and
+the breakeven ratchet at +0.25R, a live trade that reaches +0.25R and comes
+back to entry closes at breakeven — a scratch, in neither partition — so a
+live "winner" is by construction a trade that never dipped after it started
+working. The paper book has banked 67% at +0.25R, so a trade that reached
++0.25R is a winner whatever the remainder does, and its heat is the room a
+trade needed to GET to +0.25R. On that record a stop at half today's distance
+stops out 17 of 65 such trades (26%) before they get there; at three quarters,
+9 (14%); at the full distance, 2 (3%).
+
+The honest path replay agrees from the other side
+(`GET /api/journal/exit-tune-validation`, live book, 77 same-session trades):
+the winners'-heat fixed point walks `stopAtrMultiple` from 1.5 to the 0.5
+clamp and replays at the same mean R (0.06 against 0.06, CI −0.13…+0.12,
+`inside_noise`), with the exit mix moving from 2 stops / 7 targets / 35 time
+exits to 16 / 17 / 9; the one-step candidate (1.25) reads +0.01R (CI
+−0.04…+0.04, `inside_noise`); on the 39/38 walk-forward holdout the tuner
+refuses to act (16 winners, needs 20). A tighter stop trades slow time exits
+for more stop-outs and more target hits, and nets nothing per trade.
+
+**Decision: no change to `maxRiskAtrFraction` or the 2.5% cap** (task #59 is
+closed on this reading). What the replay does not price is slot turnover —
+time exits 35 → 9 free a slot sooner — which is a flow claim, and flow is
+measured by the daily-goal sweep, not by per-trade R. The paper book's own
+walk-forward (`exitTuneValidation` is live-only) stays the follow-up.
+
