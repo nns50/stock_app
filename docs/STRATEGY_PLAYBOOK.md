@@ -1314,6 +1314,16 @@ Two things the excursion read could not do until now, and one it never should:
   nothing a real order pays — the fills it does not get, the size it cannot fund, the
   order in which a bar's high and low arrived. `exitTuneValidation.ts` discarded it for
   the honest path replay, and that replay is the only thing a stop change is decided on.
+- **First reading (2026-09-17, deployed).** Both coverage identities hold. Intraday
+  winners' heat p50 / p75 / p90: paper 0.23 / 0.50 / 0.85R over 65 winners, live
+  0.09 / 0.18 / 0.32R over 26. The books disagree because the live exit rules choose who
+  counts as a winner (a live trade that reaches +0.25R and returns to entry closes at
+  breakeven, a scratch; the paper book has banked 67% by then), so the paper figure is
+  the room a trade needs to reach +0.25R: a stop at half today's distance stops out 17
+  of 65 such trades first, at three quarters 9, at the full distance 2. The live path
+  replay says the same from the other side — the 0.5-ATR fixed point nets 0.00R
+  (inside noise) with stop-outs 2 → 16. **No change to the stop** on this reading; the
+  numbers live in the spec's 2026-09-17 section.
 
 ## Reducing slippage with execution quality
 
