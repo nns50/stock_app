@@ -932,6 +932,18 @@ tabs of one **Analytics** button (top right) — pick a tab, the report loads on
   it left out** ("averages over 12 of 70 closed stock trades…") rather than presenting a
   partial sample as the whole picture. If nothing at all could be measured it tells you
   why, instead of claiming you have no closed stock trades.
+  **Both books, and the two distributions the stop question turns on (2026-09-17).**
+  `GET /api/journal/excursions?book=paper` runs the identical measurement over the
+  autotrade **paper** book — the unconstrained control arm, which until then had never
+  been measured this way at all (the default, `book=live`, is unchanged). Each
+  resolution's averages now also carry **winners' heat** (the worst dip a winning trade
+  took, |MAE| in R, as p50/p75/p90 with the count) and **losers' MFE** (how far a losing
+  trade got before losing). Read them against the stop actually placed: a stop tighter
+  than the winners' p90 stops out one winner in ten before it wins, and a loser that never
+  reached +0.25R is a slow bleeder rather than a give-back. Intraday rows only — a daily
+  bar's low is the whole day's, not the trade's. The panel shows the intraday figures
+  under the resolution split, and the **Live / Paper** switch at the top of the Excursions
+  tab runs the same measurement over either book.
 - **Execution quality (slippage)** — for each **live-traded** entry/exit that came from an
   order with a limit price, compares the actual **broker fill** to the **limit you set**.
   Positive $ always means it cost you money, whichever side you were on (a buy filled

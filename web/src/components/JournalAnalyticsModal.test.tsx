@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { JournalAnalyticsModal } from './JournalAnalyticsModal';
 import { client } from '../api/client';
+import type { ExcursionReport } from '../api/types';
 
 beforeEach(() => vi.restoreAllMocks());
 
@@ -11,6 +12,7 @@ beforeEach(() => vi.restoreAllMocks());
 describe('JournalAnalyticsModal', () => {
   it('shows Excursions by default and fetches nothing else', async () => {
     const excSpy = vi.spyOn(client, 'journalExcursions').mockResolvedValue({
+      book: 'live',
       trades: 1,
       avgMfeR: 1.2,
       avgMaeR: -0.4,
@@ -33,8 +35,24 @@ describe('JournalAnalyticsModal', () => {
       ],
       resolutionMix: { intraday: 0, daily: 0 },
       byResolution: {
-        intraday: { trades: 0, avgMfeR: null, avgMaeR: null, avgRealizedR: null, capturePct: null },
-        daily: { trades: 0, avgMfeR: null, avgMaeR: null, avgRealizedR: null, capturePct: null },
+        intraday: {
+          trades: 0,
+          avgMfeR: null,
+          avgMaeR: null,
+          avgRealizedR: null,
+          capturePct: null,
+          winnerHeatR: null,
+          loserMfeR: null,
+        },
+        daily: {
+          trades: 0,
+          avgMfeR: null,
+          avgMaeR: null,
+          avgRealizedR: null,
+          capturePct: null,
+          winnerHeatR: null,
+          loserMfeR: null,
+        },
       },
       coverage: { closedStockTrades: 1, undated: 0, overCap: 0, unavailable: 0 },
     });
@@ -57,6 +75,7 @@ describe('JournalAnalyticsModal', () => {
 
   it('switches to Execution quality and fetches slippage data', async () => {
     vi.spyOn(client, 'journalExcursions').mockResolvedValue({
+      book: 'live',
       trades: 0,
       avgMfeR: null,
       avgMaeR: null,
@@ -65,8 +84,24 @@ describe('JournalAnalyticsModal', () => {
       rows: [],
       resolutionMix: { intraday: 0, daily: 0 },
       byResolution: {
-        intraday: { trades: 0, avgMfeR: null, avgMaeR: null, avgRealizedR: null, capturePct: null },
-        daily: { trades: 0, avgMfeR: null, avgMaeR: null, avgRealizedR: null, capturePct: null },
+        intraday: {
+          trades: 0,
+          avgMfeR: null,
+          avgMaeR: null,
+          avgRealizedR: null,
+          capturePct: null,
+          winnerHeatR: null,
+          loserMfeR: null,
+        },
+        daily: {
+          trades: 0,
+          avgMfeR: null,
+          avgMaeR: null,
+          avgRealizedR: null,
+          capturePct: null,
+          winnerHeatR: null,
+          loserMfeR: null,
+        },
       },
       coverage: { closedStockTrades: 0, undated: 0, overCap: 0, unavailable: 0 },
     });
@@ -101,6 +136,7 @@ describe('JournalAnalyticsModal', () => {
 
   it('switches to Stop overrun and fetches the report', async () => {
     vi.spyOn(client, 'journalExcursions').mockResolvedValue({
+      book: 'live',
       trades: 0,
       avgMfeR: null,
       avgMaeR: null,
@@ -109,8 +145,24 @@ describe('JournalAnalyticsModal', () => {
       rows: [],
       resolutionMix: { intraday: 0, daily: 0 },
       byResolution: {
-        intraday: { trades: 0, avgMfeR: null, avgMaeR: null, avgRealizedR: null, capturePct: null },
-        daily: { trades: 0, avgMfeR: null, avgMaeR: null, avgRealizedR: null, capturePct: null },
+        intraday: {
+          trades: 0,
+          avgMfeR: null,
+          avgMaeR: null,
+          avgRealizedR: null,
+          capturePct: null,
+          winnerHeatR: null,
+          loserMfeR: null,
+        },
+        daily: {
+          trades: 0,
+          avgMfeR: null,
+          avgMaeR: null,
+          avgRealizedR: null,
+          capturePct: null,
+          winnerHeatR: null,
+          loserMfeR: null,
+        },
       },
       coverage: { closedStockTrades: 0, undated: 0, overCap: 0, unavailable: 0 },
     });
@@ -159,6 +211,7 @@ describe('JournalAnalyticsModal', () => {
 
   it('switches to Regime tighten and fetches the counterfactual ledger', async () => {
     vi.spyOn(client, 'journalExcursions').mockResolvedValue({
+      book: 'live',
       trades: 0,
       avgMfeR: null,
       avgMaeR: null,
@@ -167,8 +220,24 @@ describe('JournalAnalyticsModal', () => {
       rows: [],
       resolutionMix: { intraday: 0, daily: 0 },
       byResolution: {
-        intraday: { trades: 0, avgMfeR: null, avgMaeR: null, avgRealizedR: null, capturePct: null },
-        daily: { trades: 0, avgMfeR: null, avgMaeR: null, avgRealizedR: null, capturePct: null },
+        intraday: {
+          trades: 0,
+          avgMfeR: null,
+          avgMaeR: null,
+          avgRealizedR: null,
+          capturePct: null,
+          winnerHeatR: null,
+          loserMfeR: null,
+        },
+        daily: {
+          trades: 0,
+          avgMfeR: null,
+          avgMaeR: null,
+          avgRealizedR: null,
+          capturePct: null,
+          winnerHeatR: null,
+          loserMfeR: null,
+        },
       },
       coverage: { closedStockTrades: 0, undated: 0, overCap: 0, unavailable: 0 },
     });
@@ -241,6 +310,7 @@ describe('JournalAnalyticsModal', () => {
 
   it('switches to Risk of ruin, seeds from journal stats, and runs a simulation', async () => {
     vi.spyOn(client, 'journalExcursions').mockResolvedValue({
+      book: 'live',
       trades: 0,
       avgMfeR: null,
       avgMaeR: null,
@@ -249,8 +319,24 @@ describe('JournalAnalyticsModal', () => {
       rows: [],
       resolutionMix: { intraday: 0, daily: 0 },
       byResolution: {
-        intraday: { trades: 0, avgMfeR: null, avgMaeR: null, avgRealizedR: null, capturePct: null },
-        daily: { trades: 0, avgMfeR: null, avgMaeR: null, avgRealizedR: null, capturePct: null },
+        intraday: {
+          trades: 0,
+          avgMfeR: null,
+          avgMaeR: null,
+          avgRealizedR: null,
+          capturePct: null,
+          winnerHeatR: null,
+          loserMfeR: null,
+        },
+        daily: {
+          trades: 0,
+          avgMfeR: null,
+          avgMaeR: null,
+          avgRealizedR: null,
+          capturePct: null,
+          winnerHeatR: null,
+          loserMfeR: null,
+        },
       },
       coverage: { closedStockTrades: 0, undated: 0, overCap: 0, unavailable: 0 },
     });
@@ -296,6 +382,7 @@ describe('JournalAnalyticsModal — excursion coverage', () => {
 
   it('says the averages are a sample when trades were excluded', async () => {
     vi.spyOn(client, 'journalExcursions').mockResolvedValue({
+      book: 'live',
       trades: 1,
       avgMfeR: 1.2,
       avgMaeR: -0.4,
@@ -304,8 +391,24 @@ describe('JournalAnalyticsModal — excursion coverage', () => {
       rows: [row],
       resolutionMix: { intraday: 0, daily: 1 },
       byResolution: {
-        intraday: { trades: 0, avgMfeR: null, avgMaeR: null, avgRealizedR: null, capturePct: null },
-        daily: { trades: 1, avgMfeR: null, avgMaeR: null, avgRealizedR: null, capturePct: null },
+        intraday: {
+          trades: 0,
+          avgMfeR: null,
+          avgMaeR: null,
+          avgRealizedR: null,
+          capturePct: null,
+          winnerHeatR: null,
+          loserMfeR: null,
+        },
+        daily: {
+          trades: 1,
+          avgMfeR: null,
+          avgMaeR: null,
+          avgRealizedR: null,
+          capturePct: null,
+          winnerHeatR: null,
+          loserMfeR: null,
+        },
       },
       coverage: { closedStockTrades: 70, undated: 4, overCap: 16, unavailable: 49 },
     });
@@ -318,6 +421,7 @@ describe('JournalAnalyticsModal — excursion coverage', () => {
 
   it('stays quiet when it covered everything', async () => {
     vi.spyOn(client, 'journalExcursions').mockResolvedValue({
+      book: 'live',
       trades: 1,
       avgMfeR: 1.2,
       avgMaeR: -0.4,
@@ -326,8 +430,24 @@ describe('JournalAnalyticsModal — excursion coverage', () => {
       rows: [row],
       resolutionMix: { intraday: 0, daily: 1 },
       byResolution: {
-        intraday: { trades: 0, avgMfeR: null, avgMaeR: null, avgRealizedR: null, capturePct: null },
-        daily: { trades: 1, avgMfeR: null, avgMaeR: null, avgRealizedR: null, capturePct: null },
+        intraday: {
+          trades: 0,
+          avgMfeR: null,
+          avgMaeR: null,
+          avgRealizedR: null,
+          capturePct: null,
+          winnerHeatR: null,
+          loserMfeR: null,
+        },
+        daily: {
+          trades: 1,
+          avgMfeR: null,
+          avgMaeR: null,
+          avgRealizedR: null,
+          capturePct: null,
+          winnerHeatR: null,
+          loserMfeR: null,
+        },
       },
       coverage: { closedStockTrades: 1, undated: 0, overCap: 0, unavailable: 0 },
     });
@@ -339,6 +459,7 @@ describe('JournalAnalyticsModal — excursion coverage', () => {
   it('does not claim you have no closed stock trades when it just could not measure them', async () => {
     // The empty-state version of the same lie: trades exist, none was analysable.
     vi.spyOn(client, 'journalExcursions').mockResolvedValue({
+      book: 'live',
       trades: 0,
       avgMfeR: null,
       avgMaeR: null,
@@ -347,8 +468,24 @@ describe('JournalAnalyticsModal — excursion coverage', () => {
       rows: [],
       resolutionMix: { intraday: 0, daily: 0 },
       byResolution: {
-        intraday: { trades: 0, avgMfeR: null, avgMaeR: null, avgRealizedR: null, capturePct: null },
-        daily: { trades: 0, avgMfeR: null, avgMaeR: null, avgRealizedR: null, capturePct: null },
+        intraday: {
+          trades: 0,
+          avgMfeR: null,
+          avgMaeR: null,
+          avgRealizedR: null,
+          capturePct: null,
+          winnerHeatR: null,
+          loserMfeR: null,
+        },
+        daily: {
+          trades: 0,
+          avgMfeR: null,
+          avgMaeR: null,
+          avgRealizedR: null,
+          capturePct: null,
+          winnerHeatR: null,
+          loserMfeR: null,
+        },
       },
       coverage: { closedStockTrades: 12, undated: 3, overCap: 0, unavailable: 9 },
     });
@@ -361,6 +498,7 @@ describe('JournalAnalyticsModal — excursion coverage', () => {
 
   it('still says "no closed stock trades" when there genuinely are none', async () => {
     vi.spyOn(client, 'journalExcursions').mockResolvedValue({
+      book: 'live',
       trades: 0,
       avgMfeR: null,
       avgMaeR: null,
@@ -369,12 +507,115 @@ describe('JournalAnalyticsModal — excursion coverage', () => {
       rows: [],
       resolutionMix: { intraday: 0, daily: 0 },
       byResolution: {
-        intraday: { trades: 0, avgMfeR: null, avgMaeR: null, avgRealizedR: null, capturePct: null },
-        daily: { trades: 0, avgMfeR: null, avgMaeR: null, avgRealizedR: null, capturePct: null },
+        intraday: {
+          trades: 0,
+          avgMfeR: null,
+          avgMaeR: null,
+          avgRealizedR: null,
+          capturePct: null,
+          winnerHeatR: null,
+          loserMfeR: null,
+        },
+        daily: {
+          trades: 0,
+          avgMfeR: null,
+          avgMaeR: null,
+          avgRealizedR: null,
+          capturePct: null,
+          winnerHeatR: null,
+          loserMfeR: null,
+        },
       },
       coverage: { closedStockTrades: 0, undated: 0, overCap: 0, unavailable: 0 },
     });
     render(<JournalAnalyticsModal open onClose={() => {}} />);
     expect(await screen.findByText(/No closed stock trades to analyze/)).toBeInTheDocument();
+  });
+});
+
+// The stop question is a threshold question — what a tighter stop costs is the
+// share of winners whose worst dip crossed it — and the paper book is the
+// control arm. Until 2026-09-17 the distributions were not printed and the
+// paper book was reachable only through the route. Both are pinned here, at
+// the consumer: a field the server computes and nothing renders is not shipped.
+describe('JournalAnalyticsModal — excursion distributions and the paper book', () => {
+  const noAverages = {
+    trades: 0,
+    avgMfeR: null,
+    avgMaeR: null,
+    avgRealizedR: null,
+    capturePct: null,
+    winnerHeatR: null,
+    loserMfeR: null,
+  };
+  const empty = (book: ExcursionReport['book']): ExcursionReport => ({
+    book,
+    trades: 0,
+    avgMfeR: null,
+    avgMaeR: null,
+    avgRealizedR: null,
+    capturePct: null,
+    rows: [],
+    resolutionMix: { intraday: 0, daily: 0 },
+    byResolution: { intraday: { ...noAverages }, daily: { ...noAverages } },
+    coverage: { closedStockTrades: 0, undated: 0, overCap: 0, unavailable: 0 },
+  });
+
+  it('prints the winners’ heat and losers’ MFE quantiles for the intraday rows', async () => {
+    vi.spyOn(client, 'journalExcursions').mockResolvedValue({
+      ...empty('live'),
+      trades: 17,
+      avgMfeR: 0.9,
+      avgMaeR: -0.5,
+      avgRealizedR: 0.1,
+      capturePct: 30,
+      rows: [
+        {
+          positionId: 1,
+          symbol: 'AAPL',
+          side: 'long',
+          entryDate: '2026-09-16',
+          mfePct: 5,
+          maePct: -2,
+          mfeR: 1.2,
+          maeR: -0.4,
+          realizedR: 0.8,
+          capturedPct: 60,
+          resolution: 'intraday',
+        },
+      ],
+      resolutionMix: { intraday: 17, daily: 0 },
+      byResolution: {
+        intraday: {
+          trades: 17,
+          avgMfeR: 0.9,
+          avgMaeR: -0.5,
+          avgRealizedR: 0.1,
+          capturePct: 30,
+          winnerHeatR: { n: 12, p50: 0.4, p75: 0.6, p90: 0.72 },
+          loserMfeR: { n: 5, p50: 0.35, p75: 0.43, p90: 0.47 },
+        },
+        daily: { ...noAverages },
+      },
+      coverage: { closedStockTrades: 17, undated: 0, overCap: 0, unavailable: 0 },
+    });
+    render(<JournalAnalyticsModal open onClose={() => {}} />);
+    const line = await screen.findByText(/Room a winner needed/);
+    expect(line).toHaveTextContent('median +0.40R, p90 +0.72R over 12 winners');
+    expect(line).toHaveTextContent('Losers got as far as median +0.35R before losing, over 5.');
+  });
+
+  it('switches the same measurement to the paper book and says which book it is reading', async () => {
+    const spy = vi
+      .spyOn(client, 'journalExcursions')
+      .mockImplementation(async (book: ExcursionReport['book'] = 'live') => empty(book));
+    render(<JournalAnalyticsModal open onClose={() => {}} />);
+    expect(await screen.findByText('No closed stock trades to analyze')).toBeInTheDocument();
+    expect(spy).toHaveBeenLastCalledWith('live');
+    expect(screen.queryByText(/unconstrained control arm/)).toBeNull();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Paper' }));
+    await waitFor(() => expect(spy).toHaveBeenLastCalledWith('paper'));
+    expect(await screen.findByText(/unconstrained control arm/)).toBeInTheDocument();
   });
 });

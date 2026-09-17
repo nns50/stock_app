@@ -11836,3 +11836,69 @@ with `filledOn: 'next_tick'`. On the first take-profit that fires on a spike,
 `fillPrice` sits well under `decisionMark` — that gap is the number this
 change exists to stop booking.
 
+## 2026-09-17 (second) — the paper book's excursions, and the distribution behind the tuner
+
+The second lesson from reading the unconstrained paper book. The proposal as
+first written was "record the worst price since entry beside the best" — a
+tick-sampled MAE column on both position tables. It was not built, because the
+quantity already exists and is measured better: `services/excursion.ts` has
+computed MAE/MFE from 5-minute bars for closed live stock trades since July,
+`excursionTune.ts` sizes a stop from the winners' heat it reports, and
+`exitTuneValidation.ts` replays tighter stops on the live book walk-forward. A
+second, cruder derivation of the same number is the disease CLAUDE.md names.
+
+What that machinery did NOT do:
+
+1. **See the paper book.** Every excursion read, and everything downstream of
+   it, ran over the journal's own ledger. The paper book is the larger sample
+   (141 closed trades to live's ~85) and the unconstrained control arm. The
+   2026-09-16 read that prompted all of this — winners reach +0.25R in a
+   median 12 minutes, losers take a median 275 minutes to travel the full 2.5%
+   to the stop — was done from the paper rows' best-price column alone, because
+   their worst price was recorded nowhere. It is recorded: in the bars.
+2. **Report a distribution where the question is a threshold.** A stop is a
+   line; what it costs is the share of winners whose worst dip crossed it
+   before they won. The report carried an average MAE.
+
+### Now
+
+- `paperExcursions.ts` maps a closed paper row onto the same `ExcursionInput`
+  the live route builds — side, the FROZEN initial stop, ET dates from the
+  epoch stamps, the entry minute for the intraday window. The quantity is the
+  ORIGINAL (risk at entry over the initial stop distance), not the row's, which
+  a scale-out has reduced while banking the slice: measured off the remainder,
+  every R on a scaled-out trade would inflate. `realizedR` therefore equals
+  `paperRealizedR` by construction.
+- `GET /api/journal/excursions?book=paper` runs the identical measurement;
+  `book=live` (the default) is unchanged and now labelled. One loop,
+  `collectExcursions`, runs both — cap, concurrency and the coverage identity
+  (`trades + undated + overCap + unavailable = population`) are shared.
+- Each resolution's averages carry `winnerHeatR` (|MAE| over rows that closed
+  positive) and `loserMfeR` (MFE over rows that closed negative) as
+  `{ n, p50, p75, p90 }`. A scratch belongs to neither. The percentile is the
+  one `excursionTune.ts` sizes from, moved to `util/percentile.ts` so the
+  report and the tuner cannot disagree by a rank.
+- The Journal analytics panel prints the intraday winners' heat (median, p90,
+  n) and the losers' median MFE under the resolution split, and its Excursions
+  tab has a Live / Paper switch that runs the same request with `book=paper`.
+  Both are pinned at the consumer in `JournalAnalyticsModal.test.tsx`: a
+  quantile the server computes and nothing renders is not shipped.
+
+### What was deliberately not built
+
+A sum over trades of "if the stop had sat at *f* × today's distance, each
+trade whose MAE crossed it loses *f*R instead". It was the first thing
+sketched, and it is the peak-minus-distance model `exitTuneValidation.ts`
+discarded: it reports every tightening as an improvement because it charges a
+tighter stop for nothing a real order pays. The honest path replay exists for
+the live book; extending it to the paper book is the follow-up, not this.
+
+### Pre-committed reading
+
+`GET /api/journal/excursions?book=paper` on the deployed box: the coverage
+identity holds; the intraday partition reports `winnerHeatR` with n in the
+dozens. The reading for task #59 is then the winners' heat p90 against the
+1.0R stop, on both books; a p90 well under 1.0 on both is the case for
+`maxRiskAtrFraction` to bind harder or the cap to move, and it goes to the
+replay before it goes to the config.
+

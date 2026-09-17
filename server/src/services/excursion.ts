@@ -5,6 +5,8 @@
 
 import { Candle, Timeframe } from '../providers/types';
 import { etDateTimeToMs } from '../util/marketDate';
+import { mapPool } from '../util/async';
+import { percentile } from '../util/percentile';
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
 
@@ -269,6 +271,15 @@ export interface ExcursionReport {
   };
 }
 
+/** A distribution over one partition of a report's rows: three percentiles
+ *  and the count they were taken over. Rounded to 2dp, in R. */
+export interface ExcursionQuantiles {
+  n: number;
+  p50: number;
+  p75: number;
+  p90: number;
+}
+
 /** The averages a single resolution's rows support. */
 export interface ExcursionAverages {
   trades: number;
@@ -276,6 +287,19 @@ export interface ExcursionAverages {
   avgMaeR: number | null;
   avgRealizedR: number | null;
   capturePct: number | null;
+  /** How much room the WINNERS needed — |MAE| in R over rows that closed
+   *  positive (2026-09-17). The p90 is the number excursionTune.ts sizes a
+   *  stop from: a stop tighter than it stops out one winner in ten before it
+   *  wins. Read against the stop actually placed (1.0R): on the paper book
+   *  winners reached +0.25R in a median 12 minutes while losers took a median
+   *  275 minutes to travel the full distance to the stop, which is the
+   *  question this distribution exists to answer. Null with no winners
+   *  carrying R. */
+  winnerHeatR: ExcursionQuantiles | null;
+  /** How far the LOSERS got — MFE in R over rows that closed negative. A
+   *  loser that never reached +0.25R is a slow bleeder; one that reached
+   *  +0.5R and still lost is a give-back. Null with no losers carrying R. */
+  loserMfeR: ExcursionQuantiles | null;
 }
 
 function mean(xs: number[]): number | null {
@@ -291,16 +315,91 @@ function mean(xs: number[]): number | null {
 /** The four averages over one set of rows. Used for the pooled figures and,
  *  through the same function, for each resolution — so a per-resolution average
  *  can never drift from the pooled one's definition. */
+function quantilesOf(xs: number[]): ExcursionQuantiles | null {
+  if (!xs.length) return null;
+  return {
+    n: xs.length,
+    p50: round2(percentile(xs, 50)),
+    p75: round2(percentile(xs, 75)),
+    p90: round2(percentile(xs, 90)),
+  };
+}
+
 function averagesOf(rows: TradeExcursion[]): ExcursionAverages {
   const withR = rows.filter((r) => r.mfeR !== null);
   const captures = rows.filter((r) => r.capturedPct !== null).map((r) => r.capturedPct as number);
+  // A scratch (realized exactly 0) is neither: it needed no room to win and
+  // did not lose, so it belongs to neither distribution.
+  const winners = withR.filter((r) => (r.realizedR as number) > 0);
+  const losers = withR.filter((r) => (r.realizedR as number) < 0);
   return {
     trades: rows.length,
     avgMfeR: mean(withR.map((r) => r.mfeR as number)),
     avgMaeR: mean(withR.map((r) => r.maeR as number)),
     avgRealizedR: mean(withR.map((r) => r.realizedR as number)),
     capturePct: mean(captures),
+    winnerHeatR: quantilesOf(winners.map((r) => Math.abs(r.maeR as number))),
+    loserMfeR: quantilesOf(losers.map((r) => r.mfeR as number)),
   };
+}
+
+/** One candle fetch per trade, so the work is bounded. Newest trades win and
+ *  the number dropped is REPORTED — see ExcursionCoverage.
+ *
+ *  Raised from 50 on 2026-09-08. At 50 the journal route was analysing 50 of
+ *  the 92 measurable closed stock trades and silently reporting the other 42
+ *  as `overCap` — which is what made task #32's target-multiple comparison
+ *  undecidable: every candidate target came out inside noise, and at 1.25R
+ *  and above only three or four trades differed at all. A cap that throws
+ *  away half the evidence is the binding constraint on a question about the
+ *  tail. */
+export const EXCURSION_TRADE_CAP = 250;
+
+/** Concurrent candle fetches. `Promise.all` over every selected trade fired
+ *  all of them at once, which was survivable at 50 and is not the thing to
+ *  scale: the provider rate-limits hard enough that the screener already
+ *  loses ~47 of 559 symbols a tick to it, and here a throttled fetch does not
+ *  fail loudly — it lands in `unavailable` and SHRINKS the sample, which is
+ *  the exact opposite of what raising the cap is for. Same pool size the
+ *  screener uses. */
+export const EXCURSION_FETCH_CONCURRENCY = 6;
+
+export interface CollectedExcursions {
+  rows: TradeExcursion[];
+  /** Inputs beyond `cap`, most recent kept. */
+  overCap: number;
+  /** Attempted but unusable — the candle fetch failed or held nothing over
+   *  the holding window. Counted, never discarded. */
+  unavailable: number;
+}
+
+/**
+ * Measure a set of trades — the ONE loop both books' reports run (the
+ * journal route for live and paper, 2026-09-17). Inputs are taken newest
+ * first up to `cap`; each is one fetch through `excursionForTrade`, `concurrency`
+ * at a time; a failure or an empty window counts as unavailable rather than
+ * vanishing. Rows come back newest first.
+ */
+export async function collectExcursions(
+  source: CandleSource,
+  inputs: ExcursionInput[],
+  cap: number = EXCURSION_TRADE_CAP,
+  concurrency: number = EXCURSION_FETCH_CONCURRENCY,
+): Promise<CollectedExcursions> {
+  const selected = inputs.slice(0, Math.max(0, Math.floor(cap)));
+  const rows: TradeExcursion[] = [];
+  let unavailable = 0;
+  await mapPool(selected, concurrency, async (p) => {
+    try {
+      const ex = await excursionForTrade(source, p);
+      if (ex) rows.push(ex);
+      else unavailable++;
+    } catch {
+      unavailable++;
+    }
+  });
+  rows.sort((a, b) => b.entryDate.localeCompare(a.entryDate));
+  return { rows, overCap: inputs.length - selected.length, unavailable };
 }
 
 export function aggregateExcursions(rows: TradeExcursion[], coverage?: Partial<ExcursionCoverage>): ExcursionReport {

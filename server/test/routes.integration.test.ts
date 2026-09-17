@@ -17,7 +17,7 @@ import { addExit, createPosition } from '../src/db/positions';
 import { getAutotradeConfig } from '../src/db/autotradeConfig';
 import { setAutotradeConfig } from '../src/db/autotradeConfig';
 import { saveDailyResult } from '../src/db/dailyResults';
-import { openPaperPosition } from '../src/db/autotradePaperPositions';
+import { closePaperPosition, openPaperPosition } from '../src/db/autotradePaperPositions';
 import { openOptionsPaperPosition } from '../src/db/autotradeOptionsPaperPositions';
 import { createLiveOptionsPosition } from '../src/db/autotradeLiveOptionsPositions';
 import { saveLastTick } from '../src/db/autotradeLastTick';
@@ -3899,6 +3899,51 @@ describe('journal analysis routes tell you what they could not cover (integratio
       expect(r.trades + r.coverage.unavailable, `limit=${q} analysed the wrong number`).toBe(4);
       expect(r.coverage.overCap, `limit=${q} dropped trades`).toBe(0);
     }
+  });
+
+  it('measures the PAPER book on request — the control arm, same walk, same accounting', async () => {
+    // Until 2026-09-17 this route (and everything downstream of it — the exit
+    // tuner, its validation) had only ever seen the live ledger. The paper
+    // book is the larger, unconstrained sample, and it maps onto the same
+    // input, so the same identity has to hold for it.
+    db.exec('DELETE FROM autotrade_paper_positions;');
+    const p = openPaperPosition({
+      symbol: 'PAPX',
+      side: 'buy',
+      quantity: 10,
+      entryPrice: 100,
+      stopPrice: 95,
+      targetPrice: 110,
+      riskAmount: 50,
+      riskProfile: 'MODERATE',
+      rationale: 'fixture',
+    });
+    closePaperPosition(p.id, { exitPrice: 104, exitReason: 'target' });
+    openPaperPosition({
+      symbol: 'PAPY',
+      side: 'buy',
+      quantity: 10,
+      entryPrice: 50,
+      stopPrice: 48,
+      targetPrice: 55,
+      riskAmount: 20,
+      riskProfile: 'MODERATE',
+      rationale: 'still open — no holding window to measure',
+    });
+
+    const rep = (await getJson('/api/journal/excursions?book=paper')) as Excursions & { book: string };
+    expect(rep.book).toBe('paper');
+    expect(rep.coverage.closedStockTrades).toBe(1); // the open row is not a closed trade
+    const c = rep.coverage;
+    expect(rep.trades + c.undated + c.overCap + c.unavailable).toBe(c.closedStockTrades);
+
+    // The default is unchanged: the live ledger, labelled.
+    const live = (await getJson('/api/journal/excursions')) as Excursions & { book: string };
+    expect(live.book).toBe('live');
+  });
+
+  it('refuses a book it does not have', async () => {
+    expect((await fetch(`${base}/api/journal/excursions?book=options`)).status).toBe(400);
   });
 
   it('exit-replay accounts for every closed stock trade and defaults to the live geometry', async () => {

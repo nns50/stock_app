@@ -32,6 +32,7 @@
 // exitTuneValidation.ts — the rules themselves have never been checked against
 // realized P&L, and that, not this, is what keeps autoTuneExitsEnabled off.
 
+import { percentile } from '../../util/percentile';
 import { ExcursionReport } from '../excursion';
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
@@ -67,17 +68,8 @@ const STOP_ROOM_PERCENTILE = 90;
  *  little size, while being too tight costs whole winners. */
 const STOP_SAFETY_BUFFER = 1.1;
 
-/** Linear-interpolated percentile of an unsorted sample. Empty -> 0. */
-function percentile(values: number[], p: number): number {
-  if (values.length === 0) return 0;
-  const xs = [...values].sort((a, b) => a - b);
-  if (xs.length === 1) return xs[0] as number;
-  const rank = (p / 100) * (xs.length - 1);
-  const lo = Math.floor(rank);
-  const hi = Math.ceil(rank);
-  const frac = rank - lo;
-  return (xs[lo] as number) * (1 - frac) + (xs[hi] as number) * frac;
-}
+// percentile() moved to util/percentile.ts (2026-09-17) — the excursion report
+// now surfaces the same quantiles this tuner sizes from, so they share it.
 // Aim the target at this fraction of a winner's average favorable peak — you
 // can't sell the exact high, so target a bit below it to actually get filled.
 const TARGET_CAPTURE_FRACTION = 0.8;

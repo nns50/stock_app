@@ -732,15 +732,35 @@ export interface ExcursionCoverage {
   unavailable: number;
 }
 
+/** A distribution over one partition of a report's rows: three percentiles
+ *  and the count they were taken over, in R. */
+export interface ExcursionQuantiles {
+  n: number;
+  p50: number;
+  p75: number;
+  p90: number;
+}
+
 export interface ExcursionAverages {
   trades: number;
   avgMfeR: number | null;
   avgMaeR: number | null;
   avgRealizedR: number | null;
   capturePct: number | null;
+  /** How much room the WINNERS needed — |MAE| in R over trades that closed
+   *  positive. A stop tighter than the p90 stops out one winner in ten before
+   *  it wins. Null with no winners carrying R. */
+  winnerHeatR: ExcursionQuantiles | null;
+  /** How far the LOSERS got — MFE in R over trades that closed negative. A
+   *  loser that never reached +0.25R is a slow bleeder; one that reached
+   *  +0.5R and still lost is a give-back. Null with no losers carrying R. */
+  loserMfeR: ExcursionQuantiles | null;
 }
 
 export interface ExcursionReport {
+  /** Which book was measured (2026-09-17). `live` is the journal's own
+   *  ledger; `paper` the autotrade paper book, the unconstrained control arm. */
+  book: 'live' | 'paper';
   /** Trades actually analysed — the `rows` below. See `coverage` for the rest. */
   trades: number;
   avgMfeR: number | null;

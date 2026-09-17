@@ -5,6 +5,7 @@ import {
   barsWithinHoldingPeriod,
   excursionForTrade,
   ExcursionInput,
+  collectExcursions,
 } from '../src/services/excursion';
 import type { Candle } from '../src/providers/types';
 
@@ -340,5 +341,82 @@ describe('aggregateExcursions — averages per resolution', () => {
     expect(rep.byResolution.intraday.trades + rep.byResolution.daily.trades).toBe(rep.trades);
     expect(rep.byResolution.intraday.trades).toBe(rep.resolutionMix.intraday);
     expect(rep.byResolution.daily.trades).toBe(rep.resolutionMix.daily);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The two distributions the stop question turns on (2026-09-17).
+//
+// An average MAE says little about a stop: a stop is a threshold, and what it
+// costs is the share of WINNERS whose worst dip crossed it before they won. So
+// the report carries winners' heat (|MAE|) as percentiles — the p90 is the
+// number excursionTune.ts sizes from — and, on the other side, how far the
+// LOSERS got (MFE) before losing, which is what separates a slow bleeder from
+// a give-back. Same rows, same percentile the tuner uses.
+// ---------------------------------------------------------------------------
+describe('aggregateExcursions — winners’ heat and losers’ MFE', () => {
+  const won = (low: number, high = 101) =>
+    computeExcursion({ ...longTrade, realizedPnl: 50 }, [candle(high, low)], 'intraday')!;
+  const lost = (high: number, low = 91) =>
+    computeExcursion({ ...longTrade, realizedPnl: -100 }, [candle(high, low)], 'intraday')!;
+
+  it('takes winners’ |MAE| and losers’ MFE as percentiles, per resolution', () => {
+    // Winners dipped 0.1R, 0.4R and 0.8R (lows 99, 96, 92 against a 90 stop);
+    // losers ran +0.2R and +0.5R before losing (highs 102, 105).
+    const rows = [won(99), won(96), won(92), lost(102), lost(105)];
+    const a = aggregateExcursions(rows).byResolution.intraday;
+    expect(a.winnerHeatR).toEqual({ n: 3, p50: 0.4, p75: 0.6, p90: 0.72 });
+    expect(a.loserMfeR).toEqual({ n: 2, p50: 0.35, p75: 0.43, p90: 0.47 });
+    // Nothing was measured on daily bars, so that partition reports nothing.
+    expect(aggregateExcursions(rows).byResolution.daily.winnerHeatR).toBeNull();
+  });
+
+  it('reports null, not zero, for a side with no trades — and a scratch is on neither side', () => {
+    const scratch = computeExcursion({ ...longTrade, realizedPnl: 0 }, [candle(103, 97)], 'intraday')!;
+    const onlyWinners = aggregateExcursions([won(99), scratch]).byResolution.intraday;
+    expect(onlyWinners.winnerHeatR).toEqual({ n: 1, p50: 0.1, p75: 0.1, p90: 0.1 });
+    expect(onlyWinners.loserMfeR).toBeNull();
+  });
+
+  it('leaves a row with no stop (no R) out of both distributions', () => {
+    const noStop = computeExcursion({ ...longTrade, stopPrice: null, realizedPnl: 50 }, [candle(110, 95)], 'intraday')!;
+    expect(noStop.maeR).toBeNull();
+    const a = aggregateExcursions([noStop, won(96)]).byResolution.intraday;
+    expect(a.winnerHeatR).toEqual({ n: 1, p50: 0.4, p75: 0.4, p90: 0.4 });
+  });
+});
+
+describe('collectExcursions — one loop for both books', () => {
+  const trade = (id: number, symbol: string, entryDate: string): ExcursionInput => ({
+    ...longTrade,
+    positionId: id,
+    symbol,
+    entryDate,
+    exitDate: '2026-01-05',
+  });
+  const source = {
+    getCandles: vi.fn(async (symbol: string) => {
+      if (symbol === 'BAD') throw new Error('provider down');
+      if (symbol === 'EMPTY') return [];
+      return [candle(120, 96)];
+    }),
+  };
+
+  it('caps newest-first, counts what it could not measure, and never loses a trade', async () => {
+    // The shared bar is stamped 2026-01-02, so a measurable trade must have
+    // entered on or before it — the first run of this case gave AAA 01-03 and
+    // read its own fixture as "unavailable".
+    const inputs = [
+      trade(1, 'AAA', '2026-01-02'),
+      trade(2, 'BAD', '2026-01-01'),
+      trade(3, 'EMPTY', '2026-01-01'),
+      trade(4, 'BBB', '2025-12-31'),
+      trade(5, 'CCC', '2025-12-30'),
+    ];
+    const out = await collectExcursions(source, inputs, 4, 2);
+    expect(out.overCap).toBe(1); // the fifth, oldest, was not attempted
+    expect(out.unavailable).toBe(2); // the throw and the empty window, counted
+    expect(out.rows.map((r) => r.positionId)).toEqual([1, 4]); // newest first
+    expect(out.rows.length + out.unavailable + out.overCap).toBe(inputs.length);
   });
 });
