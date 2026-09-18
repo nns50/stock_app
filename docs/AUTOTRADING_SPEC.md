@@ -12010,10 +12010,14 @@ ACCOUNT-WIDE figure against an OPTIONS-ONLY cap.
   refusals) under a 190% allowance of about $57,700.
 - `max_aggregate_open_risk` — shared with equity BY DESIGN, and it refused five
   options signals between 10:01 and 10:10 while the stock positions held the
-  whole 7.5% budget. Unchanged: at 2.5% risk × 3 stock slots the budget is full
-  whenever the stock book is, so the options sleeve opens only when a stock
-  slot is empty. Widening it (12.5% = 2.5% × the five slots of both sleeves)
-  is an exposure decision and waits for the operator's word.
+  whole 7.5% budget. At 2.5% risk × 3 stock slots that budget is full whenever
+  the stock book is, so the options sleeve could open only when a stock slot
+  was empty. Widening it is an exposure decision, and the operator took it the
+  same day: **`maxAggregateOpenRiskPct` 7.5 → 12.5** at 12:02 ET (2.5% × the
+  five slots of both sleeves: three stock, two options). The daily halt stays
+  at 7.5% of the day's opening equity; with every slot filled the book can now
+  carry 12.5% of equity at risk before it, which is the trade-off the operator
+  accepted.
 
 The change, one derivation per quantity:
 
