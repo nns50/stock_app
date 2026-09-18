@@ -11942,3 +11942,47 @@ time exits 35 → 9 free a slot sooner — which is a flow claim, and flow is
 measured by the daily-goal sweep, not by per-trade R. The paper book's own
 walk-forward (`exitTuneValidation` is live-only) stays the follow-up.
 
+## 2026-09-18 — options entries are priced from the real-time ask
+
+The operator asked on 2026-09-17 whether the options sleeve used the account's
+OPRA entitlement ("OPRA Real-Time Non-display"). It did for the exits — live
+since 2026-09-12, paper since 2026-09-17 — and not for the entries. Both books
+re-fetched the contract from the Yahoo-sourced chain at placement, ~15 minutes
+delayed, and built the buy limit from its midpoint plus 5%; the sizer's fill
+premium and the fat-finger reference were that same stale midpoint. On a 0DTE
+contract a quarter of an hour is the difference between a limit that fills and
+one that rests under a market that has already left, and the contract count
+was off by whatever the premium had moved in the meantime.
+
+The change, one module and two callers per side (CLAUDE.md's rule):
+
+- `optionsExitPricing.ts` gains the buy side: `buyableEntryLimit` — the ask
+  with the 5% buffer on top, rounded UP onto the tick grid in one shared
+  `buyLimitFromRaw`, the buffered mark when there is no ask — and its spread
+  twin, long ask minus short bid. The resolver is `resolveContractQuote`;
+  `resolveExitQuote` stays as its name on the sell side.
+- The live entry resolves each leg through it, keyed by the contract symbol
+  the signal already carries, refuses a last-trade-only print as before,
+  sizes and references at the ask, and journals `priceBasis`, `quoteSource`,
+  `quoteAgeMs` and each leg's quote on `live_options_order_placed`.
+- The paper entry fills at the same ask — the mark, or its last trade, when
+  no ask exists; the paper book never refused a last-trade print — and says
+  which on `options_paper_order_placed` (`fillBasis`, `quoteSource`).
+- The rounding guard in `optionTick.test.ts` now counts TWO sites over the
+  live file and the shared module, one per side of an order, and the live
+  file rounds nothing of its own.
+
+Nothing changes when no two-sided quote exists: every existing case that
+priced from a mark-only chain prices identically, which the untouched entry
+tests prove. The paper book's entry series changes on this date the way its
+exit series did on 09-17.
+
+### Pre-committed check
+
+The first `live_options_order_placed` after the deploy carries
+`priceBasis: 'ask'` and `quoteSource: 'opra'` with a `quoteAgeMs` under two
+minutes, and its `limitPrice` is that ask plus 5% on the grid; the first
+`options_paper_order_placed` carries `fillBasis: 'ask'`. A
+`quoteSource: 'chain'` on a session where the OPRA route answers is the
+finding to chase.
+

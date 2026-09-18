@@ -236,6 +236,28 @@ describe('attemptOptionsPaperEntry', () => {
     expect(events[0].riskProfile).toBe('MODERATE');
   });
 
+  // THE PAPER BOOK BUYS AT THE ASK (2026-09-18) — the price a buyer pays,
+  // through the same helper the live entry is priced with, so the control arm
+  // no longer fills at a midpoint nobody is offering. The mark stays the
+  // fallback when the quote has no ask, and the row says which it was.
+  it('fills at the ask when the chain quotes one, not the midpoint', async () => {
+    mockGetProvider.mockReturnValue(
+      chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4.25, bid: 4.1, ask: 4.4 } }) as never,
+    );
+    const outcome = await attemptOptionsPaperEntry(optionSignal(), okResult, 'MODERATE');
+    expect(outcome.ok).toBe(true);
+    expect(outcome.position!.entryPrice).toBe(4.4);
+    const events = listAutotradeEvents({ stage: 'execution', symbol: 'AAPL' });
+    expect(JSON.parse(events[0].detail!)).toMatchObject({ entryPrice: 4.4, fillBasis: 'ask', quoteSource: 'chain' });
+  });
+
+  it('says the fill was at the mark when the quote has no ask', async () => {
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4.25 } }) as never);
+    await attemptOptionsPaperEntry(optionSignal(), okResult, 'MODERATE');
+    const events = listAutotradeEvents({ stage: 'execution', symbol: 'AAPL' });
+    expect(JSON.parse(events[0].detail!)).toMatchObject({ entryPrice: 4.25, fillBasis: 'mark', quoteSource: 'chain' });
+  });
+
   describe('debit spreads', () => {
     const spreadOkResult: OptionsRiskCheckResult = evaluateOptionsRiskCheck(spreadSignal(), {
       equity: 100_000,
@@ -293,7 +315,24 @@ describe('attemptOptionsPaperEntry', () => {
       });
       const events = listAutotradeEvents({ stage: 'execution', symbol: 'AAPL' });
       expect(events[0]).toMatchObject({ action: 'options_paper_order_placed' });
-      expect(JSON.parse(events[0].detail!)).toMatchObject({ kind: 'debit_spread', netDebit: 2.25 });
+      expect(JSON.parse(events[0].detail!)).toMatchObject({ kind: 'debit_spread', netDebit: 2.25, fillBasis: 'mark' });
+    });
+
+    it('opens the long leg at its ask and the short leg at its bid when the chain quotes them (2026-09-18)', async () => {
+      mockGetProvider.mockReturnValue(
+        chainsFor({
+          AAPL: [
+            { side: 'call', strike: 100, mark: 3.5, bid: 3.4, ask: 3.6 },
+            { side: 'call', strike: 110, mark: 1.25, bid: 1.2, ask: 1.3 },
+          ],
+        }) as never,
+      );
+      const outcome = await attemptOptionsPaperEntry(spreadSignal(), spreadOkResult, 'MODERATE');
+      expect(outcome.ok).toBe(true);
+      expect(outcome.position).toMatchObject({ entryPrice: 3.6, shortEntryPrice: 1.2 });
+      const detail = JSON.parse(listAutotradeEvents({ stage: 'execution', symbol: 'AAPL' })[0].detail!);
+      expect(detail).toMatchObject({ kind: 'debit_spread', fillBasis: 'ask', quoteSource: 'chain' });
+      expect(detail.netDebit).toBeCloseTo(2.4, 10);
     });
 
     it('sizes by suggestedContracts (spreads), not suggestedQuantity', async () => {

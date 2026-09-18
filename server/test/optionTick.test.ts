@@ -198,23 +198,27 @@ describe('no live options price site rounds to the cent by hand', () => {
   const autotrading = (file: string) =>
     stripComments(readFileSync(join(__dirname, '..', 'src', 'services', 'autotrading', file), 'utf8'));
 
-  it('the live executor and the shared exit pricing derive every limit through roundOptionPrice', () => {
+  it('the live executor and the shared order pricing derive every limit through roundOptionPrice', () => {
     // THE SELL SIDE MOVED (2026-09-17): sellLimitFromRaw and the two helpers
     // that reach it now live in optionsExitPricing.ts, because the paper book
-    // prices its exits through them too. The count below is over BOTH files,
-    // and it is the same three: two entry-side sites still in the live file,
-    // one sell-side site in the shared module. What this guard watches for is
-    // unchanged — the number must not rise without a genuinely new price, and
-    // the sell paths must all reach the one shared rounding.
+    // prices its exits through them too. THE BUY SIDE FOLLOWED (2026-09-18):
+    // the two entry-side sites that were still in the live file — one per
+    // shape, "mark × buffer, rounded up" — became buyLimitFromRaw in the same
+    // module, reached by buyableEntryLimit and its spread twin, so the paper
+    // book's entries are priced there too. The count below is over BOTH files
+    // and is now TWO: one rounding per side of an order, and the live file
+    // rounds nothing of its own. What this guard watches for is unchanged —
+    // the number must not rise without a genuinely new price, and every path
+    // must reach the one shared rounding for its side.
     const code = autotrading('liveOptionsExecute.ts') + '\n' + autotrading('optionsExitPricing.ts');
     // The exact shape all four sites carried: a cent-grid round assigned to a limit.
     expect(code).not.toMatch(/limitPrice\s*=\s*Math\.round\([^)]*\*\s*100\)\s*\/\s*100/);
-    // THREE, not four, since 2026-09-11: the single-leg and debit-spread SELL
-    // limits share one rounding site, so what used to be two copies of "mark ×
-    // buffer, rounded down" is one. That is the direction this guard wants —
-    // fewer places deriving the same price — so the count dropping is a pass,
-    // not a hole. What it must never do is RISE without a new genuinely
-    // distinct price, or fall to zero.
+    // The history of the count: four copies (2026-09-06), three when the two
+    // SELL limits shared one rounding (2026-09-11), two when the two BUY
+    // limits did the same (2026-09-18). Fewer places deriving the same price
+    // is the direction this guard wants, so a drop is a pass, not a hole. What
+    // it must never do is RISE without a genuinely distinct new price, or
+    // fall to zero.
     //
     // It survived the 2026-09-12 bid-first rewrite unchanged, and that was the
     // point of it: the sell side grew a second HELPER (a spread sells its long
@@ -224,19 +228,26 @@ describe('no live options price site rounds to the cent by hand', () => {
     // not, because that is how the two disagree about what is placeable, and
     // the placeability probe's answer has to bind the placement's.
     const sites = code.match(/roundOptionPrice\(/g) ?? [];
-    expect(sites).toHaveLength(3);
-    // And the shared one really is shared: both sell paths reach it.
+    expect(sites).toHaveLength(2);
+    expect(autotrading('liveOptionsExecute.ts')).not.toMatch(/roundOptionPrice\(/);
+    // And the shared ones really are shared: both sell paths reach the sell
+    // rounding, both buy paths reach the buy rounding.
     expect((code.match(/sellLimitFromRaw\(/g) ?? []).length).toBeGreaterThanOrEqual(3);
+    expect((code.match(/buyLimitFromRaw\(/g) ?? []).length).toBeGreaterThanOrEqual(3);
   });
 
-  it('the paper executor prices no exit of its own — no rounding, no buffer arithmetic', () => {
+  it('the paper executor prices no order of its own — no rounding, no buffer arithmetic on either side', () => {
     // The whole point of sharing the helpers: if optionsExecute.ts ever grows
-    // a `mark * 0.95` or a roundOptionPrice( of its own, the two books have
-    // started to disagree about what a contract can be sold for again.
+    // a `mark * 0.95`, a `mark * 1.05` or a roundOptionPrice( of its own, the
+    // two books have started to disagree about what a contract can be sold
+    // for, or bought for, again.
     const code = autotrading('optionsExecute.ts');
     expect(code).not.toMatch(/roundOptionPrice\(/);
     expect(code).not.toMatch(/\*\s*0\.95\b|\*\s*\(1\s*-\s*0\.05\)/);
+    expect(code).not.toMatch(/\*\s*1\.05\b|\*\s*\(1\s*\+\s*0\.05\)/);
     expect(code).toMatch(/sellableExitLimit\(/);
     expect(code).toMatch(/sellableSpreadExitLimit\(/);
+    expect(code).toMatch(/buyableEntryLimit\(/);
+    expect(code).toMatch(/buyableSpreadEntryLimit\(/);
   });
 });

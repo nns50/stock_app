@@ -274,6 +274,23 @@ The intent's reference price follows the basis. The fat-finger guardrail judges
 further under the mark than the account's own `liveOptionsFatFingerPct` is
 treated as corrupt, journaled, and ignored in favour of the mark.
 
+**The entry is priced from the ask, too (2026-09-18).** The same delay sat on the
+other side of every trade: both books re-fetched the contract from the delayed chain
+at placement and built the buy limit from its **midpoint plus 5%**, and the sizer's
+premium — the risk — was that same stale midpoint, while the account's OPRA
+entitlement fed only the exits. An entry now resolves the contract through the same
+OPRA-first resolver a close uses (the signal already carries the OCC symbol) and is
+priced from the **ask** — what a buyer pays — with the 5% buffer on top, so a quote
+that ticks up between the snapshot and the order still fills; a limit fills at the
+best price available, so the buffer is paid only when the market itself moved. A
+vertical pays long ask minus short bid. The sizer's re-size and the fat-finger
+reference read the ask; the buffered mark is the fallback when no two-sided quote
+exists, and the refusal to open on a last-trade-only print is unchanged. The paper
+book fills at the same ask, so the control arm no longer buys at a midpoint nobody
+offers. `live_options_order_placed` carries `priceBasis`, `quoteSource`, `quoteAgeMs`
+and each leg's quote; `options_paper_order_placed` carries `fillBasis` and
+`quoteSource`.
+
 **A sub-tick mark no longer refuses the close.** `roundOptionPrice` rounds a
 sell DOWN, so anything under half a tick became zero and was refused: HOOD's
 14:00 hard-exit replacement computed `roundOptionPrice(0.03 × 0.95) = 0` and

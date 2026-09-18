@@ -34,10 +34,15 @@ import { minutesUntilClose } from './endOfDayFlatten';
 import { getProvider } from '../../providers';
 import { validPremium } from '../trading/optionTick';
 import {
+  buyableEntryLimit,
+  buyableSpreadEntryLimit,
+  resolveContractQuote,
   resolveExitQuote,
   sellableExitLimit,
   sellableSpreadExitLimit,
+  type EntryPriceBasis,
   type ExitPriceBasis,
+  type ResolvedContractQuote,
   type SellableExitLimit,
 } from './optionsExitPricing';
 import { etToday } from '../../util/marketDate';
@@ -286,16 +291,35 @@ export async function attemptOptionsPaperEntry(
   }
 
   if (signal.kind === 'debit_spread') {
-    let longFill: number;
-    let shortFill: number;
+    let longQ: ResolvedContractQuote;
+    let shortQ: ResolvedContractQuote;
     try {
-      [longFill, shortFill] = await Promise.all([
-        fetchContractMark(signal.symbol, signal.expiration, signal.longStrike, signal.side),
-        fetchContractMark(signal.symbol, signal.expiration, signal.shortStrike, signal.side),
+      // THE PAPER BOOK FILLS THE WAY A REAL ORDER IS PRICED (2026-09-18): the
+      // same OPRA-first resolver and the same buy-side pricing as the live
+      // entry, so the control arm pays the ask a buyer pays rather than a
+      // midpoint nobody is offering. The chain is the fallback, as for a close.
+      [longQ, shortQ] = await Promise.all([
+        resolveContractQuote(signal.longContractSymbol, () =>
+          fetchContractQuote(signal.symbol, signal.expiration, signal.longStrike, signal.side),
+        ),
+        resolveContractQuote(signal.shortContractSymbol, () =>
+          fetchContractQuote(signal.symbol, signal.expiration, signal.shortStrike, signal.side),
+        ),
       ]);
     } catch (err) {
       return entryFailure(signal.symbol, riskProfile, `Quote fetch failed: ${(err as Error).message}`);
     }
+    const spreadEntry = buyableSpreadEntryLimit({
+      longAsk: longQ.ask,
+      shortBid: shortQ.bid,
+      longMark: longQ.mark,
+      shortMark: shortQ.mark,
+      fromLastTrade: longQ.fromLastTrade || shortQ.fromLastTrade,
+    });
+    // The leg prices the net was built from — the ask and the bid when the
+    // quote carried them, the marks otherwise — stored on the position so
+    // `exit − short_exit` reads against the prices actually paid.
+    const [longFill, shortFill] = spreadEntry.basis === 'ask' ? [longQ.ask!, shortQ.bid!] : [longQ.mark, shortQ.mark];
     if (!validPremium(longFill) || !validPremium(shortFill)) {
       return entryFailure(signal.symbol, riskProfile, `Invalid premium: long=${longFill} short=${shortFill}`);
     }
@@ -355,6 +379,8 @@ export async function attemptOptionsPaperEntry(
         expiration: signal.expiration,
         quantity: position.quantity,
         netDebit: longFill - shortFill,
+        fillBasis: spreadEntry.basis,
+        quoteSource: longQ.source,
       },
       riskProfile,
     });
@@ -362,8 +388,18 @@ export async function attemptOptionsPaperEntry(
   }
 
   let fillPremium: number;
+  let fillBasis: EntryPriceBasis;
+  let quoteSource: 'opra' | 'chain';
   try {
-    fillPremium = await fetchContractMark(signal.symbol, signal.expiration, signal.strike, signal.side);
+    // Same as the spread branch: the real-time ask when there is one, the
+    // chain's mark (or, for the paper book only, its last trade) otherwise.
+    const q = await resolveContractQuote(signal.contractSymbol, () =>
+      fetchContractQuote(signal.symbol, signal.expiration, signal.strike, signal.side),
+    );
+    const entry = buyableEntryLimit({ ask: q.ask, mark: q.mark, fromLastTrade: q.fromLastTrade });
+    fillPremium = entry.fillPremium;
+    fillBasis = entry.basis;
+    quoteSource = q.source;
   } catch (err) {
     return entryFailure(signal.symbol, riskProfile, `Quote fetch failed: ${(err as Error).message}`);
   }
@@ -416,6 +452,8 @@ export async function attemptOptionsPaperEntry(
       expiration: signal.expiration,
       quantity: position.quantity,
       entryPrice: fillPremium,
+      fillBasis,
+      quoteSource,
     },
     riskProfile,
   });
