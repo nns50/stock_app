@@ -240,4 +240,46 @@ describe('countTodaysOrders (the max-orders/day basis)', () => {
     submittedAt('prevEtDay', Date.UTC(2026, 6, 14, 3, 0, 0)); // 23:00 ET Jul 13 — previous ET day, excluded
     expect(countTodaysOrders(now)).toBe(1);
   });
+
+  // -------------------------------------------------------------------------
+  // Scoped to ONE sleeve (2026-09-18). Each live sleeve has its own daily cap,
+  // and both were judged against this account-wide count: on 2026-09-18 four
+  // stock entries plus two options entries read "6 placed vs 6/day" against
+  // liveOptionsMaxOrdersPerDay, and the options sleeve was shut from 10:27 ET
+  // with two placements on the book.
+  // -------------------------------------------------------------------------
+  const walkOption = (key: string, openClose: 'open' | 'close', ...states: OrderState[]) => {
+    const i = createIntent(
+      {
+        ...stockBuy,
+        assetKind: 'option',
+        optionType: 'call',
+        strike: 100,
+        expiration: '2030-01-18',
+        side: openClose === 'open' ? 'buy' : 'sell',
+        openClose,
+      },
+      key,
+    );
+    for (const s of states) transitionIntent(i.id, s);
+    return i.id;
+  };
+
+  it("counts one sleeve's opening orders when asked, and every sleeve's when not — the 2026-09-18 morning", () => {
+    for (let n = 0; n < 4; n++) walk(`stk${n}`, 'validated', 'confirmed', 'submitted', 'acknowledged', 'filled');
+    for (let n = 0; n < 2; n++) {
+      walkOption(`opt${n}`, 'open', 'validated', 'confirmed', 'submitted', 'acknowledged', 'filled');
+    }
+    expect(countTodaysOrders()).toBe(6); // the human Trade page's account-wide cap
+    expect(countTodaysOrders(Date.now(), 'stock')).toBe(4);
+    expect(countTodaysOrders(Date.now(), 'option')).toBe(2);
+  });
+
+  it('applies the close and rejection rules inside a sleeve too', () => {
+    walkOption('optOpen', 'open', 'validated', 'confirmed', 'submitted', 'acknowledged', 'filled');
+    walkOption('optClose', 'close', 'validated', 'confirmed', 'submitted', 'acknowledged', 'filled');
+    walkOption('optRej', 'open', 'validated', 'confirmed', 'submitted', 'rejected');
+    expect(countTodaysOrders(Date.now(), 'option')).toBe(1);
+    expect(countTodaysOrders(Date.now(), 'stock')).toBe(0);
+  });
 });

@@ -253,9 +253,9 @@ const ORDERS_PER_TRADE_WITH_SCALE_OUT = 3;
  *
  * This used to be `maxTradesPerDay` exactly, which quietly made the two caps
  * fight: maxTradesPerDay counts ENTRIES, while the guardrail this feeds
- * (countTodaysOrders, guardrails.ts's max_orders_per_day) counts every
- * submitted intent — entries AND exits. So "4 trades a day" really bought
- * 4 orders total, and every exit the loop placed cost an entry.
+ * (countTodaysOrders, guardrails.ts's max_orders_per_day) at the time counted
+ * every submitted intent — entries AND exits. So "4 trades a day" really
+ * bought 4 orders total, and every exit the loop placed cost an entry.
  *
  * That is not theoretical. On 2026-08-24, with both caps at 4, the day spent
  * its budget on three entries plus one stagnation scratch; GRMN's own
@@ -264,8 +264,12 @@ const ORDERS_PER_TRADE_WITH_SCALE_OUT = 3;
  * judgement. The intraday stagnation exit exists to recycle a slot, so having
  * each scratch cost a fresh entry defeated the feature that placed it.
  *
- * The entry budget is unchanged — maxTradesPerDay still caps entries, and
- * riskCheck still enforces it. This only stops exits from eating that budget.
+ * Since 2026-08-25 the count is OPENING orders only (a close neither counts
+ * nor is refused), and since 2026-09-18 it is the equity sleeve's own opening
+ * orders (the options sleeve has its own cap and its own count). The ×2 stays
+ * as headroom: a cap that a re-tried entry can exhaust is still a cap on
+ * entries, and the entry budget is unchanged — maxTradesPerDay still caps
+ * entries, and riskCheck still enforces it.
  */
 export function liveOrderCapForTrades(maxTradesPerDay: number, scaleOutEnabled = false): number {
   return maxTradesPerDay * (scaleOutEnabled ? ORDERS_PER_TRADE_WITH_SCALE_OUT : ORDERS_PER_TRADE);

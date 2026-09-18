@@ -2211,6 +2211,54 @@ describe('runLiveExecution — a live refusal is journaled with its reason', () 
   });
 });
 
+// The daily order cap is per SLEEVE (2026-09-18): the options sleeve's entries
+// used to count against liveMaxOrdersPerDay and, worse, the equity sleeve's
+// against liveOptionsMaxOrdersPerDay (liveOptionsExecute.test.ts has that
+// half). Pinned at the consumer — the guardrail verdict — not at the count.
+describe('runLiveExecution — options orders do not spend the equity sleeve’s daily order cap (2026-09-18)', () => {
+  /** An opening intent of the given kind that reached the broker today. */
+  const placedToday = (assetKind: 'stock' | 'option', key: string) => {
+    const i = createIntent(
+      {
+        symbol: 'NVDA',
+        assetKind,
+        side: 'buy',
+        openClose: 'open',
+        quantity: 1,
+        orderType: 'limit',
+        limitPrice: 100,
+        ...(assetKind === 'option' ? { optionType: 'call' as const, strike: 100, expiration: '2030-01-18' } : {}),
+      },
+      key,
+    );
+    for (const s of ['validated', 'confirmed', 'submitted', 'acknowledged', 'filled'] as const) {
+      transitionIntent(i.id, s);
+    }
+  };
+
+  it('counts the equity sleeve’s own opening orders against liveMaxOrdersPerDay, not the options sleeve’s', async () => {
+    setAutotradeConfig({ ...liveConfig(), levelExitsEnabled: false, liveMaxOrdersPerDay: 1 });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100, MSFT: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-OK' });
+    placedToday('option', 'opt0'); // an options entry earlier today: not this sleeve's
+
+    expect((await runLiveExecution([{ signal: signal() }]))[0]).toMatchObject({ ok: true });
+    expect(listAutotradeEvents({ actions: ['live_entry_blocked'] })).toHaveLength(0);
+
+    // Its own placement is now the day's one stock order, and the cap is real.
+    mockPlaceOrder.mockClear();
+    const [second] = await runLiveExecution([{ signal: signal({ symbol: 'MSFT' }) }]);
+    expect(second.ok).toBe(false);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    const blocked = listAutotradeEvents({ actions: ['live_entry_blocked'] });
+    expect(blocked).toHaveLength(1);
+    expect((JSON.parse(blocked[0].detail!) as { reasons: string }).reasons).toBe(
+      'max_orders_per_day: 1 placed vs 1/day',
+    );
+  });
+});
+
 describe('runLiveExecution — the level plan journals what the signal ASKED for', () => {
   const liveCfgFields = {
     accountEquityUsd: 100_000,

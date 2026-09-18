@@ -1878,16 +1878,23 @@ refused, over and over, while the position moves against you.
 **A cap that counts exits is not a cap on trades.** Autotrade carries two
 separate daily limits and they are deliberately different numbers.
 **Max trades per day** counts *entries* — it is your trade budget. The live
-**orders per day** cap counts *every order sent to the broker*, and closing a
-position is an order too. Setting them equal looks tidy and quietly breaks
-things: a day that spends its budget entering has nothing left to exit with.
-That is not a thought experiment — with both set to 4, a live day spent its
-allowance on three entries plus one stagnation scratch, and the next scratch
-the loop wanted was refused 44 times in a row on "4 placed vs 4/day". The
-position was carried overnight by the guardrail that existed to protect it.
-The app now derives the orders cap as **one entry plus one exit per trade**, so
-raising your trade budget raises the room to close as well. If you ever set
-these by hand, keep the orders cap at least double the trade cap. The general
+**orders per day** cap counted *every order sent to the broker* when this was
+written, and closing a position is an order too. Setting them equal looks tidy
+and quietly breaks things: a day that spends its budget entering has nothing
+left to exit with. That is not a thought experiment — with both set to 4, a
+live day spent its allowance on three entries plus one stagnation scratch, and
+the next scratch the loop wanted was refused 44 times in a row on "4 placed vs
+4/day". The position was carried overnight by the guardrail that existed to
+protect it. Two fixes followed: the app derives the orders cap as **one entry
+plus one exit per trade**, so raising your trade budget raises the room to
+close as well, and since 2026-08-25 a close neither counts against the cap nor
+is refused by it. If you ever set these by hand, keep the orders cap at least
+double the trade cap. **A cap that counts the other sleeve's orders is not a
+cap on this one either** (2026-09-18): each live sleeve — equity, options — now
+counts only its own opening orders against its own cap, after four stock
+entries plus two options entries read as "6 placed vs 6/day" against the
+options cap and shut that sleeve for the session with two orders on its own
+book. The general
 lesson generalizes past this app: when you write a rule that throttles
 *actions*, check whether "get me out" is one of the actions you just throttled.
 

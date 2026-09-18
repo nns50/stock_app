@@ -217,9 +217,11 @@ the Realized basis — then **clamped to a maximum suggestion of 10%** — see
 | **Max aggregate open risk**      | `riskPerTrade × maxConcurrentPositions` (so the book can actually hold its intended positions). Capped at 30%. |
 | **Live max order ($)**           | `equity × 20% / 25% / 35%` by band — a fat-finger backstop, not primary sizing. |
 | **Live max daily loss ($)**      | `equity × dailyDrawdownHalt%` — the dollar version of the halt above.   |
-| **Live max orders/day**          | equals max trades/day.                                                   |
+| **Live max orders/day**          | `2 × max trades/day` — one entry plus one loop-placed close per trade (3× with scale-out on). Counts only the equity sleeve's own opening orders. |
 
-The options live caps mirror the equity ones.
+The options live caps follow the same shape (the options order cap has its own
+derivation — see the options tuning plan); the options orders/day cap equals max
+trades/day and counts only the options sleeve's own opening orders (2026-09-18).
 
 ### The dollar caps stay anchored to your equity
 
@@ -596,7 +598,7 @@ Warnings you may see:
    - Daily drawdown halt = `6 × 2.38 × 0.75` ≈ **10.7%** (≈ **$107**).
    - Max aggregate open risk = `2.38 × 2` ≈ **4.76%**.
    - Live max order = `1,000 × 25%` = **$250**; live max daily loss = **$107**; live max
-     orders/day = **6**.
+     orders/day = **12** (two orders per trade: the entry and its close).
 5. **Flip to Perfect day** and the same 5% target re-sizes to **0.42%** risk and a **2%**
    drawdown halt (floored) — because now you're assuming every trade wins.
 

@@ -85,6 +85,7 @@ import {
   resetLiveOptionsProcessState,
 } from '../src/services/autotrading/liveOptionsExecute';
 import { closeLiveOptionsAutotradePosition } from '../src/services/trading/closePosition';
+import { buildLiveTradingConfig } from '../src/services/autotrading/liveExecute';
 
 const mockGetProvider = vi.mocked(getProvider);
 const mockPreviewPositions = vi.mocked(previewWebullPositions);
@@ -323,6 +324,18 @@ describe('buildLiveOptionsTradingConfig', () => {
   it('falls back maxExposureUsd to 0 when equity is unset, failing closed', () => {
     expect(buildLiveOptionsTradingConfig(liveConfig({ accountEquityUsd: null })).maxExposureUsd).toBe(0);
   });
+
+  it('judges exposure against the SAME ceiling the equity sleeve builds — liveMaxExposurePct, not a pinned 100%', () => {
+    // 2026-09-18: pinned at 100% of equity, the options sleeve could not open
+    // while the stock book held more than the account's equity — 11 refusals
+    // reading "$55,716 vs cap $29,285" under a 190% allowance.
+    const cfg = liveConfig({ accountEquityUsd: 30_000, liveMaxExposurePct: 190 });
+    expect(buildLiveOptionsTradingConfig(cfg).maxExposureUsd).toBe(57_000);
+    expect(buildLiveOptionsTradingConfig(cfg).maxExposureUsd).toBe(buildLiveTradingConfig(cfg).maxExposureUsd);
+    expect(
+      buildLiveOptionsTradingConfig(liveConfig({ accountEquityUsd: 30_000, liveMaxExposurePct: 100 })).maxExposureUsd,
+    ).toBe(30_000);
+  });
 });
 
 describe('getOptionsProbationStatus', () => {
@@ -386,6 +399,96 @@ describe('attemptLiveOptionsEntry — stale marks', () => {
 
     expect((await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', liveConfig())).ok).toBe(true);
     expect(mockPlaceOrder).toHaveBeenCalledTimes(1);
+  });
+});
+
+// THE EQUITY SLEEVE MUST NOT SPEND THE OPTIONS SLEEVE'S CAPS (2026-09-18).
+// Both live sleeves trade one real account, and two options guardrails were
+// fed an account-wide figure against an options-only cap. The daily order
+// count: 4 stock entries + 2 options entries read "6 placed vs 6/day" and shut
+// the sleeve from 10:27 ET with two placements on the book. The exposure
+// ceiling: pinned at 100% of equity while the stock book was allowed 190%, so
+// from 10:01 to 10:23 every options entry read "$55,716 vs cap $29,285".
+// Pinned at the CONSUMER — the guardrail verdict — not at the count.
+describe('attemptLiveOptionsEntry — the equity sleeve does not spend the options caps (2026-09-18)', () => {
+  const armEntry = (cfg: AutotradeConfig, state = okAccountState.state) => {
+    setAutotradeConfig(cfg);
+    mockGetProvider.mockReturnValue(
+      chainsFor({
+        AAPL: { side: 'call', strike: 100, mark: 4 },
+        MSFT: { side: 'call', strike: 100, mark: 4 },
+      }) as never,
+    );
+    mockAccountState.mockResolvedValue({ ...okAccountState, state } as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-1' });
+  };
+  // A second attempt on the SAME underlying is refused before the guardrails
+  // ("entry order already in flight"), so the second signal is another name.
+  const secondSignal = () => optionSignal({ symbol: 'MSFT', contractSymbol: 'MSFT-fixture' });
+  /** An opening intent of the given kind that reached the broker today. */
+  const placedToday = (assetKind: 'stock' | 'option', key: string) => {
+    const i = createIntent(
+      {
+        symbol: 'NVDA',
+        assetKind,
+        side: 'buy',
+        openClose: 'open',
+        quantity: 1,
+        orderType: 'limit',
+        limitPrice: 100,
+        ...(assetKind === 'option' ? { optionType: 'call' as const, strike: 100, expiration: '2030-01-18' } : {}),
+      },
+      key,
+    );
+    for (const s of ['validated', 'confirmed', 'submitted', 'acknowledged', 'filled'] as const) {
+      transitionIntent(i.id, s);
+    }
+  };
+  const blockedReasons = () =>
+    listAutotradeEvents({ actions: ['live_options_entry_blocked'] }).map(
+      (e) => (JSON.parse(e.detail!) as { reasons: string }).reasons,
+    );
+
+  it('ignores stock entries when judging liveOptionsMaxOrdersPerDay, and still counts its own', async () => {
+    const cfg = liveConfig({ liveOptionsMaxOrdersPerDay: 2 });
+    armEntry(cfg);
+    for (let n = 0; n < 6; n++) placedToday('stock', `stk${n}`); // the 2026-09-18 morning, and then some
+
+    const sig = optionSignal();
+    expect((await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', cfg)).ok).toBe(true);
+    expect(mockPlaceOrder).toHaveBeenCalledTimes(1);
+    expect(blockedReasons()).toEqual([]);
+
+    placedToday('option', 'opt-second'); // the sleeve's own second order of the day
+    mockPlaceOrder.mockClear();
+    const again = secondSignal();
+    const r = await attemptLiveOptionsEntry(again, okResult(again), 'MODERATE', cfg);
+    expect(r.ok).toBe(false);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(blockedReasons()).toEqual(['max_orders_per_day: 2 placed vs 2/day']);
+  });
+
+  it('judges exposure against liveMaxExposurePct of equity — the equity sleeve’s own ceiling', async () => {
+    // $150k of stock on $100k equity: over a pinned 100%, inside the 190% the
+    // equity sleeve is allowed. The order itself is a few hundred dollars of
+    // premium.
+    const heavy = { ...okAccountState.state, exposureUsd: 150_000 };
+    const wide = liveConfig({ liveMaxExposurePct: 190 });
+    armEntry(wide, heavy);
+    const sig = optionSignal();
+    expect((await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', wide)).ok).toBe(true);
+    expect(blockedReasons()).toEqual([]);
+
+    const pinned = liveConfig({ liveMaxExposurePct: 100 });
+    mockPlaceOrder.mockClear();
+    armEntry(pinned, heavy);
+    const again = secondSignal();
+    const r = await attemptLiveOptionsEntry(again, okResult(again), 'MODERATE', pinned);
+    expect(r.ok).toBe(false);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(blockedReasons()).toEqual([
+      expect.stringMatching(/^account_exposure: \$150,\d{3}\.\d{2} vs cap \$100,000\.00$/),
+    ]);
   });
 });
 

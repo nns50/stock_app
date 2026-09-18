@@ -2317,7 +2317,17 @@ because the loop is the only caller that is always flat by the bell, so it is
   live." Its own dedicated **guardrail caps** (max order, max daily loss, max
   orders/day, fat-finger %) and **probation** window, separate from the equity live
   caps above, since options can go live weeks after equity and size differently
-  (premium-based, not share-count-based). Note that **probation cannot cut below one
+  (premium-based, not share-count-based). Its **max orders/day** counts only the
+  options sleeve's own opening orders, and the equity cap only the equity sleeve's
+  (since 2026-09-18 — before that one account-wide count served both caps, so on
+  2026-09-18 four stock entries plus two options entries read as `6 placed vs 6/day`
+  and every options entry from 10:27 ET was refused with two on the sleeve's book).
+  The options sleeve's **exposure ceiling** is the same `liveMaxExposurePct` × equity
+  the equity sleeve uses; it had stayed pinned at 100% of equity while the equity
+  sleeve's moved to 190%, which shut the options sleeve whenever the stock book held
+  more than the account's equity. What the two sleeves still **share**, by design, is
+  the aggregate open-risk budget (`maxAggregateOpenRiskPct`): an options entry needs
+  room under it after the stock positions' risk is counted. Note that **probation cannot cut below one
   contract** — a contract is indivisible, so where the size cut would round an approved
   single contract down to nothing, the entry goes out at that one contract and logs
   **options probation at minimum** in **Recent activity** instead. Before 2026-09-02 it
