@@ -273,6 +273,13 @@ A phase doesn't start until the previous one is merged and you've used it.
     way `liveOptionsExecute` does, and requires the guardrail to pass all of it — a single
     blocked mark is a live position that cannot be closed. Caught by an existing test
     rather than in production, which is the point of asserting at the consumer.
+  - **Changed (2026-09-18), the options entry's reference price is the real-time ask.**
+    Placement re-fetched the contract from the delayed chain and set `referencePrice` to
+    its midpoint, with the limit 5% above it, so the fat-finger rule judged a fresh order
+    against a quarter-hour-old midpoint. The entry now resolves the contract through the
+    same OPRA-first resolver the exit uses and sets the reference to the ask, the limit
+    5% above that — the buy-side mirror of the 2026-09-12 bid reference on the close.
+    With no ask the buffered mark remains the basis, and the journal row says which.
 
   - **Fixed (2026-09-06), the risk-check PREVIEW counted trades from a journal action
     nothing emits.** `riskCheck.ts`'s `getPortfolioSnapshot()` derived `tradesToday` by

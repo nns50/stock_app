@@ -24,13 +24,17 @@ import {
   webullOrderStatus,
   webullOrderStatusBatch,
 } from '../../providers/webull/orders';
-import { optionTickUsd, roundOptionPrice } from '../trading/optionTick';
+import { optionTickUsd } from '../trading/optionTick';
 import {
-  OPTIONS_MARKETABLE_LIMIT_BUFFER_PCT,
+  buyableEntryLimit,
+  buyableSpreadEntryLimit,
+  resolveContractQuote,
   resolveExitQuote,
   sellableExitLimit,
   sellableSpreadExitLimit,
+  type EntryPriceBasis,
   type ExitPriceBasis,
+  type ResolvedContractQuote,
   type ResolvedExitQuote,
 } from './optionsExitPricing';
 import {
@@ -620,7 +624,6 @@ export async function attemptLiveOptionsEntry(
   }
 
   const liveCfg = buildLiveOptionsTradingConfig(autotradeCfg);
-  const buffer = 1 + OPTIONS_MARKETABLE_LIMIT_BUFFER_PCT / 100;
 
   /**
    * RE-SIZE AGAINST THE PREMIUM WE ARE ABOUT TO PAY (2026-09-13).
@@ -693,12 +696,20 @@ export async function attemptLiveOptionsEntry(
   };
 
   if (signal.kind === 'debit_spread') {
-    let longFill: number;
-    let shortFill: number;
+    let longQ: ResolvedContractQuote;
+    let shortQ: ResolvedContractQuote;
     try {
-      const [longQ, shortQ] = await Promise.all([
-        fetchContractQuote(signal.symbol, signal.expiration, signal.longStrike, signal.side),
-        fetchContractQuote(signal.symbol, signal.expiration, signal.shortStrike, signal.side),
+      // THE REAL-TIME QUOTE, NOT THE DELAYED CHAIN (2026-09-18). The same
+      // OPRA-first resolver the exits use, keyed by the contract symbols the
+      // signal already carries; the chain is the fallback, as it is for a
+      // close. See optionsExitPricing.ts.
+      [longQ, shortQ] = await Promise.all([
+        resolveContractQuote(signal.longContractSymbol, () =>
+          fetchContractQuote(signal.symbol, signal.expiration, signal.longStrike, signal.side),
+        ),
+        resolveContractQuote(signal.shortContractSymbol, () =>
+          fetchContractQuote(signal.symbol, signal.expiration, signal.shortStrike, signal.side),
+        ),
       ]);
       // Refuse to open on a LAST-TRADE-only price. A contract with no usable
       // bid/ask is one nobody is currently quoting, so the only number
@@ -714,22 +725,35 @@ export async function attemptLiveOptionsEntry(
           reason: `No live two-sided quote for ${symbol} (only a last-trade price) — not opening on a stale mark`,
         };
       }
-      [longFill, shortFill] = [longQ.price, shortQ.price];
     } catch (err) {
       return { symbol, ok: false, reason: `Quote fetch failed: ${(err as Error).message}` };
     }
-    if (!validPremium(longFill) || !validPremium(shortFill)) {
-      return { symbol, ok: false, reason: `Invalid premium: long=${longFill} short=${shortFill}` };
+    if (!validPremium(longQ.mark) || !validPremium(shortQ.mark)) {
+      return { symbol, ok: false, reason: `Invalid premium: long=${longQ.mark} short=${shortQ.mark}` };
     }
-    const netDebit = longFill - shortFill;
+    // THE ASK, NOT THE MIDPOINT. A vertical is opened by buying the long leg at
+    // its ask and selling the short leg at its bid; that net is what the order
+    // pays and what the sizer's risk is. The buffered net mark only when a leg
+    // has no quoted side. Rounded onto the broker's tick grid, UP because this
+    // is a buy limit, inside the one shared rounding (optionsExitPricing.ts);
+    // before the guardrails below, so the order-notional and buying-power caps
+    // are checked against the price that will actually be sent.
+    const entry = buyableSpreadEntryLimit({
+      longAsk: longQ.ask,
+      shortBid: shortQ.bid,
+      longMark: longQ.mark,
+      shortMark: shortQ.mark,
+      fromLastTrade: false,
+    });
+    const netDebit = entry.fillPremium;
     if (netDebit <= 0) {
-      return { symbol, ok: false, reason: `Net debit vanished at fill (long ${longFill} <= short ${shortFill})` };
+      const [longLeg, shortLeg] = entry.basis === 'ask' ? [longQ.ask, shortQ.bid] : [longQ.mark, shortQ.mark];
+      return { symbol, ok: false, reason: `Net debit vanished at fill (long ${longLeg} <= short ${shortLeg})` };
     }
-    // Onto the broker's tick grid, UP because this is a buy limit — see
-    // optionTick.ts. Rounding happens before the guardrails below, so the
-    // order-notional and buying-power caps are checked against the price that
-    // will actually be sent.
-    const limitPrice = roundOptionPrice(netDebit * buffer, 'up');
+    if (!validPremium(entry.limitPrice)) {
+      return { symbol, ok: false, reason: `Invalid premium: net debit ${netDebit} has no placeable limit` };
+    }
+    const limitPrice = entry.limitPrice;
     // A vertical's max loss IS its net debit — no disaster-stop fraction
     // applies, which is why the fraction is named at the call site rather than
     // derived inside the helper.
@@ -786,12 +810,24 @@ export async function attemptLiveOptionsEntry(
     });
 
     if (!placed.ok) return { symbol, ok: false, reason: placed.reason, intentId: placed.intentId, journaled: true };
-    return finishEntryPlacement(symbol, intent, 'debit_spread', placed, riskProfile, signal.netDebit);
+    return finishEntryPlacement(
+      symbol,
+      intent,
+      'debit_spread',
+      placed,
+      riskProfile,
+      signal.netDebit,
+      entryPricingDetail(entry.basis, [longQ, shortQ]),
+    );
   }
 
-  let fillPremium: number;
+  let q: ResolvedContractQuote;
   try {
-    const q = await fetchContractQuote(signal.symbol, signal.expiration, signal.strike, signal.side);
+    // The real-time quote first, the delayed chain as the fallback — see the
+    // spread branch above and optionsExitPricing.ts.
+    q = await resolveContractQuote(signal.contractSymbol, () =>
+      fetchContractQuote(signal.symbol, signal.expiration, signal.strike, signal.side),
+    );
     // Same refusal as the spread branch above: don't open real risk at a limit
     // derived from a last trade of unknown age.
     if (q.fromLastTrade) {
@@ -801,16 +837,24 @@ export async function attemptLiveOptionsEntry(
         reason: `No live two-sided quote for ${symbol} (only a last-trade price) — not opening on a stale mark`,
       };
     }
-    fillPremium = q.price;
   } catch (err) {
     return { symbol, ok: false, reason: `Quote fetch failed: ${(err as Error).message}` };
   }
-  if (!validPremium(fillPremium)) {
+  if (!validPremium(q.mark)) {
+    return { symbol, ok: false, reason: `Invalid premium: ${q.mark}` };
+  }
+  // THE ASK, NOT THE MIDPOINT (2026-09-18): the premium a buyer actually pays
+  // is the fill premium the sizer and the fat-finger reference read; the
+  // buffer sits on top of it so a quote that ticks up still fills. The
+  // buffered mark only when the quote has no ask. Rounded UP onto the tick
+  // grid inside the one shared rounding, before the guardrails, so the caps
+  // see the sent price.
+  const entry = buyableEntryLimit({ ask: q.ask, mark: q.mark, fromLastTrade: false });
+  const fillPremium = entry.fillPremium;
+  if (!validPremium(fillPremium) || !validPremium(entry.limitPrice)) {
     return { symbol, ok: false, reason: `Invalid premium: ${fillPremium}` };
   }
-  // Onto the broker's tick grid, UP because this is a buy limit — see
-  // optionTick.ts. Before the guardrails, so the caps see the sent price.
-  const limitPrice = roundOptionPrice(fillPremium * buffer, 'up');
+  const limitPrice = entry.limitPrice;
   // The same fraction the sizer multiplied by, from the same shared
   // derivation — so the size and the bound cannot disagree about how much of
   // the premium the disaster stop leaves at risk.
@@ -863,7 +907,40 @@ export async function attemptLiveOptionsEntry(
   });
 
   if (!placed.ok) return { symbol, ok: false, reason: placed.reason, intentId: placed.intentId, journaled: true };
-  return finishEntryPlacement(symbol, intent, 'single_leg', placed, riskProfile, signal.premium);
+  return finishEntryPlacement(
+    symbol,
+    intent,
+    'single_leg',
+    placed,
+    riskProfile,
+    signal.premium,
+    entryPricingDetail(entry.basis, [q]),
+  );
+}
+
+/** How an entry was priced, journaled beside its limit so the first real-time
+ *  entry — and every stale one after it — can be read off the row rather than
+ *  inferred (docs/AUTOTRADING_SPEC.md, 2026-09-18). */
+interface EntryPricingDetail {
+  priceBasis: EntryPriceBasis;
+  quoteSource: 'opra' | 'chain';
+  quoteAgeMs: number | null;
+  /** The two-sided quote each leg was built from: one entry for a single leg,
+   *  long then short for a spread. */
+  legs: { bid: number | null; ask: number | null; mark: number }[];
+}
+
+function entryPricingDetail(basis: EntryPriceBasis, quotes: ResolvedContractQuote[]): EntryPricingDetail {
+  // A spread's two legs resolve independently and could in principle come from
+  // different sources; the long leg's is reported, and both legs' quotes are
+  // on the row for anyone who needs the distinction.
+  const [first] = quotes;
+  return {
+    priceBasis: basis,
+    quoteSource: first.source,
+    quoteAgeMs: first.quoteAgeMs ?? null,
+    legs: quotes.map((q) => ({ bid: q.bid ?? null, ask: q.ask ?? null, mark: q.mark })),
+  };
 }
 
 /** Journal + notify once an entry order has been placed AND recorded — shared
@@ -881,6 +958,7 @@ async function finishEntryPlacement(
    *  BOTH are on it — the signal's premium is gone once the fill lands. The
    *  equity path carries the same pair as signalEntry / riskBasisPrice. */
   signalPremium: number,
+  pricing: EntryPricingDetail,
 ): Promise<LiveOptionsExecutionOutcome> {
   logAutotradeEvent({
     symbol,
@@ -892,12 +970,14 @@ async function finishEntryPlacement(
       quantity: intent.quantity,
       limitPrice: intent.limitPrice,
       orderId: placed.brokerOrderId,
-      // SLIPPAGE PROBE (2026-09-04). referencePrice is the MARK this order was
-      // decided against; limitPrice already carries a marketable buffer, so it
-      // is not the same number and cannot stand in for it. It is not persisted
-      // on the intent, so this event is the only place it survives — pair it
-      // with the entryPrice on live_options_position_opened, joined by
-      // intentId, to get the realised cost of crossing the spread.
+      // SLIPPAGE PROBE (2026-09-04). referencePrice is the premium this order
+      // was decided against — since 2026-09-18 the ASK when the quote had one,
+      // the mark before that and as the fallback (`priceBasis` says which);
+      // limitPrice already carries a marketable buffer, so it is not the same
+      // number and cannot stand in for it. It is not persisted on the intent,
+      // so this event is the only place it survives — pair it with the
+      // entryPrice on live_options_position_opened, joined by intentId, to get
+      // the realised cost of crossing the spread.
       //
       // Why it matters: the paper book fills at the quote by construction, so
       // its +$173 over 13 trades is the OPTIMISTIC bound. That edge is still
@@ -907,6 +987,7 @@ async function finishEntryPlacement(
       intentId: placed.intentId,
       referencePrice: intent.referencePrice ?? null,
       signalPremium,
+      ...pricing,
     },
     riskProfile,
   });

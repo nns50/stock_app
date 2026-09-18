@@ -389,6 +389,135 @@ describe('attemptLiveOptionsEntry — stale marks', () => {
   });
 });
 
+// THE ENTRY IS PRICED FROM THE REAL-TIME ASK (2026-09-18). Until then both
+// books re-fetched the ~15-minute-delayed chain and built the buy limit from
+// its midpoint plus 5%, and the sizer's premium — the risk — was that same
+// stale midpoint, while the account's OPRA entitlement fed only the exits.
+// These cases pin, at the consumer: the OPRA ask wins when fresh; a stale
+// print falls back to the chain (which is priced from ITS ask when it has
+// one); the mark path is unchanged when nothing has an ask; a spread pays
+// long-ask minus short-bid; the sizer reads the ask; the row says which.
+describe('attemptLiveOptionsEntry — priced from the real-time ask (2026-09-18)', () => {
+  const placedDetail = () =>
+    JSON.parse(listAutotradeEvents({ actions: ['live_options_order_placed'] })[0].detail!) as Record<string, unknown>;
+  const armEntry = () => {
+    setAutotradeConfig(liveConfig());
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-1' });
+  };
+
+  it('prices a single-leg entry from the fresh OPRA ask, not the delayed chain mark', async () => {
+    armEntry();
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
+    mockOptionQuotes.mockResolvedValue({
+      ok: true,
+      quotes: [{ symbol: 'AAPL-fixture', bid: 4.4, ask: 4.6, quoteTime: Date.now() }],
+    });
+    const sig = optionSignal();
+
+    const r = await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', liveConfig());
+    expect(r.ok).toBe(true);
+    expect(mockOptionQuotes).toHaveBeenCalledWith(['AAPL-fixture']);
+
+    const [, placedIntent] = mockPlaceOrder.mock.calls[0];
+    expect(placedIntent.limitPrice).toBe(4.83); // ask 4.6 + 5%, not mark 4 + 5% = 4.2
+    expect(placedIntent.referencePrice).toBe(4.6); // the fat-finger reference is the ask
+    expect(placedDetail()).toMatchObject({
+      referencePrice: 4.6,
+      priceBasis: 'ask',
+      quoteSource: 'opra',
+      legs: [{ bid: 4.4, ask: 4.6, mark: 4.5 }],
+    });
+    expect(placedDetail().quoteAgeMs).toBeLessThan(5_000);
+  });
+
+  it('falls back to the chain when the OPRA print is stale, and prices from the chain ask when it has one', async () => {
+    armEntry();
+    mockGetProvider.mockReturnValue(
+      chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4, bid: 3.9, ask: 4.2 } }) as never,
+    );
+    mockOptionQuotes.mockResolvedValue({
+      ok: true,
+      quotes: [{ symbol: 'AAPL-fixture', bid: 4.4, ask: 4.6, quoteTime: Date.now() - 10 * 60_000 }],
+    });
+    const sig = optionSignal();
+
+    expect((await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', liveConfig())).ok).toBe(true);
+    const [, placedIntent] = mockPlaceOrder.mock.calls[0];
+    expect(placedIntent.limitPrice).toBe(4.41); // chain ask 4.2 + 5%
+    expect(placedIntent.referencePrice).toBe(4.2);
+    expect(placedDetail()).toMatchObject({ priceBasis: 'ask', quoteSource: 'chain', quoteAgeMs: null });
+  });
+
+  it('keeps the buffered mark when neither source has an ask, and the row says so', async () => {
+    armEntry();
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
+    const sig = optionSignal();
+
+    expect((await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', liveConfig())).ok).toBe(true);
+    const [, placedIntent] = mockPlaceOrder.mock.calls[0];
+    expect(placedIntent.limitPrice).toBe(4.2);
+    expect(placedIntent.referencePrice).toBe(4);
+    expect(placedDetail()).toMatchObject({
+      priceBasis: 'mark',
+      quoteSource: 'chain',
+      legs: [{ bid: null, ask: null, mark: 4 }],
+    });
+  });
+
+  it('opens a vertical at long-ask minus short-bid when both legs have a fresh OPRA quote', async () => {
+    armEntry();
+    mockGetProvider.mockReturnValue(
+      chainsFor({
+        AAPL: [
+          { side: 'call', strike: 100, mark: 3 },
+          { side: 'call', strike: 110, mark: 1 },
+        ],
+      }) as never,
+    );
+    const book: Record<string, { symbol: string; bid: number; ask: number; quoteTime: number }> = {
+      'AAPL-long': { symbol: 'AAPL-long', bid: 2.9, ask: 3.1, quoteTime: Date.now() },
+      'AAPL-short': { symbol: 'AAPL-short', bid: 0.9, ask: 1.1, quoteTime: Date.now() },
+    };
+    mockOptionQuotes.mockImplementation(async (symbols: string[]) => ({
+      ok: true,
+      quotes: symbols.map((s) => book[s]).filter(Boolean),
+    }));
+    mockAccountType.mockResolvedValue('INDIVIDUAL_MARGIN');
+    const sig = spreadSignal();
+
+    expect((await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', liveConfig())).ok).toBe(true);
+    const [, placedIntent] = mockPlaceOrder.mock.calls[0];
+    expect(placedIntent.limitPrice).toBe(2.35); // (3.1 − 0.9) = 2.2 + 5% = 2.31, up onto the nickel grid
+    expect(placedIntent.referencePrice).toBeCloseTo(2.2, 10);
+    expect(placedDetail()).toMatchObject({ kind: 'debit_spread', priceBasis: 'ask', quoteSource: 'opra' });
+    expect(placedDetail().legs).toHaveLength(2);
+  });
+
+  it('sizes the contracts from the ask it will pay, not the mark the screener saw', async () => {
+    armEntry();
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 3 } }) as never);
+    mockOptionQuotes.mockResolvedValue({
+      ok: true,
+      quotes: [{ symbol: 'AAPL-fixture', bid: 5.8, ask: 6, quoteTime: Date.now() }],
+    });
+    const sig = optionSignal(); // premium 3 at screening time
+
+    expect((await attemptLiveOptionsEntry(sig, okResult(sig), 'MODERATE', liveConfig())).ok).toBe(true);
+    const resized = listAutotradeEvents({ actions: ['live_options_entry_risk_resized'] });
+    expect(resized).toHaveLength(1);
+    const detail = JSON.parse(resized[0].detail!) as {
+      signalPremium: number;
+      fillPremium: number;
+      fromContracts: number;
+      toContracts: number;
+    };
+    expect(detail.signalPremium).toBe(3);
+    expect(detail.fillPremium).toBe(6); // the ask, not the chain mark of 3
+    expect(detail.toContracts).toBeLessThanOrEqual(detail.fromContracts);
+  });
+});
+
 describe('attemptLiveOptionsEntry', () => {
   it('refuses when TRADING_ENABLED is off — no intent, no broker call', async () => {
     config.trading.placeEnabled = false;

@@ -2797,7 +2797,12 @@ because the loop is the only caller that is always flat by the bell, so it is
   because a rule fires on the tick the mark is at its extreme and a real order does
   not get that print. Clock-driven exits fill at once. The closed row shows the mark
   the rule saw beside the price the close got, and which price it came from; rows
-  closed before this date filled at the mark and show no basis. Shows the same
+  closed before this date filled at the mark and show no basis. **A paper entry is
+  priced the same way (2026-09-18)**: at the contract's ask when the quote carries
+  one — what a buyer actually pays — else at the mark; a spread pays the long leg's
+  ask less the short leg's bid. The live sleeve prices its entries from the same
+  real-time ask, so the two books buy at the same price, and each journal row says
+  which basis and which quote source it used. Shows the same
   open/closed counts, realized/unrealized P&L, and full trade history (contract,
   strike/expiration, entry, a live **Current $** for open positions from a fresh
   contract quote, exit, reason, contracts, P&L, R) as equity's own paper trading above.
