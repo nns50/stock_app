@@ -116,6 +116,7 @@ import { getDailyBaseline } from '../../db/dailyBaseline';
 import { pendingLiveOptionsOrdersRisk } from '../../db/autotradeLiveOptionsOrders';
 import { listLiveOptionsPositions, listOpenLiveOptionsPositions } from '../../db/autotradeLiveOptionsPositions';
 import type { LiveOptionsRiskSeed } from './liveOptionsExecute';
+import { liveExposureCapUsd } from './liveCaps';
 import {
   createPosition,
   getPosition,
@@ -255,10 +256,11 @@ export function buildLiveTradingConfig(autotradeCfg: AutotradeConfig): TradingCo
     // 100% on the reasoning that a cash account cannot hold more gross
     // exposure than its own equity — true, and it left no headroom at all:
     // on 2026-08-27 two correctly-sized positions summed to $2,284 against a
-    // $2,283.61 cap and the second was refused by 39 cents. Still 0 when
-    // equity is unset, which fails closed (any nonzero notional exceeds it)
-    // rather than silently allowing anything through.
-    maxExposureUsd: ((autotradeCfg.accountEquityUsd ?? 0) * autotradeCfg.liveMaxExposurePct) / 100,
+    // $2,283.61 cap and the second was refused by 39 cents. One shared helper
+    // since 2026-09-18: the options sleeve's twin had stayed at 100% (see
+    // liveCaps.ts). Still 0 when equity is unset, which fails closed.
+    maxExposureUsd: liveExposureCapUsd(autotradeCfg),
+    // Counts THIS sleeve's opening orders only (countTodaysOrders' own note).
     maxOrdersPerDay: autotradeCfg.liveMaxOrdersPerDay,
     // The day's loss budget, derived from the SAME function and the SAME
     // day-opening equity `riskCheck`'s percentage halt and the +3% goal use —
@@ -1085,7 +1087,7 @@ export async function attemptLiveEntry(
     return { symbol, ok: false, reason: acct.error ?? 'Could not load account state' };
   }
   const accountState: AccountState = withLoopRealizedToday(
-    withDayBuyingPower({ ...acct.state, ordersToday: countTodaysOrders() }, autotradeCfg, accountId),
+    withDayBuyingPower({ ...acct.state, ordersToday: countTodaysOrders(Date.now(), 'stock') }, autotradeCfg, accountId),
   );
   const guardrails = evaluateGuardrails(intent, accountState, liveCfg, { marketOpen: marketOpenContext(intent) });
   // Only matters for a permitted short entry (allowNakedShort — naked_short
@@ -3759,7 +3761,7 @@ async function placeLiveEquityTimeExitClose(
   if (!acct.ok || !acct.state) {
     return timeExitFailure(pos, riskProfile, acct.error ?? 'Could not load account state');
   }
-  const accountState: AccountState = { ...acct.state, ordersToday: countTodaysOrders() };
+  const accountState: AccountState = { ...acct.state, ordersToday: countTodaysOrders(Date.now(), 'stock') };
   const guardrails = evaluateGuardrails(intent, accountState, liveCfg, { marketOpen: marketOpenContext(intent) });
 
   const clientOrderId = newClientOrderId();
@@ -4434,7 +4436,7 @@ export async function checkLiveEquityScaleOuts(): Promise<LiveScaleOutOutcome[]>
       outcomes.push({ symbol, positionId: pos.id, requested: false, reason: acct.error ?? 'no account state' });
       continue;
     }
-    const accountState: AccountState = { ...acct.state, ordersToday: countTodaysOrders() };
+    const accountState: AccountState = { ...acct.state, ordersToday: countTodaysOrders(Date.now(), 'stock') };
     const guardrails = evaluateGuardrails(intent, accountState, liveCfg, { marketOpen: marketOpenContext(intent) });
     const clientOrderId = newClientOrderId();
     const intentRec = createIntent(intent, clientOrderId);
@@ -4917,7 +4919,10 @@ async function placeLiveScaleInAddOn(
   if (!acct.ok || !acct.state) {
     return { symbol, positionId: pos.id, requested: false, reason: acct.error ?? 'Could not load account state' };
   }
-  const accountState: AccountState = withLoopRealizedToday({ ...acct.state, ordersToday: countTodaysOrders() });
+  const accountState: AccountState = withLoopRealizedToday({
+    ...acct.state,
+    ordersToday: countTodaysOrders(Date.now(), 'stock'),
+  });
   const guardrails = evaluateGuardrails(intent, accountState, liveCfg, { marketOpen: marketOpenContext(intent) });
   const isShort = wouldOpenShort(intent, accountState);
 
@@ -5423,7 +5428,10 @@ export async function checkLivePerLotSecondLots(): Promise<LivePerLotOutcome[]> 
         });
         continue;
       }
-      const accountState: AccountState = withLoopRealizedToday({ ...acct.state, ordersToday: countTodaysOrders() });
+      const accountState: AccountState = withLoopRealizedToday({
+        ...acct.state,
+        ordersToday: countTodaysOrders(Date.now(), 'stock'),
+      });
       const guardrails = evaluateGuardrails(intent, accountState, liveCfg, { marketOpen: marketOpenContext(intent) });
       const isShort = wouldOpenShort(intent, accountState);
 

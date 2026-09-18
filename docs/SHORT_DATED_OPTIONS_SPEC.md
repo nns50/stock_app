@@ -187,7 +187,7 @@ Mostly already present; listed so the whole surface is visible in one place.
 |---|---|---|
 | Defined risk — premium is max loss | ~$44 = 1R | exists (sizing) |
 | `liveOptionsMaxDailyLossUsd` | 141 (~3 full losses) | exists |
-| `liveOptionsMaxOrdersPerDay` | 4 | exists |
+| `liveOptionsMaxOrdersPerDay` | 4 → 6 (2026-09-12); counts options orders only (2026-09-18) | exists |
 | Shared concurrent-position cap | 2, with equity | exists |
 | **Max 1 concurrent short-dated position** | new | **to build** |
 | `liveOptionsProbationTrades` | 0 → set to 10 at 0.5× | **to change** |
@@ -195,6 +195,17 @@ Mostly already present; listed so the whole surface is visible in one place.
 The concurrency cap matters more here than for stock: two 0DTE positions can
 both go to zero in the same 30 minutes on one adverse market move, which is a
 correlation stock positions do not have.
+
+Two of the sleeve's guardrails are judged against the sleeve's **own** figures
+since 2026-09-18. The orders/day cap read the account-wide opening-order count
+until then, so the stock sleeve's entries spent it: on 2026-09-18 four stock
+entries plus two options entries read "6 placed vs 6/day" and shut the sleeve
+from 10:27 ET with two placements on its book. The exposure ceiling was a copy
+pinned at 100% of equity while the equity sleeve's was `liveMaxExposurePct`
+(190%), so the sleeve could not open while the stock book held more than the
+account's equity (11 refusals reading "$55,716 vs cap $29,285" between 10:01 and
+10:23 ET that day); both sleeves now call one helper. The aggregate open-risk
+budget stays shared with equity by design.
 
 ---
 

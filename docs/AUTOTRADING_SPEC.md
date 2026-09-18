@@ -11986,3 +11986,62 @@ minutes, and its `limitPrice` is that ask plus 5% on the grid; the first
 `quoteSource: 'chain'` on a session where the OPRA route answers is the
 finding to chase.
 
+## 2026-09-18 (second) — the stock sleeve was spending the options sleeve's caps
+
+The operator asked at 11:28 ET why no more live positions were opening. The
+stock sleeve had an ordinary answer: its only repeat candidates were HOOD,
+SNDK and COIN, all traded earlier in the session and refused by the
+one-entry-per-symbol rule (`symbolReentryCooldownMinutes` 390, Decision 8 of
+the 3%-goal plan), plus NOK under the conviction floor. The options sleeve did
+not: every options entry from 10:01 ET was refused by a guardrail fed an
+ACCOUNT-WIDE figure against an OPTIONS-ONLY cap.
+
+- `max_orders_per_day` — `countTodaysOrders()` counted every opening intent on
+  the account. Four stock entries (USDE, COIN, HOOD, SNDK) plus two options
+  entries (HOOD 09:47, COIN 10:25) read "6 placed vs 6/day" against
+  `liveOptionsMaxOrdersPerDay` from 10:27 ET, and 26 options signals (MU, COIN,
+  NFLX, HOOD) had been refused by 11:36 with two placements on the sleeve's
+  book.
+- `account_exposure` — `buildLiveOptionsTradingConfig` pinned `maxExposureUsd`
+  at 100% of equity, a copy of the equity sleeve's value before 2026-08-27 that
+  never followed `liveMaxExposurePct` (155, then 190). The rule measures the
+  whole account's market value, so with the stock book at its allowed size
+  every options entry from 10:01 to 10:23 read "$55,716 vs cap $29,285" (11
+  refusals) under a 190% allowance of about $57,700.
+- `max_aggregate_open_risk` — shared with equity BY DESIGN, and it refused five
+  options signals between 10:01 and 10:10 while the stock positions held the
+  whole 7.5% budget. At 2.5% risk × 3 stock slots that budget is full whenever
+  the stock book is, so the options sleeve could open only when a stock slot
+  was empty. Widening it is an exposure decision, and the operator took it the
+  same day: **`maxAggregateOpenRiskPct` 7.5 → 12.5** at 12:02 ET (2.5% × the
+  five slots of both sleeves: three stock, two options). The daily halt stays
+  at 7.5% of the day's opening equity; with every slot filled the book can now
+  carry 12.5% of equity at risk before it, which is the trade-off the operator
+  accepted.
+
+The change, one derivation per quantity:
+
+- `countTodaysOrders(now, assetKind?)` scopes the count to one sleeve; the
+  options executor passes `'option'`, the equity executor `'stock'`; the human
+  Trade page's cap stays account-wide.
+- `liveExposureCapUsd(cfg)` in `liveCaps.ts` is the one ceiling both
+  `buildLiveTradingConfig` and `buildLiveOptionsTradingConfig` call.
+- Consumer tests in both live executors (the guardrail verdict with the other
+  sleeve's orders on the account; the options verdict at 150% exposure under a
+  190% ceiling) and a sleeve-scoped count test.
+
+No parameter changed. The paper control took MU three times on the signals the
+live sleeve refused (one flat at 4.55, two closed at 2.95 from 4.60 and 4.40),
+so the day's refusals cost nothing in P&L; the caps still have to mean what the
+operator set.
+
+### Pre-committed check
+
+On the first session with stock entries on the book, an options entry passes
+`max_orders_per_day` with fewer than `liveOptionsMaxOrdersPerDay` options
+placements that day, and a `live_options_entry_blocked` row naming
+`max_orders_per_day` appears only once the options sleeve's own count reaches
+the cap. An `account_exposure` refusal on the options sleeve reads a cap equal
+to `liveMaxExposurePct` % of equity (about $57,700 at a $30.4k reading), never
+the equity figure itself.
+

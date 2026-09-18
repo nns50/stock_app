@@ -390,15 +390,30 @@ function etDayStart(now: number): number {
  * nothing, which is what the GRMN cancel-and-replace above should always have
  * been.
  */
-export function countTodaysOrders(now = Date.now()): number {
+/**
+ * Opening orders that reached the broker today (ET) and were not rejected —
+ * the basis of guardrails' `max_orders_per_day`.
+ *
+ * `assetKind` scopes the count to ONE live sleeve (2026-09-18). Each autotrade
+ * sleeve carries its own daily order cap (`liveMaxOrdersPerDay` for equity,
+ * `liveOptionsMaxOrdersPerDay` for options), and both used to be judged
+ * against this account-wide count — so the equity sleeve's entries spent the
+ * options sleeve's budget. On 2026-09-18 four stock entries plus two options
+ * entries read as "6 placed vs 6/day" from 10:27 ET and every options entry
+ * for the rest of the session was refused with two real placements on the
+ * book. Left unscoped, the count is the account-wide figure the human Trade
+ * page's cap has always used.
+ */
+export function countTodaysOrders(now = Date.now(), assetKind?: AssetKind): number {
   const row = db
     .prepare(
       `SELECT COUNT(DISTINCT e.intent_id) AS n
          FROM order_events e
          JOIN order_intents i ON i.id = e.intent_id
         WHERE e.state = 'submitted' AND e.created_at >= ? AND i.state != 'rejected'
-          AND i.open_close = 'open'`,
+          AND i.open_close = 'open'
+          AND (? IS NULL OR i.asset_kind = ?)`,
     )
-    .get(etDayStart(now)) as { n: number };
+    .get(etDayStart(now), assetKind ?? null, assetKind ?? null) as { n: number };
   return row.n;
 }

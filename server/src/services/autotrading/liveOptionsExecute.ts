@@ -105,6 +105,7 @@ import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { dispatchAutotradeNotification } from './notify';
 import { fetchContractQuote, validPremium } from './optionsExecute';
 import { getLivePortfolioSnapshot, combinedLiveOpenRisk, ProbationStatus } from './liveExecute';
+import { liveExposureCapUsd } from './liveCaps';
 import { previewWebullPositions, contractKey } from '../../providers/webull/positions';
 import { bumpMissStreak, clearMissStreak, MISS_CONFIRM_THRESHOLD } from '../../db/webullMissStreak';
 
@@ -226,8 +227,13 @@ export function buildLiveOptionsTradingConfig(autotradeCfg: AutotradeConfig): Tr
     // raw contract-count cap per symbol doesn't scale sensibly the way
     // maxOrderUsd's notional cap already does.
     maxSymbolPositionQty: Number.MAX_SAFE_INTEGER,
-    // Same real cash account as equity -- 100% of configured equity, shared.
-    maxExposureUsd: autotradeCfg.accountEquityUsd ?? 0,
+    // Same real account as equity, so the SAME ceiling: liveMaxExposurePct %
+    // of equity through the one helper the equity sleeve uses. This was a
+    // hand-copied 100% that never followed the field (liveCaps.ts has the
+    // 2026-09-18 evidence).
+    maxExposureUsd: liveExposureCapUsd(autotradeCfg),
+    // Judged against the OPTIONS sleeve's own opening orders — see
+    // loadAccountAndGuardrails and countTodaysOrders' note.
     maxOrdersPerDay: autotradeCfg.liveOptionsMaxOrdersPerDay,
     maxDailyLossUsd: autotradeCfg.liveOptionsMaxDailyLossUsd,
     fatFingerPct: autotradeCfg.liveOptionsFatFingerPct,
@@ -502,7 +508,11 @@ async function loadAccountAndGuardrails(
     // consults daily_loss_halt (guardrails.ts gates it on openClose 'open'),
     // and the exit ignores the field rather than being handed a different one.
     realizedPnlTodayUsd: strategyDayFor(etToday()).pnlUsd,
-    ordersToday: countTodaysOrders(),
+    // The OPTIONS sleeve's own opening orders (2026-09-18). Unscoped, this was
+    // the account-wide count, so the equity sleeve's entries spent
+    // liveOptionsMaxOrdersPerDay: 4 stock + 2 options read "6 placed vs 6/day"
+    // and the sleeve was shut from 10:27 ET with two placements on the book.
+    ordersToday: countTodaysOrders(Date.now(), 'option'),
     accountType,
     ...(currentPositionQtyOverride !== undefined ? { currentPositionQty: currentPositionQtyOverride } : {}),
   };

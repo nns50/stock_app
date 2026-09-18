@@ -17,6 +17,25 @@ export interface SuggestedLiveCaps {
 }
 
 /**
+ * The account-exposure ceiling guardrails' `account_exposure` judges an
+ * opening order against: `liveMaxExposurePct` % of configured equity. ONE
+ * function for BOTH live sleeves (2026-09-18). The options sleeve used to pin
+ * its own copy at exactly 100% of equity — the equity sleeve's value before
+ * 2026-08-27 — and never followed when `liveMaxExposurePct` moved (155, then
+ * 190 under the 3%-goal sizing). The rule measures the whole account's market
+ * value, stock positions included, so the options sleeve could not open while
+ * the stock book held more than its own equity, which under that sizing is
+ * most of the morning: on 2026-09-18, 11 refusals between 10:01 and 10:23 ET
+ * read "$55,716 vs cap $29,285" against a 190% allowance of $57,700.
+ *
+ * Still 0 when equity is unset, which fails closed (any nonzero notional
+ * exceeds it) rather than silently allowing anything through.
+ */
+export function liveExposureCapUsd(cfg: { accountEquityUsd: number | null; liveMaxExposurePct: number }): number {
+  return ((cfg.accountEquityUsd ?? 0) * cfg.liveMaxExposurePct) / 100;
+}
+
+/**
  * `liveMaxOrderUsd` — a fraction of equity as a single-order notional backstop.
  * This is deliberately generous: the risk engine's own %-risk-per-trade sizing
  * (computeRiskSizing, stop-distance-based) is the PRIMARY size control, so
@@ -39,12 +58,13 @@ export interface SuggestedLiveCaps {
  *
  * `liveMaxOrdersPerDay` — maxTradesPerDay through targetTune's
  * liveOrderCapForTrades(), NOT maxTradesPerDay itself. maxTradesPerDay counts
- * ENTRIES; this cap counts every submitted intent, exits included, so the two
- * are not the same number and setting them equal made exits eat the entry
- * budget. See liveOrderCapForTrades' own comment for what that cost in
- * production. Shared with the tuner for the same reason liveMaxOrderUsd is:
- * clicking "Suggest from equity" after a tune must not silently replace the
- * tune's cap with a different one.
+ * ENTRIES; this cap counted every submitted intent, exits included, when the
+ * derivation was written, so the two were not the same number and setting
+ * them equal made exits eat the entry budget. See liveOrderCapForTrades' own
+ * comment for what that cost in production and for what the count is today
+ * (the equity sleeve's own opening orders). Shared with the tuner for the same
+ * reason liveMaxOrderUsd is: clicking "Suggest from equity" after a tune must
+ * not silently replace the tune's cap with a different one.
  */
 export function suggestLiveCaps(
   equityUsd: number,

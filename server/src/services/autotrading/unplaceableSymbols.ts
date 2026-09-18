@@ -10,8 +10,9 @@
 //
 // Both are in the 528-name universe today, and that happened 18 times in July.
 // Each attempt costs a full pipeline plus a broker round-trip, and creates an
-// order intent — so it also spends one of the day's maxOrdersPerDay allowance
-// on a trade that could never happen.
+// order intent that ends `rejected` — a row and a round-trip for a trade that
+// could never happen (a broker-rejected intent no longer spends the day's
+// maxOrdersPerDay allowance; countTodaysOrders excludes it).
 //
 // WHY THIS IS LEARNED RATHER THAN PRE-FILTERED. The obvious fix is to rewrite
 // `BF.B` into whatever Webull wants. The vendor docs do not say: the instrument
