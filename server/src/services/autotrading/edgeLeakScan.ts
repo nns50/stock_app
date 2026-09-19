@@ -1020,6 +1020,51 @@ export function equivalentPaceFloor(
   return interpScoreAt(ladder, paceAtOrAbove, admitted);
 }
 
+/** The pace floor's standing against the raw floor it was fitted to be
+ *  neutral against, on one ladder. Every count is a per-ladder total, so a
+ *  caller reports them per tick by dividing by the ticks it summed. */
+export interface PaceFloorDrift {
+  /** The pace floor that admits what `referenceRawFloor` admits under raw
+   *  scoring today — the re-fit, recomputed. */
+  equivalentFloor: number;
+  /** `equivalentFloor − currentFloor`: negative means the floor in force sits
+   *  ABOVE its equivalence and admits fewer symbols than the fitted reference;
+   *  positive means it admits more. */
+  driftPoints: number;
+  /** Symbols at or above the current floor under PACE scoring. */
+  admittedAtFloor: number;
+  /** Symbols at or above the reference floor under RAW scoring. */
+  admittedAtReference: number;
+}
+
+/**
+ * THE RE-CHECK, once the flag is on (2026-09-19). `equivalentPaceFloor` answered
+ * "what pace floor admits what raw-72 admits" BEFORE the flag went on, and the
+ * finding that carried it went silent the moment it did — so from 2026-09-14
+ * nothing asked whether 81 was still that floor as the score distribution
+ * moved. The ladder is still counted both ways on every tick while the flag is
+ * on, so the same translation can be re-run nightly against the CURRENT floor.
+ * Null when either end falls outside the measured ladder, rather than a guess.
+ */
+export function paceFloorDrift(
+  ladder: readonly number[],
+  rawAtOrAbove: readonly number[],
+  paceAtOrAbove: readonly number[],
+  referenceRawFloor: number,
+  currentFloor: number,
+): PaceFloorDrift | null {
+  const equivalentFloor = equivalentPaceFloor(ladder, rawAtOrAbove, paceAtOrAbove, referenceRawFloor);
+  const admittedAtFloor = interpCountAt(ladder, paceAtOrAbove, currentFloor);
+  const admittedAtReference = interpCountAt(ladder, rawAtOrAbove, referenceRawFloor);
+  if (equivalentFloor === null || admittedAtFloor === null || admittedAtReference === null) return null;
+  return {
+    equivalentFloor,
+    driftPoints: Math.round((equivalentFloor - currentFloor) * 10) / 10,
+    admittedAtFloor,
+    admittedAtReference,
+  };
+}
+
 /** Entry fills needed before the concession is worth judging. */
 export const SLIPPAGE_MIN_TRADES = 20;
 

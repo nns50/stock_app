@@ -2022,6 +2022,15 @@ non-behavioural groups: the **day level** (goal reached on N of M active session
 same decision, and why the live book skipped what paper took), and **findings** —
 execution occurrences and configuration mismatches, where any occurrence is one.
 
+One configuration finding is a standing re-fit rather than a mismatch (2026-09-19). The
+live score floor was raised from 72 to 81 when pace scoring went on, as the pace-scored
+floor that admitted the same number of symbols. That equivalence is a property of the
+score distribution, which moves, so the scan re-runs the translation nightly over the
+last ten sessions' score ladders and raises `configuration:relvol_pace_floor_drift` when
+the equivalent sits two or more points from the floor in force. Its lever is the floor
+itself, with the direction stated: a lower floor admits more entries and waits for the
+operator, a higher one is a flow cut to confirm on a second evening before applying.
+
 **The bar, the same for every dimension.**
 
 | verdict | rule |

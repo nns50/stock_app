@@ -28,6 +28,7 @@ import {
   CollectedLeakBook,
   EdgeLeakScanResult,
   equivalentPaceFloor,
+  paceFloorDrift,
   ExecutionOccurrence,
   ExtensionQuality,
   JournalSkip,
@@ -907,12 +908,36 @@ export function collectOptionsFlowFindings(cfg: AutotradeConfig, now: number): S
 // So this reports, and it reports as RESEARCH. Enabling the flag widens the
 // candidate set, which adds exposure, so it is the operator's call and never
 // the app's; and the re-fit is work to be scoped, not a knob to turn.
+//
+// AND ONCE THE FLAG IS ON, THE FLOOR IS RE-CHECKED (2026-09-19). The flag went
+// on 2026-09-14 with the floor raised 72 → 81, the pace-scored equivalent the
+// re-fit measured. From that moment this finding went silent, so nothing asked
+// whether 81 was STILL the equivalent as the score distribution moved — and
+// Friday 09-18's in-session ladder read the equivalent at 74.8, with the floor
+// admitting 13.6 symbols a tick against the 21.3 that raw-72 admits. The ladder
+// is counted both ways on every tick either way, so the same translation is
+// re-run here against the current floor and reported when it has drifted by
+// more than a rung. LOWERING the floor admits more entries and is never the
+// app's to apply; the lever carries the direction so the reader cannot mistake
+// the two.
 // ---------------------------------------------------------------------------
 
 /** Share of the scored universe that must change sides before the flag is more
  *  than cosmetic. One percent of ~480 symbols is ~5 a tick — small enough to
  *  catch a real turnover, large enough that noise does not report itself. */
 export const SCORING_SHADOW_TURNOVER_PCT = 1;
+
+/** The RAW floor the pace floor was fitted to be neutral against: 72, the
+ *  live floor fitted against realized P&L in PR #44 and in force until pace
+ *  scoring went on (2026-09-14, 72 → 81). It is the yardstick of every
+ *  re-check, so it is a written decision here rather than a config value that
+ *  would follow the floor it is meant to judge. A deliberate re-fit against
+ *  realized P&L under pace scoring is what changes it. */
+export const PACE_SCORING_RAW_REFERENCE_FLOOR = 72;
+
+/** How far the re-fitted equivalent may sit from the floor in force before it
+ *  is reported: one rung of the ladder around the live band (2 points). */
+export const PACE_FLOOR_DRIFT_POINTS = 2;
 
 export function collectScoringShadowFinding(cfg: AutotradeConfig, now: number): ScanFinding[] {
   let date = etToday(now);
@@ -949,6 +974,11 @@ export function collectScoringShadowFinding(cfg: AutotradeConfig, now: number): 
     // do — the decision is already made, and re-reporting it would nag about a
     // choice the operator has taken.
     if (d.enabled === true) enabled = true;
+    // While the flag is on, only rows the loop wrote under it feed the
+    // re-check: a screen run from the route with a body override writes a row
+    // under whatever scoring the body chose, and would sum a different
+    // distribution into the same ladder.
+    if (cfg.relVolUsePaceScoring && d.enabled !== true) continue;
     ticks += 1;
     compared += num('compared');
     pass += num('wouldNewlyPass');
@@ -982,7 +1012,12 @@ export function collectScoringShadowFinding(cfg: AutotradeConfig, now: number): 
     const day = etToday(e.createdAt);
     if (lastSeen === null || day > lastSeen) lastSeen = day;
   }
-  if (enabled || ticks === 0 || compared === 0) return [];
+  if (ticks === 0 || compared === 0) return [];
+  if (cfg.relVolUsePaceScoring) return paceFloorDriftFinding(cfg, ladder, ladderRaw, ladderPace, ladderTicks, lastSeen);
+  // The flag is off now, but a row in the window was written with it on: the
+  // decision was taken and then reverted inside the window, and re-reporting
+  // the pre-enable case would nag about a choice already made once.
+  if (enabled) return [];
 
   const perTick = (n: number): number => Math.round((n / ticks) * 10) / 10;
   // The floor that preserves today's selectivity under the other scoring —
@@ -1022,6 +1057,64 @@ export function collectScoringShadowFinding(cfg: AutotradeConfig, now: number): 
           "enabling relVolUsePaceScoring is the operator's call. And the spec's own rule comes first: a uniform " +
           'lift in total score against a liveMinSignalScore fitted to the RAW distribution is a floor nobody agreed ' +
           'to lower, so re-fit that floor against the pace-scored distribution BEFORE the flag goes on, not after.',
+      },
+    },
+  ];
+}
+
+/**
+ * The floor's standing while pace scoring is on: the re-fit, recomputed over
+ * the window's ladder against the raw reference floor, reported only when it
+ * sits more than a rung from the floor in force. A ladder that cannot answer
+ * (not written yet, or either floor off its ends) says nothing rather than
+ * naming a number.
+ */
+function paceFloorDriftFinding(
+  cfg: AutotradeConfig,
+  ladder: number[] | null,
+  ladderRaw: number[],
+  ladderPace: number[],
+  ladderTicks: number,
+  lastSeen: string | null,
+): ScanFinding[] {
+  if (ladder === null || ladderTicks === 0) return [];
+  const floor = cfg.liveMinSignalScore;
+  const drift = paceFloorDrift(ladder, ladderRaw, ladderPace, PACE_SCORING_RAW_REFERENCE_FLOOR, floor);
+  if (drift === null || Math.abs(drift.driftPoints) < PACE_FLOOR_DRIFT_POINTS) return [];
+  const perTick = (n: number): number => Math.round((n / ladderTicks) * 10) / 10;
+  // The floor sits ABOVE its equivalence: it admits fewer symbols than the
+  // fitted reference, and the lever LOWERS it — which adds entries.
+  const tighter = drift.driftPoints < 0;
+  return [
+    {
+      id: 'configuration:relvol_pace_floor_drift',
+      kind: 'configuration',
+      label: tighter
+        ? 'The live score floor has drifted above its pace-scored equivalence'
+        : 'The live score floor has drifted below its pace-scored equivalence',
+      count: ladderTicks,
+      lastSeenEtDate: lastSeen,
+      detail:
+        `Pace scoring is ON with liveMinSignalScore ${floor}. Over ${ladderTicks} ticks of the score ladder the ` +
+        `floor admits ${perTick(drift.admittedAtFloor)} symbols a tick, while the raw floor of ` +
+        `${PACE_SCORING_RAW_REFERENCE_FLOOR} it was fitted to be neutral against admits ` +
+        `${perTick(drift.admittedAtReference)}. The pace-scored equivalent of that reference now reads ` +
+        `${drift.equivalentFloor} — ${Math.abs(drift.driftPoints)} points ${tighter ? 'below' : 'above'} the floor ` +
+        `in force, against a ${PACE_FLOOR_DRIFT_POINTS}-point bar. The live book is seeing ` +
+        `${tighter ? 'fewer' : 'more'} candidates than the fitted floor intended.`,
+      lever: {
+        kind: 'config',
+        field: 'liveMinSignalScore',
+        value: drift.equivalentFloor,
+        // Lowering the floor admits entries the book refuses today.
+        direction: tighter ? 'exposure' : 'safe',
+        detail: tighter
+          ? `Setting liveMinSignalScore to ${drift.equivalentFloor} restores the fitted flow. It LOWERS the floor, ` +
+            "which adds exposure, so it is the operator's call — never applied by the app. Confirm the drift " +
+            'holds on a second evening first; a single busy or quiet session moves the ladder.'
+          : `Setting liveMinSignalScore to ${drift.equivalentFloor} restores the fitted selectivity. It RAISES the ` +
+            'floor, which refuses entries the book takes today, so it is a flow cut: confirm the drift holds on a ' +
+            'second evening before applying it.',
       },
     },
   ];
