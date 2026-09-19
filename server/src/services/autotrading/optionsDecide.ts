@@ -9,6 +9,7 @@ import { OptionsStrategyType } from '../../db/autotradeConfig';
 import { mapPool } from '../../util/async';
 import { ScreenCandidate } from './screen';
 import { Candle } from '../../providers/types';
+import { overlaySelectionQuotes, SelectionQuoteReport } from './optionsSelectionQuotes';
 
 // ---------------------------------------------------------------------------
 // The options counterpart to decide.ts (docs/AUTOTRADING_SPEC.md, phase 9).
@@ -135,6 +136,11 @@ interface OptionsSignalBase {
    *  liquidity/delta-fit ranking (entryRules.ts's EntryCandidate.score),
    *  which only ranks contracts WITHIN one underlying's own chain. */
   score: number;
+  /** Where the contract's own numbers came from at SELECTION time
+   *  (2026-09-19): the real-time OPRA snapshot overlaid on the delayed chain,
+   *  or the chain alone. Absent only on signals built before the field
+   *  existed (fixtures, replays). */
+  selection?: SelectionQuoteReport;
 }
 
 export interface SingleLegOptionsSignal extends OptionsSignalBase {
@@ -184,7 +190,12 @@ export interface DebitSpreadOptionsSignal extends OptionsSignalBase {
 
 export type OptionsTradeSignal = SingleLegOptionsSignal | DebitSpreadOptionsSignal;
 
-export type OptionsSignalResult = { ok: true; signal: OptionsTradeSignal } | { ok: false; reason: string };
+export type OptionsSignalResult =
+  | { ok: true; signal: OptionsTradeSignal }
+  /** `selection` is present on a skip decided AFTER the chain was overlaid
+   *  (2026-09-19), so "no contract passed" can say which numbers it was
+   *  judged on; earlier skips (no expiration, no chain, no IV rank) carry none. */
+  | { ok: false; reason: string; selection?: SelectionQuoteReport };
 
 /**
  * Build an options-shaped signal for one already-screened candidate, or a
@@ -355,10 +366,28 @@ export async function generateOptionsSignal(
       : configuredStrategyType;
   const autoNote = configuredStrategyType === 'auto' ? 'Auto-selected (IV rank-based) — ' : '';
 
+  // CONTRACT SELECTION ON THE REAL-TIME SNAPSHOT (2026-09-19). The chain is
+  // Yahoo-sourced and ~15 minutes delayed; placement has priced from the OPRA
+  // ask since 2026-09-18, so the strike, the delta band, the spread filter and
+  // signal.premium were all being decided on numbers the order itself no longer
+  // used. Fresh two-sided prints replace the nearest-the-money contracts' bid/
+  // ask/mark/volume/OI/greeks (optionsSelectionQuotes.ts); the strike list, the
+  // filter levels and the ranking are the chain's and unchanged, and with no
+  // OPRA answer the chain is used exactly as before. Deliberately AFTER the
+  // IV-history write above, which keeps the IV-rank series on the one source
+  // it has always had.
+  const selection = await overlaySelectionQuotes(chain, side, now.getTime());
+  chain = selection.chain;
+  const report = selection.report;
+
   const entries = scanEntries(chain, entryCfg, now, ivContext.ivRank);
   const best = entries.find((e) => e.passed);
   if (!best) {
-    return { ok: false, reason: 'No contract passed entry rules (liquidity/spread/delta/IV band)' };
+    return {
+      ok: false,
+      reason: 'No contract passed entry rules (liquidity/spread/delta/IV band)',
+      selection: report,
+    };
   }
 
   const underlyingPrice = chain.underlyingPrice ?? candidate.price;
@@ -385,7 +414,11 @@ export async function generateOptionsSignal(
     // should always pass — but checking it in code, not just assuming the
     // invariant, is exactly what the spec calls for.
     if (analysis.unboundedLoss || analysis.maxLoss === null || !Number.isFinite(analysis.maxLoss)) {
-      return { ok: false, reason: 'Structural defined-risk check failed (unbounded or non-finite max loss)' };
+      return {
+        ok: false,
+        reason: 'Structural defined-risk check failed (unbounded or non-finite max loss)',
+        selection: report,
+      };
     }
 
     const rationale =
@@ -412,6 +445,7 @@ export async function generateOptionsSignal(
         maxLossPerContract: Math.abs(analysis.maxLoss),
         rationale,
         score: candidate.total,
+        selection: report,
       },
     };
   }
@@ -435,13 +469,18 @@ export async function generateOptionsSignal(
     return {
       ok: false,
       reason: 'No short-leg contract passed entry rules further out-of-the-money than the long leg',
+      selection: report,
     };
   }
 
   const shortPremium = bestShort.metrics.mark ?? 0;
   const netDebit = premium - shortPremium;
   if (netDebit <= 0) {
-    return { ok: false, reason: 'Short leg premium ≥ long leg premium — not a net debit, skipped' };
+    return {
+      ok: false,
+      reason: 'Short leg premium ≥ long leg premium — not a net debit, skipped',
+      selection: report,
+    };
   }
 
   const analysis = analyzeStrategy({
@@ -474,6 +513,7 @@ export async function generateOptionsSignal(
     return {
       ok: false,
       reason: 'Structural defined-risk/reward check failed (unbounded or non-finite max loss/profit)',
+      selection: report,
     };
   }
 
@@ -508,6 +548,7 @@ export async function generateOptionsSignal(
       maxProfitPerContract: Math.abs(analysis.maxProfit),
       rationale,
       score: candidate.total,
+      selection: report,
     },
   };
 }
@@ -557,6 +598,10 @@ export async function runOptionsDecision(
                 ivRank: signal.ivRank,
                 maxLossPerContract: signal.maxLossPerContract,
                 rationale: signal.rationale,
+                // Which numbers chose the contract (2026-09-19): the OPRA
+                // snapshot or the delayed chain, how many contracts it re-
+                // priced, and how old the oldest print used was.
+                ...signal.selection,
               }
             : {
                 kind: signal.kind,
@@ -570,6 +615,7 @@ export async function runOptionsDecision(
                 maxLossPerContract: signal.maxLossPerContract,
                 maxProfitPerContract: signal.maxProfitPerContract,
                 rationale: signal.rationale,
+                ...signal.selection,
               },
       });
     } else {
@@ -578,7 +624,10 @@ export async function runOptionsDecision(
         symbol: candidate.symbol,
         stage: 'decision',
         action: 'no_options_signal',
-        detail: { reason: result.reason },
+        // A "no contract passed" skip says which numbers it was judged on;
+        // skips before the overlay (no expiration, no chain, no IV rank)
+        // carry no selection fields.
+        detail: { reason: result.reason, ...result.selection },
       });
     }
   });

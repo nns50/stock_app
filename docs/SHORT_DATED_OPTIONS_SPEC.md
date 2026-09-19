@@ -302,6 +302,26 @@ offers. `live_options_order_placed` carries `priceBasis`, `quoteSource`, `quoteA
 and each leg's quote; `options_paper_order_placed` carries `fillBasis` and
 `quoteSource`.
 
+**The contract is selected on the same snapshot (2026-09-19).** Pricing the order
+from the real-time ask still left the *choice* of contract on the delayed chain: which
+strike, whether it cleared the delta band, the spread filter and the liquidity floors,
+and the premium the risk check sized on were all read from a quote a quarter of an
+hour old, and on the 0DTE names the sleeve trades the delayed chain's premiums ran
+40–70% away from the live print on 2026-09-18 (HOOD 0.57 against 0.99, IBM 0.51
+against 0.95, COIN 0.55 against 1.95). Selection now fetches one OPRA snapshot for the
+nearest-the-money contracts of the signal's side — at most 40, the snapshot route's
+own batch cap — and overlays each fresh two-sided print's bid, ask, mark, volume, open
+interest, delta and IV onto that contract before the entry rules run
+(`optionsSelectionQuotes.ts`, called from `optionsDecide.ts`). The chain stays the
+source of the strike list and the fallback: a stale print (older than the same two
+minutes an order accepts, judged by the same `freshTwoSidedPrint` rule), a one-sided
+print, or no answer at all leaves that contract, or the whole chain, exactly as it
+was, and every filter level, band and weight is unchanged. The IV-rank history keeps
+reading the chain, so the rank series is unaffected. Both books share the decision,
+and the signal's journal row (`options_signal_generated`, and `no_options_signal` when
+the rules refused every contract) carries `selectionQuoteSource` ('opra' or 'chain'),
+`rePricedContracts`, `quoteAgeMs` (the oldest print used) and `quotesRequested`.
+
 **A sub-tick mark no longer refuses the close.** `roundOptionPrice` rounds a
 sell DOWN, so anything under half a tick became zero and was refused: HOOD's
 14:00 hard-exit replacement computed `roundOptionPrice(0.03 × 0.95) = 0` and

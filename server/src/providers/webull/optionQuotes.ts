@@ -52,8 +52,11 @@ export interface OptionQuotesResult {
 const cache = new TtlCache<OptionQuote>(4 * 1000);
 
 // One /option/snapshot call can carry several OCC symbols; cap the batch so a
-// stray request can't fan out unbounded.
-const MAX_SYMBOLS = 40;
+// stray request can't fan out unbounded. Exported (2026-09-19) so the contract-
+// selection overlay sizes its nearest-the-money set to the same number this
+// call will actually send, rather than carrying a copy that could drift.
+export const OPTION_QUOTES_MAX_SYMBOLS = 40;
+const MAX_SYMBOLS = OPTION_QUOTES_MAX_SYMBOLS;
 
 function num(v: unknown): number | undefined {
   if (v === null || v === undefined || v === '') return undefined;
