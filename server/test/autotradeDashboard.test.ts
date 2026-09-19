@@ -591,6 +591,19 @@ describe('gatedSwitches — the shadow is visible while it runs', () => {
     const rule = getAutotradeDashboard().gatedSwitches.find((r) => r.id === 'frozen_cap');
     expect(rule).toMatchObject({ graduated: true, evaluations: 7, proposals: 2, lastMet: true, graduatedAt: 1234 });
     expect(rule?.blockers).toEqual([]);
+    expect(rule?.lastReading).toBeNull();
+  });
+
+  it('carries a rule’s last reading, so the card can show its distance from the bar (2026-09-19)', () => {
+    db.prepare(
+      'INSERT INTO gated_switch_state (rule_id, evaluations, proposals, contradictions, last_met, last_evaluated_et_date, graduated_at, last_reading)' +
+        " VALUES ('shorts', 1, 0, 0, 0, '2026-09-19', NULL, '19 of 30 shadow shorts — short on trades')",
+    ).run();
+    const shorts = getAutotradeDashboard().gatedSwitches.find((r) => r.id === 'shorts');
+    expect(shorts?.lastReading).toBe('19 of 30 shadow shorts — short on trades');
+    // An exposure rule with a stamped graduation still reads as the operator's call.
+    db.prepare("UPDATE gated_switch_state SET graduated_at = 5 WHERE rule_id = 'shorts'").run();
+    expect(getAutotradeDashboard().gatedSwitches.find((r) => r.id === 'shorts')?.graduated).toBe(false);
   });
 });
 

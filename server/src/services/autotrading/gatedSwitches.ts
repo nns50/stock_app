@@ -1,6 +1,7 @@
 import { AutotradeConfig } from '../../db/autotradeConfig';
 import type { MlRegimeReadiness } from '../mlRegimeReadiness';
 import type { EdgeLeakScanResult, LeakReport } from './edgeLeakScan';
+import type { ShortShadowRecord } from './shortShadowRecord';
 import type { DollarCapKey } from './targetTune';
 
 // ---------------------------------------------------------------------------
@@ -77,7 +78,16 @@ export const SWITCH_WRITABLE_KEYS: readonly SwitchWritableKey[] = [
   'liveOptionsMaxDailyLossUsd',
 ] as const;
 
-export type SwitchPatch = Partial<Pick<AutotradeConfig, SwitchWritableKey>>;
+/** Keys an EXPOSURE rule may name in its proposal without the app ever being
+ *  allowed to write them (2026-09-19). The shorts switch has to say which
+ *  field the operator would flip, and `assertWritable` still refuses it at the
+ *  write — an exposure rule's patch is a message to the operator, not a write.
+ *  `assertProposable` is the wider check the engine applies to every firing. */
+export type SwitchProposalOnlyKey = 'liveAllowNakedShort';
+
+export const SWITCH_PROPOSAL_ONLY_KEYS: readonly SwitchProposalOnlyKey[] = ['liveAllowNakedShort'] as const;
+
+export type SwitchPatch = Partial<Pick<AutotradeConfig, SwitchWritableKey | SwitchProposalOnlyKey>>;
 
 /**
  * Is every value in `patch` already what the config says?
@@ -111,6 +121,21 @@ export function assertWritable(patch: SwitchPatch): void {
   }
 }
 
+/** The check every FIRING passes: a rule may name a writable key or a
+ *  proposal-only key, and nothing else. What reaches `applied` is then held
+ *  to `assertWritable` on top, so a proposal-only key can be reported and can
+ *  never be written. */
+export function assertProposable(patch: SwitchPatch): void {
+  for (const key of Object.keys(patch)) {
+    if (
+      !(SWITCH_WRITABLE_KEYS as readonly string[]).includes(key) &&
+      !(SWITCH_PROPOSAL_ONLY_KEYS as readonly string[]).includes(key)
+    ) {
+      throw new Error(`gated switches may not propose ${key}`);
+    }
+  }
+}
+
 /** One rule's reading on one session. */
 export interface SwitchFiring {
   patch: SwitchPatch;
@@ -128,6 +153,15 @@ export interface SwitchRule {
   /** Null when the criterion is not met, or when the snapshot cannot answer
    *  it — an absent input is NOT a met criterion. */
   evaluate: (s: GatedSwitchSnapshot) => SwitchFiring | null;
+  /**
+   * The rule's inputs against its bar, in words, met or not — "19 of 30
+   * shadow shorts, avg +0.08R (bar +0.1R)…". Folded into the state as
+   * `lastReading` on every evaluation and shown on the Automatic switches
+   * card, so a rule's DISTANCE from firing is visible rather than only its
+   * yes/no. Optional: a rule whose criterion is a bare condition has nothing
+   * to read. Null when the input is absent.
+   */
+  reading?: (s: GatedSwitchSnapshot) => string | null;
   /**
    * True when the patch's VALUES come from data rather than from literal code
    * — today only `leak_lever`, whose field and number are read off whatever the
@@ -260,6 +294,39 @@ export interface GatedSwitchSnapshot {
   leakScan: EdgeLeakScanResult | null;
   review: SizingReview;
   capsCoherence: { key: DollarCapKey; stored: number; derived: number | null; anchorOwned: boolean }[];
+  /** The last persisted short shadow record, or null if none has been
+   *  computed (shortShadowRecordData.ts, once per session after the close). */
+  shortShadow: ShortShadowEvidence | null;
+}
+
+/** The short shadow record as the `shorts` rule reads it: the three numbers
+ *  task #21's gate is written on, the gate's OWN verdict on them (so the rule
+ *  and `GET /api/journal/short-shadow-record` cannot disagree about the bar),
+ *  and the session they were computed after. */
+export interface ShortShadowEvidence {
+  etDate: string;
+  journaledRows: number;
+  n: number;
+  avgR: number | null;
+  winRatePct: number | null;
+  gate: ShortShadowRecord['gate'];
+}
+
+/** The record's three numbers against their bar, in one line, met or not. The
+ *  `shorts` rule's evidence when it fires and its reading when it does not. */
+export function shortShadowReading(r: ShortShadowEvidence): string {
+  const g = r.gate;
+  const avg = r.avgR === null ? 'n/a' : `${r.avgR >= 0 ? '+' : ''}${r.avgR.toFixed(2)}R`;
+  const win = r.winRatePct === null ? 'n/a' : `${r.winRatePct.toFixed(1)}%`;
+  const short: string[] = [];
+  if (!g.passesN) short.push('trades');
+  if (!g.passesAvgR) short.push('avg R');
+  if (!g.passesWinRate) short.push('win rate');
+  return (
+    `${r.n} of ${g.minTrades} shadow shorts, avg ${avg} (bar +${g.minAvgR}R), win ${win} (bar ${g.minWinRatePct}%)` +
+    ` as of ${r.etDate}` +
+    (short.length ? ` — short on ${short.join(', ')}` : ' — bar met')
+  );
 }
 
 /** The pre-committed review's inputs (Decision 7), counted since the sizing
@@ -331,11 +398,15 @@ export interface SwitchState {
    *  dollar caps), so a comparison against the rule's literal would not
    *  answer it. Null when the rule has never fired. */
   lastProposedPatch: SwitchPatch | null;
+  /** What the rule READ on its last evaluation (`SwitchRule.reading`), met or
+   *  not. Null for a rule with nothing to read, or whose input was absent. */
+  lastReading: string | null;
 }
 
 export const freshSwitchState = (ruleId: string): SwitchState => ({
   ruleId,
   lastProposedPatch: null,
+  lastReading: null,
   evaluations: 0,
   proposals: 0,
   contradictions: 0,
@@ -366,13 +437,17 @@ export type GraduationVerdict = { graduated: true } | { graduated: false; blocke
  * the criteria are met".
  */
 export function graduationVerdict(rule: SwitchRule, state: SwitchState): GraduationVerdict {
-  if (state.graduatedAt !== null) return { graduated: true };
-  const blockers: string[] = [];
   if (rule.direction === 'exposure') {
     // Not a blocker that time can clear — say so in those words, so a reader
-    // never waits for an exposure rule to graduate.
+    // never waits for an exposure rule to graduate. Checked BEFORE the stored
+    // graduation (2026-09-19): the direction is the operator's standing
+    // decision, and no row — hand-edited, migrated or corrupt — may override
+    // it. Until then a `graduated_at` on an exposure rule's row would have
+    // read as graduated.
     return { graduated: false, blockers: ['adds exposure — only the operator applies this, by standing decision'] };
   }
+  if (state.graduatedAt !== null) return { graduated: true };
+  const blockers: string[] = [];
   if (state.evaluations < SHADOW_MIN_EVALUATIONS) {
     blockers.push(`evaluated on ${state.evaluations} of ${SHADOW_MIN_EVALUATIONS} sessions`);
   }
@@ -424,6 +499,7 @@ export function nextSwitchState(
   applied: boolean,
   settled = false,
   proposedPatch: SwitchPatch | null = null,
+  reading: string | null = null,
 ): SwitchState {
   // A rule that proposed and now reads not-met, with its patch nowhere in
   // force, contradicted itself. If the patch IS in force, the criterion
@@ -440,6 +516,9 @@ export function nextSwitchState(
     // Only a firing replaces it: a quiet session must not erase the patch the
     // next contradiction test is about to ask after.
     lastProposedPatch: proposedPatch ?? state.lastProposedPatch,
+    // Unlike the patch, the reading is THIS evaluation's: an absent input
+    // reads as absent, never as yesterday's numbers.
+    lastReading: reading,
   };
 }
 
@@ -484,7 +563,10 @@ export function evaluateGatedSwitches(input: EvaluateInput): GatedSwitchResult {
     }
 
     const firing = rule.evaluate(snapshot);
-    if (firing) assertWritable(firing.patch);
+    // Every firing may only NAME a writable or proposal-only key; what reaches
+    // `applied` below is held to the writable list on top of that.
+    if (firing) assertProposable(firing.patch);
+    const reading = rule.reading ? rule.reading(snapshot) : null;
     const met = firing !== null;
     // A patch whose VALUES came from data is checked by arithmetic, not by its
     // label, before it can be applied. See SAFE_DIRECTION: the scan's own
@@ -502,8 +584,10 @@ export function evaluateGatedSwitches(input: EvaluateInput): GatedSwitchResult {
     else if (met && graduation.graduated && exposureRefusals.length === 0) outcome = 'held';
     else if (met) outcome = 'proposed';
 
-    if (outcome === 'applied' && firing)
+    if (outcome === 'applied' && firing) {
+      assertWritable(firing.patch);
       applied.push({ ruleId: rule.id, patch: firing.patch, evidence: firing.evidence });
+    }
     if ((outcome === 'proposed' || outcome === 'held') && firing) {
       proposed.push({ ruleId: rule.id, patch: firing.patch, evidence: firing.evidence, direction: rule.direction });
     }
@@ -519,6 +603,7 @@ export function evaluateGatedSwitches(input: EvaluateInput): GatedSwitchResult {
       outcome === 'applied',
       settled,
       firing ? firing.patch : null,
+      reading,
     );
     decisions.push({
       rule,
@@ -645,11 +730,25 @@ export const GATED_SWITCH_RULES: SwitchRule[] = [
     label: 'Enable live shorts',
     direction: 'exposure',
     criterion: '30 shadow short trades with average R ≥ +0.1 and a win rate ≥ 50%',
-    // Reported, never applied — and deliberately left unevaluated until the
-    // shadow record exposes those three numbers in one place. A rule that
-    // guesses at its own criterion is worse than one that says it cannot read
-    // it yet; `graduationVerdict` already refuses every exposure rule, so this
-    // costs nothing but the row in the report.
-    evaluate: () => null,
+    // Reported, never applied: `graduationVerdict` refuses every exposure rule
+    // before it reads the state, and `liveAllowNakedShort` is a proposal-only
+    // key `assertWritable` refuses at the write. So a firing here reaches the
+    // operator as a config_change_proposed row and a push, and nothing else.
+    //
+    // It reads the record's OWN gate (SHORT_ENABLE_GATE, replayed after each
+    // close by shortShadowRecordData.ts) rather than restating the three
+    // numbers, so the rule and GET /api/journal/short-shadow-record cannot
+    // disagree about the bar. Until 2026-09-19 it evaluated to null: the
+    // record was computed by a route and read by nobody in the app, while the
+    // comment here said it was waiting for the numbers to be "in one place".
+    // They were; nothing looked.
+    evaluate: (s) => {
+      const r = s.shortShadow;
+      if (!r || !r.gate.passes) return null;
+      // Already on: nothing to propose, or the rule would ask every session.
+      if (s.config.liveAllowNakedShort) return null;
+      return { patch: { liveAllowNakedShort: true }, evidence: shortShadowReading(r) };
+    },
+    reading: (s) => (s.shortShadow ? shortShadowReading(s.shortShadow) : null),
   },
 ];

@@ -2,6 +2,7 @@ import { getAutotradeConfig, setAutotradeConfig } from '../../db/autotradeConfig
 import { listAutotradeEvents, logAutotradeEvent } from '../../db/autotradeEvents';
 import { listSwitchStates, saveSwitchState } from '../../db/gatedSwitchState';
 import { getLastEdgeLeakScan } from '../../db/edgeLeakScans';
+import { getLastShortShadowRecord } from '../../db/shortShadowRecords';
 import { DailyResult, listDailyResults } from '../../db/dailyResults';
 import { getMlRegimeReadiness } from '../mlRegimeReadiness';
 import { etToday } from '../../util/marketDate';
@@ -9,6 +10,7 @@ import { isTradingSession } from '../trading/marketCalendar';
 import { isAfterSessionClose } from '../trading/marketHours';
 import { buildCapsCoherence } from './dashboard';
 import { dispatchAutotradeNotification } from './notify';
+import { shortShadowEvidenceOf } from './shortShadowRecordData';
 import {
   assertWritable,
   evaluateGatedSwitches,
@@ -202,6 +204,10 @@ export function buildGatedSwitchSnapshot(now: number): GatedSwitchSnapshot {
       derived: c.derived,
       anchorOwned: c.anchorOwned,
     })),
+    // Persisted by the loop's after-close hook (shortShadowRecordData.ts),
+    // which runs right before this engine on the same tick, so today's record
+    // is what the `shorts` rule reads tonight.
+    shortShadow: shortShadowEvidenceOf(getLastShortShadowRecord()),
   };
 }
 
@@ -285,6 +291,22 @@ export function runGatedSwitches(now: number = Date.now()): GatedSwitchResult | 
       },
       riskProfile: snapshot.config.riskProfile,
     });
+    // An EXPOSURE rule's proposal exists to ask the operator, so it is pushed
+    // (2026-09-19) — the plan's "reported with the exact settings and waits" —
+    // on the session its bar is first met, not every session it stays met: the
+    // bar, once met, stays met until the operator answers, and a nightly push
+    // for the same question is how a push stops being read. A safe rule's
+    // shadow proposal stays journal-only; the routine already reports it.
+    if (direction === 'exposure' && !(states.get(ruleId)?.lastMet ?? false)) {
+      void dispatchAutotradeNotification('gated-switches', [
+        {
+          title: `Autotrade: ${ruleId} has met its bar — your call`,
+          message: `${Object.entries(patch)
+            .map(([k, v]) => `${k} → ${String(v)}`)
+            .join(', ')} — ${evidence}. Adds exposure, so it waits for you.`,
+        },
+      ]);
+    }
   }
 
   for (const decision of result.decisions) {

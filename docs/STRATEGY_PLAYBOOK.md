@@ -637,6 +637,14 @@ Three things it is not, and each matters when quoting it:
   A gate that passes on this reading passes pessimistically, which is the only direction
   worth being wrong in when the question is whether to point real money somewhere new.
 
+**And the app reads it** (2026-09-19). For nine days the record was a route the daily
+routine fetched, and the gated switch written to read it returned nothing — a measurement
+nobody consumed. The loop now replays the declined shorts once per session after the
+close, keeps the result, and the "enable live shorts" rule reads the record's own gate;
+the route and the loop share one loader. The loader reads the whole window since
+2026-08-27 rather than the newest 1,000 journal rows (the same cap that once dropped the
+oldest 928 skips out of the leak scan), and the response says whether it was cut short.
+
 The general lesson outlives the shorts question: when a control arm has constraints the
 thing it is standing in for does not share, it is not a control arm. Replay the decision
 that was actually made.
@@ -2158,6 +2166,14 @@ session after the close, and applies the ones that **reduce** exposure.
 The asymmetry is the safety model, and it is one-way: **a rule that adds exposure is
 never applied by the app** — more risk, more slots, a wider halt, shorts all get reported
 and wait. Nothing the app does on its own can widen your risk.
+
+The one exposure rule in the table, **enable live shorts**, reads the short shadow record
+(below) since 2026-09-19 — the loop replays the declined shorts itself after each close
+and the rule reads the record's own verdict against the 30 / +0.1R / 50% bar. Until then
+the rule evaluated to nothing at all while the record sat one route away, computed and
+unread. It proposes `liveAllowNakedShort` and pushes once when the bar is first met, shows
+its reading on the Automatic switches card every session ("19 of 30 shadow shorts…"), and
+cannot write the field: it is a proposal-only key the engine refuses at the write.
 
 Since 2026-09-12 that is enforced by **arithmetic, not by a label**. One rule (`leak_lever`)
 takes its field and its number from the leak scan's output rather than from literal code,

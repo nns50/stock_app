@@ -289,6 +289,10 @@ export interface GatedSwitchStatus {
   lastMet: boolean;
   lastEvaluatedEtDate: string | null;
   graduatedAt: number | null;
+  /** What the rule read on its last evaluation, met or not — the shorts
+   *  record's three numbers against their bar. Null for a rule with nothing
+   *  to read, or not yet evaluated. */
+  lastReading: string | null;
 }
 
 export interface EdgeLeakSummary {
@@ -554,6 +558,7 @@ export function buildGatedSwitchStatus(): GatedSwitchStatus[] {
       lastMet: state.lastMet,
       lastEvaluatedEtDate: state.lastEvaluatedEtDate,
       graduatedAt: state.graduatedAt,
+      lastReading: state.lastReading,
     };
   });
 }

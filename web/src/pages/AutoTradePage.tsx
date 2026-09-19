@@ -1256,6 +1256,15 @@ function GatedSwitchesCard({ rules }: { rules: AutotradeGatedSwitch[] }) {
                 <span> — since {new Date(r.graduatedAt).toISOString().slice(0, 10)}</span>
               )}
             </div>
+            {/* What the rule READ last time, met or not (2026-09-19). A yes/no
+                on its own cannot say "19 of 30" — and for the one rule that
+                waits on the operator, the distance to the bar is the whole
+                answer to "what is the evidence so far". */}
+            {r.lastReading !== null && (
+              <div className="text-slate-400" data-testid={`gated-switch-reading-${r.id}`}>
+                {r.lastReading}
+              </div>
+            )}
           </div>
         ))}
       </div>
