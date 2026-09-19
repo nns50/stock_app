@@ -23,6 +23,8 @@ import { getOptionsProbationStatus } from './liveOptionsExecute';
 import { buildLiveSlippageRows } from './autoTune';
 import { MARKETABLE_LIMIT_BUFFER_PCT } from './marketableLimit';
 import { entryDriftPct } from './entryRisk';
+import { getLastReentryShadowRecord } from '../../db/reentryShadowRecords';
+import { reentryShadowEvidenceOf } from './reentryShadowRecordData';
 import {
   BatchRefusal,
   CollectedLeakBook,
@@ -34,7 +36,10 @@ import {
   JournalSkip,
   LeakBook,
   LeakTrade,
+  mulberry32,
+  reentryCooldownFinding,
   runEdgeLeakScan,
+  SCAN_RNG_SEED,
   ScanFinding,
 } from './edgeLeakScan';
 
@@ -1120,6 +1125,22 @@ function paceFloorDriftFinding(
   ];
 }
 
+/**
+ * The re-entry cooldown's finding, read from the record the loop persisted
+ * after the last close (reentryShadowRecordData.ts) — never recomputed here,
+ * because the record needs provider bars and this scan reads only the
+ * database. No record yet (before the first after-close tick on this build)
+ * reads as silence, not as evidence. The rng is the scan's own seed so the
+ * bootstrap interval is the same on every run of the same record.
+ */
+export function collectReentryCooldownFinding(cfg: AutotradeConfig): ScanFinding[] {
+  return reentryCooldownFinding(
+    reentryShadowEvidenceOf(getLastReentryShadowRecord()),
+    cfg.symbolReentryCooldownMinutes,
+    mulberry32(SCAN_RNG_SEED),
+  );
+}
+
 /** The stored daily goal expressed in R at the stored risk % — the level the
  *  goal-rate is counted at. Null when no goal is armed or risk is 0, because
  *  "how often did we reach nothing" is not a question. */
@@ -1188,6 +1209,7 @@ export function runEdgeLeakScanFromDb(opts: EdgeLeakScanOptions = {}): EdgeLeakS
       ...collectConfigurationFindings(cfg, now),
       ...collectOptionsFlowFindings(cfg, now),
       ...collectScoringShadowFinding(cfg, now),
+      ...collectReentryCooldownFinding(cfg),
     ],
     entrySlippagePct,
     entryLimitBufferPct: MARKETABLE_LIMIT_BUFFER_PCT,

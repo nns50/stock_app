@@ -838,6 +838,17 @@ trades.
   by replaying them on their own bars under the book's current exits. Its `unscorableRows`
   count says how many journal rows predate the entry/stop fields and therefore cannot be
   scored at all; while that number is large the reading is mostly holes, not a verdict.
+  Since 2026-09-19 it reads the whole window rather than the newest 1,000 rows (the
+  re-entry cooldown journals every tick it refuses a name, so a capped read silently
+  dropped most of a day) and says so in `journalTruncated`; `&minMinutesSinceExit=120`
+  replays the first refusal at or past 120 minutes after the symbol's last exit — what a
+  shorter cooldown would have admitted — instead of the first refusal of the day, which is
+  the immediate re-entry the paper book takes. The loop runs that replay itself after every
+  session's close at 0 / 60 / 120 / 180 minutes over the last forty sessions
+  (`GET /api/journal/reentry-shadow-record` serves the stored result), and the edge-leak
+  scan raises `configuration:reentry_cooldown_shadow` when a gap shorter than the cooldown
+  in force clears the scan's bar — fifteen or more trades with the whole 95% interval above
+  zero — an exposure lever that always waits for you.
   A companion read, `GET /api/journal/short-shadow-record` (2026-09-10), answers
   the direction question the journal could not: it replays every live-eligible short the
   live book declined on real 5-minute bars, under the book's own exit geometry, and reports
@@ -1840,7 +1851,11 @@ equally-weighted cards in the order they happened to be built:
   would, which is the only way to find out what each of those three rules is
   actually buying — live can't answer that about itself, since it closed the
   trade. Anything else that differs between the two books is a bug, not a
-  comparison.
+  comparison. For the re-entry cooldown that comparison turned out to be the
+  wrong instrument (2026-09-19): paper re-enters within minutes of its exit, so
+  it holds almost no delayed re-entries of the kind a shorter cooldown would
+  admit, and the loop now measures the cooldown by replaying its own refusals
+  after each close instead (see "What auto-trading now records at entry" above).
   Since 2026-09-05 the flatten (and every other session gate) also knows
   **market holidays and early closes**: the loop is idle all day on a full
   holiday instead of trading off the previous session's stale closes, and on a

@@ -12,6 +12,8 @@ import {
   mulberry32,
   paceFloorDrift,
   paperControlDrift,
+  reentryCooldownFinding,
+  reentryGapReadings,
   runEdgeLeakScan,
   SLIPPAGE_MIN_TRADES,
   ENTRY_DRIFT_MIN_TRADES,
@@ -764,5 +766,98 @@ describe('equivalentPaceFloor — the re-fit, not a mean shift', () => {
       expect(paceFloorDrift(LADDER, RAW, PACE, 72, 90)).toBeNull();
       expect(paceFloorDrift(LADDER, RAW, PACE, 50, 76)).toBeNull();
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The re-entry cooldown finding (2026-09-19): what a SHORTER cooldown would
+// have admitted, judged at the scan's own bar in the other direction — the
+// whole interval ABOVE zero, because the lever adds exposure. Built the way
+// the rest of this file is: a record with a known reading in it, and the scan
+// asked to name it.
+// ---------------------------------------------------------------------------
+describe('the re-entry cooldown finding — what a shorter cooldown would have admitted', () => {
+  const rng = () => mulberry32(7);
+  const gap = (minMinutesSinceExit: number, exitRs: number[]) => ({ minMinutesSinceExit, exitRs });
+  const same = (n: number, r: number) => Array.from({ length: n }, () => r);
+  /** Twenty trades whose mean is zero: an interval that straddles it. */
+  const noise = Array.from({ length: 20 }, (_, i) => (i % 2 ? 0.5 : -0.5));
+  const record = (gaps: { minMinutesSinceExit: number; exitRs: number[] }[], journalTruncated = false) => ({
+    etDate: '2026-09-18',
+    journalTruncated,
+    gaps,
+  });
+
+  it('names the gap that clears the bar, with an exposure lever the app never applies', () => {
+    const [f, ...rest] = reentryCooldownFinding(
+      record([gap(0, same(20, 0.15)), gap(60, same(20, -0.1)), gap(120, same(20, 0.3)), gap(180, same(9, 0.5))]),
+      390,
+      rng(),
+    );
+    expect(rest).toEqual([]);
+    expect(f.id).toBe('configuration:reentry_cooldown_shadow');
+    expect(f.kind).toBe('configuration');
+    expect(f.label).toMatch(/120 minutes after the exit/);
+    expect(f.count).toBe(20);
+    expect(f.lastSeenEtDate).toBe('2026-09-18');
+    // Every gap is in the detail, cleared or not, so the reader sees the shape
+    // and not only the winner; the nine-trade gap is there with its n.
+    expect(f.detail).toMatch(/cooldown is 390 minutes/);
+    expect(f.detail).toMatch(/0 min — n=20, avg \+0\.15R/);
+    expect(f.detail).toMatch(/60 min — n=20, avg -0\.10R/);
+    expect(f.detail).toMatch(/120 min — n=20, avg \+0\.30R/);
+    expect(f.detail).toMatch(/180 min — n=9, avg \+0\.50R/);
+    expect(f.detail).toMatch(/The 120-minute gap clears the bar/);
+    expect(f.detail).toMatch(/as does 0 min/);
+    expect(f.detail).toMatch(/No paper control exists/);
+    expect(f.lever).toMatchObject({
+      kind: 'config',
+      field: 'symbolReentryCooldownMinutes',
+      value: 120,
+      direction: 'exposure',
+    });
+    expect(f.lever?.detail).toMatch(/operator’s call, never applied by the app/);
+  });
+
+  it('is silent below the bar — fewer than 15 trades, or an interval that touches zero', () => {
+    expect(reentryCooldownFinding(record([gap(120, same(LEAK_MIN_TRADES - 1, 0.5))]), 390, rng())).toEqual([]);
+    expect(reentryCooldownFinding(record([gap(120, noise)]), 390, rng())).toEqual([]);
+    expect(reentryCooldownFinding(record([gap(120, same(20, -0.2))]), 390, rng())).toEqual([]);
+  });
+
+  it('never proposes a gap at or past the cooldown in force, and nothing at all when the cooldown is off', () => {
+    const cleared = record([gap(60, same(20, 0.2)), gap(120, same(20, 0.3)), gap(180, same(20, 0.4))]);
+    // At 120 the 120- and 180-minute gaps would lower nothing; 60 still would.
+    expect(reentryCooldownFinding(cleared, 120, rng())[0]?.lever?.value).toBe(60);
+    expect(reentryCooldownFinding(cleared, 60, rng())).toEqual([]);
+    expect(reentryCooldownFinding(cleared, 0, rng())).toEqual([]);
+    // The first refusal clearing under a cooldown of 60 names 0: no cooldown.
+    expect(reentryCooldownFinding(record([gap(0, same(20, 0.2))]), 60, rng())[0]?.lever?.value).toBe(0);
+  });
+
+  it('says nothing without a record', () => {
+    expect(reentryCooldownFinding(null, 390, rng())).toEqual([]);
+  });
+
+  it('prefers the higher mean among clearing gaps, and the longer gap on a tie', () => {
+    expect(
+      reentryCooldownFinding(record([gap(60, same(20, 0.3)), gap(120, same(20, 0.2))]), 390, rng())[0].lever?.value,
+    ).toBe(60);
+    expect(
+      reentryCooldownFinding(record([gap(60, same(20, 0.2)), gap(120, same(20, 0.2))]), 390, rng())[0].lever?.value,
+    ).toBe(120);
+  });
+
+  it('carries the record’s incompleteness into the detail', () => {
+    const [f] = reentryCooldownFinding(record([gap(120, same(20, 0.3))], true), 390, rng());
+    expect(f.detail).toMatch(/window is incomplete/);
+  });
+
+  it('reads each gap with the scan’s own statistics', () => {
+    const readings = reentryGapReadings(record([gap(120, same(20, 0.3)), gap(0, noise)]), rng());
+    // Sorted by gap, whatever order the record held them in.
+    expect(readings.map((r) => r.minMinutesSinceExit)).toEqual([0, 120]);
+    expect(readings[0]).toMatchObject({ n: 20, meanR: 0, winRatePct: 50, clearsBar: false });
+    expect(readings[1]).toMatchObject({ n: 20, meanR: 0.3, ciLow: 0.3, ciHigh: 0.3, winRatePct: 100, clearsBar: true });
   });
 });

@@ -52,7 +52,17 @@ import { DeclinedEntry } from './declinedEntry';
 //   change ADDS exposure.
 // ---------------------------------------------------------------------------
 
-export type ShadowSkipReason = 'below_live_floor' | 'duplicate_same_day' | 'no_bars' | 'unusable_signal';
+export type ShadowSkipReason =
+  | 'below_live_floor'
+  | 'duplicate_same_day'
+  | 'no_bars'
+  | 'unusable_signal'
+  /** Under `minMinutesSinceExit`: a refusal earlier than the gap asked for. */
+  | 'before_min_gap'
+  /** Under `minMinutesSinceExit`: a row that carries no exit gap at all — a
+   *  gate other than the re-entry cooldown, whose rows cannot answer a gap
+   *  question and are counted rather than silently passed. */
+  | 'no_exit_gap';
 
 export interface ShadowTrade extends DeclinedEntry {
   exitR: number;
@@ -70,6 +80,13 @@ export interface DeclinedEntryShadow {
   byReason: Record<string, number>;
   /** Journaled rows that produced no trade, and why. */
   excluded: Record<ShadowSkipReason, number>;
+  /**
+   * The gap this record was replayed at (ShadowOptions.minMinutesSinceExit; 0
+   * when none was asked for). On the wire for the same reason `exitRules` is:
+   * a reading at 120 minutes and one at the first refusal are different
+   * questions, and the number must say which one it answers.
+   */
+  minMinutesSinceExit: number;
   /**
    * The exit geometry these numbers were replayed under.
    *
@@ -165,6 +182,43 @@ export interface ShadowOptions {
    * (see SCORE_FLOOR_ACTIONS), where the filter would delete the evidence.
    */
   applyScoreFloor?: boolean;
+  /**
+   * Replay the first eligible refusal per symbol-day at or after this many
+   * minutes since the symbol's last live exit, instead of the first refusal of
+   * the day (2026-09-19). It is the question a SHORTER cooldown asks: the
+   * re-entry cooldown journals every tick it refuses a name, so a symbol-day
+   * holds the whole series and "what would a 120-minute cooldown have
+   * admitted" is answered by entering at the first row at or past 120. The
+   * first refusal of the day — the default — is instead the immediate
+   * re-entry the paper book takes, which is a different trade.
+   *
+   * Rows carrying no exit gap (every other gate's) are counted `no_exit_gap`
+   * under a positive value, never passed through as if they qualified. 0 or
+   * unset: no gap requirement.
+   */
+  minMinutesSinceExit?: number;
+}
+
+/**
+ * A candle source that fetches each (symbol, timeframe, window) once for its
+ * lifetime, so a caller replaying the same rows at several gaps (the re-entry
+ * record's four) pays one bar fetch per symbol-day rather than four. A failed
+ * fetch is not remembered: the next replay retries it.
+ */
+export function memoCandleSource(source: CandleSource): CandleSource {
+  const cache = new Map<string, Promise<Candle[]>>();
+  return {
+    getCandles(symbol, timeframe, query) {
+      const key = `${symbol.toUpperCase()}|${timeframe}|${query?.start ?? ''}|${query?.end ?? ''}|${query?.limit ?? ''}`;
+      let hit = cache.get(key);
+      if (!hit) {
+        hit = source.getCandles(symbol, timeframe, query);
+        cache.set(key, hit);
+        hit.catch(() => cache.delete(key));
+      }
+      return hit;
+    },
+  };
 }
 
 /**
@@ -185,11 +239,14 @@ export async function buildDeclinedEntryShadow(
   options: ShadowOptions = {},
 ): Promise<DeclinedEntryShadow> {
   const applyScoreFloor = options.applyScoreFloor ?? true;
+  const minGap = options.minMinutesSinceExit ?? 0;
   const excluded: Record<ShadowSkipReason, number> = {
     below_live_floor: 0,
     duplicate_same_day: 0,
     no_bars: 0,
     unusable_signal: 0,
+    before_min_gap: 0,
+    no_exit_gap: 0,
   };
 
   const eligible = rows.filter((r) => {
@@ -202,6 +259,18 @@ export async function buildDeclinedEntryShadow(
     if (!Number.isFinite(r.entry) || !Number.isFinite(r.stop) || !(Math.abs(r.entry - r.stop) > 0)) {
       excluded.unusable_signal += 1;
       return false;
+    }
+    // The gap filter runs BEFORE the dedupe, so "earliest per symbol-day"
+    // below becomes "the first refusal at or past the gap".
+    if (minGap > 0) {
+      if (typeof r.minutesSinceExit !== 'number') {
+        excluded.no_exit_gap += 1;
+        return false;
+      }
+      if (r.minutesSinceExit < minGap) {
+        excluded.before_min_gap += 1;
+        return false;
+      }
     }
     return true;
   });
@@ -238,5 +307,14 @@ export async function buildDeclinedEntryShadow(
   const byReason: Record<string, number> = {};
   for (const t of trades) byReason[t.reason] = (byReason[t.reason] ?? 0) + 1;
 
-  return { trades, n: trades.length, avgR, winRatePct, byReason, excluded, exitRules: rules };
+  return {
+    trades,
+    n: trades.length,
+    avgR,
+    winRatePct,
+    byReason,
+    excluded,
+    minMinutesSinceExit: minGap,
+    exitRules: rules,
+  };
 }

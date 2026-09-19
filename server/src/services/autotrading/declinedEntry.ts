@@ -59,6 +59,16 @@ export interface DeclinedEntry {
    *  rows predating the field; a reader falls back to the current floor, which
    *  is the old behaviour and the best available. */
   floorAtSkip?: number;
+  /**
+   * A re-entry cooldown refusal only (2026-09-19): minutes between the
+   * symbol's last closed live exit and this refusal, as the gate itself
+   * measured it (`minutesSince` on the row). That gate journals EVERY tick, so
+   * one symbol-day carries the whole series — which is what lets a replay ask
+   * "the first re-entry at or after N minutes" (declinedEntryShadow.ts's
+   * `minMinutesSinceExit`) rather than only "the first refusal of the day".
+   * Undefined on every other gate's rows.
+   */
+  minutesSinceExit?: number;
 }
 
 /** A skip row's side, in the replay's vocabulary rather than the order's. */
@@ -114,6 +124,7 @@ export function parseDeclinedEntry(row: {
     stop?: unknown;
     side?: unknown;
     liveMinSignalScore?: unknown;
+    minutesSince?: unknown;
   };
   try {
     d = JSON.parse(row.detail) as typeof d;
@@ -132,5 +143,8 @@ export function parseDeclinedEntry(row: {
     // reached it.
     side: d.side === 'short' ? 'short' : 'long',
     ...(typeof d.liveMinSignalScore === 'number' ? { floorAtSkip: d.liveMinSignalScore } : {}),
+    ...(typeof d.minutesSince === 'number' && Number.isFinite(d.minutesSince)
+      ? { minutesSinceExit: d.minutesSince }
+      : {}),
   };
 }

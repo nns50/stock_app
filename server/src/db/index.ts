@@ -613,6 +613,20 @@ CREATE TABLE IF NOT EXISTS short_shadow_records (
   created_at  INTEGER NOT NULL
 );
 
+-- The last re-entry cooldown shadow record (2026-09-19): every symbol-day the
+-- live re-entry cooldown refused over the window, replayed at the first
+-- refusal and at the first refusal 60 / 120 / 180 minutes after the exit --
+-- what a shorter cooldown would have admitted, under the book's own exits.
+-- Computed once per session after the close (reentryShadowRecordData.ts) and
+-- read by the leak scan's cooldown finding; same arrangement, and the same
+-- reason, as short_shadow_records above.
+CREATE TABLE IF NOT EXISTS reentry_shadow_records (
+  id          INTEGER PRIMARY KEY CHECK(id = 1),   -- singleton row
+  et_date     TEXT NOT NULL,           -- the session it was computed after (America/New_York)
+  report      TEXT NOT NULL,           -- JSON ReentryShadowReport
+  created_at  INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS autotrade_last_tick (
   id          INTEGER PRIMARY KEY CHECK(id = 1),   -- singleton row
   summary     TEXT NOT NULL,           -- JSON LoopTickSummary

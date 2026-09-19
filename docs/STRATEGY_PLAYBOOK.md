@@ -2031,6 +2031,20 @@ the equivalent sits two or more points from the floor in force. Its lever is the
 itself, with the direction stated: a lower floor admits more entries and waits for the
 operator, a higher one is a flow cut to confirm on a second evening before applying.
 
+A second standing finding (2026-09-19) reads the re-entry cooldown in the loosening
+direction. Every symbol-day the 390-minute cooldown refused is replayed after the close at
+the first refusal and at the first refusal 60, 120 and 180 minutes after the exit, under
+the book's own exits, and the scan raises `configuration:reentry_cooldown_shadow` when a
+gap shorter than the cooldown in force reads n ≥ 15 with the whole 95% interval **above**
+zero — the leak bar on the other side of zero, because the lever
+(`symbolReentryCooldownMinutes` → that gap) adds exposure and is never applied by the app.
+There is no paper control for it: paper has no cooldown and re-enters within minutes of
+its exit (58 of its 62 re-entries inside 30 minutes), so it holds almost no delayed
+re-entries, which is why the question needed its own instrument. The first reading, the
+week of 09-14 over nine refused symbol-days: +0.15R at the first refusal, +0.05R at 60
+minutes, −0.06R at 90, −0.12R at 120 (0 of 9 winners), −0.09R at 180 — nothing near the
+bar, and the cooldown stays at 390.
+
 **The bar, the same for every dimension.**
 
 | verdict | rule |

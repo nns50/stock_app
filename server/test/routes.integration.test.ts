@@ -21,7 +21,9 @@ import { closePaperPosition, openPaperPosition } from '../src/db/autotradePaperP
 import { openOptionsPaperPosition } from '../src/db/autotradeOptionsPaperPositions';
 import { createLiveOptionsPosition } from '../src/db/autotradeLiveOptionsPositions';
 import { saveLastTick } from '../src/db/autotradeLastTick';
-import { listAutotradeEvents, logAutotradeEvent } from '../src/db/autotradeEvents';
+import { listAutotradeEvents, logAutotradeEvent, ROW_CAP } from '../src/db/autotradeEvents';
+import { saveReentryShadowRecord } from '../src/db/reentryShadowRecords';
+import { liveExitRules } from '../src/services/autotrading/declinedEntryShadow';
 import { getProvider } from '../src/providers';
 import { seedClosedAutotradeSessions, weekdaysEndingAt } from './helpers/autotradeSessions';
 
@@ -813,13 +815,150 @@ describe('GET /journal/declined-entry-shadow (integration)', () => {
       n: number;
       avgR: number | null;
       journaledRows: number;
+      journalTruncated: boolean;
+      minMinutesSinceExit: number;
     };
-    expect(out).toMatchObject({ n: 0, avgR: null, journaledRows: 0 });
+    expect(out).toMatchObject({ n: 0, avgR: null, journaledRows: 0, journalTruncated: false, minMinutesSinceExit: 0 });
   });
 
   it('rejects a request with no action rather than replaying everything', async () => {
     const res = await fetch(`${base}/api/journal/declined-entry-shadow`);
     expect(res.status).toBe(400);
+  });
+
+  it('reads the WHOLE window for an every-tick action, not the newest 1,000 rows of it', async () => {
+    // The re-entry cooldown journals every tick it refuses a name — 436 rows on
+    // 2026-09-18 alone — so a capped, newest-first read served 09-18 and 09-15
+    // and 62 of 09-14's 355 rows, silently. Rows sit below the floor they were
+    // judged against, so nothing is replayed and no bars are fetched.
+    const insert = db.prepare(
+      "INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) VALUES (?,'execution','symbol_reentry_cooldown_skipped',?,NULL,?)",
+    );
+    const t0 = Date.parse('2026-09-14T14:00:00Z');
+    db.transaction(() => {
+      for (let i = 0; i <= ROW_CAP; i++) {
+        insert.run(
+          'COIN',
+          JSON.stringify({ side: 'long', score: 74, entry: 190, stop: 185, liveMinSignalScore: 81, minutesSince: i }),
+          t0 + i * 60_000,
+        );
+      }
+    })();
+    const out = (await getJson(
+      `/api/journal/declined-entry-shadow?action=symbol_reentry_cooldown_skipped&since=${t0}`,
+    )) as { journaledRows: number; journalTruncated: boolean; excluded: Record<string, number> };
+    expect(out.journaledRows).toBe(ROW_CAP + 1);
+    expect(out.journalTruncated).toBe(false);
+    expect(out.excluded.below_live_floor).toBe(ROW_CAP + 1);
+  });
+
+  it('replays the first refusal at or past minMinutesSinceExit — what a shorter cooldown would have admitted', async () => {
+    // One symbol-day, refused every tick from one minute after the exit. A
+    // 120-minute cooldown would have admitted the 121-minute refusal, at THAT
+    // tick's entry and stop, and nothing earlier.
+    const t0 = Date.parse('2026-09-18T14:25:00Z'); // 10:25 ET
+    const insert = db.prepare(
+      "INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) VALUES (?,'execution','symbol_reentry_cooldown_skipped',?,NULL,?)",
+    );
+    const row = (minutesSince: number, entry: number) =>
+      insert.run(
+        'HOOD',
+        JSON.stringify({ side: 'long', score: 91, entry, stop: entry - 2, liveMinSignalScore: 81, minutesSince }),
+        t0 + (minutesSince - 1) * 60_000,
+      );
+    row(1, 117);
+    row(61, 118);
+    row(121, 119);
+    // Bars from the moment of each signal: a winner to its 1R target either way.
+    const candles = vi.spyOn(getProvider(), 'getCandles').mockImplementation(async () => [
+      { time: t0, open: 117, high: 117.5, low: 116.8, close: 117.2, volume: 1000 },
+      { time: t0 + 125 * 60_000, open: 119, high: 121.5, low: 118.9, close: 121, volume: 1000 },
+    ]);
+    const before = getAutotradeConfig();
+    setAutotradeConfig({
+      targetRMultiple: 1,
+      liveScaleOutEnabled: false,
+      stagnationExitMinutes: 0,
+      breakevenTriggerRMultiple: 0,
+      trailStartRMultiple: 0,
+      trailStopRMultiple: 0,
+    });
+    try {
+      const out = (await getJson(
+        `/api/journal/declined-entry-shadow?action=symbol_reentry_cooldown_skipped&since=${t0}&minMinutesSinceExit=120`,
+      )) as {
+        n: number;
+        minMinutesSinceExit: number;
+        trades: { at: number; entry: number; minutesSinceExit: number; exitR: number }[];
+        excluded: Record<string, number>;
+      };
+      expect(out.minMinutesSinceExit).toBe(120);
+      expect(out.n).toBe(1);
+      expect(out.trades[0]).toMatchObject({ at: t0 + 120 * 60_000, entry: 119, minutesSinceExit: 121 });
+      expect(out.trades[0].exitR).toBeCloseTo(1, 5);
+      expect(out.excluded).toMatchObject({ before_min_gap: 2, no_exit_gap: 0, duplicate_same_day: 0 });
+
+      // Without the gap: the first refusal of the day, the immediate re-entry.
+      const first = (await getJson(
+        `/api/journal/declined-entry-shadow?action=symbol_reentry_cooldown_skipped&since=${t0}`,
+      )) as { trades: { entry: number; minutesSinceExit: number }[]; excluded: Record<string, number> };
+      expect(first.trades[0]).toMatchObject({ entry: 117, minutesSinceExit: 1 });
+      expect(first.excluded.duplicate_same_day).toBe(2);
+    } finally {
+      candles.mockRestore();
+      setAutotradeConfig(before);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The re-entry cooldown record the leak scan reads (2026-09-19): served as
+// stored, never recomputed on the request path.
+// ---------------------------------------------------------------------------
+describe('GET /journal/reentry-shadow-record (integration)', () => {
+  beforeEach(() => {
+    db.exec('DELETE FROM reentry_shadow_records;');
+  });
+
+  it('is null before the first after-close tick, and the loop’s row after it', async () => {
+    expect(await getJson('/api/journal/reentry-shadow-record')).toEqual({ record: null });
+
+    saveReentryShadowRecord(
+      '2026-09-18',
+      {
+        since: Date.parse('2026-09-14T04:00:00Z'),
+        lookbackSessions: 40,
+        journaledRows: 1293,
+        journalTruncated: false,
+        unscorableRows: 0,
+        cooldownMinutes: 390,
+        gaps: [120].map((minMinutesSinceExit) => ({
+          trades: [],
+          n: 0,
+          avgR: null,
+          winRatePct: null,
+          byReason: {},
+          excluded: {
+            below_live_floor: 0,
+            duplicate_same_day: 0,
+            no_bars: 0,
+            unusable_signal: 0,
+            before_min_gap: 0,
+            no_exit_gap: 0,
+          },
+          minMinutesSinceExit,
+          exitRules: liveExitRules(getAutotradeConfig()),
+        })),
+      },
+      Date.parse('2026-09-18T20:30:00Z'),
+    );
+    const out = (await getJson('/api/journal/reentry-shadow-record')) as {
+      record: { etDate: string; createdAt: number; report: { cooldownMinutes: number; gaps: unknown[] } };
+    };
+    expect(out.record.etDate).toBe('2026-09-18');
+    expect(out.record.createdAt).toBe(Date.parse('2026-09-18T20:30:00Z'));
+    expect(out.record.report.cooldownMinutes).toBe(390);
+    expect(out.record.report.gaps).toHaveLength(1);
   });
 });
 

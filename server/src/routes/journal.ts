@@ -26,11 +26,12 @@ import {
 } from '../services/exitReplay';
 import { validateExitTuneRules, type ValidationTrade } from '../services/autotrading/exitTuneValidation';
 import { computeShortShadowReport, SHORT_SHADOW_SINCE_MS } from '../services/autotrading/shortShadowRecordData';
+import { getLastReentryShadowRecord } from '../db/reentryShadowRecords';
 import { parseDeclinedEntry, type DeclinedEntry } from '../services/autotrading/declinedEntry';
 import { readDay } from '../services/autotrading/dayMarks';
 import { listDayMarkDates } from '../db/dayMarks';
 import { buildDeclinedEntryShadow, SCORE_FLOOR_ACTIONS } from '../services/autotrading/declinedEntryShadow';
-import { listAutotradeEvents } from '../db/autotradeEvents';
+import { listAutotradeEventsInWindow } from '../db/autotradeEvents';
 import type { Candle } from '../providers/types';
 import {
   buildRegimeTightenLedger,
@@ -964,6 +965,25 @@ journalRouter.get(
 );
 
 // ---------------------------------------------------------------------------
+// GET /api/journal/reentry-shadow-record
+//
+// The re-entry cooldown's record as the leak scan read it (2026-09-19): every
+// symbol-day the cooldown refused over the window, replayed at the first
+// refusal and 60 / 120 / 180 minutes after the exit. STORED, not recomputed:
+// the loop computes it once per session after the close
+// (reentryShadowRecordData.ts) and this serves that row, so the reader and the
+// scan's cooldown finding look at the same numbers. A fresh reading at one gap
+// is `declined-entry-shadow?action=symbol_reentry_cooldown_skipped&
+// minMinutesSinceExit=`. `record` is null before the first after-close tick.
+// ---------------------------------------------------------------------------
+journalRouter.get(
+  '/reentry-shadow-record',
+  asyncHandler(async (_req, res) => {
+    res.json({ record: getLastReentryShadowRecord() });
+  }),
+);
+
+// ---------------------------------------------------------------------------
 // GET /api/journal/declined-entry-shadow?action=&since=
 //
 // The same replay as the short record, pointed at any other refusal class
@@ -982,17 +1002,39 @@ journalRouter.get(
 // Reads empty for rows written before the entry/stop fields existed — those
 // cannot be scored and are counted as `unscorableRows` rather than silently
 // skipped, so a thin reading is visibly thin instead of looking like a verdict.
+//
+// THE WHOLE WINDOW, NOT THE NEWEST 1,000 ROWS OF IT (2026-09-19). This read
+// was `listAutotradeEvents({ limit: 1000 })`, which clamps and orders newest
+// first — fine for a gate that journals once per symbol-day, and silently
+// wrong for the re-entry cooldown, which journals EVERY tick it refuses a name
+// (436 rows on 09-18 alone, three names cooling for an afternoon). Asked for
+// the week of 09-14, it returned 09-18, 09-15 and the last 62 rows of 09-14,
+// dropping 293 of that day's 355 without a word: the same LIMIT artifact the
+// leak scan's skip collector walked into on 09-12. `journalTruncated` now says
+// when even the windowed read hit its ceiling.
+//
+// `minMinutesSinceExit` (same day) is the question a SHORTER cooldown asks —
+// see ShadowOptions — and is meaningful only for that gate's rows.
 // ---------------------------------------------------------------------------
 journalRouter.get(
   '/declined-entry-shadow',
   asyncHandler(async (req, res) => {
-    const { action, since } = parseQuery(
-      z.object({ action: z.string().min(1).max(64), since: z.coerce.number().optional() }),
+    const { action, since, minMinutesSinceExit } = parseQuery(
+      z.object({
+        action: z.string().min(1).max(64),
+        since: z.coerce.number().optional(),
+        minMinutesSinceExit: z.coerce
+          .number()
+          .int()
+          .min(0)
+          .max(24 * 60)
+          .optional(),
+      }),
       req,
     );
     const cfg = getAutotradeConfig();
     const from = since ?? Date.now() - 40 * 24 * 60 * 60 * 1000;
-    const journaled = listAutotradeEvents({ actions: [action], since: from, limit: 1000 });
+    const { events: journaled, truncated } = listAutotradeEventsInWindow({ actions: [action], since: from });
     const rows: DeclinedEntry[] = [];
     let unscorableRows = 0;
     for (const e of journaled) {
@@ -1006,8 +1048,16 @@ journalRouter.get(
     // constitute the evidence and return an empty record that reads as "no
     // signal" instead of "wrong question".
     const applyScoreFloor = !SCORE_FLOOR_ACTIONS.has(action);
-    const record = await buildDeclinedEntryShadow(getProvider(), rows, cfg, { applyScoreFloor });
-    res.json({ action, since: from, journaledRows: journaled.length, unscorableRows, applyScoreFloor, ...record });
+    const record = await buildDeclinedEntryShadow(getProvider(), rows, cfg, { applyScoreFloor, minMinutesSinceExit });
+    res.json({
+      action,
+      since: from,
+      journaledRows: journaled.length,
+      journalTruncated: truncated,
+      unscorableRows,
+      applyScoreFloor,
+      ...record,
+    });
   }),
 );
 

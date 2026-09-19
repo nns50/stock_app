@@ -14,6 +14,7 @@ import {
   collectConfigurationFindings,
   collectExecutionFindings,
   collectOptionsFlowFindings,
+  collectReentryCooldownFinding,
   collectScoringShadowFinding,
   joinLeakTrades,
   runEdgeLeakScanFromDb,
@@ -21,6 +22,9 @@ import {
 } from '../src/services/autotrading/edgeLeakScanData';
 import { ROW_CAP } from '../src/db/autotradeEvents';
 import { recencySuffix } from '../src/services/autotrading/edgeLeakScan';
+import { saveReentryShadowRecord } from '../src/db/reentryShadowRecords';
+import { DeclinedEntryShadow, liveExitRules } from '../src/services/autotrading/declinedEntryShadow';
+import type { ReentryShadowReport } from '../src/services/autotrading/reentryShadowRecordData';
 import { seedClosedAutotradeSessions, weekdaysEndingAt } from './helpers/autotradeSessions';
 import { etDateTimeToMs } from '../src/util/marketDate';
 import { readFileSync } from 'node:fs';
@@ -40,7 +44,8 @@ beforeEach(() => {
   db.exec(
     'DELETE FROM positions; DELETE FROM position_exits; DELETE FROM autotrade_paper_positions; ' +
       'DELETE FROM autotrade_options_paper_positions; DELETE FROM autotrade_live_options_positions; ' +
-      'DELETE FROM autotrade_config; DELETE FROM autotrade_events; DELETE FROM edge_leak_scans;',
+      'DELETE FROM autotrade_config; DELETE FROM autotrade_events; DELETE FROM edge_leak_scans; ' +
+      'DELETE FROM reentry_shadow_records;',
   );
 });
 
@@ -987,6 +992,90 @@ describe('the execution findings — any occurrence is one', () => {
     expect(finding?.lastSeenEtDate).toBe('2026-09-10');
     expect(finding?.sessionsSinceLastSeen).toBe(1);
     expect(finding?.detail).toMatch(/none since 2026-09-10, 1 session ago/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The re-entry cooldown finding, read from the PERSISTED record (2026-09-19).
+// The scan never replays anything itself — it reads what the loop wrote after
+// the close — so what matters here is that the row in the table reaches the
+// scan's findings, and that no row reads as silence rather than as evidence.
+// ---------------------------------------------------------------------------
+describe('the re-entry cooldown finding, read from the persisted record', () => {
+  const gapShadow = (minMinutesSinceExit: number, exitRs: number[]): DeclinedEntryShadow => ({
+    trades: exitRs.map((exitR, i) => ({
+      symbol: `S${i}`,
+      at: Date.parse('2026-09-18T15:00:00Z') + i * 86_400_000,
+      score: 90,
+      entry: 100,
+      stop: 98,
+      side: 'long',
+      floorAtSkip: 81,
+      minutesSinceExit: minMinutesSinceExit + 1,
+      exitR,
+      reason: exitR > 0 ? 'target' : 'stop',
+      bestR: Math.max(exitR, 0),
+      barsHeld: 3,
+    })),
+    n: exitRs.length,
+    avgR: exitRs.length ? exitRs.reduce((s, r) => s + r, 0) / exitRs.length : null,
+    winRatePct: exitRs.length ? (exitRs.filter((r) => r > 0).length / exitRs.length) * 100 : null,
+    byReason: {},
+    excluded: {
+      below_live_floor: 0,
+      duplicate_same_day: 0,
+      no_bars: 0,
+      unusable_signal: 0,
+      before_min_gap: 0,
+      no_exit_gap: 0,
+    },
+    minMinutesSinceExit,
+    exitRules: liveExitRules(defaultAutotradeConfig()),
+  });
+  const same = (n: number, r: number) => Array.from({ length: n }, () => r);
+  const record = (gaps: DeclinedEntryShadow[]): ReentryShadowReport => ({
+    since: Date.parse('2026-09-14T04:00:00Z'),
+    lookbackSessions: 40,
+    journaledRows: 1293,
+    journalTruncated: false,
+    unscorableRows: 0,
+    cooldownMinutes: 390,
+    gaps,
+  });
+  const cleared = () =>
+    record([
+      gapShadow(0, same(20, 0.15)),
+      gapShadow(60, same(20, -0.1)),
+      gapShadow(120, same(20, 0.3)),
+      gapShadow(180, same(9, 0.5)),
+    ]);
+
+  it('reads as silence, not evidence, before the first record exists', () => {
+    setAutotradeConfig({ ...defaultAutotradeConfig(), symbolReentryCooldownMinutes: 390 });
+    expect(collectReentryCooldownFinding(getAutotradeConfig())).toEqual([]);
+  });
+
+  it('reaches the scan’s findings from the row the loop persisted, lever and all', () => {
+    setAutotradeConfig({ ...defaultAutotradeConfig(), symbolReentryCooldownMinutes: 390 });
+    saveReentryShadowRecord('2026-09-18', cleared(), Date.parse('2026-09-18T20:30:00Z'));
+    const [f] = collectReentryCooldownFinding(getAutotradeConfig());
+    expect(f?.lever).toMatchObject({ field: 'symbolReentryCooldownMinutes', value: 120, direction: 'exposure' });
+    expect(f?.lastSeenEtDate).toBe('2026-09-18');
+
+    // The consumer: the scan a route or the routine runs carries it.
+    const scan = runEdgeLeakScanFromDb({ now: Date.parse('2026-09-18T21:00:00Z') });
+    const found = scan.findings.find((x) => x.id === 'configuration:reentry_cooldown_shadow');
+    expect(found?.lever?.value).toBe(120);
+  });
+
+  it('judges the record against the cooldown in force NOW, not the one it was computed under', () => {
+    // The operator has since lowered the cooldown to 120: the 120-minute gap
+    // would lower nothing, and only the first refusal still clears.
+    setAutotradeConfig({ ...defaultAutotradeConfig(), symbolReentryCooldownMinutes: 120 });
+    saveReentryShadowRecord('2026-09-18', cleared(), Date.parse('2026-09-18T20:30:00Z'));
+    expect(collectReentryCooldownFinding(getAutotradeConfig())[0]?.lever?.value).toBe(0);
+    setAutotradeConfig({ ...defaultAutotradeConfig(), symbolReentryCooldownMinutes: 0 });
+    expect(collectReentryCooldownFinding(getAutotradeConfig())).toEqual([]);
   });
 });
 

@@ -128,6 +128,27 @@ describe('parseDeclinedEntry — the consumer', () => {
       parseDeclinedEntry({ symbol: 'GGG', detail: '{"entry":100,"stop":95,"score":74}', createdAt: 1 })?.side,
     ).toBe('long');
   });
+
+  it('carries the re-entry cooldown’s exit gap, and only when the row has one', () => {
+    // The cooldown row spreads its own reading (`minutesSince`) beside the
+    // replay fields; the gap is what a shorter-cooldown replay selects on.
+    const cooldown = parseDeclinedEntry({
+      symbol: 'HHH',
+      detail: '{"entry":100,"stop":95,"score":90,"side":"long","minutesSince":121,"cooldownMinutes":390}',
+      createdAt: 1,
+    });
+    expect(cooldown?.minutesSinceExit).toBe(121);
+    // Any other gate's row: undefined, never 0 — a zero would read as "at the
+    // exit" and qualify for every gap.
+    const other = parseDeclinedEntry({ symbol: 'III', detail: '{"entry":100,"stop":95,"score":90}', createdAt: 1 });
+    expect(other).not.toHaveProperty('minutesSinceExit');
+    const junk = parseDeclinedEntry({
+      symbol: 'JJJ',
+      detail: '{"entry":100,"stop":95,"score":90,"minutesSince":"soon"}',
+      createdAt: 1,
+    });
+    expect(junk).not.toHaveProperty('minutesSinceExit');
+  });
 });
 
 describe('the entry path cannot journal an unscorable refusal', () => {
