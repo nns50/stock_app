@@ -12089,3 +12089,31 @@ route answers is the finding to chase; a `no_options_signal` whose reason is
 "No contract passed entry rules" with `rePricedContracts` 0 on such a session
 is the same finding.
 
+
+## 2026-09-19 (second) — the leak scan's window applies to every section
+
+Found while reading the day (2026-09-18): `GET /api/journal/edge-leaks?sessions=1`
+returned the same trades, pairs and buckets as `?sessions=40`, and a _larger_
+`no_live_row` (145 against 104). `collectBook` hands the scan every closed trade
+beside the `sessionDates` it chose, and `runEdgeLeakScan` read `input.live.trades`
+and `input.paper.trades` unfiltered: only `buildDayLevel` and `coverage.sessions`
+honoured the window. The journal skips the attribution pairs against _were_
+bounded to the window, so a narrow read paired forty sessions of paper trades
+against one session of skips and reported the rest as "nothing the journal
+explains" — the bucket whose whole meaning is a recording gap.
+
+**The fix** is one function, `tradesInWindow`, applied once at the top of
+`runEdgeLeakScan` to both books; the dimensions, the pairing, the attribution,
+the day level and `coverage` all read its result. It is a date **range** on the
+trade's entry date, not a membership test against the calendar's sessions: a
+row stamped on a non-session date inside the window is `buildSessionPaths`'s to
+fold onto its neighbouring session, as it already does, not the window's to
+drop. `coverage` gains `liveOutsideWindow` / `paperOutsideWindow` — how many
+closed trades the window excluded — so a reader can tell "one session" from
+"one session of a one-session book". A full-window read of a book younger than
+the window is unchanged, which the untouched scan tests prove.
+
+**Pre-committed check.** On the deployed book, `?sessions=1&book=both` after a
+session reports `coverage.liveTrades` equal to that session's closed live
+trades, `coverage.sessions: 1`, and a `no_live_row` count no larger than the
+`?sessions=40` read's.

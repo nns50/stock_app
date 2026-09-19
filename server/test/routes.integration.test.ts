@@ -990,12 +990,19 @@ describe('GET /journal/edge-leaks (integration)', () => {
 
     const scan = (await getJson('/api/journal/edge-leaks?sessions=40&book=both')) as {
       books: string[];
-      coverage: { liveTrades: number; paperTrades: number };
+      coverage: { liveTrades: number; paperTrades: number; liveOutsideWindow: number };
       dimensions: { id: string }[];
       dayLevel: { activeSessions: number };
     };
     expect(scan.books).toEqual(['live', 'paper']);
-    expect(scan.coverage.liveTrades).toBe(8);
+    // Four weekdays, THREE sessions: 2026-09-07 is Labor Day, and the window
+    // starts at the first SESSION on or after the first entry (09-08), so the
+    // holiday's two trades sit before it. The day level always dropped them as
+    // outside the window; since 2026-09-19 the buckets and the coverage read
+    // the same window, and the two are counted rather than silently absent.
+    expect(scan.coverage.liveTrades).toBe(6);
+    expect(scan.coverage.liveOutsideWindow).toBe(2);
+    expect(scan.dayLevel.activeSessions).toBe(3);
     expect(scan.dimensions.some((d) => d.id === 'round')).toBe(true);
 
     const dash = (await getJson('/api/autotrade/dashboard')) as { edgeLeakSummary: { etDate: string } | null };

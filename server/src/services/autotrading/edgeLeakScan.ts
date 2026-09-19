@@ -350,8 +350,16 @@ export interface EdgeLeakScanResult {
   dayLevel: DayLevelReport;
   attribution: AttributionReport;
   coverage: {
+    /** Closed trades INSIDE the session window — the ones every section of
+     *  this scan read. See tradesInWindow. */
     liveTrades: number;
     paperTrades: number;
+    /** Closed trades the collector handed over from OUTSIDE the window, in no
+     *  section of this scan. Non-zero whenever the book is older than the
+     *  window, so a reader can tell "one session" from "one session of a
+     *  one-session book". */
+    liveOutsideWindow: number;
+    paperOutsideWindow: number;
     liveDropped: number;
     paperDropped: number;
     /** The two counts above, split by cause — a bare total cannot tell "no
@@ -1093,10 +1101,39 @@ function entryDriftFinding(entryDriftPct: number[], bufferPct: number): ScanFind
   ];
 }
 
+/**
+ * The trades of a book that fall inside its session window — keyed on the ET
+ * date of the ENTRY, which is the session a trade belongs to (LeakTrade.etDate).
+ *
+ * THE WINDOW USED TO NARROW ONLY THE DAY LEVEL (found 2026-09-18). The
+ * collector hands over EVERY closed trade beside the `sessionDates` it chose,
+ * and until this the buckets, the pairing, the attribution and `coverage`
+ * read the whole list: `?sessions=1` returned the same 40-session buckets as
+ * `?sessions=40`, while the journal skips it was paired against WERE bounded
+ * to the window — so a one-session read inflated `no_live_row` (145 against
+ * 104) with paper trades from sessions the skip read never covered. The
+ * window is applied once, here, and every section below reads the result, so
+ * `coverage.sessions` and `coverage.liveTrades` describe the same trades.
+ */
+export function tradesInWindow(trades: LeakTrade[], sessionDates: string[]): LeakTrade[] {
+  if (sessionDates.length === 0) return [];
+  // A RANGE, not set membership: a trade stamped on a non-session date inside
+  // the window (a row the calendar disagrees with, a fixture on a holiday) is
+  // the day level's to remap onto its neighbouring session — which
+  // buildSessionPaths already does — not the window's to drop.
+  let first = sessionDates[0];
+  let last = sessionDates[0];
+  for (const d of sessionDates) {
+    if (d < first) first = d;
+    if (d > last) last = d;
+  }
+  return trades.filter((t) => t.etDate >= first && t.etDate <= last);
+}
+
 export function runEdgeLeakScan(input: EdgeLeakScanInput): EdgeLeakScanResult {
   const rng = input.rng ?? mulberry32(SCAN_RNG_SEED);
-  const live = input.live.trades;
-  const paper = input.paper.trades;
+  const live = tradesInWindow(input.live.trades, input.live.sessionDates);
+  const paper = tradesInWindow(input.paper.trades, input.paper.sessionDates);
   const dimensions = DIMENSIONS.map((d) => runDimension(d, live, paper, rng));
 
   const all: LeakReport[] = dimensions.flatMap((d) =>
@@ -1149,6 +1186,8 @@ export function runEdgeLeakScan(input: EdgeLeakScanInput): EdgeLeakScanResult {
     coverage: {
       liveTrades: live.length,
       paperTrades: paper.length,
+      liveOutsideWindow: input.live.trades.length - live.length,
+      paperOutsideWindow: input.paper.trades.length - paper.length,
       liveDropped: input.live.droppedTrades,
       paperDropped: input.paper.droppedTrades,
       liveDropReasons: input.live.dropReasons ?? { ...NO_DROPS },

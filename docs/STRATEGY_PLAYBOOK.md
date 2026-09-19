@@ -1995,6 +1995,17 @@ dimensions over both books, applies one statistical bar to every one, and report
 fails it with the lever that closes it. The Auto page shows the count; the daily routine
 runs it and reports what is new.
 
+**`sessions` is the window for every section** (since 2026-09-19). The collector hands the
+scan every closed trade beside the window it chose, and until then only the day level and
+the `coverage.sessions` count honoured it: `?sessions=1` returned forty sessions of
+buckets labelled as one, and paired them against journal skips that _were_ bounded to the
+window, so a one-session read inflated `no_live_row` with paper trades from sessions the
+skip read never covered (145 against 104 on the deployed book). The window is applied
+once, as a date range on the entry date, and the buckets, the pairing, the attribution and
+`coverage` all read the result; `coverage.liveOutsideWindow` / `paperOutsideWindow` say
+how many closed trades it left out, so "one session" and "one session of a one-session
+book" read differently.
+
 **The catalog (v1).** Round within symbol-day · entry half-hour and the after-13:00
 aggregate · score band · VWAP extension · % of session range · exit reason · hold time ·
 symbol (n ≥ 5) · sector · weekday · ML regime · asset · position size. Plus three
