@@ -2191,6 +2191,39 @@ describe('autotrade config routes (integration)', () => {
     expect(JSON.parse(rows[0].detail!)).toEqual({ from: true, to: false });
   });
 
+  it('journals EVERY field a PUT changed, so a cap change can be dated (2026-09-19)', async () => {
+    // The operator's maxAggregateOpenRiskPct 7.5 → 12.5 on 2026-09-18 left no
+    // row: only eight transitions had dedicated rows. One row per PUT now
+    // lists every field that moved, from and to — asserted on the journal the
+    // review reads, not on the helper that builds the list.
+    db.exec("DELETE FROM autotrade_events WHERE action = 'config_changed'");
+    const before = (await getJson('/api/autotrade/config')) as {
+      maxAggregateOpenRiskPct: number;
+      liveMaxExposurePct: number;
+      symbolReentryCooldownMinutes: number;
+    };
+    const aggregate = before.maxAggregateOpenRiskPct === 12.5 ? 7.5 : 12.5;
+    const cooldown = before.symbolReentryCooldownMinutes === 390 ? 120 : 390;
+    await put('/api/autotrade/config', {
+      maxAggregateOpenRiskPct: aggregate,
+      symbolReentryCooldownMinutes: cooldown,
+      liveMaxExposurePct: before.liveMaxExposurePct, // sent unchanged: must not be listed
+    });
+    // A PUT that changes nothing journals nothing.
+    await put('/api/autotrade/config', { maxAggregateOpenRiskPct: aggregate });
+
+    const rows = listAutotradeEvents({ stage: 'config', actions: ['config_changed'] });
+    expect(rows).toHaveLength(1);
+    const detail = JSON.parse(rows[0].detail!) as { fields: { field: string; from: unknown; to: unknown }[] };
+    expect(detail.fields).toHaveLength(2);
+    expect(detail.fields).toEqual(
+      expect.arrayContaining([
+        { field: 'maxAggregateOpenRiskPct', from: before.maxAggregateOpenRiskPct, to: aggregate },
+        { field: 'symbolReentryCooldownMinutes', from: before.symbolReentryCooldownMinutes, to: cooldown },
+      ]),
+    );
+  });
+
   it('accountEquityUsd: null still explicitly clears it, distinct from omitting the field entirely', async () => {
     await put('/api/autotrade/config', { enabled: true, accountEquityUsd: 50_000 });
     const cleared = await put('/api/autotrade/config', { accountEquityUsd: null });

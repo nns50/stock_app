@@ -2834,7 +2834,14 @@ because the loop is the only caller that is always flat by the bell, so it is
 - **Recent activity** — a journal of what the screen, decision, and risk-check stages
   did and why (candidate found, excluded, signal generated, passed/blocked, a paper
   order placed or closed, a setting changed) — the same feed the execution loop above
-  writes into automatically.
+  writes into automatically. Since 2026-09-19 **every** settings change made through the
+  Settings page or `PUT /api/autotrade/config` leaves one `config_changed` row listing
+  each field that moved with its old and new value (`fields: [{ field, from, to }]`).
+  Before that only eight transitions (the risk profile, the on/off switches, equity, the
+  options strategy type, the risk %, the tuner) had a row of their own, and a cap change
+  such as `maxAggregateOpenRiskPct` 7.5 → 12.5 left no trace — the config row's own
+  timestamp cannot date it, because the equity sync rewrites it every minute. The eight
+  dedicated rows still appear beside it; a save that changes nothing writes nothing.
 
 This is decision-support and tracking, not financial advice — check the spec doc for the
 full design, current status, and the roadmap for the options-trading addition still to

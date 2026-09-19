@@ -8421,6 +8421,9 @@ config row cannot say: its `updated_at` moves on every loop tick, because the eq
 writes `accountEquityUsd` every minute. So the config route journals the transitions —
 `sizing_changed` when `riskPerTradePct` moves, `auto_tune_disabled` / `auto_tune_enabled`
 when the tuner's flag flips — beside the handful of flag transitions it already recorded.
+(Since 2026-09-19 it also journals every other field a PUT moves, as one `config_changed`
+row per request — see the dated section of that day. The two rows named here are still
+written, and `sizingChangedOn` still reads `sizing_changed`.)
 
 Where the journal cannot say (a change that predates the row, which the 2026-09-12 trial
 itself is), the review window falls back to the sessions the loop actually RECORDED,
@@ -12117,3 +12120,35 @@ the window is unchanged, which the untouched scan tests prove.
 session reports `coverage.liveTrades` equal to that session's closed live
 trades, `coverage.sessions: 1`, and a `no_live_row` count no larger than the
 `?sessions=40` read's.
+
+## 2026-09-19 (third) — every settings change through the route is journaled
+
+Found on 2026-09-18 while reading the day: the operator's `maxAggregateOpenRiskPct`
+7.5 → 12.5, applied through `PUT /api/autotrade/config` at midday, left **no**
+journal row. The route journaled eight transitions — the risk profile, `enabled`,
+`accountEquityUsd`, the two live switches, the options strategy type,
+`riskPerTradePct` (`sizing_changed`) and the tuner's flag — and nothing else. The
+reason `sizing_changed` exists ("nothing else in the database can date that",
+because the config row's `updated_at` moves every minute under the equity sync)
+applies to every cap, slot count, cooldown and goal level just the same, and
+each of them has been changed by hand during the trial.
+
+**The change.** `diffAutotradeConfig(before, after)` (`db/autotradeConfig.ts`,
+pure) lists every field that differs between two configs with its old and new
+value, compared as JSON so a nested block counts once. The three stamps the
+config sets for itself on a transition (`liveEnabledAt`, `liveOptionsEnabledAt`,
+`autoTuneExitTunedAt`) are excluded: each already travels with the transition
+that set it. The route journals the list as one `config_changed` row per PUT —
+`detail: { fields: [{ field, from, to }] }` — after the dedicated rows, which
+are unchanged; a PUT that changes nothing writes nothing. The loop's own writes
+(the equity sync, the caps re-anchor, the gated switches, the tuner) do not pass
+through the route and keep their own rows (`live_caps_reanchored`,
+`config_auto_applied`, `auto_tune_*`).
+
+**Tested at the consumer**: `routes.integration.test.ts` drives the PUT with two
+changed fields and one sent unchanged, then a no-op PUT, and asserts the journal
+holds exactly one row listing exactly the two.
+
+**Pre-committed check.** The next hand change on the deployed box — any field —
+shows a `config_changed` row on Recent activity within the same minute, carrying
+the old and new value.

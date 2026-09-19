@@ -1907,3 +1907,46 @@ export function setAutotradeConfig(patch: Partial<AutotradeConfig>): AutotradeCo
 export function setAutotradeKillSwitch(on: boolean): AutotradeConfig {
   return setAutotradeConfig({ killSwitch: on });
 }
+
+/** One field's move between two configs, as the config route journals it. */
+export interface ConfigFieldChange {
+  field: keyof AutotradeConfig;
+  from: unknown;
+  to: unknown;
+}
+
+/** Stamps the config sets FOR ITSELF on a transition — the moment live trading
+ *  was enabled, the exit geometry's clock. Each already travels with the
+ *  transition that set it, so listing it beside the field that moved would say
+ *  the same thing twice. */
+const CONFIG_STAMP_KEYS: ReadonlySet<keyof AutotradeConfig> = new Set<keyof AutotradeConfig>([
+  'liveEnabledAt',
+  'liveOptionsEnabledAt',
+  'autoTuneExitTunedAt',
+]);
+
+/**
+ * Every field that differs between two configs, with its old and new value, in
+ * the config's own key order (2026-09-19).
+ *
+ * Compared as JSON so a nested block (the regime weight presets) counts once,
+ * as the block, and so `null` and an absent key are the same absence. Pure —
+ * the route journals the result as one `config_changed` row per PUT, which is
+ * how a cap or sizing change gets a date the config row cannot give it (its
+ * `updated_at` moves every tick, because the equity sync writes
+ * `accountEquityUsd` every minute).
+ */
+export function diffAutotradeConfig(before: AutotradeConfig, after: AutotradeConfig): ConfigFieldChange[] {
+  const keys = new Set<keyof AutotradeConfig>([
+    ...(Object.keys(before) as (keyof AutotradeConfig)[]),
+    ...(Object.keys(after) as (keyof AutotradeConfig)[]),
+  ]);
+  const out: ConfigFieldChange[] = [];
+  for (const key of keys) {
+    if (CONFIG_STAMP_KEYS.has(key)) continue;
+    const from = before[key] ?? null;
+    const to = after[key] ?? null;
+    if (JSON.stringify(from) !== JSON.stringify(to)) out.push({ field: key, from, to });
+  }
+  return out;
+}
