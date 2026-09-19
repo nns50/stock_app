@@ -1659,7 +1659,15 @@ equally-weighted cards in the order they happened to be built:
   against a third of one newly failing. That finding also does the re-fit: the
   screen counts how many symbols reach each rung of a score ladder under both
   scorings, so the scan can say what floor pace scoring admits the same set at,
-  measured rather than guessed from the average score move),
+  measured rather than guessed from the average score move. Pace scoring went
+  **on** on 2026-09-14 with the live floor raised from 72 to 81, the equivalent
+  that re-fit measured. Since 2026-09-19 the scan keeps re-checking that floor
+  while the flag is on: every night it re-runs the same translation over the last
+  ten sessions' ladders and raises `configuration:relvol_pace_floor_drift` when
+  the pace-scored equivalent of the raw floor of 72 sits two or more points from
+  the floor in force, saying how many symbols a tick each admits and which way
+  the lever moves exposure — lowering the floor admits more entries and is always
+  your call, raising it is a flow cut worth a second evening's confirmation),
   **min move today (%)** (2026-08-25 — a candidate must have moved at least this far
   in the trade's own direction *today*: a long needs +this, a short −this. 0 = off. The
   rest of the screener is largely positional — momentum averages today's change with the

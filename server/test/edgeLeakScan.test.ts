@@ -10,6 +10,7 @@ import {
   LeakTrade,
   LEAK_MIN_TRADES,
   mulberry32,
+  paceFloorDrift,
   paperControlDrift,
   runEdgeLeakScan,
   SLIPPAGE_MIN_TRADES,
@@ -736,5 +737,32 @@ describe('equivalentPaceFloor — the re-fit, not a mean shift', () => {
 
   it('returns the floor unchanged when the two scorings agree', () => {
     expect(equivalentPaceFloor(LADDER, RAW, RAW, 72)).toBe(72);
+  });
+
+  // The re-check once the flag is on (2026-09-19): the same translation, run
+  // against the floor in force, saying which way it has drifted and by how much.
+  describe('paceFloorDrift', () => {
+    it('reads a floor sitting ABOVE its equivalence as tighter, with both admissions', () => {
+      // raw at 72 admits 100 → pace equivalent 76; a floor of 80 admits 60 under pace.
+      expect(paceFloorDrift(LADDER, RAW, PACE, 72, 80)).toEqual({
+        equivalentFloor: 76,
+        driftPoints: -4,
+        admittedAtFloor: 60,
+        admittedAtReference: 100,
+      });
+    });
+
+    it('reads a floor sitting BELOW its equivalence as looser', () => {
+      expect(paceFloorDrift(LADDER, RAW, PACE, 72, 72)).toMatchObject({ equivalentFloor: 76, driftPoints: 4 });
+    });
+
+    it('reads zero drift when the floor IS the equivalence', () => {
+      expect(paceFloorDrift(LADDER, RAW, PACE, 72, 76)?.driftPoints).toBe(0);
+    });
+
+    it('says nothing rather than extrapolating when either floor is off the ladder', () => {
+      expect(paceFloorDrift(LADDER, RAW, PACE, 72, 90)).toBeNull();
+      expect(paceFloorDrift(LADDER, RAW, PACE, 50, 76)).toBeNull();
+    });
   });
 });

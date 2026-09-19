@@ -463,12 +463,108 @@ describe('the scoring shadow', () => {
   });
 
   it('stops nagging once the flag is on — the decision has been taken', () => {
+    // Rows written with the flag on, and the flag still on now, with the floor
+    // at its re-fitted equivalence (raw 72 admits 100; pace admits 100 at 76).
+    setAutotradeConfig({ ...defaultAutotradeConfig(), relVolUsePaceScoring: true, liveMinSignalScore: 76 });
     for (let i = 0; i < 10; i++) shadowRow(at + i, { enabled: true });
+    expect(collectScoringShadowFinding(getAutotradeConfig(), now)).toEqual([]);
+  });
+
+  it('stays quiet when the flag was reverted inside the window', () => {
+    // The pre-enable case was decided once; a reverted flag must not re-raise it.
+    for (let i = 0; i < 10; i++) shadowRow(at + i, { enabled: i < 5 });
     expect(collectScoringShadowFinding(getAutotradeConfig(), now)).toEqual([]);
   });
 
   it('says nothing at all when the shadow has not run', () => {
     expect(collectScoringShadowFinding(getAutotradeConfig(), now)).toEqual([]);
+  });
+
+  // -------------------------------------------------------------------------
+  // THE FLOOR IS RE-CHECKED WHILE THE FLAG IS ON (2026-09-19). The flag went
+  // on 2026-09-14 with the floor at 81, the equivalent of raw-72 measured
+  // then; this finding went silent the same moment, and nothing asked again.
+  // Friday 09-18's in-session ladder read the equivalent at 74.8.
+  // -------------------------------------------------------------------------
+  describe('the floor re-check, once the flag is on', () => {
+    const on = (floor: number) =>
+      setAutotradeConfig({ ...defaultAutotradeConfig(), relVolUsePaceScoring: true, liveMinSignalScore: floor });
+
+    it('reports a floor that has drifted ABOVE its equivalence, with a lowering lever that adds exposure', () => {
+      on(80); // raw 72 admits 100 a tick; pace admits 100 at 76 and only 60 at 80.
+      for (let i = 0; i < 10; i++) shadowRow(at + i, { enabled: true });
+      const [f] = collectScoringShadowFinding(getAutotradeConfig(), now);
+      expect(f).toBeTruthy();
+      expect(f.id).toBe('configuration:relvol_pace_floor_drift');
+      expect(f.kind).toBe('configuration');
+      expect(f.count).toBe(10);
+      expect(f.lastSeenEtDate).toBe('2026-09-09');
+      expect(f.detail).toMatch(/liveMinSignalScore 80/);
+      expect(f.detail).toMatch(/admits 60 symbols a tick, while the raw floor of 72 .* admits 100/);
+      expect(f.detail).toMatch(/now reads 76 — 4 points below the floor in force/);
+      expect(f.detail).toMatch(/seeing fewer candidates/);
+      // The lever names the field and the number, and says which way it moves
+      // exposure: lowering the floor is never the app's to apply.
+      expect(f.lever).toMatchObject({ kind: 'config', field: 'liveMinSignalScore', value: 76, direction: 'exposure' });
+      expect(f.lever?.detail).toMatch(/operator's call/);
+    });
+
+    it('reports a floor that has drifted BELOW its equivalence, with a raising lever that is safe', () => {
+      on(72); // pace admits 140 at 72 against the 100 the reference admits.
+      for (let i = 0; i < 10; i++) shadowRow(at + i, { enabled: true });
+      const [f] = collectScoringShadowFinding(getAutotradeConfig(), now);
+      expect(f.detail).toMatch(/4 points above the floor in force/);
+      expect(f.detail).toMatch(/seeing more candidates/);
+      expect(f.lever).toMatchObject({ field: 'liveMinSignalScore', value: 76, direction: 'safe' });
+      expect(f.lever?.detail).toMatch(/flow cut/);
+    });
+
+    it('is silent inside the two-point bar', () => {
+      on(75); // equivalent 76: one point of drift.
+      for (let i = 0; i < 10; i++) shadowRow(at + i, { enabled: true });
+      expect(collectScoringShadowFinding(getAutotradeConfig(), now)).toEqual([]);
+    });
+
+    it('never nags the pre-enable case while the flag is on', () => {
+      on(76);
+      for (let i = 0; i < 10; i++) shadowRow(at + i, { enabled: true });
+      expect(collectScoringShadowFinding(getAutotradeConfig(), now).map((f) => f.id)).not.toContain(
+        'configuration:relvol_pace_scoring_shadow',
+      );
+    });
+
+    it('sums only the rows the loop wrote under the flag — a route run on raw scoring is not the same ladder', () => {
+      on(80);
+      for (let i = 0; i < 10; i++) shadowRow(at + i, { enabled: true });
+      // Five rows from a screen route call with the flag overridden off, on a
+      // ladder that would hide the drift if it were summed in.
+      for (let i = 0; i < 5; i++) {
+        shadowRow(at + 100 + i, {
+          enabled: false,
+          ladderRawAtOrAbove: [300, 200, 140, 100, 60, 30],
+          ladderPaceAtOrAbove: [300, 200, 140, 100, 60, 30],
+        });
+      }
+      const [f] = collectScoringShadowFinding(getAutotradeConfig(), now);
+      expect(f.count).toBe(10);
+      expect(f.lever?.value).toBe(76);
+    });
+
+    it('says nothing when the ladder cannot answer — no rungs, or a floor off its ends', () => {
+      on(90); // above the ladder's top rung of 80.
+      for (let i = 0; i < 10; i++) shadowRow(at + i, { enabled: true });
+      expect(collectScoringShadowFinding(getAutotradeConfig(), now)).toEqual([]);
+      db.exec("DELETE FROM autotrade_events WHERE action = 'relvol_pace_scoring_shadow'");
+      on(80);
+      for (let i = 0; i < 10; i++)
+        shadowRow(at + i, {
+          enabled: true,
+          scoreLadder: undefined,
+          ladderRawAtOrAbove: undefined,
+          ladderPaceAtOrAbove: undefined,
+        });
+      expect(collectScoringShadowFinding(getAutotradeConfig(), now)).toEqual([]);
+    });
   });
 });
 

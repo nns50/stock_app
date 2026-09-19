@@ -12219,3 +12219,50 @@ shows the shorts reading with the same `n`, `avgR` and `winRatePct` the route
 returns that evening. On 2026-09-18 those read n 19, +0.08R, 52.6% (the route);
 the card must read the same on 2026-09-22 unless new declined shorts moved
 them.
+
+## 2026-09-19 (fifth) — the pace floor is re-checked nightly while the flag is on
+
+**The gap.** Pace scoring went on 2026-09-14 with `liveMinSignalScore` raised
+72 → 81, the pace-scored floor the ladder re-fit measured as admitting the same
+symbols raw-72 did (the section of 2026-09-12 above). `collectScoringShadowFinding`
+returned nothing from that moment — "the decision has been taken" — so nothing
+asked again whether 81 was still that floor. The equivalence is a property of
+the score distribution, which moves with the market's volume shape, and the
+operator asked on 2026-09-19 for the check to run nightly.
+
+**What the ladder says now.** Read on the deployed box over the last four
+sessions (09-15 … 09-18, 691 loop ticks under the flag): raw-72 admits 24.7
+symbols a tick; the pace floor admitting the same is **77.3**; the floor in
+force, 81, admits **18.0** a tick — the equivalent of raw-75.3. Friday alone
+read 74.8 against 81 (176 ticks, 13.6 admitted against 21.3). The floor has
+drifted about four points above its equivalence: the live book sees roughly a
+quarter fewer candidates than the fitted floor intended.
+
+**The change.** `paceFloorDrift` (`edgeLeakScan.ts`, pure) runs the same
+translation as `equivalentPaceFloor` against the floor in force and returns the
+equivalent, the drift in points and both admissions; null off the ladder's ends
+rather than a guess. `collectScoringShadowFinding` now branches on the CONFIG's
+flag. Off: the pre-enable finding as before, silent when the window holds a row
+written with the flag on (a reverted decision is not re-raised). On: it sums
+only rows the loop wrote under the flag (a screen route call with the flag
+overridden off writes a different distribution) and raises
+`configuration:relvol_pace_floor_drift` when the drift is at least
+`PACE_FLOOR_DRIFT_POINTS` (2, one rung of the ladder). The reference raw floor is
+`PACE_SCORING_RAW_REFERENCE_FLOOR` = 72, a written decision beside the finding
+rather than a config value that would follow the floor it judges. The lever is
+`liveMinSignalScore` → the equivalent, `direction: 'exposure'` when it lowers the
+floor (never the app's to apply: `leak_lever` reads leaks, not findings, and
+`exposureGuard` refuses a lower floor besides) and `'safe'` when it raises it,
+with the detail asking for a second evening's confirmation either way.
+
+**Tested at the consumer.** The finding over seeded ladders: a floor above its
+equivalence (lever 76, exposure), below it (lever 76, safe), inside the bar
+(silent), the pre-enable finding never raised while the flag is on, route rows
+on raw scoring not summed, a floor off the ladder (silent); and the pure
+helper's four cases.
+
+**Pre-committed check.** The first nightly scan after this deploys reports
+`configuration:relvol_pace_floor_drift` with a ten-session equivalent in the
+mid-to-high 70s and a lowering lever. It is reported and waits: whether to lower
+the floor is the operator's decision, and Decision 7's review reads the flow
+either way.
