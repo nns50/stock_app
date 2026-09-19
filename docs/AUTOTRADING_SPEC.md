@@ -3606,7 +3606,9 @@ blocks the reflex and then gets out of the way.
 
 **Journaled every time** as `symbol_reentry_cooldown_skipped`, not once per day
 like the cheap skips — a re-entry the loop WANTED is exactly the population to
-audit before trusting the gate, and these were invisible until now.
+audit before trusting the gate, and these were invisible until now. Since
+2026-09-19 those rows are replayed nightly at several gaps after the exit and
+judged by the leak scan — the section "2026-09-19 (sixth)" below.
 
 Ships **off**. Paper, backtests and the manual preview are unchanged until live
 config opts in.
@@ -12266,3 +12268,135 @@ helper's four cases.
 mid-to-high 70s and a lowering lever. It is reported and waits: whether to lower
 the floor is the operator's decision, and Decision 7's review reads the flow
 either way.
+
+---
+
+## 2026-09-19 (sixth) — the re-entry cooldown is measured nightly
+
+**The question.** The operator asked whether `symbolReentryCooldownMinutes`
+(390, the whole session — Decision 8 of the 3% plan) could be lowered or the
+cooldown done differently, since live trading tends to stop in the afternoon
+once the morning's names are locked out, and asked for the paper book to be
+read first. It was, along with the live book's own re-entries and the week's
+refusals replayed by hand. The decision recorded here is **keep 390, change no
+methodology**, and build the instrument that answers the question nightly.
+
+**What the paper book says** (155 closed trades 2026-07-02 … 09-18; no
+cooldown, so it is the control for every other gate):
+
+| paper | n | mean R | total R |
+| --- | --- | --- | --- |
+| round 1 | 93 | +0.079 | +7.33 |
+| round 2 | 29 | +0.055 | +1.60 |
+| round 3+ | 33 | −0.006 | −0.20 |
+| all re-entries | 62 | +0.023 | +1.40 |
+| re-entries since 09-14 | 20 | −0.001 | −0.03 |
+| round 1 since 09-14 | 27 | +0.257 | +6.93 |
+| re-entries before 12:00 ET | 44 | +0.060 | +2.65 |
+| re-entries 12:00 and later | 18 | −0.069 | −1.25 |
+
+58 of the 62 paper re-entries were placed within 30 minutes of the previous exit
+— the next tick after a stop-out, on the same still-live signal. The paper book
+therefore does not model a time cooldown at all: a simulated 60-minute cooldown
+leaves 11 re-entries (+0.06R), 120 minutes leaves 6 (−0.16R), 240 minutes leaves
+3 (−0.05R). The one paper split that reads positive — re-enter at once after a
+LOSER, n=20, +0.24R — is contradicted by the live book below.
+
+**What the live book says** (113 autotrade stock trades 2026-07-09 … 09-18, R
+on the journal's own basis):
+
+| live | n | mean R | $ |
+| --- | --- | --- | --- |
+| round 1, all | 84 | +0.053 | +369 |
+| re-entries, all | 29 | −0.174 | −118 |
+| re-entries in September (cooldown 90–120 then) | 20 | −0.085 | −128 |
+| re-entries 60–120 min after the exit | 12 | −0.091 | −110 |
+| re-entry above the prior exit price | 15 | +0.032 | |
+| re-entry below the prior exit price | 14 | −0.395 | |
+| re-entries since 09-14 (390 in force) | 0 | | |
+| round 1 since 09-14 | 14 | +0.098 | |
+
+**What 390 refused this week, replayed.** 1,293 `symbol_reentry_cooldown_skipped`
+rows over 09-14, 09-15 and 09-18 (twelve symbol-days; NOW, QCOM and VERA never
+reached the 81 floor), replayed with `buildDeclinedEntryShadow` under the
+deployed exits (breakeven 0.25R, trail 0.5/0.5, target 1R, stagnation 60 min /
+0.5R), entering at the first eligible refusal at or past each gap:
+
+| gap after the exit | n | avg R | total R | winners |
+| --- | --- | --- | --- | --- |
+| first refusal (0–1 min) | 9 | +0.147 | +1.32 | 6 of 9 |
+| 60 min | 9 | +0.049 | +0.44 | 4 of 9 |
+| 90 min | 9 | −0.061 | −0.55 | 3 of 9 |
+| 120 min | 9 | −0.116 | −1.04 | 0 of 9 |
+| 180 min | 9 | −0.091 | −0.82 | 2 of 9 |
+| 240 min | 6 | −0.003 | −0.02 | 2 of 6 |
+
+The replay fills at the signal price with no slippage; paired live trades on the
+same signals realize about 0.15R less than paper (the scan's attribution, n=35),
+so the first-refusal +0.15R is roughly break-even in live terms.
+
+**Why the afternoon is quiet.** 09-16 and 09-17 had no live entries at any hour
+— `live_risk_blocked` (over 1,000 rows on 09-17, fixed by PR #629) and the
+floor, not the cooldown, since no position existed to cool down. On 09-18 all
+five entries came before 11:07; from noon the only names passing the 81 floor
+were the four already traded (cooldown rows 108 / 107 / 103 an hour at 12, 13
+and 14h; floor skips 0–1 an hour; shorts off 19 / 5 / 1; the entry window closes
+about 14:55), and those replay at −0.12R at 120 minutes and 0.00R at 240. The
+record's afternoon edge is thin on both books regardless (the scan's entry-hour
+dimension); the edge sits in the 09:30–11:30 rounds.
+
+**The gap in the instrument, found on the way.** `GET
+/api/journal/declined-entry-shadow` read the newest 1,000 rows (`listAutotradeEvents`,
+id DESC, clamped). For a gate that journals once per symbol-day that is the
+window; for the cooldown, which journals every tick, it served 09-18, 09-15 and
+62 of 09-14's 355 rows and said nothing — the LIMIT artifact of 2026-09-12 one
+route over. And the replay could only ask "the first refusal of the day", the
+immediate re-entry, never "the first refusal at or past N minutes", which is the
+question a shorter cooldown asks.
+
+**The change.**
+
+- The route reads `listAutotradeEventsInWindow` and reports `journalTruncated`;
+  `?minMinutesSinceExit=` replays the first eligible refusal per symbol-day at
+  or past the gap. `DeclinedEntry.minutesSinceExit` is parsed from the cooldown
+  row's own `minutesSince`; rows before the gap are counted `before_min_gap`,
+  rows with no gap (other gates) `no_exit_gap`, never passed through. The record
+  carries the gap it was replayed at beside its exit rules.
+- `reentryShadowRecordData.ts`: once per session after the close, every
+  refused symbol-day over the scan's forty-session window (never before
+  2026-09-14, when the cooldown went to 390 — the 120-minute era refused a
+  different population) is replayed at gaps 0 / 60 / 120 / 180 with one bar
+  fetch per symbol-day (`memoCandleSource`) and persisted to
+  `reentry_shadow_records`; one attempt per session, awaited by the loop in its
+  own try/catch after the short record. `GET /api/journal/reentry-shadow-record`
+  serves the stored row.
+- `reentryCooldownFinding` (`edgeLeakScan.ts`, pure): a gap SHORTER than the
+  cooldown in force with n ≥ `LEAK_MIN_TRADES` and the whole 95% interval ABOVE
+  zero raises `configuration:reentry_cooldown_shadow` with the lever
+  `symbolReentryCooldownMinutes` → that gap, `direction: 'exposure'` — never
+  applied by the app (`leak_lever` reads leaks, not findings; an exposure lever
+  never graduates). Among several clearing gaps: the higher mean, the longer gap
+  on a tie. Silent inside the bar, without a record, with the cooldown off, or
+  when every clearing gap is at or past it. The detail lists every gap's n /
+  mean / interval / win rate, says that no paper control exists for a delayed
+  re-entry, and carries the window's incompleteness. The scan reads the stored
+  record (`collectReentryCooldownFinding`) and stays DB-only.
+
+**Tested at the consumer.** The route over `ROW_CAP + 1` rows (complete, not
+truncated) and a three-refusal symbol-day replayed at 120 minutes (that tick's
+entry and stop, the earlier two counted); the hook (window start never before
+the boundary, one fetch per symbol-day across four gaps, each gap entering at
+its own tick's price, once per session, a failure not retried until the next
+session, the evidence mapping); the pure finding (named with its lever, every
+gap in the detail, below the bar, at or past the cooldown, cooldown off, no
+record, tie-break, incompleteness); the DB collector and the end-to-end scan;
+the record route.
+
+**Pre-committed check.** The first after-close tick after this deploys writes
+`reentry_shadow_records` for that session, and `GET
+/api/journal/reentry-shadow-record` reads four gaps over the window since 09-14
+with the first-refusal gap the largest n and the 180-minute gap the smallest.
+The nightly scan raises **no** `configuration:reentry_cooldown_shadow` finding
+on it: no gap is near n ≥ 15 with an interval above zero (the 60-minute gap's
++0.05R on nine trades is the closest). The cooldown stays at 390 until a gap
+clears the bar, and then it waits for the operator's word.

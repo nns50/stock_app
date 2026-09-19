@@ -307,5 +307,14 @@ export async function buildDeclinedEntryShadow(
   const byReason: Record<string, number> = {};
   for (const t of trades) byReason[t.reason] = (byReason[t.reason] ?? 0) + 1;
 
-  return { trades, n: trades.length, avgR, winRatePct, byReason, excluded, minMinutesSinceExit: minGap, exitRules: rules };
+  return {
+    trades,
+    n: trades.length,
+    avgR,
+    winRatePct,
+    byReason,
+    excluded,
+    minMinutesSinceExit: minGap,
+    exitRules: rules,
+  };
 }

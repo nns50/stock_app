@@ -870,12 +870,10 @@ describe('GET /journal/declined-entry-shadow (integration)', () => {
     row(61, 118);
     row(121, 119);
     // Bars from the moment of each signal: a winner to its 1R target either way.
-    const candles = vi
-      .spyOn(getProvider(), 'getCandles')
-      .mockImplementation(async () => [
-        { time: t0, open: 117, high: 117.5, low: 116.8, close: 117.2, volume: 1000 },
-        { time: t0 + 125 * 60_000, open: 119, high: 121.5, low: 118.9, close: 121, volume: 1000 },
-      ]);
+    const candles = vi.spyOn(getProvider(), 'getCandles').mockImplementation(async () => [
+      { time: t0, open: 117, high: 117.5, low: 116.8, close: 117.2, volume: 1000 },
+      { time: t0 + 125 * 60_000, open: 119, high: 121.5, low: 118.9, close: 121, volume: 1000 },
+    ]);
     const before = getAutotradeConfig();
     setAutotradeConfig({
       targetRMultiple: 1,

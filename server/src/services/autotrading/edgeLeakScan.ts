@@ -1350,9 +1350,7 @@ export function reentryCooldownFinding(
         `interval above zero)${others.length ? `, as does ${others.join(' and ')}` : ''}. No paper control exists ` +
         'for a delayed re-entry — the paper book re-enters within minutes of its exit — so this stands on the ' +
         'replay alone, which fills at the signal price with no slippage.' +
-        (evidence.journalTruncated
-          ? ' The journal read behind it hit its ceiling, so the window is incomplete.'
-          : '') +
+        (evidence.journalTruncated ? ' The journal read behind it hit its ceiling, so the window is incomplete.' : '') +
         ` As of ${evidence.etDate}.`,
       lever: {
         kind: 'config',

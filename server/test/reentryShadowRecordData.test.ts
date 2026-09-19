@@ -50,7 +50,12 @@ const insert = () =>
     "INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) VALUES (?,'execution','symbol_reentry_cooldown_skipped',?,NULL,?)",
   );
 /** The cooldown's own row: the replay fields plus its reading of the gap. */
-function refusal(symbol: string, minutesSince: number, entry: number, at: number = T0 + (minutesSince - 1) * MIN): void {
+function refusal(
+  symbol: string,
+  minutesSince: number,
+  entry: number,
+  at: number = T0 + (minutesSince - 1) * MIN,
+): void {
   insert().run(
     symbol,
     JSON.stringify({
