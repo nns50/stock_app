@@ -494,7 +494,13 @@ CREATE TABLE IF NOT EXISTS gated_switch_state (
   -- ask whether it is now in force -- by anyone's hand, not just the app's.
   -- Without it, the operator applying a proposal while the rule was still
   -- shadowed read as the rule contradicting itself and barred it for good.
-  last_proposed_patch     TEXT
+  last_proposed_patch     TEXT,
+  -- The rule's last READING (2026-09-19): its inputs against its bar, in
+  -- words, met or not -- "19 of 30 shadow shorts, avg +0.08R (bar +0.1R)".
+  -- NULL for a rule with nothing to read, or one not yet evaluated. Shown on
+  -- the Automatic switches card so a rule's distance from firing is visible
+  -- rather than only its yes/no.
+  last_reading            TEXT
 );
 
 -- One row per trading session: what the day actually did (2026-09-12).
@@ -590,6 +596,20 @@ CREATE TABLE IF NOT EXISTS edge_leak_scans (
   watches     INTEGER NOT NULL,
   findings    INTEGER NOT NULL,
   result      TEXT NOT NULL,           -- JSON EdgeLeakScanResult
+  created_at  INTEGER NOT NULL
+);
+
+-- The last SHORT SHADOW RECORD (services/autotrading/shortShadowRecordData.ts,
+-- 2026-09-19). Singleton, for the reason edge_leak_scans is: the record replays
+-- every declined short on provider bars -- one fetch per live-eligible
+-- symbol-day -- so the after-close hook computes it once per session and the
+-- gated-switch engine reads the stored fact. Until it existed the record was
+-- computed by a route and read by nobody in the app: the 'shorts' switch
+-- evaluated to null for want of it, while its three numbers sat one route away.
+CREATE TABLE IF NOT EXISTS short_shadow_records (
+  id          INTEGER PRIMARY KEY CHECK(id = 1),   -- singleton row
+  et_date     TEXT NOT NULL,           -- the session it was computed after (America/New_York)
+  report      TEXT NOT NULL,           -- JSON ShortShadowReport
   created_at  INTEGER NOT NULL
 );
 
@@ -1294,6 +1314,13 @@ function migrate(): void {
   }
   if (!dailyResultCols.some((c) => c.name === 'pre_open_move_usd')) {
     db.exec('ALTER TABLE autotrade_daily_results ADD COLUMN pre_open_move_usd REAL');
+  }
+
+  // 2026-09-19: a rule's last reading — see the column's note in the schema
+  // above. Existing rows stay NULL until the rule is next evaluated.
+  const switchCols = db.prepare('PRAGMA table_info(gated_switch_state)').all() as { name: string }[];
+  if (!switchCols.some((c) => c.name === 'last_reading')) {
+    db.exec('ALTER TABLE gated_switch_state ADD COLUMN last_reading TEXT');
   }
 
   const paperPosCols = db.prepare('PRAGMA table_info(autotrade_paper_positions)').all() as { name: string }[];

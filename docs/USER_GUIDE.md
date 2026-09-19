@@ -843,7 +843,11 @@ trades.
   live book declined on real 5-minute bars, under the book's own exit geometry, and reports
   the sample size, average R and win rate independently of the paper book's slots. The
   declined-short journal rows now also carry `liveEligible` and the score floor they were
-  judged against, so counting them no longer requires knowing which gates run first.
+  judged against, so counting them no longer requires knowing which gates run first. Since
+  2026-09-19 the loop computes the same record itself after each session's close and the
+  "Enable live shorts" automatic switch reads it (see [Automatic switches](#automatic-switches-what-the-app-changes-by-itself));
+  the route and the loop share one loader, which now reads the whole window rather than
+  the newest 1,000 rows, and the response says so (`journalTruncated`).
   Live bracket exits record an **exit reason** (`stop` / `target` /
   `time_exit`) on the exit itself, so you can see *which exit mechanism* is making or
   losing the money instead of inferring it from prices. Since 2026-09-10 that holds even
@@ -2834,7 +2838,14 @@ because the loop is the only caller that is always flat by the bell, so it is
 - **Recent activity** — a journal of what the screen, decision, and risk-check stages
   did and why (candidate found, excluded, signal generated, passed/blocked, a paper
   order placed or closed, a setting changed) — the same feed the execution loop above
-  writes into automatically.
+  writes into automatically. Since 2026-09-19 **every** settings change made through the
+  Settings page or `PUT /api/autotrade/config` leaves one `config_changed` row listing
+  each field that moved with its old and new value (`fields: [{ field, from, to }]`).
+  Before that only eight transitions (the risk profile, the on/off switches, equity, the
+  options strategy type, the risk %, the tuner) had a row of their own, and a cap change
+  such as `maxAggregateOpenRiskPct` 7.5 → 12.5 left no trace — the config row's own
+  timestamp cannot date it, because the equity sync rewrites it every minute. The eight
+  dedicated rows still appear beside it; a save that changes nothing writes nothing.
 
 This is decision-support and tracking, not financial advice — check the spec doc for the
 full design, current status, and the roadmap for the options-trading addition still to
@@ -2943,6 +2954,20 @@ and whether it has disqualified itself. When a rule does graduate and act, it wr
 `config_auto_applied` to Recent Activity with the before/after values and the numbers
 that met the criterion, and sends a notification — a config change on live money is not
 something to discover later.
+
+**The shorts rule reads its own evidence** (since 2026-09-19). "Enable live shorts" is
+the one rule that waits for you, and until then it was also the one rule that read nothing:
+its three numbers lived in `GET /api/journal/short-shadow-record` and nothing in the app
+looked. Now the loop replays the declined shorts itself once per session after the close,
+keeps the result, and the rule reads that record's own verdict against the bar (30 trades,
+average R ≥ +0.1, win rate ≥ 50%). The card shows the reading under the rule, met or not
+— "19 of 30 shadow shorts, avg +0.08R (bar +0.1R), win 52.6% (bar 50%) as of 2026-09-18 —
+short on trades, avg R" — so the distance to the bar is visible without fetching anything.
+When the bar is met the rule writes `config_change_proposed` with the field you would flip
+(`liveAllowNakedShort`) and sends **one** notification, on the session it is first met;
+it never applies the change, and it stops proposing once shorts are on. A replay that
+fails (no bars) costs that evening's refresh and nothing else — the rule reads the last
+record it has.
 
 **Two brakes.** The **kill switch** stops every application, and the `gatedSwitchesEnabled`
 setting turns the engine off entirely. Neither stops the *evaluation*: a shadow record

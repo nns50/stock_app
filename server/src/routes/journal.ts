@@ -25,7 +25,7 @@ import {
   type ReplayTrade,
 } from '../services/exitReplay';
 import { validateExitTuneRules, type ValidationTrade } from '../services/autotrading/exitTuneValidation';
-import { buildShortShadowRecord, type SkippedShort } from '../services/autotrading/shortShadowRecord';
+import { computeShortShadowReport, SHORT_SHADOW_SINCE_MS } from '../services/autotrading/shortShadowRecordData';
 import { parseDeclinedEntry, type DeclinedEntry } from '../services/autotrading/declinedEntry';
 import { readDay } from '../services/autotrading/dayMarks';
 import { listDayMarkDates } from '../db/dayMarks';
@@ -946,45 +946,20 @@ journalRouter.get(
 // Read services/autotrading/shortShadowRecord.ts for the three things this
 // number is NOT before quoting it; in particular it reuses exitReplay, which
 // resolves every intrabar ambiguity against the trade, so it UNDERSTATES.
+//
+// The loader and the compute path live in shortShadowRecordData.ts since
+// 2026-09-19, shared with the loop's after-close hook, which persists the
+// default-window record for the `shorts` gated switch. Until then this route
+// was the record's only reader — the switch that was written to read those
+// three numbers evaluated to null for want of them.
 // ---------------------------------------------------------------------------
 journalRouter.get(
   '/short-shadow-record',
   asyncHandler(async (req, res) => {
     const { since } = parseQuery(z.object({ since: z.coerce.number().optional() }), req);
-    const cfg = getAutotradeConfig();
     // Defaults to the day short-dated evidence started accruing, matching the
     // window task #21's own gate is measured over.
-    const from = since ?? Date.parse('2026-08-27T04:00:00Z');
-    const rows: SkippedShort[] = listAutotradeEvents({ actions: ['live_short_skipped'], since: from, limit: 1000 })
-      .map((e) => {
-        if (!e.symbol || !e.detail) return null;
-        try {
-          const d = JSON.parse(e.detail) as {
-            score?: number;
-            entry?: number;
-            stop?: number;
-            liveMinSignalScore?: number;
-          };
-          if (typeof d.score !== 'number' || typeof d.entry !== 'number' || typeof d.stop !== 'number') return null;
-          return {
-            symbol: e.symbol,
-            at: e.createdAt,
-            score: d.score,
-            entry: d.entry,
-            stop: d.stop,
-            // Carried through so the replay judges each row by the floor that
-            // actually declined it. Without this the report silently re-scores
-            // its own history every time liveMinSignalScore moves.
-            ...(typeof d.liveMinSignalScore === 'number' ? { floorAtSkip: d.liveMinSignalScore } : {}),
-          };
-        } catch {
-          return null;
-        }
-      })
-      .filter((r): r is SkippedShort => r !== null);
-
-    const record = await buildShortShadowRecord(getProvider(), rows, cfg);
-    res.json({ since: from, journaledRows: rows.length, ...record });
+    res.json(await computeShortShadowReport(since ?? SHORT_SHADOW_SINCE_MS));
   }),
 );
 

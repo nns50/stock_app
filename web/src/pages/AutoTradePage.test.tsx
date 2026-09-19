@@ -320,6 +320,7 @@ function gatedSwitchesFixture(overrides: Partial<AutotradeGatedSwitch>[] = []): 
       lastMet: false,
       lastEvaluatedEtDate: null,
       graduatedAt: null,
+      lastReading: null,
     },
     {
       id: 'shorts',
@@ -335,6 +336,7 @@ function gatedSwitchesFixture(overrides: Partial<AutotradeGatedSwitch>[] = []): 
       lastMet: false,
       lastEvaluatedEtDate: null,
       graduatedAt: null,
+      lastReading: null,
     },
   ];
   return base.map((row, i) => ({ ...row, ...(overrides[i] ?? {}) }));
@@ -3838,7 +3840,11 @@ describe('AutoTradePage', () => {
         dashboardFixture({
           gatedSwitches: gatedSwitchesFixture([
             { evaluations: 3, proposals: 2, lastEvaluatedEtDate: '2026-09-11' },
-            { lastEvaluatedEtDate: '2026-09-11' },
+            {
+              lastEvaluatedEtDate: '2026-09-11',
+              lastReading:
+                '19 of 30 shadow shorts, avg +0.08R (bar +0.1R), win 52.6% (bar 50%) — short on trades, avg R',
+            },
           ]),
         }),
       );
@@ -3849,6 +3855,12 @@ describe('AutoTradePage', () => {
       // A date that stops advancing is the only visible sign the after-close
       // hook has stopped; every count above would keep reading plausibly.
       expect(card).toHaveTextContent('Last evaluated 2026-09-11.');
+      // The rule that waits on the operator says how far its evidence sits
+      // from the bar (2026-09-19); a rule with nothing to read shows no line.
+      expect(screen.getByTestId('gated-switch-reading-shorts')).toHaveTextContent(
+        '19 of 30 shadow shorts, avg +0.08R (bar +0.1R), win 52.6% (bar 50%) — short on trades, avg R',
+      );
+      expect(screen.queryByTestId('gated-switch-reading-overlay_revert')).toBeNull();
     });
 
     it('says when a rule has graduated, and when one has disqualified itself', async () => {

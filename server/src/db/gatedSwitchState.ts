@@ -15,6 +15,7 @@ interface Row {
   last_evaluated_et_date: string | null;
   graduated_at: number | null;
   last_proposed_patch: string | null;
+  last_reading: string | null;
 }
 
 /** A stored patch that no longer parses is treated as ABSENT, not as an empty
@@ -39,6 +40,7 @@ const map = (r: Row): SwitchState => ({
   lastEvaluatedEtDate: r.last_evaluated_et_date,
   graduatedAt: r.graduated_at,
   lastProposedPatch: parsePatch(r.last_proposed_patch),
+  lastReading: r.last_reading ?? null,
 });
 
 export function listSwitchStates(): Map<string, SwitchState> {
@@ -50,8 +52,8 @@ export function saveSwitchState(s: SwitchState): void {
   db.prepare(
     `INSERT INTO gated_switch_state
        (rule_id, evaluations, proposals, contradictions, last_met, last_evaluated_et_date, graduated_at,
-        last_proposed_patch)
-     VALUES (?,?,?,?,?,?,?,?)
+        last_proposed_patch, last_reading)
+     VALUES (?,?,?,?,?,?,?,?,?)
      ON CONFLICT(rule_id) DO UPDATE SET
        evaluations = excluded.evaluations,
        proposals = excluded.proposals,
@@ -64,7 +66,11 @@ export function saveSwitchState(s: SwitchState): void {
        -- Same one-way reasoning as the graduation above: a quiet session
        -- carries null and must not erase the patch the next contradiction
        -- test is about to ask after.
-       last_proposed_patch = COALESCE(excluded.last_proposed_patch, gated_switch_state.last_proposed_patch)`,
+       last_proposed_patch = COALESCE(excluded.last_proposed_patch, gated_switch_state.last_proposed_patch),
+       -- NOT coalesced: the reading describes the LAST evaluation, and a
+       -- session on which the input was absent must read as absent, not as
+       -- yesterday's numbers.
+       last_reading = excluded.last_reading`,
   ).run(
     s.ruleId,
     s.evaluations,
@@ -74,5 +80,6 @@ export function saveSwitchState(s: SwitchState): void {
     s.lastEvaluatedEtDate,
     s.graduatedAt,
     s.lastProposedPatch ? JSON.stringify(s.lastProposedPatch) : null,
+    s.lastReading,
   );
 }

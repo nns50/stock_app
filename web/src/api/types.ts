@@ -3045,6 +3045,10 @@ export interface AutotradeGatedSwitch {
   lastMet: boolean;
   lastEvaluatedEtDate: string | null;
   graduatedAt: number | null;
+  /** What the rule read on its last evaluation, met or not — for the shorts
+   *  switch, the record's three numbers against their bar. Null for a rule
+   *  with nothing to read, or one not yet evaluated. */
+  lastReading: string | null;
 }
 
 export interface AutotradeEdgeLeakSummary {

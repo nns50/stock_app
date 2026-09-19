@@ -1,11 +1,23 @@
-import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
+
+// The push an exposure proposal sends is the one side effect here that leaves
+// the process; captured so the "once, on the session the bar is first met"
+// rule is asserted rather than assumed.
+vi.mock('../src/services/notifier', () => ({
+  dispatchNotifications: vi.fn().mockResolvedValue({ delivered: true, count: 1, results: [] }),
+}));
+
+import { dispatchNotifications } from '../src/services/notifier';
 import { initDb, db } from '../src/db';
 import { defaultAutotradeConfig, getAutotradeConfig, setAutotradeConfig } from '../src/db/autotradeConfig';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { DailyResult, saveDailyResult } from '../src/db/dailyResults';
 import { listSwitchStates } from '../src/db/gatedSwitchState';
+import { saveShortShadowRecord } from '../src/db/shortShadowRecords';
+import { Candle } from '../src/providers/types';
 import { deriveDollarCaps } from '../src/services/autotrading/targetTune';
 import {
+  buildGatedSwitchSnapshot,
   buildSizingReview,
   reviewSessions,
   runGatedSwitches,
@@ -13,6 +25,9 @@ import {
   sizingChangedOn,
 } from '../src/services/autotrading/gatedSwitchesData';
 import { SHADOW_MIN_EVALUATIONS } from '../src/services/autotrading/gatedSwitches';
+import { buildGatedSwitchStatus } from '../src/services/autotrading/dashboard';
+import { buildShortShadowRecord } from '../src/services/autotrading/shortShadowRecord';
+import { SHORT_SHADOW_SINCE_MS, ShortShadowReport } from '../src/services/autotrading/shortShadowRecordData';
 
 // ---------------------------------------------------------------------------
 // The DB half. What matters here is the chain a config write actually travels:
@@ -26,9 +41,40 @@ beforeAll(() => initDb());
 beforeEach(() => {
   db.exec(
     'DELETE FROM autotrade_config; DELETE FROM autotrade_events; DELETE FROM gated_switch_state; ' +
-      'DELETE FROM autotrade_daily_results; DELETE FROM edge_leak_scans;',
+      'DELETE FROM autotrade_daily_results; DELETE FROM edge_leak_scans; DELETE FROM short_shadow_records;',
   );
+  vi.mocked(dispatchNotifications).mockClear();
 });
+
+/**
+ * A short shadow record built by the PRODUCER — buildShortShadowRecord over
+ * `n` declined shorts that each fall straight to their 2R target — rather than
+ * a hand-written shape the producer could not emit. Wrapped the way the
+ * after-close hook persists it.
+ */
+async function shortReport(n: number): Promise<ShortShadowReport> {
+  const T0 = Date.parse('2026-09-10T13:35:00Z');
+  const bar = (offsetMin: number, high: number, low: number): Candle => ({
+    time: T0 + offsetMin * 60_000,
+    open: (high + low) / 2,
+    high,
+    low,
+    close: (high + low) / 2,
+    volume: 1000,
+  });
+  const source = { getCandles: async () => [bar(0, 100, 99), bar(5, 99, 97), bar(10, 97, 95.5)] };
+  const rows = Array.from({ length: n }, (_, i) => ({ symbol: `S${i}`, at: T0, score: 80, entry: 100, stop: 102 }));
+  const record = await buildShortShadowRecord(source, rows, {
+    ...defaultAutotradeConfig(),
+    liveMinSignalScore: 72,
+    targetRMultiple: 2,
+    breakevenTriggerRMultiple: 0,
+    trailStartRMultiple: 0,
+    trailStopRMultiple: 0,
+    liveScaleOutEnabled: false,
+  });
+  return { since: SHORT_SHADOW_SINCE_MS, journaledRows: n, journalTruncated: false, ...record };
+}
 
 /** Thursday 2026-09-10, 17:30 ET — after the close, on a session. */
 const AFTER_CLOSE = Date.parse('2026-09-10T21:30:00Z');
@@ -332,6 +378,83 @@ describe('runGatedSwitches — the shadow, end to end', () => {
     expect(runGatedSwitchesAfterClose(Date.parse('2026-09-12T21:30:00Z'))).toBeNull(); // Saturday
     expect(listSwitchStates().size).toBe(0);
     expect(runGatedSwitchesAfterClose(AFTER_CLOSE)).not.toBeNull();
+  });
+});
+
+describe('the shorts switch, over the persisted record (2026-09-19)', () => {
+  const shortsPushes = () =>
+    vi.mocked(dispatchNotifications).mock.calls.filter(([events]) => events[0]?.title.includes('shorts'));
+
+  it('proposes liveAllowNakedShort once the record’s gate passes, pushes once, and writes nothing', async () => {
+    setAutotradeConfig({ ...defaultAutotradeConfig(), liveAllowNakedShort: false });
+    const report = await shortReport(31);
+    expect(report.gate.passes).toBe(true);
+    saveShortShadowRecord('2026-09-10', report);
+    // The snapshot carries the record's OWN verdict, not a restatement of it.
+    expect(buildGatedSwitchSnapshot(AFTER_CLOSE).shortShadow).toMatchObject({
+      etDate: '2026-09-10',
+      n: 31,
+      winRatePct: 100,
+      gate: { passes: true },
+    });
+
+    runGatedSwitches(AFTER_CLOSE);
+
+    // THE CONSUMER: the stored config, untouched — an exposure rule never writes.
+    expect(getAutotradeConfig().liveAllowNakedShort).toBe(false);
+    expect(listAutotradeEvents({ stage: 'config', actions: ['config_auto_applied'] })).toHaveLength(0);
+    const proposed = listAutotradeEvents({ stage: 'config', actions: ['config_change_proposed'] })
+      .map(
+        (e) =>
+          JSON.parse(e.detail!) as {
+            rule: string;
+            direction: string;
+            patch: Record<string, unknown>;
+            evidence: string;
+            blockers: string[];
+          },
+      )
+      .find((d) => d.rule === 'shorts');
+    expect(proposed).toMatchObject({ direction: 'exposure', patch: { liveAllowNakedShort: true } });
+    expect(proposed?.evidence).toMatch(
+      /^31 of 30 shadow shorts, avg \+2\.00R \(bar \+0\.1R\), win 100\.0% \(bar 50%\)/,
+    );
+    expect(proposed?.blockers.join(' ')).toMatch(/only the operator applies this/);
+    expect(listSwitchStates().get('shorts')).toMatchObject({ proposals: 1, lastMet: true, graduatedAt: null });
+    expect(listSwitchStates().get('shorts')?.lastReading).toMatch(/bar met/);
+    // Pushed on the session the bar was first met…
+    expect(shortsPushes()).toHaveLength(1);
+    expect(shortsPushes()[0][0][0].message).toMatch(/liveAllowNakedShort → true .* waits for you/);
+
+    // …and not again the next session it stays met: the question is the same
+    // one, and the operator has not answered it yet.
+    runGatedSwitches(Date.parse('2026-09-11T21:30:00Z'));
+    expect(listSwitchStates().get('shorts')?.proposals).toBe(2);
+    expect(shortsPushes()).toHaveLength(1);
+    expect(getAutotradeConfig().liveAllowNakedShort).toBe(false);
+  });
+
+  it('carries a record under the bar as a READING on the dashboard row, not a proposal', async () => {
+    const report = await shortReport(19);
+    expect(report.gate).toMatchObject({ passesN: false, passesAvgR: true, passesWinRate: true, passes: false });
+    saveShortShadowRecord('2026-09-10', report);
+
+    runGatedSwitches(AFTER_CLOSE);
+
+    expect(listSwitchStates().get('shorts')).toMatchObject({ proposals: 0, lastMet: false });
+    expect(shortsPushes()).toHaveLength(0);
+    // The dashboard's row reads the same persisted state the engine wrote.
+    const row = buildGatedSwitchStatus().find((r) => r.id === 'shorts');
+    expect(row?.lastReading).toBe(
+      '19 of 30 shadow shorts, avg +2.00R (bar +0.1R), win 100.0% (bar 50%) as of 2026-09-10 — short on trades',
+    );
+  });
+
+  it('reads no record as no evidence — the rule stays quiet with nothing to read', () => {
+    frozenCapConfig();
+    runGatedSwitches(AFTER_CLOSE);
+    expect(buildGatedSwitchSnapshot(AFTER_CLOSE).shortShadow).toBeNull();
+    expect(listSwitchStates().get('shorts')).toMatchObject({ evaluations: 1, proposals: 0, lastReading: null });
   });
 });
 

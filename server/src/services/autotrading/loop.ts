@@ -46,6 +46,7 @@ import { reanchorLiveCapsIfDrifted } from './liveCapsReanchor';
 import { recordTodayAfterClose } from './dailyResults';
 import { recordDayMark } from './dayMarks';
 import { runGatedSwitchesAfterClose } from './gatedSwitchesData';
+import { refreshShortShadowRecordAfterClose } from './shortShadowRecordData';
 import { DailyTargetStatus, updateDailyGoalScale, updateDailyTarget } from './dailyTarget';
 import { hasExpiredLiveOptions, sweepExpiredLiveOptions } from './liveOptionsExpiry';
 import { maybeAlertDailyDrawdownHalt } from './dailyHaltAlert';
@@ -562,6 +563,17 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       await recordDayMark();
     } catch (e) {
       journalStageFailure('day mark', e);
+    }
+    // The short shadow record the `shorts` switch reads (2026-09-19): every
+    // declined short since 08-27 replayed on real bars, computed once per
+    // session after the close and persisted, so the rule below reads a fact
+    // the app computed rather than one a routine may or may not have fetched.
+    // One attempt per session; provider bars, so awaited and caught on its
+    // own — a failed replay costs tonight's refresh, never the switches.
+    try {
+      await refreshShortShadowRecordAfterClose();
+    } catch (e) {
+      journalStageFailure('short shadow record', e);
     }
     // …and once it exists, evaluate the criteria-gated switches against it
     // (2026-09-12). Every SAFE rule starts in shadow — it journals what it

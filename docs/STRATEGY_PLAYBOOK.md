@@ -637,6 +637,14 @@ Three things it is not, and each matters when quoting it:
   A gate that passes on this reading passes pessimistically, which is the only direction
   worth being wrong in when the question is whether to point real money somewhere new.
 
+**And the app reads it** (2026-09-19). For nine days the record was a route the daily
+routine fetched, and the gated switch written to read it returned nothing — a measurement
+nobody consumed. The loop now replays the declined shorts once per session after the
+close, keeps the result, and the "enable live shorts" rule reads the record's own gate;
+the route and the loop share one loader. The loader reads the whole window since
+2026-08-27 rather than the newest 1,000 journal rows (the same cap that once dropped the
+oldest 928 skips out of the leak scan), and the response says whether it was cut short.
+
 The general lesson outlives the shorts question: when a control arm has constraints the
 thing it is standing in for does not share, it is not a control arm. Replay the decision
 that was actually made.
@@ -1995,6 +2003,17 @@ dimensions over both books, applies one statistical bar to every one, and report
 fails it with the lever that closes it. The Auto page shows the count; the daily routine
 runs it and reports what is new.
 
+**`sessions` is the window for every section** (since 2026-09-19). The collector hands the
+scan every closed trade beside the window it chose, and until then only the day level and
+the `coverage.sessions` count honoured it: `?sessions=1` returned forty sessions of
+buckets labelled as one, and paired them against journal skips that _were_ bounded to the
+window, so a one-session read inflated `no_live_row` with paper trades from sessions the
+skip read never covered (145 against 104 on the deployed book). The window is applied
+once, as a date range on the entry date, and the buckets, the pairing, the attribution and
+`coverage` all read the result; `coverage.liveOutsideWindow` / `paperOutsideWindow` say
+how many closed trades it left out, so "one session" and "one session of a one-session
+book" read differently.
+
 **The catalog (v1).** Round within symbol-day · entry half-hour and the after-13:00
 aggregate · score band · VWAP extension · % of session range · exit reason · hold time ·
 symbol (n ≥ 5) · sector · weekday · ML regime · asset · position size. Plus three
@@ -2147,6 +2166,14 @@ session after the close, and applies the ones that **reduce** exposure.
 The asymmetry is the safety model, and it is one-way: **a rule that adds exposure is
 never applied by the app** — more risk, more slots, a wider halt, shorts all get reported
 and wait. Nothing the app does on its own can widen your risk.
+
+The one exposure rule in the table, **enable live shorts**, reads the short shadow record
+(below) since 2026-09-19 — the loop replays the declined shorts itself after each close
+and the rule reads the record's own verdict against the 30 / +0.1R / 50% bar. Until then
+the rule evaluated to nothing at all while the record sat one route away, computed and
+unread. It proposes `liveAllowNakedShort` and pushes once when the bar is first met, shows
+its reading on the Automatic switches card every session ("19 of 30 shadow shorts…"), and
+cannot write the field: it is a proposal-only key the engine refuses at the write.
 
 Since 2026-09-12 that is enforced by **arithmetic, not by a label**. One rule (`leak_lever`)
 takes its field and its number from the leak scan's output rather than from literal code,

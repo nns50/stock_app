@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { defaultAutotradeConfig } from '../src/db/autotradeConfig';
 import {
+  assertProposable,
   assertWritable,
   evaluateGatedSwitches,
   freshSwitchState,
@@ -15,9 +16,11 @@ import {
   PRE_TRIAL_SIZING,
   SAFE_DIRECTION,
   SHADOW_MIN_EVALUATIONS,
+  ShortShadowEvidence,
   SwitchRule,
   SwitchState,
 } from '../src/services/autotrading/gatedSwitches';
+import { SHORT_ENABLE_GATE } from '../src/services/autotrading/shortShadowRecord';
 
 // ---------------------------------------------------------------------------
 // This engine's output is a config write on live money, so the tests are
@@ -45,6 +48,29 @@ function snapshot(over: Partial<GatedSwitchSnapshot> = {}): GatedSwitchSnapshot 
       haltsMaxIn5: 0,
     },
     capsCoherence: [],
+    shortShadow: null,
+    ...over,
+  };
+}
+
+/** The short shadow record as the snapshot carries it. Defaults to the
+ *  deployed reading of 2026-09-18: 19 trades, +0.08R, 52.6% — under the bar
+ *  on the count and the average, over it on the win rate. */
+function shortShadow(over: Partial<ShortShadowEvidence> = {}): ShortShadowEvidence {
+  const n = over.n ?? 19;
+  const avgR = over.avgR === undefined ? 0.08 : over.avgR;
+  const winRatePct = over.winRatePct === undefined ? 52.6 : over.winRatePct;
+  const g = SHORT_ENABLE_GATE;
+  const passesN = n >= g.minTrades;
+  const passesAvgR = avgR !== null && avgR >= g.minAvgR;
+  const passesWinRate = winRatePct !== null && winRatePct >= g.minWinRatePct;
+  return {
+    etDate: ET,
+    journaledRows: 240,
+    n,
+    avgR,
+    winRatePct,
+    gate: { ...g, passesN, passesAvgR, passesWinRate, passes: passesN && passesAvgR && passesWinRate },
     ...over,
   };
 }
@@ -76,6 +102,14 @@ describe('the blast radius is explicit', () => {
     expect(() => assertWritable({ liveTradingEnabled: false } as never)).toThrow(/may not write liveTradingEnabled/);
     expect(() => assertWritable({ killSwitch: true } as never)).toThrow(/killSwitch/);
   });
+
+  it('lets an exposure rule NAME the shorts switch and still refuses to write it', () => {
+    // A proposal-only key: reportable, never writable. Both checks in one
+    // place so the next key added here is judged on both questions.
+    expect(() => assertProposable({ liveAllowNakedShort: true })).not.toThrow();
+    expect(() => assertWritable({ liveAllowNakedShort: true })).toThrow(/may not write liveAllowNakedShort/);
+    expect(() => assertProposable({ killSwitch: true } as never)).toThrow(/may not propose killSwitch/);
+  });
 });
 
 describe('graduation — a safe rule shadows its way to acting', () => {
@@ -86,6 +120,9 @@ describe('graduation — a safe rule shadows its way to acting', () => {
     const v = graduationVerdict(exposure, graduated({ evaluations: 500, proposals: 100 }));
     expect(v.graduated).toBe(false);
     if (!v.graduated) expect(v.blockers[0]).toMatch(/only the operator applies this/);
+    // …not even with a graduation stamped on its row. The direction is the
+    // operator's standing decision; no row overrides it (2026-09-19).
+    expect(graduationVerdict(exposure, graduated({ graduatedAt: 1 })).graduated).toBe(false);
   });
 
   it('needs five evaluations, at least one firing, and no contradiction', () => {
@@ -446,7 +483,25 @@ describe('evaluateGatedSwitches', () => {
       criterion: 'never mind',
       evaluate: () => ({ patch: { liveTradingEnabled: true } as never, evidence: '' }),
     };
-    expect(() => run({ rules: [rogue] })).toThrow(/may not write/);
+    // Refused at the FIRING, before any outcome is decided: a key that is
+    // neither writable nor proposal-only may not even be named.
+    expect(() => run({ rules: [rogue] })).toThrow(/may not propose liveTradingEnabled/);
+  });
+
+  it('refuses to APPLY a proposal-only key even from a safe rule that has graduated', () => {
+    // The shorts switch names liveAllowNakedShort, an exposure rule's message
+    // to the operator. A safe rule reaching `applied` with the same key is held
+    // to the writable list on top of the proposal check.
+    const rogue: SwitchRule = {
+      id: 'stub',
+      label: 'stub',
+      direction: 'safe',
+      criterion: 'never mind',
+      evaluate: () => ({ patch: { liveAllowNakedShort: true }, evidence: '' }),
+    };
+    expect(() => run({ rules: [rogue], states: new Map([['stub', graduated()]]) })).toThrow(
+      /may not write liveAllowNakedShort/,
+    );
   });
 });
 
@@ -694,5 +749,73 @@ describe('the shipped rules', () => {
     }
     // The one exposure rule is reported, never applied.
     expect(GATED_SWITCH_RULES.filter((r) => r.direction === 'exposure').map((r) => r.id)).toEqual(['shorts']);
+  });
+
+  // -------------------------------------------------------------------------
+  // THE SHORTS SWITCH READS THE RECORD IT WAS WRITTEN FOR (2026-09-19).
+  //
+  // It shipped as `evaluate: () => null` with a comment saying it would stay
+  // unevaluated until the shadow record exposed its three numbers "in one
+  // place". The record's route exposed them from the day it shipped; nothing
+  // in the app read it. Driven through the real engine, because the point is
+  // the consumer: a firing here must reach `proposed` and never `applied`.
+  // -------------------------------------------------------------------------
+  describe('shorts — reads the short shadow record’s own gate', () => {
+    const shorts = GATED_SWITCH_RULES.find((r) => r.id === 'shorts')!;
+    const run = (s: GatedSwitchSnapshot, state?: SwitchState) =>
+      evaluateGatedSwitches({
+        snapshot: s,
+        states: new Map(state ? [['shorts', state]] : []),
+        enabled: true,
+        now: 1_000,
+        rules: [shorts],
+      });
+
+    it('reads nothing while no record exists — an absent input is not a met criterion', () => {
+      const r = run(snapshot());
+      expect(r.decisions[0].outcome).toBe('quiet');
+      expect(r.decisions[0].nextState.lastReading).toBeNull();
+    });
+
+    it('stays quiet under the bar, and says how far the record sits from it', () => {
+      const r = run(snapshot({ shortShadow: shortShadow() }));
+      expect(r.decisions[0].outcome).toBe('quiet');
+      expect(r.proposed).toEqual([]);
+      // The reading names every leg that is short, so "not yet" is legible.
+      expect(r.decisions[0].nextState.lastReading).toBe(
+        '19 of 30 shadow shorts, avg +0.08R (bar +0.1R), win 52.6% (bar 50%) as of 2026-09-14 — short on trades, avg R',
+      );
+    });
+
+    it('proposes liveAllowNakedShort once the record’s gate passes — and NEVER applies it', () => {
+      const met = shortShadow({ n: 31, avgR: 0.14, winRatePct: 54.8 });
+      expect(met.gate.passes).toBe(true);
+      // Even against a state that claims a graduation: the direction wins.
+      const r = run(snapshot({ shortShadow: met }), {
+        ...freshSwitchState('shorts'),
+        evaluations: 20,
+        proposals: 6,
+        graduatedAt: 1,
+      });
+      expect(r.decisions[0].outcome).toBe('proposed');
+      expect(r.applied).toEqual([]);
+      expect(r.proposed).toEqual([
+        {
+          ruleId: 'shorts',
+          direction: 'exposure',
+          patch: { liveAllowNakedShort: true },
+          evidence: '31 of 30 shadow shorts, avg +0.14R (bar +0.1R), win 54.8% (bar 50%) as of 2026-09-14 — bar met',
+        },
+      ]);
+      expect(r.decisions[0].nextState.lastReading).toMatch(/bar met/);
+    });
+
+    it('goes quiet once shorts are on — a proposal for the state already in force is noise', () => {
+      const met = shortShadow({ n: 31, avgR: 0.14, winRatePct: 54.8 });
+      const r = run(snapshot({ shortShadow: met, config: { ...defaultAutotradeConfig(), liveAllowNakedShort: true } }));
+      expect(r.decisions[0].outcome).toBe('quiet');
+      // The reading still travels: "on, and here is what the record says".
+      expect(r.decisions[0].nextState.lastReading).toMatch(/bar met/);
+    });
   });
 });

@@ -184,6 +184,69 @@ describe('coverage — a trade with no value for a cut is excluded, never pooled
   });
 });
 
+describe('the session window — every section reads the same trades (2026-09-18)', () => {
+  // The collector hands over EVERY closed trade beside the window it chose,
+  // and until this only the day level and `coverage.sessions` honoured
+  // `sessionDates`: `?sessions=1` returned forty sessions of buckets labelled
+  // as one, and paired them against journal skips that WERE bounded to the
+  // window, so a one-session read inflated `no_live_row` (145 against 104 on
+  // the deployed book) with paper trades from sessions the skip read never
+  // covered.
+  const at = (date: string, time: string): number => etDateTimeToMs(date, time) as number;
+  const on = (date: string, over: Partial<LeakTrade> = {}): LeakTrade =>
+    trade({ etDate: date, entryAt: at(date, '10:00'), exitAt: at(date, '10:30'), ...over });
+  const many = (n: number, date: string, over: Partial<LeakTrade> = {}): LeakTrade[] =>
+    Array.from({ length: n }, (_, i) => on(date, { r: -0.2 + (i % 2 === 0 ? 0.02 : -0.02), ...over }));
+
+  it('narrows the buckets, the attribution and the coverage to the window, and counts what it left out', () => {
+    const live = [...many(12, '2026-09-08'), ...many(12, '2026-09-09'), ...many(12, '2026-09-10')];
+    const paper = [
+      on('2026-09-08', { book: 'paper', symbol: 'OLD', r: 0.5 }),
+      on('2026-09-10', { book: 'paper', symbol: 'NEW', r: 0.5 }),
+    ];
+    const result = scan(live, paper, {
+      live: { trades: live, sessionDates: ['2026-09-10'], droppedTrades: 0 },
+      paper: { trades: paper, sessionDates: ['2026-09-10'], droppedTrades: 0 },
+    });
+    expect(result.coverage).toMatchObject({
+      liveTrades: 12,
+      paperTrades: 1,
+      liveOutsideWindow: 24,
+      paperOutsideWindow: 1,
+      sessions: 1,
+    });
+    // The buckets read the window's twelve, not the book's thirty-six.
+    const round = result.dimensions.find((d) => d.id === 'round');
+    expect(round?.buckets.find((b) => b.bucket === '1')?.n).toBe(12);
+    expect(round?.covered).toBe(12);
+    // The paper trade from a session outside the window is not an unexplained
+    // refusal of it — that is exactly the inflation this removes.
+    expect(result.attribution.untaken).toHaveLength(1);
+    expect(result.attribution.untaken[0]).toMatchObject({ reason: 'no_live_row', n: 1 });
+    expect(result.dayLevel.sessions).toBe(1);
+  });
+
+  it('keeps a trade stamped on a non-session date INSIDE the window, for the day level to remap', () => {
+    // 2026-09-07 is Labor Day. A row the calendar disagrees with is the day
+    // level's to fold onto its neighbouring session (buildSessionPaths already
+    // does), not the window's to drop — so the window is a date range, not a
+    // membership test against the calendar's sessions.
+    const live = [...many(12, '2026-09-04'), ...many(12, '2026-09-07'), ...many(12, '2026-09-08')];
+    const result = scan(live, [], {
+      live: { trades: live, sessionDates: ['2026-09-04', '2026-09-08'], droppedTrades: 0 },
+    });
+    expect(result.coverage.liveTrades).toBe(36);
+    expect(result.coverage.liveOutsideWindow).toBe(0);
+  });
+
+  it('reads the whole book when the window covers it, so a full read is unchanged', () => {
+    const result = scan(bucket(20, 0.1));
+    expect(result.coverage.liveTrades).toBe(20);
+    expect(result.coverage.liveOutsideWindow).toBe(0);
+    expect(result.coverage.paperOutsideWindow).toBe(0);
+  });
+});
+
 describe('the day level — the goal rate and what the red days were made of', () => {
   const at = (date: string, time: string): number => etDateTimeToMs(date, time) as number;
 

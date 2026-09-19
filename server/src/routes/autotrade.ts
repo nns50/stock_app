@@ -6,6 +6,7 @@ import { resetDailyBaselineFlags } from '../db/dailyBaseline';
 import { updateDailyTarget } from '../services/autotrading/dailyTarget';
 import {
   AutotradeConfig,
+  diffAutotradeConfig,
   getAutotradeConfig,
   setAutotradeConfig,
   setAutotradeKillSwitch,
@@ -873,6 +874,22 @@ autotradeRouter.put(
         stage: 'config',
         action: next.autoTuneEnabled ? 'auto_tune_enabled' : 'auto_tune_disabled',
         detail: { from: before.autoTuneEnabled, to: next.autoTuneEnabled },
+        riskProfile: next.riskProfile,
+      });
+    }
+    // EVERY field that moved, as one row per PUT (2026-09-19). The dedicated
+    // rows above cover eight transitions, and the operator's
+    // maxAggregateOpenRiskPct 7.5 → 12.5 on 2026-09-18 was none of them: it
+    // left no trace at all, though it is exactly the kind of change a review
+    // has to be able to date, for the reason sizing_changed's comment gives.
+    // A preset that moves several fields lists each of them; a PUT that
+    // changes nothing journals nothing.
+    const changed = diffAutotradeConfig(before, next);
+    if (changed.length > 0) {
+      logAutotradeEvent({
+        stage: 'config',
+        action: 'config_changed',
+        detail: { fields: changed },
         riskProfile: next.riskProfile,
       });
     }

@@ -8400,7 +8400,7 @@ it.
 | `sizing_revert` | safe | at 10+ active sessions since the sizing change: the mean day is negative, OR the drawdown halt tripped twice in any 5 sessions |
 | `leak_lever` | safe | the last edge-leak scan reports a LEAK (not a watch, not unconfirmed) whose lever is a config field in the safe direction |
 | `frozen_cap` | safe | a stored dollar cap no longer equals its anchor-derived value, so every automatic re-anchor skips it |
-| `shorts` | exposure | 30 shadow short trades, average R ≥ +0.1, win rate ≥ 50% — reported, never applied |
+| `shorts` | exposure | 30 shadow short trades, average R ≥ +0.1, win rate ≥ 50% — reported, never applied (reads the persisted short shadow record since 2026-09-19) |
 
 Three of them refuse to fire when the change would be a no-op — `sizing_revert` when the
 risk % is already pre-trial, `leak_lever` when the config already carries the lever's
@@ -8410,9 +8410,10 @@ same thing every session forever is a rule nobody reads.
 **Not implemented, and why:** the plan's shock-nowcast rule (`regimeShockRangeRatio` once
 the nowcast has anticipated the model's High-Vol reads on a majority of ≥3 shock days).
 Its evidence is not computable from what is journaled today, and a rule that guesses at
-its own criterion is worse than one that says it cannot read it yet. `shorts` is in the
-table but evaluates to null for the same reason — its three numbers are not in one place
-— which costs nothing, because an exposure rule can never act regardless.
+its own criterion is worse than one that says it cannot read it yet. `shorts` was in the
+table evaluating to null "for the same reason — its three numbers are not in one place";
+that claim was wrong, and the dated section of 2026-09-19 says how (the numbers were in
+one place, the short-shadow route, and nothing read it). It reads the persisted record now.
 
 ### Two dates that had to be journaled
 
@@ -8421,6 +8422,9 @@ config row cannot say: its `updated_at` moves on every loop tick, because the eq
 writes `accountEquityUsd` every minute. So the config route journals the transitions —
 `sizing_changed` when `riskPerTradePct` moves, `auto_tune_disabled` / `auto_tune_enabled`
 when the tuner's flag flips — beside the handful of flag transitions it already recorded.
+(Since 2026-09-19 it also journals every other field a PUT moves, as one `config_changed`
+row per request — see the dated section of that day. The two rows named here are still
+written, and `sizingChangedOn` still reads `sizing_changed`.)
 
 Where the journal cannot say (a change that predates the row, which the 2026-09-12 trial
 itself is), the review window falls back to the sessions the loop actually RECORDED,
@@ -12089,3 +12093,129 @@ route answers is the finding to chase; a `no_options_signal` whose reason is
 "No contract passed entry rules" with `rePricedContracts` 0 on such a session
 is the same finding.
 
+
+## 2026-09-19 (second) — the leak scan's window applies to every section
+
+Found while reading the day (2026-09-18): `GET /api/journal/edge-leaks?sessions=1`
+returned the same trades, pairs and buckets as `?sessions=40`, and a _larger_
+`no_live_row` (145 against 104). `collectBook` hands the scan every closed trade
+beside the `sessionDates` it chose, and `runEdgeLeakScan` read `input.live.trades`
+and `input.paper.trades` unfiltered: only `buildDayLevel` and `coverage.sessions`
+honoured the window. The journal skips the attribution pairs against _were_
+bounded to the window, so a narrow read paired forty sessions of paper trades
+against one session of skips and reported the rest as "nothing the journal
+explains" — the bucket whose whole meaning is a recording gap.
+
+**The fix** is one function, `tradesInWindow`, applied once at the top of
+`runEdgeLeakScan` to both books; the dimensions, the pairing, the attribution,
+the day level and `coverage` all read its result. It is a date **range** on the
+trade's entry date, not a membership test against the calendar's sessions: a
+row stamped on a non-session date inside the window is `buildSessionPaths`'s to
+fold onto its neighbouring session, as it already does, not the window's to
+drop. `coverage` gains `liveOutsideWindow` / `paperOutsideWindow` — how many
+closed trades the window excluded — so a reader can tell "one session" from
+"one session of a one-session book". A full-window read of a book younger than
+the window is unchanged, which the untouched scan tests prove.
+
+**Pre-committed check.** On the deployed book, `?sessions=1&book=both` after a
+session reports `coverage.liveTrades` equal to that session's closed live
+trades, `coverage.sessions: 1`, and a `no_live_row` count no larger than the
+`?sessions=40` read's.
+
+## 2026-09-19 (third) — every settings change through the route is journaled
+
+Found on 2026-09-18 while reading the day: the operator's `maxAggregateOpenRiskPct`
+7.5 → 12.5, applied through `PUT /api/autotrade/config` at midday, left **no**
+journal row. The route journaled eight transitions — the risk profile, `enabled`,
+`accountEquityUsd`, the two live switches, the options strategy type,
+`riskPerTradePct` (`sizing_changed`) and the tuner's flag — and nothing else. The
+reason `sizing_changed` exists ("nothing else in the database can date that",
+because the config row's `updated_at` moves every minute under the equity sync)
+applies to every cap, slot count, cooldown and goal level just the same, and
+each of them has been changed by hand during the trial.
+
+**The change.** `diffAutotradeConfig(before, after)` (`db/autotradeConfig.ts`,
+pure) lists every field that differs between two configs with its old and new
+value, compared as JSON so a nested block counts once. The three stamps the
+config sets for itself on a transition (`liveEnabledAt`, `liveOptionsEnabledAt`,
+`autoTuneExitTunedAt`) are excluded: each already travels with the transition
+that set it. The route journals the list as one `config_changed` row per PUT —
+`detail: { fields: [{ field, from, to }] }` — after the dedicated rows, which
+are unchanged; a PUT that changes nothing writes nothing. The loop's own writes
+(the equity sync, the caps re-anchor, the gated switches, the tuner) do not pass
+through the route and keep their own rows (`live_caps_reanchored`,
+`config_auto_applied`, `auto_tune_*`).
+
+**Tested at the consumer**: `routes.integration.test.ts` drives the PUT with two
+changed fields and one sent unchanged, then a no-op PUT, and asserts the journal
+holds exactly one row listing exactly the two.
+
+**Pre-committed check.** The next hand change on the deployed box — any field —
+shows a `config_changed` row on Recent activity within the same minute, carrying
+the old and new value.
+
+## 2026-09-19 (fourth) — the shorts switch reads the record it was written for
+
+**The gap.** The gated-switch engine shipped on 2026-09-12 with the `shorts`
+rule as `evaluate: () => null` and a comment saying it would stay unevaluated
+"until the shadow record exposes those three numbers in one place". The short
+shadow record had shipped two days earlier as `GET /api/journal/short-shadow-record`,
+exposing exactly those three numbers and a `gate` verdict on them. Nothing in
+the app read it. When the operator asked on 2026-09-18 what the evidence for
+shorts was, the answer came from the daily routine fetching the route — the
+single point of failure the engine exists to remove. A rule that cannot read its
+own criterion is a rule with no criterion; CLAUDE.md's "computed, read by
+nothing", one layer up from config.
+
+**The change.**
+
+- `shortShadowRecordData.ts` (new, the DB half): `loadSkippedShorts` (moved out
+  of the route; it now reads the WHOLE window with `listAutotradeEventsInWindow`
+  rather than the newest 1,000 rows, and reports `journalTruncated`),
+  `computeShortShadowReport` (the one compute path the route and the hook
+  share), and `refreshShortShadowRecordAfterClose`: once per session after the
+  close, replay and persist to the new singleton table `short_shadow_records`.
+  One attempt per session — the loop calls it on every after-close tick, and a
+  provider outage must cost one evening's refresh, not ~480 replays. The loop
+  awaits it right before the gated switches so the engine reads tonight's
+  record; a failure is journaled as a stage failure and the engine runs on the
+  last record it has.
+- `GatedSwitchSnapshot.shortShadow` carries the record's three numbers, its
+  `gate` verdict and the session it was computed after. The `shorts` rule reads
+  `gate.passes` — the record's OWN verdict, so the rule and the route cannot
+  disagree about the bar — and proposes `{ liveAllowNakedShort: true }` with the
+  reading as its evidence; it stays quiet once shorts are on.
+- `liveAllowNakedShort` is a **proposal-only key**: `SwitchPatch` may name it,
+  `assertProposable` (every firing) admits it, `assertWritable` (everything that
+  reaches `applied`, and the applier itself) refuses it. And
+  `graduationVerdict` now checks the direction BEFORE the stored graduation, so
+  a `graduated_at` on an exposure rule's row — hand-edited, migrated or corrupt —
+  no longer reads as graduated.
+- Every rule may carry a `reading`: its inputs against its bar, in words, met
+  or not. Persisted as `gated_switch_state.last_reading` on every evaluation
+  (not coalesced — an absent input reads as absent) and shown on the Automatic
+  switches card under the rule, so "19 of 30 shadow shorts, avg +0.08R (bar
+  +0.1R), win 52.6% (bar 50%) as of 2026-09-18 — short on trades, avg R" is
+  visible without fetching anything.
+- An EXPOSURE proposal is **pushed** on the session its bar is first met (the
+  plan's "reported with the exact settings and waits"), and not again while it
+  stays met: the bar, once met, stays met until the operator answers, and a
+  nightly push for the same question is how a push stops being read. Safe
+  rules' shadow proposals stay journal-only, as before.
+
+**Tested at the consumer.** `gatedSwitchesData.test.ts` persists a record
+built by `buildShortShadowRecord` itself (31 declined shorts that fall to their
+2R target), runs the engine, and asserts on the stored config
+(`liveAllowNakedShort` still false), the `config_change_proposed` row, the one
+push, the second session's silence, and the dashboard row's reading; a
+19-trade record reads as a reading and no proposal. `shortShadowRecordData.test.ts`
+drives the hook through in-session, after-close, same-session repeat, the
+route/hook equality and the one-attempt-per-session rule against a provider
+that throws.
+
+**Pre-committed check.** The first after-close tick on the deployed box writes
+a `short_shadow_records` row for that session, and the Automatic switches card
+shows the shorts reading with the same `n`, `avgR` and `winRatePct` the route
+returns that evening. On 2026-09-18 those read n 19, +0.08R, 52.6% (the route);
+the card must read the same on 2026-09-22 unless new declined shorts moved
+them.
