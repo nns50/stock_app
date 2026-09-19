@@ -57,6 +57,24 @@ export const CONTRACT_QUOTE_MAX_AGE_MS = 120_000;
  *  reads it has to move. */
 export const EXIT_QUOTE_MAX_AGE_MS = CONTRACT_QUOTE_MAX_AGE_MS;
 
+/** The one freshness rule for an OPRA print, shared by the order resolver
+ *  below and the contract-selection overlay (optionsSelectionQuotes.ts,
+ *  2026-09-19): two-sided, finite, and no older than CONTRACT_QUOTE_MAX_AGE_MS.
+ *  A print without a timestamp is taken as current — the snapshot route omits
+ *  `quote_time` only on a live row — and `ageMs` is undefined for it. One
+ *  function so selection and pricing cannot disagree about what "fresh" means. */
+export function freshTwoSidedPrint(
+  q: { bid?: number; ask?: number; quoteTime?: number } | undefined,
+  now: number,
+  maxAgeMs: number = CONTRACT_QUOTE_MAX_AGE_MS,
+): { usable: boolean; ageMs?: number } {
+  if (!q) return { usable: false };
+  const ageMs = q.quoteTime === undefined ? undefined : Math.max(0, now - q.quoteTime);
+  const fresh = ageMs === undefined || ageMs <= maxAgeMs;
+  const twoSided = q.bid !== undefined && q.ask !== undefined && Number.isFinite(q.bid) && Number.isFinite(q.ask);
+  return { usable: fresh && twoSided, ageMs };
+}
+
 /** The freshest two-sided quote for one contract, and where it came from.
  *  `mark` keeps the midpoint the exit LADDER evaluates (its rule levels are
  *  defined on the mark and must not move); `bid` is what a CLOSE is priced at
@@ -258,16 +276,15 @@ export async function resolveContractQuote(
   if (contractSymbol && webullConfigured()) {
     const snap = await webullOptionQuotes([contractSymbol]);
     const q = snap.ok ? snap.quotes[0] : undefined;
-    const ageMs = q?.quoteTime === undefined ? undefined : Math.max(0, now - q.quoteTime);
-    const fresh = ageMs === undefined || ageMs <= CONTRACT_QUOTE_MAX_AGE_MS;
-    if (q && fresh && q.bid !== undefined && q.ask !== undefined && Number.isFinite(q.bid) && Number.isFinite(q.ask)) {
+    const print = freshTwoSidedPrint(q, now);
+    if (q && print.usable && q.bid !== undefined && q.ask !== undefined) {
       return {
         bid: q.bid,
         ask: q.ask,
         mark: (q.bid + q.ask) / 2,
         fromLastTrade: false,
         source: 'opra',
-        quoteAgeMs: ageMs,
+        quoteAgeMs: print.ageMs,
       };
     }
   }

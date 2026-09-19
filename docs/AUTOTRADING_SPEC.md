@@ -12045,3 +12045,47 @@ the cap. An `account_exposure` refusal on the options sleeve reads a cap equal
 to `liveMaxExposurePct` % of equity (about $57,700 at a $30.4k reading), never
 the equity figure itself.
 
+## 2026-09-19 — options contracts are selected on real-time data
+
+PR #628 (2026-09-18) priced the options ENTRY from the real-time ask, and the
+first session under it showed why that was only half the fix: the contract had
+still been CHOSEN on the Yahoo-sourced chain, ~15 minutes delayed. Every entry
+rule in `options/entryRules.ts` — the delta band, the spread filter, the
+open-interest and volume floors, the IV band — and the premium the risk check
+sizes on read the chain's numbers, and on the 0DTE names the sleeve trades those
+ran 40–70% away from the live print (HOOD 0.57 against 0.99, IBM 0.51 against
+0.95, COIN 0.55 against 1.95 on 2026-09-18). The order paid the live price for
+a contract picked on a stale one.
+
+The change, one new module and one call site:
+
+- `optionsSelectionQuotes.ts`: `selectionCandidates` takes the nearest-the-
+  money contracts of the signal's side, capped at the snapshot route's own
+  batch limit (`OPTION_QUOTES_MAX_SYMBOLS`, 40, exported from the provider so
+  the two cannot drift); `overlayLiveQuotes` replaces a contract's bid, ask,
+  mark, volume, open interest, delta and IV from a fresh two-sided print and
+  leaves everything else as the chain had it; `overlaySelectionQuotes` does
+  the one fetch and never throws — no answer, an error, a stale or one-sided
+  print all return the chain unchanged. Freshness is `freshTwoSidedPrint` from
+  `optionsExitPricing.ts`, the same rule the entry and exit resolver applies,
+  so selection and pricing cannot disagree about what "fresh" means.
+- `optionsDecide.ts` overlays the chain right before `scanEntries`, after the
+  IV-history write, so the IV-rank series keeps its one source. Filter
+  levels, bands and weights are untouched; with no OPRA answer the decision
+  is byte-for-byte the previous one, which the untouched decision tests
+  prove. The signal carries `selection`, and `options_signal_generated` /
+  `no_options_signal` carry `selectionQuoteSource`, `rePricedContracts`,
+  `quoteAgeMs` (the oldest print used) and `quotesRequested`.
+
+Both books share the decision, so both benefit. No parameter changed.
+
+### Pre-committed check
+
+The first `options_signal_generated` of the 2026-09-22 session reads
+`selectionQuoteSource: 'opra'` with `rePricedContracts` above 0 and
+`quoteAgeMs` under 120000, and the session's first placement carries
+`quoteSource: 'opra'`. A `'chain'` selection on a session where the snapshot
+route answers is the finding to chase; a `no_options_signal` whose reason is
+"No contract passed entry rules" with `rePricedContracts` 0 on such a session
+is the same finding.
+

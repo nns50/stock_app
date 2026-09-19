@@ -2812,7 +2812,11 @@ because the loop is the only caller that is always flat by the bell, so it is
   one — what a buyer actually pays — else at the mark; a spread pays the long leg's
   ask less the short leg's bid. The live sleeve prices its entries from the same
   real-time ask, so the two books buy at the same price, and each journal row says
-  which basis and which quote source it used. Shows the same
+  which basis and which quote source it used. Since 2026-09-19 the **contract itself
+  is chosen** on the same real-time snapshot: the nearest-the-money contracts are
+  re-priced from OPRA before the entry rules pick a strike, with the delayed chain as
+  the fallback, and the signal row says which source chose it
+  (`selectionQuoteSource`, with `rePricedContracts` and `quoteAgeMs`). Shows the same
   open/closed counts, realized/unrealized P&L, and full trade history (contract,
   strike/expiration, entry, a live **Current $** for open positions from a fresh
   contract quote, exit, reason, contracts, P&L, R) as equity's own paper trading above.

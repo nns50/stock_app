@@ -1,8 +1,18 @@
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 
 vi.mock('../src/providers', () => ({ getProvider: vi.fn(), getProviderStatus: vi.fn() }));
+// The real-time OPRA snapshot the contract selection overlays on the delayed
+// chain (2026-09-19). Default OFF (ok:false) so every pre-existing case keeps
+// deciding on the chain fixtures it was written against; the cases that care
+// arm it explicitly.
+vi.mock('../src/providers/webull/optionQuotes', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/providers/webull/optionQuotes')>();
+  return { ...actual, webullOptionQuotes: vi.fn(async () => ({ ok: false, quotes: [] })) };
+});
 
 import { getProvider, getProviderStatus } from '../src/providers';
+import { webullOptionQuotes } from '../src/providers/webull/optionQuotes';
+import { CONTRACT_QUOTE_MAX_AGE_MS } from '../src/services/autotrading/optionsExitPricing';
 import { initDb, db } from '../src/db';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { getIvHistory, recordAtmIv } from '../src/db/ivHistory';
@@ -18,6 +28,7 @@ import { Candle, OptionsChain } from '../src/providers/types';
 
 const mockGetProvider = vi.mocked(getProvider);
 const mockGetProviderStatus = vi.mocked(getProviderStatus);
+const mockOptionQuotes = vi.mocked(webullOptionQuotes);
 
 const OPTIONS_CAPABLE_STATUS = {
   name: 'mock',
@@ -196,6 +207,7 @@ beforeEach(() => {
   db.exec("DELETE FROM iv_history; DELETE FROM autotrade_events WHERE symbol = 'AAPL'");
   mockGetProviderStatus.mockReset().mockReturnValue(OPTIONS_CAPABLE_STATUS);
   mockGetProvider.mockReset();
+  mockOptionQuotes.mockReset().mockResolvedValue({ ok: false, quotes: [] });
 });
 
 describe('generateOptionsSignal', () => {
@@ -655,6 +667,142 @@ describe('generateOptionsSignal', () => {
       expect(result.ok).toBe(true);
       if (!result.ok) return;
       expect(result.signal.rationale).not.toMatch(/auto-selected/i);
+    });
+  });
+});
+
+// THE CONTRACT IS SELECTED ON THE REAL-TIME SNAPSHOT (2026-09-19). Until then
+// the strike, the delta band, the spread filter and signal.premium were all
+// decided on the ~15-minute-delayed chain while the order itself was priced
+// from the live ask. These cases pin, at the decision: a fresh print re-prices
+// the contract and the journal says so; a print can admit a contract the stale
+// chain refused; a stale print or no answer leaves today's decision byte for
+// byte and the row says the chain judged it.
+describe('generateOptionsSignal — contract selection on the real-time snapshot (2026-09-19)', () => {
+  const armChain = (expiration: string, opts: { delta?: number; mark?: number } = {}) =>
+    mockGetProvider.mockReturnValue({
+      getOptionsExpirations: vi.fn(async () => [expiration]),
+      getOptionsChain: vi.fn(async () => chainFor(expiration, opts)),
+    } as unknown as ReturnType<typeof getProvider>);
+  const rowsFor = (action: string) => listAutotradeEvents({ actions: [action] }).filter((e) => e.symbol === 'AAPL');
+
+  it('selects and prices the contract on a fresh OPRA print, and the journal row says so', async () => {
+    fillIvHistory('AAPL', 20, { min: 0.2, max: 0.6 });
+    const expiration = expirationDaysOut(21);
+    armChain(expiration, { mark: 3 });
+    mockOptionQuotes.mockResolvedValue({
+      ok: true,
+      quotes: [
+        {
+          symbol: `AAPL-${expiration}-call`,
+          bid: 3.9,
+          ask: 4.1,
+          volume: 900,
+          openInterest: 2000,
+          delta: 0.5,
+          iv: 0.42,
+          quoteTime: Date.now() - 590,
+        },
+      ],
+    });
+
+    const { signals, skipped } = await runOptionsDecision([candidate()]);
+    expect(skipped).toEqual([]);
+    expect(signals).toHaveLength(1);
+    const signal = signals[0];
+    if (signal.kind !== 'single_leg') throw new Error('expected a single-leg signal');
+    expect(signal.premium).toBe(4); // the live midpoint, not the chain's 3
+    expect(signal.delta).toBe(0.5);
+    expect(signal.maxLossPerContract).toBe(400); // sized on the same live premium
+    expect(mockOptionQuotes).toHaveBeenCalledWith([`AAPL-${expiration}-call`]);
+    expect(signal.selection).toMatchObject({ selectionQuoteSource: 'opra', rePricedContracts: 1, quotesRequested: 1 });
+    expect(signal.selection?.quoteAgeMs).toBeGreaterThanOrEqual(590);
+    expect(signal.selection?.quoteAgeMs).toBeLessThan(CONTRACT_QUOTE_MAX_AGE_MS);
+
+    const rows = rowsFor('options_signal_generated');
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0].detail!)).toMatchObject({
+      premium: 4,
+      selectionQuoteSource: 'opra',
+      rePricedContracts: 1,
+      quotesRequested: 1,
+    });
+  });
+
+  it('admits a contract the delayed chain refused once the live delta sits in the band', async () => {
+    fillIvHistory('AAPL', 20, { min: 0.2, max: 0.6 });
+    const expiration = expirationDaysOut(21);
+    armChain(expiration, { delta: 0.25, mark: 3 }); // outside the 0.30-0.60 band on the chain
+
+    // Control: no snapshot, the chain alone refuses it — today's behaviour.
+    const before = await generateOptionsSignal(candidate());
+    expect(before.ok).toBe(false);
+    if (!before.ok) {
+      expect(before.reason).toMatch(/no contract passed entry rules/i);
+      expect(before.selection).toEqual({
+        selectionQuoteSource: 'chain',
+        rePricedContracts: 0,
+        quoteAgeMs: null,
+        quotesRequested: 1,
+      });
+    }
+
+    mockOptionQuotes.mockResolvedValue({
+      ok: true,
+      quotes: [{ symbol: `AAPL-${expiration}-call`, bid: 2.9, ask: 3.1, delta: 0.45, quoteTime: Date.now() }],
+    });
+    const after = await generateOptionsSignal(candidate());
+    expect(after.ok).toBe(true);
+    if (!after.ok || after.signal.kind !== 'single_leg') throw new Error('expected a single-leg signal');
+    expect(after.signal.delta).toBe(0.45);
+    expect(after.signal.selection?.selectionQuoteSource).toBe('opra');
+  });
+
+  it('leaves the chain untouched on a stale print, and the signal says the chain chose it', async () => {
+    fillIvHistory('AAPL', 20, { min: 0.2, max: 0.6 });
+    const expiration = expirationDaysOut(21);
+    armChain(expiration, { mark: 3 });
+    mockOptionQuotes.mockResolvedValue({
+      ok: true,
+      quotes: [
+        {
+          symbol: `AAPL-${expiration}-call`,
+          bid: 3.9,
+          ask: 4.1,
+          quoteTime: Date.now() - CONTRACT_QUOTE_MAX_AGE_MS - 1_000,
+        },
+      ],
+    });
+
+    const result = await generateOptionsSignal(candidate());
+    expect(result.ok).toBe(true);
+    if (!result.ok || result.signal.kind !== 'single_leg') throw new Error('expected a single-leg signal');
+    expect(result.signal.premium).toBe(3);
+    expect(result.signal.selection).toEqual({
+      selectionQuoteSource: 'chain',
+      rePricedContracts: 0,
+      quoteAgeMs: null,
+      quotesRequested: 1,
+    });
+  });
+
+  it("no snapshot answer: today's decision byte for byte, and a skip row says the chain judged it", async () => {
+    fillIvHistory('AAPL', 20, { min: 0.2, max: 0.6 });
+    const expiration = expirationDaysOut(21);
+    armChain(expiration, { delta: 0.25, mark: 3 });
+
+    const { signals, skipped } = await runOptionsDecision([candidate()]);
+    expect(signals).toEqual([]);
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0].reason).toMatch(/no contract passed entry rules/i);
+    expect(mockOptionQuotes).toHaveBeenCalledTimes(1);
+    const rows = rowsFor('no_options_signal');
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0].detail!)).toMatchObject({
+      selectionQuoteSource: 'chain',
+      rePricedContracts: 0,
+      quoteAgeMs: null,
+      quotesRequested: 1,
     });
   });
 });
