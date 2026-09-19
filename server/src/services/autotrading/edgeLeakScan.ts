@@ -1244,3 +1244,127 @@ export function runEdgeLeakScan(input: EdgeLeakScanInput): EdgeLeakScanResult {
     },
   };
 }
+
+// --- the re-entry cooldown ---------------------------------------------------
+//
+// What a SHORTER live re-entry cooldown would have admitted (2026-09-19). The
+// round dimension above found second rounds losing and named the cooldown as
+// the lever that closes them (390, one entry per symbol per session). The
+// question in the other direction — is the afternoon lock-out costing more
+// than it saves — has no paper control: the paper book re-enters within
+// minutes of its exit and holds almost no delayed re-entries at all. So the
+// evidence is the cooldown's own refusals, replayed at the first eligible
+// refusal at or past each candidate gap (reentryShadowRecordData.ts), and the
+// bar is the scan's own: LEAK_MIN_TRADES over the window with the whole 95%
+// interval on the right side of zero — ABOVE, here, because the lever adds
+// exposure. It is never applied by the app.
+
+export interface ReentryGapEvidence {
+  minMinutesSinceExit: number;
+  /** The replayed exit R of each refused symbol-day, entered at this gap. */
+  exitRs: number[];
+}
+
+export interface ReentryShadowEvidence {
+  /** The session the record was computed after. */
+  etDate: string;
+  journalTruncated: boolean;
+  gaps: ReentryGapEvidence[];
+}
+
+export interface ReentryGapReading {
+  minMinutesSinceExit: number;
+  n: number;
+  meanR: number | null;
+  ciLow: number | null;
+  ciHigh: number | null;
+  winRatePct: number | null;
+  /** n >= LEAK_MIN_TRADES and the whole interval above zero. */
+  clearsBar: boolean;
+}
+
+export function reentryGapReadings(evidence: ReentryShadowEvidence, rng: () => number): ReentryGapReading[] {
+  return [...evidence.gaps]
+    .sort((a, b) => a.minMinutesSinceExit - b.minMinutesSinceExit)
+    .map((g) => {
+      const sig = computeSignificanceStats(
+        g.exitRs.map((r) => ({ pnl: r })),
+        { rng },
+      );
+      const n = g.exitRs.length;
+      return {
+        minMinutesSinceExit: g.minMinutesSinceExit,
+        n,
+        meanR: sig.expectancy === null ? null : round4(sig.expectancy),
+        ciLow: sig.ciLow === null ? null : round4(sig.ciLow),
+        ciHigh: sig.ciHigh === null ? null : round4(sig.ciHigh),
+        winRatePct: n ? round2((g.exitRs.filter((r) => r > 0).length / n) * 100) : null,
+        clearsBar: n >= LEAK_MIN_TRADES && sig.ciLow !== null && sig.ciLow > 0,
+      };
+    });
+}
+
+const signedR = (v: number | null): string => (v === null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(2)}R`);
+
+/**
+ * The finding, when a gap SHORTER than the cooldown in force clears the bar.
+ * Silent otherwise: inside the bar, with no record, with the cooldown off, or
+ * when every clearing gap is at or past the cooldown already (the lever would
+ * lower nothing). Among several clearing gaps it names the highest mean, and
+ * the longer gap on a tie — the smaller loosening.
+ */
+export function reentryCooldownFinding(
+  evidence: ReentryShadowEvidence | null,
+  cooldownMinutes: number,
+  rng: () => number,
+): ScanFinding[] {
+  if (!evidence || !(cooldownMinutes > 0)) return [];
+  const readings = reentryGapReadings(evidence, rng).filter((r) => r.minMinutesSinceExit < cooldownMinutes);
+  const clearing = readings.filter((r) => r.clearsBar);
+  if (clearing.length === 0) return [];
+  const best = clearing.reduce((a, b) => {
+    if (b.meanR === null || a.meanR === null) return a;
+    if (b.meanR > a.meanR) return b;
+    if (b.meanR === a.meanR && b.minMinutesSinceExit > a.minMinutesSinceExit) return b;
+    return a;
+  });
+  const others = clearing.filter((r) => r !== best).map((r) => `${r.minMinutesSinceExit} min`);
+  const table = readings
+    .map(
+      (r) =>
+        `${r.minMinutesSinceExit} min — n=${r.n}, avg ${signedR(r.meanR)} (95% ${signedR(r.ciLow)} to ` +
+        `${signedR(r.ciHigh)}), win ${r.winRatePct === null ? '—' : `${r.winRatePct}%`}`,
+    )
+    .join('; ');
+  return [
+    {
+      id: 'configuration:reentry_cooldown_shadow',
+      kind: 'configuration',
+      label: `Re-entries the cooldown refused replay positive ${best.minMinutesSinceExit} minutes after the exit`,
+      count: best.n,
+      lastSeenEtDate: evidence.etDate,
+      detail:
+        `The live re-entry cooldown is ${cooldownMinutes} minutes. Every symbol-day it refused over the window, ` +
+        'replayed under the book’s own exits at the first eligible refusal at or past each gap since the exit: ' +
+        `${table}. The ${best.minMinutesSinceExit}-minute gap clears the bar (n ≥ ${LEAK_MIN_TRADES}, the whole ` +
+        `interval above zero)${others.length ? `, as does ${others.join(' and ')}` : ''}. No paper control exists ` +
+        'for a delayed re-entry — the paper book re-enters within minutes of its exit — so this stands on the ' +
+        'replay alone, which fills at the signal price with no slippage.' +
+        (evidence.journalTruncated
+          ? ' The journal read behind it hit its ceiling, so the window is incomplete.'
+          : '') +
+        ` As of ${evidence.etDate}.`,
+      lever: {
+        kind: 'config',
+        field: 'symbolReentryCooldownMinutes',
+        value: best.minMinutesSinceExit,
+        direction: 'exposure',
+        detail:
+          `Setting symbolReentryCooldownMinutes to ${best.minMinutesSinceExit} admits a second entry per symbol-day, ` +
+          'which ADDS exposure — the operator’s call, never applied by the app. Confirm on a second evening, and take ' +
+          'the attribution’s paired live-minus-paper difference off the replayed mean first: the replay fills where ' +
+          'the paper book fills.',
+      },
+    },
+  ];
+}

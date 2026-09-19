@@ -26,6 +26,7 @@ import {
 } from '../services/exitReplay';
 import { validateExitTuneRules, type ValidationTrade } from '../services/autotrading/exitTuneValidation';
 import { computeShortShadowReport, SHORT_SHADOW_SINCE_MS } from '../services/autotrading/shortShadowRecordData';
+import { getLastReentryShadowRecord } from '../db/reentryShadowRecords';
 import { parseDeclinedEntry, type DeclinedEntry } from '../services/autotrading/declinedEntry';
 import { readDay } from '../services/autotrading/dayMarks';
 import { listDayMarkDates } from '../db/dayMarks';
@@ -960,6 +961,25 @@ journalRouter.get(
     // Defaults to the day short-dated evidence started accruing, matching the
     // window task #21's own gate is measured over.
     res.json(await computeShortShadowReport(since ?? SHORT_SHADOW_SINCE_MS));
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// GET /api/journal/reentry-shadow-record
+//
+// The re-entry cooldown's record as the leak scan read it (2026-09-19): every
+// symbol-day the cooldown refused over the window, replayed at the first
+// refusal and 60 / 120 / 180 minutes after the exit. STORED, not recomputed:
+// the loop computes it once per session after the close
+// (reentryShadowRecordData.ts) and this serves that row, so the reader and the
+// scan's cooldown finding look at the same numbers. A fresh reading at one gap
+// is `declined-entry-shadow?action=symbol_reentry_cooldown_skipped&
+// minMinutesSinceExit=`. `record` is null before the first after-close tick.
+// ---------------------------------------------------------------------------
+journalRouter.get(
+  '/reentry-shadow-record',
+  asyncHandler(async (_req, res) => {
+    res.json({ record: getLastReentryShadowRecord() });
   }),
 );
 

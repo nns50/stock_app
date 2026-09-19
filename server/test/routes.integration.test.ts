@@ -22,6 +22,8 @@ import { openOptionsPaperPosition } from '../src/db/autotradeOptionsPaperPositio
 import { createLiveOptionsPosition } from '../src/db/autotradeLiveOptionsPositions';
 import { saveLastTick } from '../src/db/autotradeLastTick';
 import { listAutotradeEvents, logAutotradeEvent, ROW_CAP } from '../src/db/autotradeEvents';
+import { saveReentryShadowRecord } from '../src/db/reentryShadowRecords';
+import { liveExitRules } from '../src/services/autotrading/declinedEntryShadow';
 import { getProvider } from '../src/providers';
 import { seedClosedAutotradeSessions, weekdaysEndingAt } from './helpers/autotradeSessions';
 
@@ -908,6 +910,57 @@ describe('GET /journal/declined-entry-shadow (integration)', () => {
       candles.mockRestore();
       setAutotradeConfig(before);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The re-entry cooldown record the leak scan reads (2026-09-19): served as
+// stored, never recomputed on the request path.
+// ---------------------------------------------------------------------------
+describe('GET /journal/reentry-shadow-record (integration)', () => {
+  beforeEach(() => {
+    db.exec('DELETE FROM reentry_shadow_records;');
+  });
+
+  it('is null before the first after-close tick, and the loop’s row after it', async () => {
+    expect(await getJson('/api/journal/reentry-shadow-record')).toEqual({ record: null });
+
+    saveReentryShadowRecord(
+      '2026-09-18',
+      {
+        since: Date.parse('2026-09-14T04:00:00Z'),
+        lookbackSessions: 40,
+        journaledRows: 1293,
+        journalTruncated: false,
+        unscorableRows: 0,
+        cooldownMinutes: 390,
+        gaps: [120].map((minMinutesSinceExit) => ({
+          trades: [],
+          n: 0,
+          avgR: null,
+          winRatePct: null,
+          byReason: {},
+          excluded: {
+            below_live_floor: 0,
+            duplicate_same_day: 0,
+            no_bars: 0,
+            unusable_signal: 0,
+            before_min_gap: 0,
+            no_exit_gap: 0,
+          },
+          minMinutesSinceExit,
+          exitRules: liveExitRules(getAutotradeConfig()),
+        })),
+      },
+      Date.parse('2026-09-18T20:30:00Z'),
+    );
+    const out = (await getJson('/api/journal/reentry-shadow-record')) as {
+      record: { etDate: string; createdAt: number; report: { cooldownMinutes: number; gaps: unknown[] } };
+    };
+    expect(out.record.etDate).toBe('2026-09-18');
+    expect(out.record.createdAt).toBe(Date.parse('2026-09-18T20:30:00Z'));
+    expect(out.record.report.cooldownMinutes).toBe(390);
+    expect(out.record.report.gaps).toHaveLength(1);
   });
 });
 

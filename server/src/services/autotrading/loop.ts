@@ -47,6 +47,7 @@ import { recordTodayAfterClose } from './dailyResults';
 import { recordDayMark } from './dayMarks';
 import { runGatedSwitchesAfterClose } from './gatedSwitchesData';
 import { refreshShortShadowRecordAfterClose } from './shortShadowRecordData';
+import { refreshReentryShadowRecordAfterClose } from './reentryShadowRecordData';
 import { DailyTargetStatus, updateDailyGoalScale, updateDailyTarget } from './dailyTarget';
 import { hasExpiredLiveOptions, sweepExpiredLiveOptions } from './liveOptionsExpiry';
 import { maybeAlertDailyDrawdownHalt } from './dailyHaltAlert';
@@ -574,6 +575,15 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       await refreshShortShadowRecordAfterClose();
     } catch (e) {
       journalStageFailure('short shadow record', e);
+    }
+    // The re-entry cooldown's twin (2026-09-19): every symbol-day the cooldown
+    // refused, replayed at the first refusal and 60 / 120 / 180 minutes after
+    // the exit, persisted for the leak scan's cooldown finding. Same
+    // one-attempt-per-session rule, awaited and caught on its own.
+    try {
+      await refreshReentryShadowRecordAfterClose();
+    } catch (e) {
+      journalStageFailure('re-entry shadow record', e);
     }
     // …and once it exists, evaluate the criteria-gated switches against it
     // (2026-09-12). Every SAFE rule starts in shadow — it journals what it
