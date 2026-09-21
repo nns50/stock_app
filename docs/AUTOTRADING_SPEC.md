@@ -12400,3 +12400,69 @@ The nightly scan raises **no** `configuration:reentry_cooldown_shadow` finding
 on it: no gap is near n ≥ 15 with an interval above zero (the 60-minute gap's
 +0.05R on nine trades is the closest). The cooldown stays at 390 until a gap
 clears the bar, and then it waits for the operator's word.
+
+---
+
+## 2026-09-21 — the contract-selection overlay was refused for its size, every time
+
+**What happened.** PR #632 (2026-09-19) overlays a real-time OPRA snapshot on
+the delayed chain before the options entry rules run, so a contract is chosen on
+the price it will actually be bought at. Its first session was 2026-09-21. It
+never fired. All **53** `options_signal_generated` rows that day read
+`selectionQuoteSource: 'chain'` with `rePricedContracts: 0` beside
+`quotesRequested: 40`.
+
+**Root cause, reproduced against the deployed route.** The snapshot endpoint
+accepts at most **20** symbols in one call:
+
+```
+ 2 symbols → ok, 2 quotes
+30 symbols → ok:false  "symbols size must be between 1 and 20."
+40 symbols → ok:false  "symbols size must be between 1 and 20."
+```
+
+`OPTION_QUOTES_MAX_SYMBOLS` was 40, double the limit, and
+`selectionCandidates` sized its nearest-the-money set to it. So every request
+was rejected whole, `overlaySelectionQuotes` took its `untouched()` path, and
+the decision ran on the delayed chain — which is precisely the state the PR
+existed to end. A second rule compounds it: the endpoint rejects the ENTIRE
+batch with `Invalid Symbol:[…]` when any one symbol is not a listed contract,
+rather than serving the ones it can.
+
+**What it cost.** The NVDA 260921C225 bought at 09:51 was selected on a chain
+premium of 0.35 and filled at 0.86, about two and a half times the number the
+delta band, the spread filter and the risk check all judged. It then went to its
+disaster stop. Every options decision since the deploy sized on the same kind of
+stale premium.
+
+**Why nothing caught it.** `webullOptionQuotes` is mocked in every test that
+exercises the overlay, so the cap was never sent anywhere that could refuse it,
+and the one assertion on the number compared the constant to a literal copy of
+itself. This is the CLAUDE.md rule in its purest form: a value proven where it is
+COMPUTED tells you nothing about the consumer that has to accept it. When a
+constant describes somebody else's limit, the test has to be against that limit.
+
+**The change.**
+
+- `WEBULL_SNAPSHOT_BATCH_LIMIT` = 20, the per-call broker limit, separate from
+  `OPTION_QUOTES_MAX_SYMBOLS` = 40, the caller cap. Two numbers because they
+  answer two questions; a comment on each says which.
+- `selectionCandidates` defaults to the BATCH limit, so a decision stays one
+  broker call.
+- `webullOptionQuotes` chunks its misses into batches of that size rather than
+  truncating, and a refused batch no longer discards the batches that answered.
+- `SelectionQuoteReport` gains `selectionQuoteError`, journaled with the rest, so
+  a fallback to the chain states its reason instead of reading as a quiet market.
+
+**Tested at the consumer.** The request size is asserted against the broker's
+limit with its own refusal text in the failure message; every asked-for symbol
+reaches a batch (chunking, not truncation); a rejected batch keeps the quotes the
+others returned; and the overlay's report carries the broker's own error, the
+"nothing fresh" case, and the thrown case.
+
+**Pre-committed check.** The first session after this deploys reports
+`selectionQuoteSource: 'opra'` with `rePricedContracts` above zero and
+`quotesRequested: 20` on the first options decision that reaches a chain, and
+`quoteAgeMs` inside the two-minute freshness window. A `chain` source on every
+row again, or any row carrying `selectionQuoteError`, is a finding — quote the
+error.

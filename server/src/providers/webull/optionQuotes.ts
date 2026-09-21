@@ -51,12 +51,43 @@ export interface OptionQuotesResult {
 // multiple viewers can hit OPRA for the same contract.
 const cache = new TtlCache<OptionQuote>(4 * 1000);
 
-// One /option/snapshot call can carry several OCC symbols; cap the batch so a
-// stray request can't fan out unbounded. Exported (2026-09-19) so the contract-
-// selection overlay sizes its nearest-the-money set to the same number this
-// call will actually send, rather than carrying a copy that could drift.
+/**
+ * What ONE /option/snapshot call may carry — the broker's own hard limit,
+ * learned from its own refusal (2026-09-21).
+ *
+ * This was 40, and the endpoint answers a batch above 20 with
+ * `symbols size must be between 1 and 20.` and NO quotes. So every contract-
+ * selection overlay call since it shipped on 2026-09-19 asked for 40, was
+ * refused outright, and fell back to the delayed chain — silently, because the
+ * fallback is by design. All 53 of the first session's options decisions read
+ * `selectionQuoteSource: 'chain'` with `rePricedContracts: 0` while
+ * `quotesRequested: 40`, and the NVDA 0DTE call that lost the day was chosen on
+ * a chain premium of 0.35 and filled at 0.86.
+ *
+ * The unit tests mocked this function, so the one number that had to agree with
+ * something outside the process was the one nothing checked.
+ */
+export const WEBULL_SNAPSHOT_BATCH_LIMIT = 20;
+
+/**
+ * The most symbols one CALLER may ask for. Deliberately a different number from
+ * the batch limit above: a caller's set is chunked into batches, so this bounds
+ * the broker call budget (40 = at most two calls) while the batch limit bounds
+ * what each call may contain. Exported so the contract-selection overlay sizes
+ * its nearest-the-money set to a real limit rather than carrying a copy.
+ *
+ * The overlay asks for WEBULL_SNAPSHOT_BATCH_LIMIT, not this, so its selection
+ * stays one call per decision.
+ */
 export const OPTION_QUOTES_MAX_SYMBOLS = 40;
 const MAX_SYMBOLS = OPTION_QUOTES_MAX_SYMBOLS;
+
+/** `xs` in groups of at most `size`, preserving order. */
+function chunk<T>(xs: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < xs.length; i += size) out.push(xs.slice(i, i + size));
+  return out;
+}
 
 function num(v: unknown): number | undefined {
   if (v === null || v === undefined || v === '') return undefined;
@@ -96,9 +127,10 @@ function mapQuote(r: Record<string, unknown>): OptionQuote {
 }
 
 /**
- * Fetch live option quotes for up to ~40 OCC symbols. Serves cached quotes and
- * only calls Webull for the misses; preserves the requested order. Read-only;
- * never throws.
+ * Fetch live option quotes for up to OPTION_QUOTES_MAX_SYMBOLS OCC symbols.
+ * Serves cached quotes and only calls Webull for the misses, in batches of
+ * WEBULL_SNAPSHOT_BATCH_LIMIT; preserves the requested order. Read-only; never
+ * throws.
  */
 export async function webullOptionQuotes(symbols: string[]): Promise<OptionQuotesResult> {
   if (!webullConfigured()) {
@@ -115,9 +147,13 @@ export async function webullOptionQuotes(symbols: string[]): Promise<OptionQuote
     else misses.push(s);
   }
 
-  if (misses.length) {
+  // One call per WEBULL_SNAPSHOT_BATCH_LIMIT symbols. A single request carrying
+  // more is refused whole — no partial answer — so the chunking is what makes a
+  // caller's set reachable at all, not an optimisation.
+  let lastError: string | null = null;
+  for (const batch of chunk(misses, WEBULL_SNAPSHOT_BATCH_LIMIT)) {
     const r = await webullClient().call('GET', '/openapi/market-data/option/snapshot', {
-      query: { symbols: misses.join(','), category: 'US_OPTION' },
+      query: { symbols: batch.join(','), category: 'US_OPTION' },
       surface: 'market',
     });
     if (r.ok) {
@@ -128,13 +164,18 @@ export async function webullOptionQuotes(symbols: string[]): Promise<OptionQuote
           found.set(q.symbol, q);
         }
       }
-    } else if (found.size === 0) {
-      // Nothing cached to fall back on — surface the Webull error.
+    } else {
+      // The endpoint rejects the WHOLE batch when any symbol in it is not a
+      // listed contract (`Invalid Symbol:[…]`), so one bad strike costs its
+      // batch and not the rest. Remember the reason for a caller that ends up
+      // with nothing.
       const j = (r.data ?? {}) as { msg?: string; message?: string };
-      return { ok: false, quotes: [], error: j.msg || j.message || `Webull request failed (${r.status})` };
+      lastError = j.msg || j.message || `Webull request failed (${r.status})`;
     }
-    // Otherwise keep the cached hits we do have rather than failing the whole call.
   }
+  // Nothing cached and nothing fetched — surface the Webull error rather than
+  // an empty success a caller would read as "no market".
+  if (lastError !== null && found.size === 0) return { ok: false, quotes: [], error: lastError };
 
   return { ok: true, quotes: wanted.map((s) => found.get(s)).filter((q): q is OptionQuote => q !== undefined) };
 }

@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { config } from '../src/config';
-import { webullOptionQuotes, clearOptionQuotesCache } from '../src/providers/webull/optionQuotes';
+import {
+  webullOptionQuotes,
+  clearOptionQuotesCache,
+  OPTION_QUOTES_MAX_SYMBOLS,
+  WEBULL_SNAPSHOT_BATCH_LIMIT,
+} from '../src/providers/webull/optionQuotes';
 
 const orig = { ...config.webull };
 afterEach(() => {
@@ -107,5 +112,61 @@ describe('webull option quotes', () => {
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/invalid symbol/i);
     expect(r.quotes).toEqual([]);
+  });
+
+  // ---------------------------------------------------------------------------
+  // THE BATCH LIMIT IS THE BROKER'S, NOT OURS (2026-09-21).
+  //
+  // The endpoint answers a batch above 20 with `symbols size must be between 1
+  // and 20.` and NO quotes — it does not serve the ones it could. The caller cap
+  // was 40 and every contract-selection overlay call was refused whole for two
+  // sessions, falling back to the delayed chain in silence.
+  // ---------------------------------------------------------------------------
+  const manySymbols = (n: number) =>
+    Array.from({ length: n }, (_, i) => `AAA260622C${String(100000 + i * 1000).padStart(8, '0')}`);
+
+  it('never sends more than the broker accepts in one call, and splits the rest into more calls', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(okResp([]));
+
+    const asked = manySymbols(OPTION_QUOTES_MAX_SYMBOLS);
+    await webullOptionQuotes(asked);
+
+    const batches = fetchSpy.mock.calls.map((c) => {
+      const u = new URL(String(c[0]));
+      return (u.searchParams.get('symbols') ?? '').split(',').filter(Boolean);
+    });
+    expect(batches.length).toBe(Math.ceil(asked.length / WEBULL_SNAPSHOT_BATCH_LIMIT));
+    for (const b of batches) {
+      expect(
+        b.length,
+        `a batch of ${b.length} exceeds the broker limit of ${WEBULL_SNAPSHOT_BATCH_LIMIT}; ` +
+          'the endpoint refuses an oversized batch WHOLE and returns no quotes',
+      ).toBeLessThanOrEqual(WEBULL_SNAPSHOT_BATCH_LIMIT);
+    }
+    // Every symbol asked for reaches a batch — chunking, not truncation.
+    expect(batches.flat().sort()).toEqual([...asked].sort());
+  });
+
+  it('keeps the batches that answered when one batch is refused', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const good = { ...SNAP[0], symbol: 'AAA260622C00100000' };
+    let call = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      call += 1;
+      // The second batch carries an unlisted strike, so the broker rejects it
+      // whole. The first batch's quotes must survive that.
+      return call === 1
+        ? okResp([good])
+        : ({
+            ok: false,
+            status: 417,
+            text: async () => JSON.stringify({ message: 'Invalid Symbol:[AAA260622C00121000].' }),
+          } as Response);
+    });
+
+    const r = await webullOptionQuotes(manySymbols(WEBULL_SNAPSHOT_BATCH_LIMIT + 1));
+    expect(r.ok).toBe(true);
+    expect(r.quotes.map((q) => q.symbol)).toEqual(['AAA260622C00100000']);
   });
 });

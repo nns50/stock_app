@@ -8,7 +8,11 @@ vi.mock('../src/providers/webull/optionQuotes', async (importOriginal) => {
   return { ...actual, webullOptionQuotes: vi.fn(async () => ({ ok: false, quotes: [] })) };
 });
 
-import { OPTION_QUOTES_MAX_SYMBOLS, webullOptionQuotes } from '../src/providers/webull/optionQuotes';
+import {
+  OPTION_QUOTES_MAX_SYMBOLS,
+  WEBULL_SNAPSHOT_BATCH_LIMIT,
+  webullOptionQuotes,
+} from '../src/providers/webull/optionQuotes';
 import { CONTRACT_QUOTE_MAX_AGE_MS, freshTwoSidedPrint } from '../src/services/autotrading/optionsExitPricing';
 import {
   overlayLiveQuotes,
@@ -60,15 +64,33 @@ describe('selectionCandidates — the nearest-the-money set, capped at the snaps
     expect(picked).not.toBe(calls); // a copy, never the chain's own array
   });
 
-  it('keeps the 40 strikes nearest the underlying price out of 60, breaking the last tie by chain order', () => {
+  it('keeps the strikes nearest the underlying price out of 60, breaking the last tie by chain order', () => {
     const calls = range(70, 129).map((s) => contract(s));
     const picked = selectionCandidates(chainOf(calls, 100), 'call');
-    expect(picked).toHaveLength(OPTION_QUOTES_MAX_SYMBOLS);
-    expect(OPTION_QUOTES_MAX_SYMBOLS).toBe(40);
-    // 39 strikes within 19 of the money (81..119), plus the first of the two
-    // at distance 20 in chain order: 80 comes before 120.
-    expect(picked.map((c) => c.strike).sort((a, b) => a - b)).toEqual(range(80, 119));
+    expect(picked).toHaveLength(WEBULL_SNAPSHOT_BATCH_LIMIT);
+    // 19 strikes within 9 of the money (91..109), plus the first of the two at
+    // distance 10 in chain order: 90 comes before 110.
+    expect(picked.map((c) => c.strike).sort((a, b) => a - b)).toEqual(range(90, 109));
     expect(picked[0].strike).toBe(100); // ordered nearest first
+  });
+
+  // THE BUG THIS FILE MISSED (2026-09-21). The cap used to be asserted against
+  // a COPY of itself — `expect(OPTION_QUOTES_MAX_SYMBOLS).toBe(40)` — which is
+  // true of any number the constant happens to hold. The number that had to be
+  // right was the one the BROKER accepts, and it is 20: a batch of 40 comes
+  // back `symbols size must be between 1 and 20.` with no quotes, so every
+  // selection overlay from 2026-09-19 to 2026-09-21 was refused whole and fell
+  // back to the delayed chain in silence.
+  it('sizes the request to what ONE broker call accepts, never to the caller cap', () => {
+    expect(WEBULL_SNAPSHOT_BATCH_LIMIT).toBeLessThanOrEqual(20);
+    const calls = range(1, 60).map((s) => contract(s));
+    const picked = selectionCandidates(chainOf(calls, 30), 'call');
+    expect(
+      picked.length,
+      'the selection must fit in one snapshot call: the endpoint refuses a batch above its limit WHOLE, ' +
+        'returning no quotes at all rather than the ones it could serve',
+    ).toBeLessThanOrEqual(WEBULL_SNAPSHOT_BATCH_LIMIT);
+    expect(OPTION_QUOTES_MAX_SYMBOLS).toBeGreaterThanOrEqual(WEBULL_SNAPSHOT_BATCH_LIMIT);
   });
 
   it('falls back to the chain delta nearest 0.50 when the chain carries no underlying price', () => {
@@ -189,8 +211,32 @@ describe('overlaySelectionQuotes — one fetch, the chain unchanged without a fr
       rePricedContracts: 0,
       quoteAgeMs: null,
       quotesRequested: 2,
+      // WHY the fallback happened, so an overlay that is inert for two sessions
+      // reads as refused rather than as "no OPRA answer today" (2026-09-21).
+      selectionQuoteError: 'snapshot unavailable',
     });
     expect(mockOptionQuotes).toHaveBeenCalledWith([chain.calls[0].symbol, chain.calls[1].symbol]);
+  });
+
+  it('carries the broker’s own refusal into the report', async () => {
+    mockOptionQuotes.mockResolvedValue({
+      ok: false,
+      quotes: [],
+      error: 'symbols size must be between 1 and 20.',
+    });
+    const { report } = await overlaySelectionQuotes(chainOf([contract(100)], 100), 'call', NOW);
+    expect(report.selectionQuoteError).toBe('symbols size must be between 1 and 20.');
+  });
+
+  it('says so when the snapshot answered but nothing in it was fresh', async () => {
+    const calls = [contract(100)];
+    mockOptionQuotes.mockResolvedValue({
+      ok: true,
+      quotes: [{ symbol: calls[0].symbol, bid: 3.9, ask: 4.1, quoteTime: NOW - CONTRACT_QUOTE_MAX_AGE_MS * 3 }],
+    });
+    const { report } = await overlaySelectionQuotes(chainOf(calls, 100), 'call', NOW);
+    expect(report.selectionQuoteSource).toBe('chain');
+    expect(report.selectionQuoteError).toMatch(/no fresh two-sided print/);
   });
 
   it('never throws on the OPRA leg — an error returns the chain unchanged', async () => {
@@ -199,18 +245,19 @@ describe('overlaySelectionQuotes — one fetch, the chain unchanged without a fr
     const { chain: out, report } = await overlaySelectionQuotes(chain, 'call', NOW);
     expect(out).toBe(chain);
     expect(report.selectionQuoteSource).toBe('chain');
+    expect(report.selectionQuoteError).toBe('socket hang up');
   });
 
-  it('sends only the 40 nearest-the-money symbols of a 60-strike side, and says how many it asked for', async () => {
+  it('sends one batch the broker will accept, and says how many it asked for', async () => {
     const chain = chainOf(
       range(70, 129).map((s) => contract(s)),
       100,
     );
     const { report } = await overlaySelectionQuotes(chain, 'call', NOW);
     const sent = mockOptionQuotes.mock.calls[0][0];
-    expect(sent).toHaveLength(40);
-    expect(new Set(sent).size).toBe(40);
-    expect(report.quotesRequested).toBe(40);
+    expect(sent).toHaveLength(WEBULL_SNAPSHOT_BATCH_LIMIT);
+    expect(new Set(sent).size).toBe(WEBULL_SNAPSHOT_BATCH_LIMIT);
+    expect(report.quotesRequested).toBe(WEBULL_SNAPSHOT_BATCH_LIMIT);
   });
 
   it('re-prices the side from fresh prints and reports the oldest age, leaving the other side alone', async () => {
@@ -237,6 +284,7 @@ describe('overlaySelectionQuotes — one fetch, the chain unchanged without a fr
       quoteAgeMs: 4_000,
       quotesRequested: 3,
     });
+    expect(report.selectionQuoteError).toBeUndefined(); // no reason to give when it worked
   });
 
   it('overlays the puts for a put signal', async () => {

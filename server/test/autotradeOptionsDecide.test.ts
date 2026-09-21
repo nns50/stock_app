@@ -744,6 +744,9 @@ describe('generateOptionsSignal — contract selection on the real-time snapshot
         rePricedContracts: 0,
         quoteAgeMs: null,
         quotesRequested: 1,
+        // Since 2026-09-21 a fallback says WHY: a silent one hid a request the
+        // broker refused for its size across two sessions.
+        selectionQuoteError: 'snapshot unavailable',
       });
     }
 
@@ -783,6 +786,7 @@ describe('generateOptionsSignal — contract selection on the real-time snapshot
       rePricedContracts: 0,
       quoteAgeMs: null,
       quotesRequested: 1,
+      selectionQuoteError: 'no fresh two-sided print among the quotes returned',
     });
   });
 

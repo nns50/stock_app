@@ -1,5 +1,5 @@
 import { OptionContract, OptionsChain } from '../../providers/types';
-import { OPTION_QUOTES_MAX_SYMBOLS, OptionQuote, webullOptionQuotes } from '../../providers/webull/optionQuotes';
+import { OptionQuote, WEBULL_SNAPSHOT_BATCH_LIMIT, webullOptionQuotes } from '../../providers/webull/optionQuotes';
 import { CONTRACT_QUOTE_MAX_AGE_MS, freshTwoSidedPrint } from './optionsExitPricing';
 
 // ---------------------------------------------------------------------------
@@ -39,27 +39,48 @@ export interface SelectionQuoteReport {
    *  timestamp on the row) do not raise it. */
   quoteAgeMs: number | null;
   /** How many contract symbols were sent to the snapshot: the nearest-the-
-   *  money set, capped at OPTION_QUOTES_MAX_SYMBOLS. */
+   *  money set, capped at WEBULL_SNAPSHOT_BATCH_LIMIT so the selection is one
+   *  broker call and is never refused for its size. */
   quotesRequested: number;
+  /**
+   * Why the overlay fell back to the chain, when it did (2026-09-21). The
+   * fallback is silent BY DESIGN — a missing snapshot must leave the decision
+   * byte-for-byte what it was — and that silence is exactly how a request the
+   * broker refused for two sessions read as "no OPRA answer today". Present
+   * only on a 'chain' report that had a reason; absent when nothing was fresh.
+   */
+  selectionQuoteError?: string;
 }
 
-function untouched(quotesRequested: number): SelectionQuoteReport {
-  return { selectionQuoteSource: 'chain', rePricedContracts: 0, quoteAgeMs: null, quotesRequested };
+function untouched(quotesRequested: number, error?: string): SelectionQuoteReport {
+  return {
+    selectionQuoteSource: 'chain',
+    rePricedContracts: 0,
+    quoteAgeMs: null,
+    quotesRequested,
+    ...(error ? { selectionQuoteError: error } : {}),
+  };
 }
 
 /**
  * The contracts of one side worth a live print: the `cap` nearest the money.
  * Ordered by distance from the underlying's price when the chain carries it,
  * else by how close the chain's own |delta| sits to 0.50 (at-the-money), else
- * in chain order. Forty strikes around the money cover every delta band the
+ * in chain order. Twenty strikes around the money cover every delta band the
  * decision uses (long 0.30-0.60, short leg 0.15-0.25) on any listed chain, so
  * no band-dependent selection is needed here — and none that would read the
  * stale delta the overlay exists to replace. Pure; never mutates the chain.
+ *
+ * The cap is the broker's PER-CALL limit, not the caller cap: a set larger than
+ * one batch would be split across calls, and a decision that costs two broker
+ * calls per candidate per tick is a different trade-off from the one this was
+ * built for. It was OPTION_QUOTES_MAX_SYMBOLS (40) until 2026-09-21, which is
+ * double what one call accepts, so every request was refused whole.
  */
 export function selectionCandidates(
   chain: OptionsChain,
   side: 'call' | 'put',
-  cap: number = OPTION_QUOTES_MAX_SYMBOLS,
+  cap: number = WEBULL_SNAPSHOT_BATCH_LIMIT,
 ): OptionContract[] {
   const contracts = side === 'call' ? chain.calls : chain.puts;
   if (contracts.length <= cap) return contracts.slice();
@@ -141,14 +162,21 @@ export async function overlaySelectionQuotes(
   let quotes: OptionQuote[];
   try {
     const snap = await webullOptionQuotes(candidates.map((c) => c.symbol));
-    if (!snap.ok) return { chain, report: untouched(candidates.length) };
+    if (!snap.ok) return { chain, report: untouched(candidates.length, snap.error ?? 'snapshot unavailable') };
     quotes = snap.quotes;
-  } catch {
-    return { chain, report: untouched(candidates.length) };
+  } catch (e) {
+    return { chain, report: untouched(candidates.length, e instanceof Error ? e.message : 'snapshot threw') };
   }
   const sideContracts = side === 'call' ? chain.calls : chain.puts;
   const { contracts, rePriced, oldestAgeMs } = overlayLiveQuotes(sideContracts, quotes, now);
-  if (!rePriced) return { chain, report: untouched(candidates.length) };
+  if (!rePriced)
+    return {
+      chain,
+      report: untouched(
+        candidates.length,
+        quotes.length === 0 ? 'snapshot returned no quotes' : 'no fresh two-sided print among the quotes returned',
+      ),
+    };
   return {
     chain: { ...chain, ...(side === 'call' ? { calls: contracts } : { puts: contracts }) },
     report: {
