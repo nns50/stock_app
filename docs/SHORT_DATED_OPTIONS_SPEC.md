@@ -312,7 +312,8 @@ against 0.95, COIN 0.55 against 1.95). Selection now fetches one OPRA snapshot f
 nearest-the-money contracts of the signal's side — at most 40, the snapshot route's
 own batch cap — and overlays each fresh two-sided print's bid, ask, mark, volume, open
 interest, delta and IV onto that contract before the entry rules run
-(`optionsSelectionQuotes.ts`, called from `optionsDecide.ts`). The chain stays the
+(`optionsSelectionQuotes.ts`, called from `optionsDecide.ts`). **The batch is 20, not
+40, from 2026-09-21** — see the correction below. The chain stays the
 source of the strike list and the fallback: a stale print (older than the same two
 minutes an order accepts, judged by the same `freshTwoSidedPrint` rule), a one-sided
 print, or no answer at all leaves that contract, or the whole chain, exactly as it
@@ -321,6 +322,28 @@ reading the chain, so the rank series is unaffected. Both books share the decisi
 and the signal's journal row (`options_signal_generated`, and `no_options_signal` when
 the rules refused every contract) carries `selectionQuoteSource` ('opra' or 'chain'),
 `rePricedContracts`, `quoteAgeMs` (the oldest print used) and `quotesRequested`.
+
+**…and for its first two sessions it never once fired (2026-09-21).** The batch
+above was 40. The snapshot endpoint accepts **20**, answers anything larger with
+`symbols size must be between 1 and 20.` and returns no quotes at all, so every
+selection call was refused whole and fell back to the delayed chain — silently,
+because a silent fallback is the design. All 53 of the first session's decisions
+read `selectionQuoteSource: 'chain'` with `rePricedContracts: 0` beside
+`quotesRequested: 40`, and the NVDA 260921C225 the sleeve bought that morning was
+chosen on a chain premium of **0.35** and filled at **0.86**. The unit tests mocked
+the snapshot call, and the one assertion on the cap compared it to a copy of itself
+(`expect(OPTION_QUOTES_MAX_SYMBOLS).toBe(40)`), which is true of whatever the
+constant holds.
+
+Three things changed. `WEBULL_SNAPSHOT_BATCH_LIMIT` (20) is now a separate constant
+from `OPTION_QUOTES_MAX_SYMBOLS` (40, the caller cap) because they answer different
+questions — what one call may carry, and how much work a caller may ask for — and the
+selection sizes to the former so it stays one call per decision. `webullOptionQuotes`
+**chunks** its misses into batches of that size instead of truncating to the cap, and
+a batch the broker rejects (one unlisted strike rejects its whole batch) no longer
+costs the batches that answered. And the report carries `selectionQuoteError`, so a
+fallback says *why* rather than looking like a quiet market. The tests now assert the
+request size against the broker's limit with its own refusal text in the message.
 
 **A sub-tick mark no longer refuses the close.** `roundOptionPrice` rounds a
 sell DOWN, so anything under half a tick became zero and was refused: HOOD's
