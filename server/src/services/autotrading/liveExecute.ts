@@ -72,6 +72,7 @@ import { activeSymbolCooldowns } from './symbolCooldown';
 import { declinedSide, journalDeclinedEntry } from './declinedEntry';
 import { MarketDirectionReading, directionRefuses } from './marketDirection';
 import { isUnparseableSymbolError, markUnplaceableSymbol, unplaceableReason } from './unplaceableSymbols';
+import { markShortRefused, shortRefusedReason } from './refusedShorts';
 import { computeFinishLineFactor } from './finishLine';
 import { regimeAdjustedTargets } from './regimeTargets';
 import { liveEntryScoreGate } from './entryScoreGate';
@@ -384,6 +385,12 @@ function entryStampPatch(
 const AUTOTRADE_TAGS = ['live', 'autotrade'];
 export const isAutotradePosition = (p: Position): boolean => p.tags.includes('autotrade');
 
+/** The position an order's fill opens: a buy opens a long, a sell (a short
+ *  sale) opens a short. ONE mapping for the create path and both adoption
+ *  paths, so the row a fill creates and the row a fill may adopt cannot
+ *  disagree about which side it is on. */
+export const positionSideOf = (orderSide: 'buy' | 'sell'): 'long' | 'short' => (orderSide === 'buy' ? 'long' : 'short');
+
 /**
  * The account, with `currentPositionQty` counting SHARES of `symbol` and
  * nothing else (2026-09-23).
@@ -597,13 +604,23 @@ export function adoptOrphanedLivePositions(): { adopted: number } {
   if (orphans.length === 0) return { adopted: 0 };
   const pendingEntries = listPendingLiveOrders().filter((o) => o.role === 'entry' && o.positionId === null);
   if (pendingEntries.length === 0) return { adopted: 0 };
+  // THE SAME SIDE (2026-09-23, shorts pre-flight). A buy fills a long and a
+  // short sale fills a short, so an order can only be the fill of a holding on
+  // its own side. Matching on the symbol alone would hand a live short order
+  // the operator's own long in the name (or a long order their short) and book
+  // its P&L with the sign reversed.
+  const intentSides = getIntents(pendingEntries.map((o) => o.intentId));
+  const sameSide = (o: { intentId: number }, p: { side: 'long' | 'short' }): boolean => {
+    const side = intentSides.get(o.intentId)?.side;
+    return side !== undefined && positionSideOf(side) === p.side;
+  };
 
   let adopted = 0;
   for (const p of orphans) {
     const match =
       p.sourceIntentId !== null
         ? // Exact order-to-order link — no cross-account ambiguity possible.
-          pendingEntries.find((o) => o.intentId === p.sourceIntentId)
+          pendingEntries.find((o) => o.intentId === p.sourceIntentId && sameSide(o, p))
         : // Symbol-only match — could otherwise link a pending order for account A
           // to an orphan actually held in account B if both trade the same symbol
           // around an account switch. Require agreement when both sides know
@@ -611,7 +628,10 @@ export function adoptOrphanedLivePositions(): { adopted: number } {
           // permissive-for-linking-not-closing stance as positions.ts's own
           // includeUnassignedAccount.
           pendingEntries.find(
-            (o) => o.symbol === p.symbol && (o.accountId == null || p.accountId == null || o.accountId === p.accountId),
+            (o) =>
+              o.symbol === p.symbol &&
+              sameSide(o, p) &&
+              (o.accountId == null || p.accountId == null || o.accountId === p.accountId),
           );
     if (!match) continue;
     // One order, one holding (2026-09-23). The list is read once, before the
@@ -908,6 +928,34 @@ export interface LiveExecutionOutcome {
  * rounds to zero. Guardrails run against FRESH account state, exactly like
  * placeOrder() does for the human path — never trusting stale data.
  */
+/** Which guard on the live entry path refused an entry (2026-09-23, shorts
+ *  pre-flight). See attemptLiveEntry for each. */
+export type LiveEntryGuard = 'through_stop' | 'holding_unknown' | 'opposite_holding' | 'short_refused_today';
+
+/** Refuse an entry at one of attemptLiveEntry's guards, journaling
+ *  `live_entry_guard_refused` once per symbol and guard per ET day. The same
+ *  signal comes back every tick while it lasts, and one row says as much as
+ *  sixty. The detail carries the replay fields (side, entry, stop, score) so
+ *  the attribution can price what the guard kept out. */
+function refuseEntryAtGuard(
+  symbol: string,
+  guard: LiveEntryGuard,
+  why: string,
+  detail: Record<string, unknown>,
+  riskProfile: string,
+): LiveExecutionOutcome {
+  if (claimOncePerDay('live_entry_guard_refused', `${symbol}|${guard}`)) {
+    logAutotradeEvent({
+      symbol,
+      stage: 'execution',
+      action: 'live_entry_guard_refused',
+      detail: { guard, reason: why, ...detail },
+      riskProfile,
+    });
+  }
+  return { symbol, ok: false, reason: `Entry refused (${guard}): ${why}` };
+}
+
 export async function attemptLiveEntry(
   signal: TradeSignal,
   riskResult: RiskCheckResult,
@@ -976,6 +1024,26 @@ export async function attemptLiveEntry(
     return { symbol, ok: false, reason: `Quote fetch failed: ${(err as Error).message}` };
   }
   if (!Number.isFinite(last) || last <= 0) return { symbol, ok: false, reason: `Invalid quote price: ${last}` };
+
+  // A PRICE ALREADY THROUGH THE STOP IS NOT AN ENTRY (2026-09-23, shorts
+  // pre-flight). The stop was set from the signal's entry, a screen that can be
+  // a minute or two old, and nothing compared it with the quote this order is
+  // priced from: the bracket guardrail compares the stop with the LIMIT, which
+  // sits 0.5% on the far side of the quote, so a quote up to 0.5% through the
+  // stop passed. The order then filled beyond its own stop, and the stop leg
+  // either fired at once or was refused as through the market. Not seen on the
+  // record (39 recorded placements, the nearest 1.19% from its stop), and
+  // cheaper to refuse than to find.
+  const stopAlreadyHit = signal.side === 'buy' ? last <= signal.stop : last >= signal.stop;
+  if (stopAlreadyHit) {
+    return refuseEntryAtGuard(
+      symbol,
+      'through_stop',
+      `the quote ${last} is already ${signal.side === 'buy' ? 'at or below' : 'at or above'} the stop ${signal.stop}`,
+      { side: signal.side, last, stop: signal.stop, entry: signal.entry, score: signal.score },
+      riskProfile,
+    );
+  }
 
   const buffer = 1 + (signal.side === 'buy' ? 1 : -1) * (MARKETABLE_LIMIT_BUFFER_PCT / 100);
   const limitPrice = Math.round(last * buffer * 100) / 100;
@@ -1143,6 +1211,55 @@ export async function attemptLiveEntry(
   if (!acct.ok || !acct.state) {
     return { symbol, ok: false, reason: acct.error ?? 'Could not load account state' };
   }
+
+  // WHAT THE BROKER ALREADY HOLDS IN THE NAME (2026-09-23, shorts pre-flight).
+  //
+  // Whether a sell goes out as Webull's SHORT or as a plain SELL is decided
+  // from the broker's own signed quantity (wouldOpenShort, below). The loop's
+  // "already held" check reads the ledger, which the position sync refreshes
+  // every few minutes, so a name the operator bought by hand inside that window
+  // is invisible to it. A short entry against it would go out as a plain SELL
+  // of the operator's shares, with BUY legs over them, and the fill would then
+  // be booked as the loop's short. The mirror is a long entry against a short
+  // the operator holds, which buys it back.
+  //
+  // So an entry is refused while the broker holds the name the OTHER way round,
+  // and a short is refused when the holdings read failed, since that read is
+  // the only thing that decides whether it is a short at all. A long with an
+  // unreadable holding goes on as before: the side of its order does not turn
+  // on it.
+  const brokerQty = acct.positionsUnavailable ? null : acct.state.currentPositionQty;
+  if (signal.side === 'sell' && brokerQty === null) {
+    return refuseEntryAtGuard(
+      symbol,
+      'holding_unknown',
+      'the positions read failed, so it is not known whether this sell would open a short or sell shares held',
+      { side: signal.side, entry: signal.entry, stop: signal.stop, score: signal.score },
+      riskProfile,
+    );
+  }
+  if (brokerQty !== null && brokerQty !== 0 && brokerQty > 0 !== (signal.side === 'buy')) {
+    return refuseEntryAtGuard(
+      symbol,
+      'opposite_holding',
+      `the broker already holds ${Math.abs(brokerQty)} ${symbol} ${brokerQty > 0 ? 'long' : 'short'}, the other way ` +
+        `round from this ${signal.side === 'buy' ? 'long' : 'short'}`,
+      { side: signal.side, brokerPositionQty: brokerQty, entry: signal.entry, stop: signal.stop, score: signal.score },
+      riskProfile,
+    );
+  }
+  const refusedShort = signal.side === 'sell' ? shortRefusedReason(symbol, etToday()) : undefined;
+  if (refusedShort !== undefined) {
+    return refuseEntryAtGuard(
+      symbol,
+      'short_refused_today',
+      `the broker refused a short in ${symbol} earlier today (${refusedShort}), and a borrow or the short-sale ` +
+        'rule does not lift within the session',
+      { side: signal.side, entry: signal.entry, stop: signal.stop, score: signal.score, brokerReason: refusedShort },
+      riskProfile,
+    );
+  }
+
   const accountState: AccountState = withLoopRealizedToday(
     withDayBuyingPower({ ...acct.state, ordersToday: countTodaysOrders(Date.now(), 'stock') }, autotradeCfg, accountId),
   );
@@ -1308,6 +1425,10 @@ export async function attemptLiveEntry(
     // data alone is not evidence that a symbol is tradable.
     const unparseable = isUnparseableSymbolError(symbol, broker.error);
     if (unparseable) markUnplaceableSymbol(symbol, broker.error ?? 'broker cannot parse this symbol');
+    // A SHORT the broker refused (hard to borrow, no locate, the short-sale
+    // rule) holds that symbol's shorts for the day; see refusedShorts.ts. Only
+    // a definite refusal reaches here: an unanswered one returned above.
+    if (isShort) markShortRefused(symbol, etToday(), broker.error ?? 'refused');
     // Learn the ceiling from the broker itself. The reported buying power
     // overstates what it will fund on an opening order — it is netted against
     // CURRENT exposure, which a closed position returns to zero, while the
@@ -2727,8 +2848,14 @@ function materializeEntryFill(
   // and uncounted. The phantom tripped the −7.5% daily halt at 10:23, on a real
   // day of about −4.3%. A stock order fills in shares; only a stock row can be
   // that fill.
+  //
+  // AND ON THE ORDER'S SIDE (2026-09-23, shorts pre-flight): a buy fills a
+  // long, a short sale fills a short. A long row the operator holds in the name
+  // is not a short order's fill, and adopting it would book the short's P&L
+  // with the sign reversed.
+  const fillSide = positionSideOf(intent.side);
   const orphanCandidates = listPositions({ status: 'open', symbol: intent.symbol }).filter(
-    (p) => p.assetType === 'stock' && p.sourceIntentId === null,
+    (p) => p.assetType === 'stock' && p.sourceIntentId === null && p.side === fillSide,
   );
   const adopted =
     orphanCandidates.find((p) => isAutotradePosition(p)) ??
@@ -2816,7 +2943,7 @@ function materializeEntryFill(
   const position = createPosition({
     assetType: 'stock',
     symbol: intent.symbol,
-    side: intent.side === 'buy' ? 'long' : 'short',
+    side: positionSideOf(intent.side),
     quantity: filledQty,
     entryPrice: filledPrice,
     entryDate: etDateStr(placedAt),
@@ -3527,6 +3654,21 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
     // read it did not get. It is unknown, which acts on nothing and pages as
     // unconfirmed below. (2026-09-23, from the #637 review.)
     const heldQty = held.ok && !held.positionsUnavailable ? (held.state?.currentPositionQty ?? null) : null;
+    // THE BROKER'S QUANTITY IS SIGNED (accountState.ts: long +, short −), so a
+    // short of 100 comes back as −100. Everything below used to require it to
+    // be positive, which no short can ever be: a short that lost its stop was
+    // never re-armed and never closed through its stop, only paged, and the
+    // one test of it handed the sweep a +10 the reader never returns for a
+    // short (2026-09-23, from the shorts pre-flight audit).
+    //
+    // `heldShares` is the holding IN THE POSITION'S DIRECTION. Positive: the
+    // position's shares are confirmed held. Negative: the broker holds the
+    // OTHER way, which is not this position's holding whatever it is (the
+    // operator's own trade in the name, most likely), so it confirms nothing
+    // and nothing is acted on — the same stance as a read that failed.
+    const heldShares = heldQty === null ? null : pos.side === 'short' ? -heldQty : heldQty;
+    const heldConfirmed = heldShares !== null && heldShares > 0 ? heldShares : null;
+    const heldOpposite = heldShares !== null && heldShares < 0;
     if (heldQty === 0) {
       // Not naked — closed, and awaiting the reconcile. Say so and page nobody.
       outcomes.push({
@@ -3546,7 +3688,7 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
       positionId: pos.id,
       symbol,
       protectedAtBroker: false,
-      heldAtBroker: heldQty,
+      heldAtBroker: heldConfirmed,
     };
     outcomes.push(outcome);
 
@@ -3561,11 +3703,12 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
     // rollback). The stop and target come from the position row, which is the
     // same geometry the original bracket carried.
     //
-    // Only on a CONFIRMED naked position: heldQty null means the account read
-    // failed, and placing a bracket against an unknown holding is how a covered
-    // position becomes a short. An AMBIGUOUS placement is never retried for the
-    // same reason the scale-out does not retry one — a second bracket on top of
-    // a possibly-live one is two stops against one position.
+    // Only on a CONFIRMED naked position: heldConfirmed null means the account
+    // read failed or the broker holds the other way round, and placing a
+    // bracket against an unknown holding is how a covered position becomes a
+    // short. An AMBIGUOUS placement is never retried for the same reason the
+    // scale-out does not retry one — a second bracket on top of a possibly-live
+    // one is two stops against one position.
     //
     // THE SIDE (2026-09-23). The intent comes from protectiveBracketIntent, the
     // one derivation every standalone bracket now shares. This branch built its
@@ -3605,7 +3748,7 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
     let rearmed = false;
     let rearmNote: string | null = null;
     let actionNote: string | null = null;
-    const canAct = heldQty !== null && heldQty > 0 && pos.stopPrice !== null && config.trading.placeEnabled;
+    const canAct = heldConfirmed !== null && pos.stopPrice !== null && config.trading.placeEnabled;
     if (canAct && halted) {
       outcome.heldByKillSwitch = true;
     } else if (canAct && pendingExitPositionIds.has(pos.id)) {
@@ -3652,7 +3795,7 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
             action: 'live_bracket_rearm_target_cancelled',
             detail: {
               positionId: pos.id,
-              heldAtBroker: heldQty,
+              heldAtBroker: heldConfirmed,
               cancelled,
               recordedStop: pos.stopPrice,
               targetPrice: pos.targetPrice,
@@ -3672,8 +3815,8 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
           (cancelled.length > 0 ? ` after ${cancelled.length} leg(s) were already cancelled` : '') +
           '.';
       }
-    } else if (canAct) {
-      const quantity = Math.min(pos.remainingQuantity, heldQty);
+    } else if (canAct && heldConfirmed !== null) {
+      const quantity = Math.min(pos.remainingQuantity, heldConfirmed);
       const rearm = await webullPlaceStandaloneBracket(
         accountId,
         protectiveBracketIntent(symbol, pos.side, quantity),
@@ -3727,8 +3870,9 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
     //
     // THREE INDEPENDENT FACTS, ALL REQUIRED, because this is the one branch here
     // that sells real shares with no human in the loop:
-    //   1. the broker confirms the shares are still held (heldQty > 0, above —
-    //      the same read that tells a naked position from a stop mid-fill);
+    //   1. the broker confirms the shares are still held, the right way round
+    //      (heldConfirmed, above — the same read that tells a naked position
+    //      from a stop mid-fill);
     //   2. the re-arm was ATTEMPTED and the broker REFUSED it;
     //   3. a QUOTE FETCHED NOW is through the recorded stop.
     // (2) and (3) are separate sources that must agree, so neither a stale quote
@@ -3756,8 +3900,7 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
       !rearmed &&
       rearmNote !== null &&
       rearmNote !== 'unanswered' &&
-      heldQty !== null &&
-      heldQty > 0 &&
+      heldConfirmed !== null &&
       pos.stopPrice !== null &&
       config.trading.placeEnabled &&
       !pendingExitPositionIds.has(pos.id)
@@ -3789,7 +3932,7 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
               journal: {
                 recordedStop: pos.stopPrice,
                 lastPrice: last,
-                heldAtBroker: heldQty,
+                heldAtBroker: heldConfirmed,
                 // WHY the stop could not simply be re-armed, carried into the
                 // one row this produces so the sequence reads without a join.
                 rearmOutcome: rearmNote,
@@ -3830,7 +3973,8 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
     const reportState = unprotectedReportState({
       heldByKillSwitch: outcome.heldByKillSwitch ?? false,
       exitWorking: outcome.exitWorking ?? false,
-      heldAtBroker: heldQty,
+      // An opposite holding confirms nothing, so it pages as unconfirmed.
+      heldAtBroker: heldConfirmed,
     });
     if (!alreadyReportedUnprotectedToday(pos.id, reportState)) {
       logAutotradeEvent({
@@ -3845,11 +3989,14 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
           quantity: pos.remainingQuantity,
           recordedStop: pos.stopPrice,
           restingExitLegs: restingLegs.length,
-          // null means the account read FAILED, so this is paging without
-          // having confirmed the shares are still held. Fail-loud is the right
-          // direction for a protection alarm, but the reader must be able to
-          // tell that case from a confirmed naked position.
-          heldAtBroker: heldQty,
+          // null means the account read FAILED (or the broker holds the other
+          // way round), so this is paging without having confirmed the shares
+          // are still held. Fail-loud is the right direction for a protection
+          // alarm, but the reader must be able to tell that case from a
+          // confirmed naked position.
+          heldAtBroker: heldConfirmed,
+          // The broker's own signed quantity (long +, short −), as read.
+          brokerPositionQty: heldQty,
           // Why the automatic re-arm did not save it — the first question a
           // reader of this row now has.
           rearmAttempted: rearmNote !== null || rearmed,
@@ -3886,11 +4033,15 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
               : rearmNote === 'unanswered'
                 ? 'An automatic re-arm was UNANSWERED, so a second bracket was not stacked on a possibly-live one. '
                 : `An automatic re-arm failed (${rearmNote}). `) +
-            (heldQty === null
-              ? 'The account read FAILED, so it is NOT confirmed that these shares are still held — ' +
-                'a stop that has just filled looks the same from here. Check the broker before acting.'
-              : `The broker confirms ${heldQty} share(s) still held, so this is real.` +
-                (outcome.heldByKillSwitch ? '' : ' Check the broker and re-arm protection by hand.')),
+            (heldOpposite && heldQty !== null
+              ? `The broker holds ${Math.abs(heldQty)} share(s) of ${symbol} the other way round ` +
+                `(${heldQty > 0 ? 'long' : 'short'}), not this ${pos.side}, so nothing was acted on — ` +
+                'check the broker before acting.'
+              : heldConfirmed === null
+                ? 'The account read FAILED, so it is NOT confirmed that these shares are still held — ' +
+                  'a stop that has just filled looks the same from here. Check the broker before acting.'
+                : `The broker confirms ${heldConfirmed} share(s) still held, so this is real.` +
+                  (outcome.heldByKillSwitch ? '' : ' Check the broker and re-arm protection by hand.')),
         },
         riskProfile: getLiveEntryOrderForPosition(pos.id)?.riskProfile ?? cfg.riskProfile,
       });
@@ -4050,6 +4201,53 @@ async function placeLiveEquityTimeExitClose(
     return timeExitFailure(pos, riskProfile, acct.error ?? 'Could not load account state');
   }
   const accountState: AccountState = { ...acct.state, ordersToday: countTodaysOrders(Date.now(), 'stock') };
+
+  // THE BROKER'S HOLDING BOUNDS THE CLOSE (2026-09-23, shorts pre-flight).
+  //
+  // The close used to order `remainingQuantity` whatever the broker held, and
+  // the only thing stopping an oversell was the guardrails' naked_short rule:
+  // a long's close that would leave the account net SHORT is refused while
+  // liveAllowNakedShort is off. Turning shorts on switches that rule off, and
+  // with it the long side's only protection in this app — a stagnation close on
+  // a long whose stop had just filled would then go out as a SELL of shares no
+  // longer held. And no rule here stopped a short's cover buying more than the
+  // short held (a stop leg part-filled before the flatten cancelled it). The
+  // broker has been seen refusing a close that would reverse a position (see
+  // cancelLiveBracketExitLegs), but whether it refuses these, or books the
+  // first as a short sale and the second as a long with no stop under it, has
+  // never been seen. Its check is not ours to lean on.
+  //
+  // One race is left: the holding is read BEFORE the bracket's legs are
+  // cancelled, so a leg that part-fills between the two is not in the cap. The
+  // broker's reversal check is the backstop there, and the next tick re-reads.
+  //
+  // So the close reads the holding in the position's direction (the broker's
+  // quantity is signed: long +, short −) and orders no more than that. Nothing
+  // held that way round — the shares are gone and a reconcile will book the
+  // fill, or the read failed, or the broker holds the other way round — is
+  // refused here, which is what naked_short did for a long all along.
+  const brokerQty = acct.positionsUnavailable ? null : acct.state.currentPositionQty;
+  const heldShares = brokerQty === null ? null : pos.side === 'short' ? -brokerQty : brokerQty;
+  if (heldShares === null || heldShares <= 0) {
+    const reasons = `broker_holding: ${
+      brokerQty === null
+        ? 'the positions read failed, so the holding is unknown'
+        : brokerQty === 0
+          ? `the broker holds no ${symbol}`
+          : `the broker holds ${Math.abs(brokerQty)} ${symbol} ${brokerQty > 0 ? 'long' : 'short'}, not this ${pos.side}`
+    } — nothing to ${closeSide} without opening a position`;
+    logAutotradeEvent({
+      symbol,
+      stage: 'execution',
+      action: 'live_time_exit_blocked',
+      detail: { reasons, positionId: pos.id, brokerPositionQty: brokerQty },
+      riskProfile,
+    });
+    return { symbol, positionId: pos.id, requested: false, reason: `Guardrails blocked: ${reasons}` };
+  }
+  const cappedFrom = heldShares < intent.quantity ? intent.quantity : null;
+  if (cappedFrom !== null) intent.quantity = heldShares;
+
   const guardrails = evaluateGuardrails(intent, accountState, liveCfg, { marketOpen: marketOpenContext(intent) });
 
   const clientOrderId = newClientOrderId();
@@ -4160,6 +4358,9 @@ async function placeLiveEquityTimeExitClose(
     action: 'live_time_exit_placed',
     detail: {
       quantity: intent.quantity,
+      // Set only when the broker held fewer shares than the position's
+      // remainder, so the close ordered what was actually there.
+      ...(cappedFrom !== null ? { cappedFrom } : {}),
       limitPrice,
       orderId: broker.orderId,
       positionId: pos.id,

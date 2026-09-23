@@ -280,6 +280,75 @@ describe('checkLiveEquityTimeExits', () => {
     expect(mockCancelOrder).not.toHaveBeenCalled();
   });
 
+  // -------------------------------------------------------------------------
+  // THE BROKER'S HOLDING BOUNDS THE CLOSE (2026-09-23, shorts pre-flight). The
+  // only thing that stopped a close overselling was naked_short, which turning
+  // shorts on switches off; and nothing at all stopped a short's cover buying
+  // more than the short held.
+  // -------------------------------------------------------------------------
+  const closeRefused = () =>
+    listAutotradeEvents({ stage: 'execution', actions: ['live_time_exit_blocked'] }).map((e) =>
+      JSON.parse(e.detail ?? '{}'),
+    );
+  /** The close reads the entry combo's status before it cancels anything, to
+   *  rule out a leg racing the fill; `found: false` is the ordinary answer for
+   *  an order that has aged out of the broker's window. */
+  const comboAgedOut = () =>
+    mockOrderStatus.mockResolvedValue({ ok: true, found: false } as Awaited<ReturnType<typeof webullOrderStatus>>);
+
+  it('closes only the shares the broker still holds when a stop has part-filled', async () => {
+    const { quantity } = await openAgedLivePosition(30);
+    mockOpenOrders.mockResolvedValue(noOpenOrders);
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 102 }) as ReturnType<typeof getProvider>);
+    const held = Math.floor(quantity / 2);
+    mockAccountState.mockResolvedValue(accountStateWith(held) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-CAPPED' });
+    comboAgedOut();
+
+    await checkLiveEquityTimeExits();
+
+    expect(mockPlaceOrder.mock.calls[0][1]).toMatchObject({ side: 'sell', openClose: 'close', quantity: held });
+    const placed = listAutotradeEvents({ stage: 'execution', actions: ['live_time_exit_placed'] });
+    expect(JSON.parse(placed[0].detail ?? '{}')).toMatchObject({ quantity: held, cappedFrom: quantity });
+  });
+
+  it('places nothing when the broker holds none of the name — the shares are gone, not waiting to be sold', async () => {
+    await openAgedLivePosition(30);
+    mockOpenOrders.mockResolvedValue(noOpenOrders);
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 102 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(accountStateWith(0) as Awaited<ReturnType<typeof webullAccountState>>);
+    // Shorts on: the naked_short rule no longer stands between this sell and a
+    // new short, which is the case this guard exists for.
+    setAutotradeConfig({ liveAllowNakedShort: true });
+
+    const outcomes = await checkLiveEquityTimeExits();
+
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(outcomes[0]).toMatchObject({ requested: false });
+    expect(closeRefused()[0].reasons).toMatch(/broker_holding: the broker holds no AAPL/);
+  });
+
+  it('covers a SHORT with a BUY for the shares short, and refuses when the broker holds the name long', async () => {
+    const { position, quantity } = await openAgedLivePosition(30);
+    db.prepare("UPDATE positions SET side = 'short', stop_price = 105, target_price = 90 WHERE id = ?").run(
+      position.id,
+    );
+    mockOpenOrders.mockResolvedValue(noOpenOrders);
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 101 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(accountStateWith(quantity) as Awaited<ReturnType<typeof webullAccountState>>);
+
+    await checkLiveEquityTimeExits();
+
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(closeRefused()[0].reasons).toMatch(/holds \d+ AAPL long, not this short/);
+
+    mockAccountState.mockResolvedValue(accountStateWith(-quantity) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-COVER' });
+    comboAgedOut();
+    await checkLiveEquityTimeExits();
+    expect(mockPlaceOrder.mock.calls[0][1]).toMatchObject({ side: 'buy', openClose: 'close', quantity });
+  });
+
   it('cancels the resting exit leg (by its own id) and places a fresh closing order once cleared', async () => {
     const { position, quantity } = await openAgedLivePosition(30);
     mockOpenOrders

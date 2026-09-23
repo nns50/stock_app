@@ -1286,6 +1286,7 @@ describe('order-list pagination', () => {
       exitPrice: 117.5999,
       exitDate: '2026-09-18',
       exitReason: 'target' as const,
+      positionSide: 'long' as const,
     };
     expect(decideExitCorrection(exit, r.legs!)).toMatchObject({
       action: 'correct',

@@ -2350,6 +2350,20 @@ unread. It proposes `liveAllowNakedShort` and pushes once when the bar is first 
 its reading on the Automatic switches card every session ("19 of 30 shadow shorts…"), and
 cannot write the field: it is a proposal-only key the engine refuses at the write.
 
+**Before you say yes to it** (2026-09-23). The code a live short runs was audited and its
+gaps fixed (protection, closes, adoption, the exit correction and the entry guards; the
+User Guide lists them). The evidence is thinner than the rule's count suggests:
+- **27 of 30 shadow shorts at +0.21R** read on 2026-09-23. Without that day it was 20 at
+  +0.08R, below the bar. Fourteen of the 27 came from two single opening ticks, seven each.
+- **The replay fills at the signal price**, books stops exactly at the stop, and counts a
+  touch of the target as a fill. On the same decision live has earned 0.09 to 0.19R less
+  than paper, so +0.21R is an upper bound.
+
+Three checks are worth making when the rule proposes:
+- it still clears with its best day taken out;
+- a one-share test short has shown how Webull reports a short holding (`npm run capture:broker`);
+- the first sessions run at half size.
+
 Since 2026-09-12 that is enforced by **arithmetic, not by a label**. One rule (`leak_lever`)
 takes its field and its number from the leak scan's output rather than from literal code,
 and the scan's own score-band lever would have proposed lowering the live score floor while

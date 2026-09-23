@@ -842,6 +842,7 @@ describe('matchSaleOutsideBracket', () => {
     quantity: 23,
     exitDate: '2026-09-22',
     createdAt: Date.parse('2026-09-22T20:05:00Z'),
+    positionSide: 'long' as const,
   };
   const none = () => false;
 
@@ -894,6 +895,18 @@ describe('matchSaleOutsideBracket', () => {
         none,
       ),
     ).toMatchObject({ qty: 23, reason: 'manual', source: 'broker_history' });
+  });
+
+  // A SHORT is closed by a BUY (2026-09-23, shorts pre-flight). This matched
+  // SELLs only, so a short covered by hand, or by a stop outside its bracket,
+  // kept the sync's quote estimate for good.
+  it('reads the BUY that covered a short, and ignores a sell of the same name', () => {
+    const short = { ...exit, positionSide: 'short' as const };
+    expect(matchSaleOutsideBracket(short, entered, [fill({ side: 'SELL' })], none)).toBeNull();
+    expect(matchSaleOutsideBracket(short, entered, [fill({ side: 'BUY', filledPrice: 179.5 })], none)).toMatchObject({
+      price: 179.5,
+      qty: 23,
+    });
   });
 
   it("ignores buys, other symbols, opening orders, the app's own orders, and fills outside the position's life", () => {

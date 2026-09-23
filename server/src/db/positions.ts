@@ -678,6 +678,9 @@ export interface SyncEstimatedExit {
   /** When the sync booked this exit (`position_exits.created_at`). The shares
    *  were gone by then, so a fill after it cannot be the one that closed it. */
   createdAt: number;
+  /** The position's side, which decides the side of the order that closed it
+   *  (a SELL for a long, a BUY for a short) and the sign of its P&L. */
+  positionSide: 'long' | 'short';
 }
 
 /**
@@ -713,7 +716,7 @@ export function listSyncEstimatedExits(filter: { since?: string; accountId?: str
       `SELECT e.id AS exitId, e.position_id AS positionId, p.symbol, e.quantity,
               e.exit_price AS exitPrice, e.exit_date AS exitDate, e.exit_reason AS exitReason,
               p.source_intent_id AS sourceIntentId, p.account_id AS positionAccountId,
-              e.created_at AS createdAt
+              e.created_at AS createdAt, p.side AS positionSide
          FROM position_exits e
          JOIN positions p ON p.id = e.position_id
         WHERE ${clauses.join(' AND ')}

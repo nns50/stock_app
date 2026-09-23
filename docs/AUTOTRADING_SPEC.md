@@ -14208,3 +14208,51 @@ red-day decomposition's own "stop" driver at +0.93% more. Together those were al
 - `GET /journal/slippage`: no exit row whose `side` is the position's opening side.
 - `GET /journal/tune-advice`: no `edge:exitReason:*` recommendation, and every
   `edge:red_day_driver:*` has `expectedDayPctDelta: null`.
+
+## 2026-09-23 (twenty-eighth) — a live short is protected, closed and booked the way a long is
+
+No live short has ever traded (`liveAllowNakedShort` is false), and the shorts rule was three
+trades from proposing it. So every path a short would run for the first time was audited
+before that proposal could arrive. The audit ran as three read-only reviews: placement,
+management and booking. Each finding below was confirmed in the code before it was fixed.
+
+**Found and fixed:**
+
+| # | Finding | Fix |
+| --- | --- | --- |
+| 1 | The broker reads a short as a NEGATIVE quantity (`accountState.ts` signs it). The protection sweep acted only on a positive one, so a naked short was paged and never re-armed or closed through its stop. The one test gave a short +10, a shape the reader never returns. | `heldShares` reads the holding in the position's direction. A holding the other way round confirms nothing and pages as unconfirmed. The fixture is now −10. |
+| 2 | Whether a sell went out as Webull's SHORT or a plain SELL came from the broker's quantity, while "already held" came from the ledger, which the sync refreshes every few minutes. A short against shares the operator had just bought would have sold them. A long against a short they held would have bought it back. | `attemptLiveEntry` refuses an entry while the broker holds the name the other way round (`opposite_holding`), and a short when the holdings read failed (`holding_unknown`). A long with an unreadable holding goes on as before. |
+| 3 | Adoption matched a holding on symbol alone. | Both adoption paths require the holding's side to match the order's (`positionSideOf`, the one mapping the create path also uses). |
+| 4 | A close ordered `remainingQuantity` whatever the broker held. The naked-short guardrail was the long side's only protection in the app against overselling, and switching shorts on turns it off. Nothing in the app stopped a short's cover buying past zero. The broker has refused a close that would reverse a position, but whether it refuses these has never been seen. | `placeLiveEquityTimeExitClose` caps the close at the held shares (`cappedFrom` on the placed row). It refuses when none are held that way round (`live_time_exit_blocked`, `broker_holding: …`). |
+| 5 | The exit correction matched SELL fills only, so a short covered by hand never found its fill. The correction's journaled `pnlDelta` ignored side. | The closing side comes from the position (a BUY for a short), and `pnlDelta` is signed by side. |
+| 6 | A broker refusal of a short (hard to borrow, no locate, the short-sale rule) was retried every tick. | A definite refusal holds that symbol's shorts for the ET day (`refusedShorts.ts`, `short_refused_today`). An unanswered one does not. |
+| 7 | Nothing compared the placement quote with the stop. The bracket guardrail compares the limit, 0.5% beyond the quote. | An entry whose quote is at or through its stop is refused (`through_stop`). Not seen on the record: 39 placements, the nearest 1.19% from its stop. |
+
+Each refusal in 2, 6 and 7 writes `live_entry_guard_refused` once per symbol and guard per ET
+day, with the replay fields. The action is in the attribution's once-a-day skip classes.
+
+**Not fixed here:**
+- The attribution pairs a live trade with a paper one on symbol and day without checking
+  side, so a live long could be compared with a paper short. It is a measurement fix of its
+  own.
+- The shadow replay's optimism is shared with every replay-based record. It fills at the
+  signal price, books stops at the level even through a gap, arms breakeven on intrabar
+  extremes, counts a target touch as a fill, and skips several live gates. Changing it
+  moves those records too, so it waits for the operator.
+- How Webull reports a stock short in its positions has never been captured. A one-share
+  test short and `npm run capture:broker` would settle it.
+- The close's cap reads the holding before the bracket's legs are cancelled, so a leg that
+  part-fills between the two is not in it. The broker's reversal refusal is the backstop,
+  and the next tick re-reads the holding. It predates this change and needs a leg to
+  part-fill inside a second or two.
+
+**Tests (each mutation-checked):**
+- the protection sweep re-arms a short with BUY legs at −10, closes a naked short the
+  market has run through with a BUY, and acts on nothing when the broker holds the name
+  long;
+- the close caps at held shares, refuses with none held, covers a short with a BUY, and
+  refuses a short when the broker holds the name long;
+- adoption skips an opposite-side holding, both in the orphan sweep and at the fill;
+- each entry guard refuses, journals once and places nothing; a same-side holding still
+  trades; an unanswered short is not remembered;
+- the exit correction reads a short's BUY, and a lower cover is a positive `pnlDelta`.

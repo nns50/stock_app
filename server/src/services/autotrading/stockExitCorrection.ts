@@ -218,16 +218,24 @@ export interface SaleWindow {
   exitDate: string;
   createdAt: number;
   after?: number | null;
+  /** The position's side: a long is closed by a SELL, a short by a BUY. */
+  positionSide: 'long' | 'short';
 }
 
-/** Every SELL of the symbol that could have closed the exit, oldest first, the
- *  app's own orders included (the matcher drops those; a skip row lists them). */
+/** Every order of the symbol on the CLOSING side (a SELL for a long, a BUY for
+ *  a short) that could have closed the exit, oldest first, the app's own orders
+ *  included (the matcher drops those; a skip row lists them).
+ *
+ *  SELL only until 2026-09-23 (the shorts pre-flight), so a short covered by
+ *  hand, or by a stop outside its bracket, could never find its fill and kept
+ *  the sync's quote estimate for good. */
 function closingFills(exit: SaleWindow, enteredAt: number, fills: BrokerEquityFill[]): BrokerEquityFill[] {
   const symbol = exit.symbol.toUpperCase();
+  const closingSide = exit.positionSide === 'short' ? 'BUY' : 'SELL';
   return fills
     .filter(
       (f) =>
-        f.side === 'SELL' &&
+        f.side === closingSide &&
         f.symbol === symbol &&
         f.comboType !== 'MASTER' &&
         f.filledAt >= enteredAt &&
