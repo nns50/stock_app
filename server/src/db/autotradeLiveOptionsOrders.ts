@@ -317,6 +317,32 @@ export function listFilledExitsOfClosedPositions(since: number): FilledExitOfClo
   return rows;
 }
 
+/**
+ * Closed single-leg positions that no app order closed, for positions closed at
+ * or after `since`: the ones the broker sync booked at an estimate because the
+ * contract left the account without an app order (a hand close in Webull).
+ * `exit_reason` 'manual' with no FILLED exit order linked is that shape. An
+ * Auto-page close is also 'manual', but it goes through an app order, so the
+ * NOT EXISTS keeps it out. See correctHandClosesFromHistory.
+ */
+export function listHandClosedPositionIds(since: number): number[] {
+  const rows = db
+    .prepare(
+      `SELECT p.id AS id
+         FROM autotrade_live_options_positions p
+        WHERE p.status = 'closed' AND p.kind = 'single_leg' AND p.exit_reason = 'manual'
+          AND p.exit_at >= ?
+          AND NOT EXISTS (
+            SELECT 1 FROM autotrade_live_options_orders alo
+              JOIN order_intents oi ON oi.id = alo.intent_id
+             WHERE alo.role = 'exit' AND alo.position_id = p.id AND oi.state = 'filled'
+          )
+        ORDER BY p.id`,
+    )
+    .all(since) as { id: number }[];
+  return rows.map((r) => r.id);
+}
+
 /** Aggregate risk $ and count of autotrade options ENTRY orders that are
  *  PLACED but not yet materialized into a live options position (position_id
  *  IS NULL, intent not cancelled/rejected/expired). The counterpart to

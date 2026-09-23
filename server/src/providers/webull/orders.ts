@@ -919,6 +919,98 @@ async function fetchFullOrderList(accountId: string, path: string): Promise<Orde
   return { ok: true, envelopes };
 }
 
+/** One single-leg options order from the broker's order history that filled
+ *  some quantity, reduced to what matching a hand close needs. */
+export interface BrokerOptionFill {
+  clientOrderId: string;
+  side: 'BUY' | 'SELL';
+  /** e.g. SELL_TO_CLOSE, when the broker says. */
+  positionIntent: string | null;
+  underlying: string;
+  optionType: 'call' | 'put';
+  strike: number;
+  /** YYYY-MM-DD. */
+  expiration: string;
+  filledQty: number;
+  /** Per share, as the broker reports it. */
+  filledPrice: number;
+  filledAt: number;
+}
+
+/**
+ * The options fills in a list of order envelopes (pure, for tests). A
+ * single-leg OPTION order names its contract only on its leg (`option_type`,
+ * `option_expire_date`, `strike_price`, `symbol` = the underlying), which is
+ * the shape the history returned for the app's own NVDA close on 2026-09-21.
+ * Multi-leg orders are skipped: a spread's per-leg fill is not reported.
+ * Anything with no filled quantity, no price or no parseable time is skipped.
+ */
+export function parseBrokerOptionFills(envelopes: unknown[]): BrokerOptionFill[] {
+  const out: BrokerOptionFill[] = [];
+  for (const envUnknown of envelopes) {
+    const env = envUnknown as OrderEnvelope;
+    for (const o of env.orders ?? []) {
+      if (o.instrument_type !== 'OPTION') continue;
+      const legs = Array.isArray(o.legs) ? (o.legs as Array<Record<string, unknown>>) : [];
+      if (legs.length !== 1) continue;
+      const leg = legs[0];
+      const type = typeof leg.option_type === 'string' ? leg.option_type.toUpperCase() : '';
+      const strike = num(leg.strike_price);
+      const expiration = typeof leg.option_expire_date === 'string' ? leg.option_expire_date : '';
+      const underlying = typeof leg.symbol === 'string' ? leg.symbol : typeof o.symbol === 'string' ? o.symbol : '';
+      const filledQty = num(o.filled_quantity);
+      const filledPrice = num(o.filled_price);
+      const filledAtMs =
+        num(o.filled_time) ?? (typeof o.filled_time_at === 'string' ? Date.parse(o.filled_time_at) : NaN);
+      const side = o.side === 'SELL' || o.side === 'BUY' ? o.side : null;
+      const clientOrderId = typeof o.client_order_id === 'string' ? o.client_order_id : (env.client_order_id ?? '');
+      if (
+        (type !== 'CALL' && type !== 'PUT') ||
+        strike === undefined ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(expiration) ||
+        !underlying ||
+        side === null ||
+        !clientOrderId ||
+        filledQty === undefined ||
+        filledQty <= 0 ||
+        filledPrice === undefined ||
+        filledPrice <= 0 ||
+        !Number.isFinite(filledAtMs)
+      ) {
+        continue;
+      }
+      out.push({
+        clientOrderId,
+        side,
+        positionIntent: typeof o.position_intent === 'string' ? o.position_intent : null,
+        underlying: underlying.toUpperCase(),
+        optionType: type === 'CALL' ? 'call' : 'put',
+        strike,
+        expiration,
+        filledQty,
+        filledPrice,
+        filledAt: filledAtMs,
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Every options fill in the broker's order history (its default window, the
+ * last 7 days), from one paged read. READ-ONLY, never throws. Used to book a
+ * position the operator closed by hand at the broker's own fill instead of an
+ * estimate (liveOptionsExecute.ts, matchHandCloseFill).
+ */
+export async function listBrokerOptionFills(
+  accountId: string,
+): Promise<{ ok: boolean; fills: BrokerOptionFill[]; error?: string }> {
+  if (!webullConfigured()) return { ok: false, fills: [], error: 'Webull is not configured.' };
+  const r = await fetchFullOrderList(accountId, '/openapi/trade/order/history');
+  if (!r.ok) return { ok: false, fills: [], error: r.error };
+  return { ok: true, fills: parseBrokerOptionFills(r.envelopes) };
+}
+
 /**
  * Look up the live status of one of OUR orders by its client_order_id, scanning
  * open orders then history (which covers filled/cancelled). READ-ONLY — places

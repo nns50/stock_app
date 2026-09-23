@@ -24,6 +24,8 @@ import {
   webullPlaceOrder,
   webullOrderStatus,
   webullOrderStatusBatch,
+  listBrokerOptionFills,
+  type BrokerOptionFill,
 } from '../../providers/webull/orders';
 import { optionTickUsd } from '../trading/optionTick';
 import {
@@ -47,6 +49,7 @@ import {
   getIntents,
   recordIntentNoteOnce,
   OrderIntentRecord,
+  intentExistsForKey,
 } from '../../db/orders';
 import { canTransition, isTerminal } from '../trading/orderLifecycle';
 import { cancelIntent } from '../trading/cancelOrder';
@@ -59,6 +62,7 @@ import {
   listPendingLiveOptionsOrders,
   countLiveOptionsOrdersSince,
   listFilledExitsOfClosedPositions,
+  listHandClosedPositionIds,
   LiveOptionsOrderKind,
   LiveOptionsOrderMeta,
 } from '../../db/autotradeLiveOptionsOrders';
@@ -1939,6 +1943,8 @@ function noteReprice(positionId: number, now: number = Date.now()): number {
 export function resetLiveOptionsProcessState(): void {
   exitRepricesByPosition.clear();
   killSwitchHeldPositions.clear();
+  confirmedHandCloses.clear();
+  lastHandCloseCorrectionAt = 0;
 }
 
 /**
@@ -2964,6 +2970,9 @@ export function correctEstimatedOptionsCloses(now: number = Date.now()): number 
       action: 'live_options_exit_corrected',
       detail: {
         positionId: pos.id,
+        // The app's own order filled; the race was the order read lagging the
+        // positions read. A hand close says source: 'broker_history'.
+        source: 'app_order',
         intentId: row.intentId,
         fromPrice: pos.exitPrice,
         fromShortPrice: pos.shortExitPrice,
@@ -3128,6 +3137,8 @@ export async function syncLiveOptionsPositionsFromBroker(accountId: string): Pro
   const open = listOpenLiveOptionsPositions({ accountId });
   const closedSymbols = new Set<string>();
   let closed = 0;
+  // Read lazily: only a position the sync is about to close needs it.
+  let fills: Awaited<ReturnType<typeof listBrokerOptionFills>> | undefined;
   for (const pos of open) {
     // Keyed per-position (not per-contract): each open row closes as a whole,
     // never FIFO-split like equity's lots, so there's no reason to share a
@@ -3155,9 +3166,31 @@ export async function syncLiveOptionsPositionsFromBroker(accountId: string): Pro
       // bug this guards against (equity's closePositionsFromPreview hit the
       // same shape).
       if (bumpMissStreak(accountId, streakKey) < MISS_CONFIRM_THRESHOLD) continue;
-      const exitPrice = await safeContractMark(pos.symbol, pos.expiration, pos.strike, pos.side);
-      if (exitPrice == null) continue; // can't price it — leave open, retry next sync
-      if (closeLiveOptionsPositionFromBroker(pos, exitPrice, null)) {
+      // The contract left the account without an app order the reconcile
+      // could book: a hand close, or an app close no read has shown yet. The
+      // broker's own history is asked first (one paged read per sync, and only
+      // when something is actually being closed), and an estimate is the
+      // fallback. See matchHandCloseFill.
+      fills ??= await listBrokerOptionFills(accountId);
+      const fill = fills.ok ? matchHandCloseFill(pos, fills.fills, intentExistsForKey) : null;
+      if (fill) {
+        if (
+          closeLiveOptionsPositionFromBroker(pos, fill.price, null, {
+            exitAt: fill.filledAt,
+            pricedBy: 'broker_fill',
+            fill,
+          })
+        ) {
+          confirmedHandCloses.add(pos.id);
+          closed++;
+          closedSymbols.add(pos.symbol);
+          clearMissStreak(accountId, streakKey);
+        }
+        continue;
+      }
+      const estimate = await brokerSyncEstimate(pos);
+      if (estimate === null) continue; // can't price it — leave open, retry next sync
+      if (closeLiveOptionsPositionFromBroker(pos, estimate.price, null, { pricedBy: estimate.source })) {
         closed++;
         closedSymbols.add(pos.symbol);
         clearMissStreak(accountId, streakKey);
@@ -3208,24 +3241,181 @@ async function safeContractMark(
   side: 'call' | 'put',
 ): Promise<number | null> {
   try {
-    // A last-trade fallback is fine here, unlike the order paths above: this
-    // values a position for display and close-detection, it doesn't set a price
-    // anything gets submitted at.
+    // Nothing is SUBMITTED at this price, but it is not only for display
+    // either: a debit spread closed by the sync is BOOKED at it, so it is the
+    // position's realized P&L, the day's result and the review's input. The
+    // single-leg path asks the broker's history and the real-time quote first
+    // (brokerSyncEstimate). Spreads still read the chain here.
     return (await fetchContractQuote(symbol, expiration, strike, side)).price;
   } catch {
     return null;
   }
 }
 
+/**
+ * The price a single-leg position is booked at when the broker sync closes it
+ * and the broker's history shows no fill for it yet: the real-time OPRA mid when
+ * a fresh two-sided print exists, else the delayed chain's mark. Null when
+ * neither can price it: the sync then leaves the position open and retries.
+ *
+ * Until 2026-09-23 this was the chain alone, which is about 15 minutes delayed
+ * and can fall back to a stale last trade. INTC #10 (a 0DTE $119 call) was
+ * booked at $1.29 at 12:46 ET on 2026-09-21. The app's own chase had priced it
+ * at a $3.70 bid two minutes earlier, and INTC was about $3.50 in the money.
+ */
+async function brokerSyncEstimate(
+  pos: LiveOptionsPosition,
+): Promise<{ price: number; source: 'opra' | 'chain' } | null> {
+  try {
+    const q = await resolveContractQuote(pos.contractSymbol, () =>
+      fetchContractQuote(pos.symbol, pos.expiration, pos.strike, pos.side),
+    );
+    return validPremium(q.mark) ? { price: q.mark, source: q.source } : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The broker's own fill for a position closed without an app order, from its
+ * order history, or null when the history cannot say. PURE.
+ *
+ * A candidate fill must be all of these:
+ * - a SELL of this exact contract (underlying, call or put, expiration, strike);
+ * - filled at or after the position opened;
+ * - NOT one of the app's own orders. Those are the reconcile's to book, and
+ *   correctEstimatedOptionsCloses fixes the race when they are not.
+ * Fills are taken oldest first until they add up to exactly the position's
+ * quantity, and the result is their quantity-weighted price. Two cases stay
+ * estimates rather than guesses: fills that overshoot the quantity (the contract
+ * was traded again) and fills that never reach it (part of it went some other
+ * way).
+ */
+export function matchHandCloseFill(
+  pos: Pick<LiveOptionsPosition, 'kind' | 'symbol' | 'side' | 'strike' | 'expiration' | 'quantity' | 'entryAt'>,
+  fills: BrokerOptionFill[],
+  isAppOrder: (clientOrderId: string) => boolean,
+): { price: number; qty: number; filledAt: number; clientOrderIds: string[] } | null {
+  if (pos.kind !== 'single_leg') return null;
+  const mine = fills
+    .filter(
+      (f) =>
+        f.side === 'SELL' &&
+        f.underlying === pos.symbol.toUpperCase() &&
+        f.optionType === pos.side &&
+        Math.abs(f.strike - pos.strike) < 1e-6 &&
+        f.expiration === pos.expiration &&
+        f.filledAt >= pos.entryAt &&
+        !isAppOrder(f.clientOrderId),
+    )
+    .sort((a, b) => a.filledAt - b.filledAt);
+  let qty = 0;
+  let notional = 0;
+  const clientOrderIds: string[] = [];
+  for (const f of mine) {
+    if (qty + f.filledQty > pos.quantity) return null;
+    qty += f.filledQty;
+    notional += f.filledQty * f.filledPrice;
+    clientOrderIds.push(f.clientOrderId);
+    if (qty === pos.quantity) {
+      return { price: Math.round((notional / qty) * 10_000) / 10_000, qty, filledAt: f.filledAt, clientOrderIds };
+    }
+  }
+  return null;
+}
+
+/** Hand closes whose booked exit already matches the broker's fill, so the
+ *  correction pass does not read the history for them again. Process state:
+ *  a restart costs one extra read. */
+const confirmedHandCloses = new Set<number>();
+/** When the correction pass last read the broker's history. */
+let lastHandCloseCorrectionAt = 0;
+/** Why the pass is throttled: a history read is one or more gated calls
+ *  (2 requests / 2 s), and a hand close is corrected within 15 minutes. */
+const HAND_CLOSE_CORRECTION_INTERVAL_MS = 15 * 60 * 1000;
+const HAND_CLOSE_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * A HAND CLOSE BOOKS THE BROKER'S FILL (2026-09-23).
+ *
+ * When the operator sells a contract in Webull, no app order exists for the
+ * reconcile to book, and the broker sync closes the row at an estimate. On
+ * 2026-09-21 and 09-22 three closes went that way: INTC #10 at $1.29, TSLA #11
+ * at $1.38, AAPL #12 at $0.94. The broker's order history records the real
+ * fills (legs carry the contract, `position_intent` SELL_TO_CLOSE). The
+ * history can lag, so a fill may not be there yet when the sync closes the row.
+ * This pass revisits estimated hand closes from the last seven days (the
+ * history's own window). It rewrites each one the history can match, price and
+ * exit time, with the reason left `manual`, and journals
+ * `live_options_exit_corrected` with `source: 'broker_history'`. A past day
+ * whose total moved is re-recorded.
+ *
+ * Runs at most every 15 minutes, and reads the history only when an
+ * unconfirmed estimated hand close exists. Never throws.
+ */
+export async function correctHandClosesFromHistory(accountId: string, now: number = Date.now()): Promise<number> {
+  if (now - lastHandCloseCorrectionAt < HAND_CLOSE_CORRECTION_INTERVAL_MS) return 0;
+  const candidates = listHandClosedPositionIds(now - HAND_CLOSE_LOOKBACK_MS).filter(
+    (id) => !confirmedHandCloses.has(id),
+  );
+  if (candidates.length === 0) return 0;
+  lastHandCloseCorrectionAt = now;
+  const history = await listBrokerOptionFills(accountId);
+  if (!history.ok) return 0;
+  let corrected = 0;
+  for (const id of candidates) {
+    const pos = getLiveOptionsPosition(id);
+    if (!pos || pos.status !== 'closed' || pos.exitPrice === null || pos.exitAt === null) continue;
+    const fill = matchHandCloseFill(pos, history.fills, intentExistsForKey);
+    if (!fill) continue;
+    confirmedHandCloses.add(id);
+    if (Math.abs(pos.exitPrice - fill.price) < 0.005 && pos.exitAt === fill.filledAt) continue;
+    const pnlBefore = liveOptionsPnl(pos, pos.exitPrice);
+    const fixed = correctLiveOptionsExit(pos.id, fill.price, 'manual', fill.filledAt);
+    if (!fixed) continue;
+    corrected += 1;
+    logAutotradeEvent({
+      symbol: pos.symbol,
+      stage: 'execution',
+      action: 'live_options_exit_corrected',
+      detail: {
+        positionId: pos.id,
+        source: 'broker_history',
+        fromPrice: pos.exitPrice,
+        toPrice: fill.price,
+        fromExitAt: pos.exitAt,
+        toExitAt: fill.filledAt,
+        fromReason: pos.exitReason,
+        toReason: 'manual',
+        fillClientOrderIds: fill.clientOrderIds,
+        pnlBefore: Math.round(pnlBefore * 100) / 100,
+        pnlAfter: Math.round(liveOptionsPnl(fixed, fill.price) * 100) / 100,
+      },
+      riskProfile: pos.riskProfile,
+    });
+    for (const day of new Set([etToday(pos.exitAt), etToday(fill.filledAt)])) {
+      if (day !== etToday(now) && listDailyResults(day, day).length > 0) recordDailyResult(day, now);
+    }
+  }
+  return corrected;
+}
+
 function closeLiveOptionsPositionFromBroker(
   pos: LiveOptionsPosition,
   exitPrice: number,
   shortExitPrice: number | null,
+  priced: {
+    /** Where the price came from: the broker's fill, or an estimate. */
+    pricedBy: 'broker_fill' | 'opra' | 'chain';
+    exitAt?: number;
+    fill?: { clientOrderIds: string[] };
+  } = { pricedBy: 'chain' },
 ): boolean {
   const closed = closeLiveOptionsPosition(pos.id, {
     exitPrice,
     shortExitPrice: shortExitPrice ?? undefined,
     exitReason: 'manual',
+    exitAt: priced.exitAt,
   });
   if (!closed) return false; // already closed (e.g. by reconcileLiveOptionsOrders earlier this same tick) — not an error
   logAutotradeEvent({
@@ -3238,7 +3428,12 @@ function closeLiveOptionsPositionFromBroker(
       exitPrice,
       shortExitPrice,
       pnl: liveOptionsPnl(closed, exitPrice, shortExitPrice),
-      note: 'Auto-closed via Webull broker-truth sync — no longer held at the broker. Exit price is an ESTIMATE from the latest quote, not a confirmed fill.',
+      pricedBy: priced.pricedBy,
+      ...(priced.fill ? { fillClientOrderIds: priced.fill.clientOrderIds } : {}),
+      note:
+        priced.pricedBy === 'broker_fill'
+          ? "Closed via Webull broker-truth sync (no longer held at the broker), at the broker's own fill from its order history: a hand close."
+          : 'Auto-closed via Webull broker-truth sync — no longer held at the broker. Exit price is an ESTIMATE from the latest quote, not a confirmed fill.',
     },
     riskProfile: pos.riskProfile,
   });

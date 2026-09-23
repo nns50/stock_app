@@ -148,6 +148,12 @@ export function isComboOrder(rec: Pick<OrderIntentRecord, 'optionStrategy' | 'is
  * Create a `draft` intent for an order. Idempotent: the same key returns the
  * existing intent rather than inserting a duplicate. Records a creation event.
  */
+/** Whether an order with this client_order_id is one the app placed. Anything
+ *  else in the broker's order history was placed by hand. */
+export function intentExistsForKey(idempotencyKey: string): boolean {
+  return !!db.prepare('SELECT 1 FROM order_intents WHERE idempotency_key = ? LIMIT 1').get(idempotencyKey);
+}
+
 export function createIntent(input: OrderIntent, idempotencyKey: string): OrderIntentRecord {
   const existing = db.prepare('SELECT * FROM order_intents WHERE idempotency_key = ?').get(idempotencyKey) as
     IntentRow | undefined;

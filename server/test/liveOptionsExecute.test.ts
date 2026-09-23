@@ -19,6 +19,9 @@ vi.mock('../src/providers/webull/orders', async (importOriginal) => {
     // an acknowledged order (#87). The default is "the broker does not know it
     // either", so every pre-existing case reconciles exactly as before.
     webullOrderDetail: vi.fn(async () => ({ ok: true, found: false })),
+    // The broker's order history, read for hand-close fills. Default empty, so
+    // every pre-existing case books the sync's estimate as before.
+    listBrokerOptionFills: vi.fn(async () => ({ ok: true, fills: [] })),
   };
 });
 // The real-time OPRA snapshot the exit path prefers over the ~15-minute
@@ -49,6 +52,8 @@ import {
   webullOrderDetail,
   webullCancelOrder,
   WebullOrderStatus,
+  listBrokerOptionFills,
+  BrokerOptionFill,
 } from '../src/providers/webull/orders';
 import { previewWebullPositions } from '../src/providers/webull/positions';
 import { webullOptionQuotes } from '../src/providers/webull/optionQuotes';
@@ -97,6 +102,8 @@ import {
   resetLiveOptionsProcessState,
   optionsExitAt,
   correctEstimatedOptionsCloses,
+  matchHandCloseFill,
+  correctHandClosesFromHistory,
 } from '../src/services/autotrading/liveOptionsExecute';
 import { DailyResult, listDailyResults, saveDailyResult } from '../src/db/dailyResults';
 import { closeLiveOptionsAutotradePosition } from '../src/services/trading/closePosition';
@@ -109,6 +116,7 @@ const mockAccountType = vi.mocked(webullAccountType);
 const mockPlaceOrder = vi.mocked(webullPlaceOrder);
 const mockOrderStatus = vi.mocked(webullOrderStatus);
 const mockOrderDetail = vi.mocked(webullOrderDetail);
+const mockBrokerFills = vi.mocked(listBrokerOptionFills);
 const mockCancelOrder = vi.mocked(webullCancelOrder);
 const mockOptionQuotes = vi.mocked(webullOptionQuotes);
 
@@ -294,6 +302,8 @@ beforeEach(() => {
   mockOrderStatus.mockReset();
   mockOrderDetail.mockReset();
   mockOrderDetail.mockResolvedValue({ ok: true, found: false });
+  mockBrokerFills.mockReset();
+  mockBrokerFills.mockResolvedValue({ ok: true, fills: [] });
   mockCancelOrder.mockReset();
   mockOptionQuotes.mockReset();
   // Default: no OPRA entitlement in play, so pricing falls back to the chain
@@ -2885,6 +2895,7 @@ describe('correctEstimatedOptionsCloses — a confirmed fill replaces a sync est
     expect(detailOf('live_options_exit_corrected')).toEqual([
       {
         positionId: pos.id,
+        source: 'app_order',
         intentId: exitIntentId,
         fromPrice: 5,
         fromShortPrice: null,
@@ -3036,6 +3047,272 @@ describe('correctEstimatedOptionsCloses — a confirmed fill replaces a sync est
     await checkLiveOptionsExits();
     return { pos };
   }
+});
+
+// ---------------------------------------------------------------------------
+// A HAND CLOSE BOOKS THE BROKER'S FILL (2026-09-23). INTC #10 on 2026-09-21:
+// the operator sold a 0DTE $119 call by hand, and the broker sync booked it
+// at a delayed-chain $1.29 while the app's own chase had seen a $3.70 bid two
+// minutes earlier.
+// ---------------------------------------------------------------------------
+describe('hand closes: the broker\u2019s own fill, not an estimate', () => {
+  const ENTRY_AT = Date.parse('2026-09-21T14:07:53Z');
+  const handFill = (over: Partial<BrokerOptionFill> = {}): BrokerOptionFill => ({
+    clientOrderId: 'HAND-1',
+    side: 'SELL',
+    positionIntent: 'SELL_TO_CLOSE',
+    underlying: 'AAPL',
+    optionType: 'call',
+    strike: 100,
+    expiration: '2030-01-18',
+    filledQty: 2,
+    filledPrice: 3.7,
+    filledAt: ENTRY_AT + 2 * 60 * 60 * 1000,
+    ...over,
+  });
+  const position = {
+    kind: 'single_leg' as const,
+    symbol: 'AAPL',
+    side: 'call' as const,
+    strike: 100,
+    expiration: '2030-01-18',
+    quantity: 2,
+    entryAt: ENTRY_AT,
+  };
+  const notApp = () => false;
+
+  describe('matchHandCloseFill', () => {
+    it('takes a single fill of the whole position at its price', () => {
+      expect(matchHandCloseFill(position, [handFill()], notApp)).toEqual({
+        price: 3.7,
+        qty: 2,
+        filledAt: ENTRY_AT + 2 * 60 * 60 * 1000,
+        clientOrderIds: ['HAND-1'],
+      });
+    });
+
+    it('weights two partial sales by quantity', () => {
+      const m = matchHandCloseFill(
+        { ...position, quantity: 3 },
+        [
+          handFill({ clientOrderId: 'A', filledQty: 1, filledPrice: 4, filledAt: ENTRY_AT + 1000 }),
+          handFill({ clientOrderId: 'B', filledQty: 2, filledPrice: 3.4, filledAt: ENTRY_AT + 2000 }),
+        ],
+        notApp,
+      );
+      expect(m).toEqual({ price: 3.6, qty: 3, filledAt: ENTRY_AT + 2000, clientOrderIds: ['A', 'B'] });
+    });
+
+    it('ignores the app\u2019s own orders, other contracts, buys, and fills before the position opened', () => {
+      const fills = [
+        handFill({ clientOrderId: 'APP-1' }),
+        handFill({ strike: 105 }),
+        handFill({ expiration: '2030-02-15' }),
+        handFill({ optionType: 'put' }),
+        handFill({ side: 'BUY' }),
+        handFill({ underlying: 'MSFT' }),
+        handFill({ filledAt: ENTRY_AT - 1 }),
+      ];
+      expect(matchHandCloseFill(position, fills, (id) => id === 'APP-1')).toBeNull();
+    });
+
+    it('stays an estimate when the fills overshoot or never reach the quantity', () => {
+      expect(matchHandCloseFill(position, [handFill({ filledQty: 3 })], notApp)).toBeNull();
+      expect(matchHandCloseFill(position, [handFill({ filledQty: 1 })], notApp)).toBeNull();
+    });
+
+    it('never matches a spread: its legs are not reported separately', () => {
+      expect(matchHandCloseFill({ ...position, kind: 'debit_spread' }, [handFill()], notApp)).toBeNull();
+    });
+  });
+
+  describe('the broker sync', () => {
+    function heldThenGone() {
+      setAutotradeConfig(liveConfig());
+      const pos = openLivePosition({ expiration: '2030-01-18', entryPrice: 0.84, quantity: 2, accountId: 'ACC1' });
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 1.29 } }) as never);
+      mockPreviewPositions.mockResolvedValue(previewOf([]));
+      return pos;
+    }
+    const closedRow = () =>
+      JSON.parse(listAutotradeEvents({ actions: ['live_options_position_closed'] })[0].detail!) as Record<
+        string,
+        unknown
+      >;
+
+    it('books a hand close at the broker\u2019s fill and its time when the history shows it', async () => {
+      const pos = heldThenGone();
+      const fill = handFill({ filledAt: pos.entryAt + 60_000 });
+      mockBrokerFills.mockResolvedValue({ ok: true, fills: [fill] });
+      await syncLiveOptionsPositionsFromBroker('ACC1');
+      await syncLiveOptionsPositionsFromBroker('ACC1');
+      expect(getLiveOptionsPosition(pos.id)).toMatchObject({
+        status: 'closed',
+        exitPrice: 3.7,
+        exitAt: fill.filledAt,
+        exitReason: 'manual',
+      });
+      expect(closedRow()).toMatchObject({
+        via: 'broker_sync',
+        pricedBy: 'broker_fill',
+        fillClientOrderIds: ['HAND-1'],
+      });
+      // The history is read only when something is being closed.
+      expect(mockBrokerFills).toHaveBeenCalledTimes(1);
+    });
+
+    it('estimates from the real-time OPRA mid before the delayed chain', async () => {
+      const pos = heldThenGone();
+      mockOptionQuotes.mockResolvedValue({
+        ok: true,
+        quotes: [{ symbol: 'AAPL-fixture', bid: 3.6, ask: 3.8, quoteTime: Date.now() }],
+      });
+      await syncLiveOptionsPositionsFromBroker('ACC1');
+      await syncLiveOptionsPositionsFromBroker('ACC1');
+      expect(getLiveOptionsPosition(pos.id)).toMatchObject({ status: 'closed', exitPrice: 3.7 });
+      expect(closedRow()).toMatchObject({ pricedBy: 'opra' });
+    });
+
+    it('falls back to the chain when neither the history nor OPRA can say', async () => {
+      const pos = heldThenGone();
+      await syncLiveOptionsPositionsFromBroker('ACC1');
+      await syncLiveOptionsPositionsFromBroker('ACC1');
+      expect(getLiveOptionsPosition(pos.id)).toMatchObject({ status: 'closed', exitPrice: 1.29 });
+      expect(closedRow()).toMatchObject({ pricedBy: 'chain' });
+    });
+  });
+
+  describe('correctHandClosesFromHistory', () => {
+    /** The INTC shape: closed by the sync at a chain estimate, the history
+     *  empty at the time. */
+    async function estimatedHandClose() {
+      setAutotradeConfig(liveConfig());
+      const pos = openLivePosition({ expiration: '2030-01-18', entryPrice: 0.84, quantity: 2, accountId: 'ACC1' });
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 1.29 } }) as never);
+      mockPreviewPositions.mockResolvedValue(previewOf([]));
+      await syncLiveOptionsPositionsFromBroker('ACC1');
+      await syncLiveOptionsPositionsFromBroker('ACC1');
+      expect(getLiveOptionsPosition(pos.id)).toMatchObject({ exitPrice: 1.29, exitReason: 'manual' });
+      mockBrokerFills.mockClear();
+      return pos;
+    }
+
+    it('rewrites the estimate to the fill once the history shows it, and journals it', async () => {
+      const pos = await estimatedHandClose();
+      const fill = handFill({ filledAt: pos.entryAt + 60_000 });
+      mockBrokerFills.mockResolvedValue({ ok: true, fills: [fill] });
+
+      expect(await correctHandClosesFromHistory('ACC1')).toBe(1);
+
+      expect(getLiveOptionsPosition(pos.id)).toMatchObject({
+        exitPrice: 3.7,
+        exitAt: fill.filledAt,
+        exitReason: 'manual',
+      });
+      const [row] = listAutotradeEvents({ actions: ['live_options_exit_corrected'] });
+      expect(JSON.parse(row.detail!)).toMatchObject({
+        positionId: pos.id,
+        source: 'broker_history',
+        fromPrice: 1.29,
+        toPrice: 3.7,
+        fromReason: 'manual',
+        toReason: 'manual',
+        fillClientOrderIds: ['HAND-1'],
+        pnlBefore: 90, // (1.29 - 0.84) x 2 x 100
+        pnlAfter: 572, // (3.70 - 0.84) x 2 x 100
+      });
+    });
+
+    it('reads the history at most every 15 minutes, and not at all once a close is confirmed', async () => {
+      const pos = await estimatedHandClose();
+      const t0 = Date.now();
+      // Nothing in the history yet: one read, no change.
+      expect(await correctHandClosesFromHistory('ACC1', t0)).toBe(0);
+      expect(mockBrokerFills).toHaveBeenCalledTimes(1);
+      // Inside the window: no read at all.
+      expect(await correctHandClosesFromHistory('ACC1', t0 + 60_000)).toBe(0);
+      expect(mockBrokerFills).toHaveBeenCalledTimes(1);
+      // After it, the fill has arrived: corrected.
+      mockBrokerFills.mockResolvedValue({ ok: true, fills: [handFill({ filledAt: pos.entryAt + 60_000 })] });
+      expect(await correctHandClosesFromHistory('ACC1', t0 + 16 * 60_000)).toBe(1);
+      // Confirmed: nothing left to check, so no further read.
+      expect(await correctHandClosesFromHistory('ACC1', t0 + 32 * 60_000)).toBe(0);
+      expect(mockBrokerFills).toHaveBeenCalledTimes(2);
+    });
+
+    it('never touches a close the app\u2019s own order made, manual or not', async () => {
+      // An Auto-page close: exit reason manual, but through an app order the
+      // reconcile booked. It is not a hand close.
+      setAutotradeConfig(liveConfig());
+      setTradingConfig({
+        enabled: true,
+        killSwitch: false,
+        maxOrderUsd: 100_000,
+        maxExposureUsd: 100_000,
+        maxSymbolPositionQty: 10_000,
+        maxDailyLossUsd: 100_000,
+      });
+      const pos = openLivePosition({ expiration: '2030-01-18', entryPrice: 3, quantity: 2, accountId: 'ACC1' });
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4.5 } }) as never);
+      mockAccountState.mockResolvedValue(
+        holdingAccountState(pos.quantity) as Awaited<ReturnType<typeof webullAccountState>>,
+      );
+      mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-MANUAL-2' });
+      await closeLiveOptionsAutotradePosition(pos, 'ACC1', `SELL ${pos.quantity} AAPL`);
+      mockOrderStatus.mockResolvedValue({
+        ok: true,
+        found: true,
+        status: 'FILLED',
+        filledQty: 2,
+        filledPrice: 4.5,
+      } as WebullOrderStatus);
+      await reconcileLiveOptionsOrders();
+      expect(getLiveOptionsPosition(pos.id)).toMatchObject({ status: 'closed', exitReason: 'manual', exitPrice: 4.5 });
+
+      mockBrokerFills.mockResolvedValue({ ok: true, fills: [handFill({ filledPrice: 9, filledAt: pos.entryAt + 1 })] });
+      expect(await correctHandClosesFromHistory('ACC1')).toBe(0);
+      expect(mockBrokerFills).not.toHaveBeenCalled();
+      expect(getLiveOptionsPosition(pos.id)).toMatchObject({ exitPrice: 4.5 });
+    });
+
+    it('re-records the days the correction moves, keeping their account figures', async () => {
+      db.exec('DELETE FROM autotrade_daily_results; DELETE FROM autotrade_daily_baseline;');
+      const pos = await estimatedHandClose();
+      const yesterdayMs = Date.now() - 24 * 60 * 60 * 1000;
+      db.prepare('UPDATE autotrade_live_options_positions SET exit_at = ?, entry_at = ? WHERE id = ?').run(
+        yesterdayMs,
+        yesterdayMs - 60 * 60 * 1000,
+        pos.id,
+      );
+      const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(yesterdayMs);
+      saveDailyResult({
+        etDate: day,
+        baselineEquityUsd: 10_000,
+        closeEquityUsd: 10_090,
+        accountGainPct: 0.9,
+        strategyPnlUsd: 90,
+        strategyGainPct: 0.9,
+        liveTrades: 1,
+        paperPnlUsd: 0,
+        goalReached: false,
+        giveBackHalted: false,
+        drawdownHalted: false,
+        accountStrategyDiverged: false,
+        divergenceUsd: 0,
+        preOpenMoveUsd: null,
+        riskPerTradePct: 2.5,
+        goalBasis: 'strategy',
+        recordedAt: 1,
+      });
+      mockBrokerFills.mockResolvedValue({ ok: true, fills: [handFill({ filledAt: yesterdayMs - 1000 })] });
+
+      expect(await correctHandClosesFromHistory('ACC1')).toBe(1);
+
+      const after = listDailyResults(day, day)[0];
+      expect(after.strategyPnlUsd).toBe(572);
+      expect(after.baselineEquityUsd).toBe(10_000);
+    });
+  });
 });
 
 function previewOf(

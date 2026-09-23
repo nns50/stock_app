@@ -12905,3 +12905,68 @@ $2.57 `take_profit`, P&L $0.00 → +$510.00. After it, the 2026-09-22 daily resu
 a strategy P&L of +$127.04 over 11 closes. Any other position corrected is a finding: read
 its intent before trusting the new number. MU #14, NVDA #9, TSLA #8, COIN #7 and HOOD #6
 were closed by the reconcile at their fills and must not move.
+
+## 2026-09-23 (sixth) — a hand close books the broker's fill
+
+The three estimates "(fifth)" left alone were the operator's hand closes under the kill
+switch: INTC #10 and TSLA #11 on 09-21, AAPL #12 on 09-22. No app order exists for them, so
+nothing app-side knows their price. The broker does. Its order history lists every fill of
+the last seven days. A single-leg option order names its contract on its leg (`option_type`,
+`option_expire_date`, `strike_price`, `symbol` = the underlying) and carries
+`position_intent` (`SELL_TO_CLOSE`), `filled_price`, `filled_quantity` and
+`filled_time_at`. That is the shape the app's own NVDA close came back in, on 2026-09-21.
+
+INTC is the size of the problem. The 0DTE $119 call (5 contracts at $0.84) was booked at
+**$1.29** at 12:46 ET. The app's own chase had priced it at a **$3.70** bid two minutes
+earlier (its 24 refused closes from 11:52 to 12:44 were the operator's resting sell in the
+way), and INTC stood about $3.50 in the money. At a ~$3.70 fill the trade is about +$1,430,
+not +$225, which moves 09-21's strategy result from −$1,160.36 to roughly flat.
+
+**Changes.**
+
+- `listBrokerOptionFills` / `parseBrokerOptionFills`: every single-leg options fill in the
+  history, from one paged read. Equity orders, unfilled orders, spreads and unparseable
+  contracts are skipped. A partial fill that was later cancelled counts, because those
+  contracts traded.
+- `matchHandCloseFill` (pure) takes SELLs of the exact contract, at or after the position
+  opened, that are not one of the app's orders (`intentExistsForKey`). It adds them oldest
+  first until they reach exactly the position's quantity and books the quantity-weighted
+  price at the last fill's time. An overshoot or a shortfall stays an estimate.
+- The broker sync asks the history (one read, only when it is closing something) before it
+  estimates. The estimate is now the real-time OPRA mid when fresh, else the chain. The
+  journal row's `pricedBy` says which (`broker_fill`, `opra`, `chain`). Spreads are
+  unchanged.
+- `correctHandClosesFromHistory` runs after the sync, at most every 15 minutes. It reads the
+  history only while an estimated hand close is unconfirmed in the last seven days. It
+  rewrites each match (price and exit time, reason still `manual`), journals
+  `live_options_exit_corrected` with `source: 'broker_history'`, and re-records each past
+  day the move touched.
+- The comment on `safeContractMark` said its price was only for display. That was false: it
+  is the booked exit. The comment is corrected.
+- Correction rows now carry a `source`, and the leak scan splits on it. `app_order` (the
+  race in "(fifth)", an app defect) and `broker_history` (a hand close re-booked at the
+  operator's fill: context, not a defect) are reported separately.
+
+**Tested.**
+- The parser runs on the exact envelope the history returned for NVDA, with its fallbacks
+  and skips.
+- The matcher is tested on:
+  - a single fill;
+  - a quantity-weighted pair;
+  - exclusions (app orders, other strikes, expiries, types, sides, underlyings, and fills
+    before entry);
+  - an overshoot and a shortfall;
+  - a spread.
+- The sync is tested on each source: a history fill (booked at its price and time, and read
+  once), the OPRA mid, and the chain.
+- The pass is tested on an INTC-shaped correction, $1.29 → $3.70, P&L +$90 → +$572, and on
+  the 15-minute throttle and the no-read-once-confirmed rule. An Auto-page close (manual,
+  but via an app order) is never a candidate, and a past day's result is re-recorded.
+- Four cases fail with the match removed.
+
+**Pre-committed check.** On the first pass after the deploy (within 15 minutes), INTC #10,
+TSLA #11 and AAPL #12 must each carry a `live_options_exit_corrected` row with
+`source: 'broker_history'` and the broker's fill, or have a stated reason why not. The
+reasons that count are that no matching sale is in the history, or the sales do not add up to
+the position. If the first two correct, 09-21 and 09-22 are re-recorded. A hand close that
+stays at an estimate with a matching sale in the history is a finding.
