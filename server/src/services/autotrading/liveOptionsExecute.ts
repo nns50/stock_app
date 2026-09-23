@@ -109,7 +109,7 @@ import {
 import { evaluateDailyTarget } from './dailyTarget';
 import { getDailyBaseline } from '../../db/dailyBaseline';
 import { correlatedNotional, sectorNotional, buildSectorOf, RiskCheckContext } from './riskCheck';
-import { logAutotradeEvent } from '../../db/autotradeEvents';
+import { listAutotradeEvents, logAutotradeEvent } from '../../db/autotradeEvents';
 import { dispatchAutotradeNotification } from './notify';
 import { fetchContractQuote, validPremium } from './optionsExecute';
 import { getLivePortfolioSnapshot, combinedLiveOpenRisk, ProbationStatus } from './liveExecute';
@@ -1944,6 +1944,7 @@ export function resetLiveOptionsProcessState(): void {
   exitRepricesByPosition.clear();
   killSwitchHeldPositions.clear();
   confirmedHandCloses.clear();
+  unmatchedHandCloses.clear();
   lastHandCloseCorrectionAt = 0;
 }
 
@@ -3297,18 +3298,7 @@ export function matchHandCloseFill(
   isAppOrder: (clientOrderId: string) => boolean,
 ): { price: number; qty: number; filledAt: number; clientOrderIds: string[] } | null {
   if (pos.kind !== 'single_leg') return null;
-  const mine = fills
-    .filter(
-      (f) =>
-        f.side === 'SELL' &&
-        f.underlying === pos.symbol.toUpperCase() &&
-        f.optionType === pos.side &&
-        Math.abs(f.strike - pos.strike) < 1e-6 &&
-        f.expiration === pos.expiration &&
-        f.filledAt >= pos.entryAt &&
-        !isAppOrder(f.clientOrderId),
-    )
-    .sort((a, b) => a.filledAt - b.filledAt);
+  const mine = contractSells(pos, fills).filter((f) => !isAppOrder(f.clientOrderId));
   let qty = 0;
   let notional = 0;
   const clientOrderIds: string[] = [];
@@ -3324,10 +3314,86 @@ export function matchHandCloseFill(
   return null;
 }
 
+/** Every SELL of this exact contract since the position opened, oldest first,
+ *  the app's own orders included. The matcher drops those; a skip row lists
+ *  them. One filter for both, so what the matcher read and what the row says
+ *  it read cannot drift apart. */
+function contractSells(
+  pos: Pick<LiveOptionsPosition, 'symbol' | 'side' | 'strike' | 'expiration' | 'entryAt'>,
+  fills: BrokerOptionFill[],
+): BrokerOptionFill[] {
+  return fills
+    .filter(
+      (f) =>
+        f.side === 'SELL' &&
+        f.underlying === pos.symbol.toUpperCase() &&
+        f.optionType === pos.side &&
+        Math.abs(f.strike - pos.strike) < 1e-6 &&
+        f.expiration === pos.expiration &&
+        f.filledAt >= pos.entryAt,
+    )
+    .sort((a, b) => a.filledAt - b.filledAt);
+}
+
 /** Hand closes whose booked exit already matches the broker's fill, so the
  *  correction pass does not read the history for them again. Process state:
  *  a restart costs one extra read. */
 const confirmedHandCloses = new Set<number>();
+/** Hand closes the history still could not match once their own day was over:
+ *  left estimates for good, stated once, and not read again. Process state
+ *  like the set above; the statement itself is checked against the journal, so
+ *  a restart re-reads them once and states nothing twice. */
+const unmatchedHandCloses = new Set<number>();
+
+/**
+ * Say, once, that an options hand close stays an estimate (2026-09-23). The
+ * stock twin (live_exit_correction_skipped) exists because a skip nobody can
+ * see cannot be checked: three stock estimates were left alone that way with
+ * nothing in the journal saying why. This one states the contract's sells the
+ * history held, so the reason (a partial sale, the contract traded again, or
+ * no sale at all) can be read off the row.
+ */
+function journalUnmatchedHandClose(pos: LiveOptionsPosition, fills: BrokerOptionFill[]): void {
+  const already = listAutotradeEvents({
+    stage: 'execution',
+    symbol: pos.symbol,
+    actions: ['live_options_exit_correction_skipped'],
+    limit: 200,
+  }).some((e) => {
+    try {
+      return (JSON.parse(e.detail ?? 'null') as { positionId?: unknown } | null)?.positionId === pos.id;
+    } catch {
+      return false;
+    }
+  });
+  if (already) return;
+  logAutotradeEvent({
+    symbol: pos.symbol,
+    stage: 'execution',
+    action: 'live_options_exit_correction_skipped',
+    detail: {
+      positionId: pos.id,
+      side: pos.side,
+      strike: pos.strike,
+      expiration: pos.expiration,
+      quantity: pos.quantity,
+      exitPrice: pos.exitPrice,
+      exitAt: pos.exitAt,
+      cause: 'no_matching_sale',
+      why: "no set of this contract's sells in the order history adds up to the quantity booked",
+      sells: contractSells(pos, fills)
+        .slice(0, 10)
+        .map((f) => ({
+          clientOrderId: f.clientOrderId,
+          qty: f.filledQty,
+          price: f.filledPrice,
+          filledAt: f.filledAt,
+          appOrder: intentExistsForKey(f.clientOrderId),
+        })),
+    },
+    riskProfile: pos.riskProfile,
+  });
+}
 /** When the correction pass last read the broker's history. */
 let lastHandCloseCorrectionAt = 0;
 /** Why the pass is throttled: a history read is one or more gated calls
@@ -3356,7 +3422,7 @@ const HAND_CLOSE_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
 export async function correctHandClosesFromHistory(accountId: string, now: number = Date.now()): Promise<number> {
   if (now - lastHandCloseCorrectionAt < HAND_CLOSE_CORRECTION_INTERVAL_MS) return 0;
   const candidates = listHandClosedPositionIds(now - HAND_CLOSE_LOOKBACK_MS).filter(
-    (id) => !confirmedHandCloses.has(id),
+    (id) => !confirmedHandCloses.has(id) && !unmatchedHandCloses.has(id),
   );
   if (candidates.length === 0) return 0;
   lastHandCloseCorrectionAt = now;
@@ -3367,7 +3433,16 @@ export async function correctHandClosesFromHistory(accountId: string, now: numbe
     const pos = getLiveOptionsPosition(id);
     if (!pos || pos.status !== 'closed' || pos.exitPrice === null || pos.exitAt === null) continue;
     const fill = matchHandCloseFill(pos, history.fills, intentExistsForKey);
-    if (!fill) continue;
+    if (!fill) {
+      // The history can lag a sale, so an unmatched close is asked about again
+      // through its own day. After that it stays an estimate for good: stated
+      // once, and not read again.
+      if (etToday(pos.exitAt) < etToday(now)) {
+        unmatchedHandCloses.add(id);
+        journalUnmatchedHandClose(pos, history.fills);
+      }
+      continue;
+    }
     confirmedHandCloses.add(id);
     if (Math.abs(pos.exitPrice - fill.price) < 0.005 && pos.exitAt === fill.filledAt) continue;
     const pnlBefore = liveOptionsPnl(pos, pos.exitPrice);

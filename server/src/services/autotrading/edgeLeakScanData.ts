@@ -169,6 +169,12 @@ export const EXECUTION_ACTIONS: {
         "A stock exit filled on a stop or target placed outside the entry's bracket (a re-arm, or one placed by hand) was re-booked at that fill",
     },
   },
+  // The options twin (2026-09-23): a hand close no set of the contract's sells
+  // in the history adds up to, left an estimate once its day is over.
+  {
+    action: 'live_options_exit_correction_skipped',
+    label: "An options hand close matched no fill in the broker's history, and stays an estimate",
+  },
   // An estimate the correction pass had to leave in the record (2026-09-23).
   // Until this row existed the pass skipped silently, so three of the first
   // eight estimates it read stayed estimates with nothing saying why.

@@ -64,6 +64,7 @@ import { setTradingConfig } from '../src/db/trading';
 import { createPosition } from '../src/db/positions';
 import { addSymbols } from '../src/db/universe';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
+import { collectExecutionFindings } from '../src/services/autotrading/edgeLeakScanData';
 import {
   listIntents,
   createIntent,
@@ -3238,6 +3239,52 @@ describe('hand closes: the broker\u2019s own fill, not an estimate', () => {
       // Confirmed: nothing left to check, so no further read.
       expect(await correctHandClosesFromHistory('ACC1', t0 + 32 * 60_000)).toBe(0);
       expect(mockBrokerFills).toHaveBeenCalledTimes(2);
+      // An unmatched read on the close's own day is the history lagging, not a skip.
+      expect(listAutotradeEvents({ actions: ['live_options_exit_correction_skipped'] })).toHaveLength(0);
+    });
+
+    // 2026-09-23: an unmatched hand close was re-read every 15 minutes for seven
+    // days and never stated. Its stock twin left three estimates that way with
+    // nothing in the journal saying why.
+    it('states a close still unmatched after its day once, and stops reading the history for it', async () => {
+      const pos = await estimatedHandClose();
+      const yesterdayMs = Date.now() - 24 * 60 * 60 * 1000;
+      db.prepare('UPDATE autotrade_live_options_positions SET exit_at = ?, entry_at = ? WHERE id = ?').run(
+        yesterdayMs,
+        yesterdayMs - 60 * 60 * 1000,
+        pos.id,
+      );
+      // One contract of the two sold, the other gone some other way: no match.
+      mockBrokerFills.mockResolvedValue({
+        ok: true,
+        fills: [handFill({ filledQty: 1, filledAt: yesterdayMs - 1000 })],
+      });
+      const t0 = Date.now();
+
+      expect(await correctHandClosesFromHistory('ACC1', t0)).toBe(0);
+      const skipped = () =>
+        listAutotradeEvents({ actions: ['live_options_exit_correction_skipped'] }).map((e) => JSON.parse(e.detail!));
+      expect(skipped()).toEqual([
+        expect.objectContaining({
+          positionId: pos.id,
+          cause: 'no_matching_sale',
+          quantity: 2,
+          sells: [expect.objectContaining({ clientOrderId: 'HAND-1', qty: 1, appOrder: false })],
+        }),
+      ]);
+      expect(getLiveOptionsPosition(pos.id)).toMatchObject({ exitPrice: 1.29 });
+      // The scan reads the row the pass wrote.
+      const findings = new Map(collectExecutionFindings(Date.now()).map((f) => [f.action, f.count]));
+      expect(findings.get('live_options_exit_correction_skipped')).toBe(1);
+
+      // Not read again...
+      await correctHandClosesFromHistory('ACC1', t0 + 16 * 60_000);
+      expect(mockBrokerFills).toHaveBeenCalledTimes(1);
+      // ...and a restart reads it once more but states nothing twice.
+      resetLiveOptionsProcessState();
+      await correctHandClosesFromHistory('ACC1', t0 + 32 * 60_000);
+      expect(mockBrokerFills).toHaveBeenCalledTimes(2);
+      expect(skipped()).toHaveLength(1);
     });
 
     it('never touches a close the app\u2019s own order made, manual or not', async () => {

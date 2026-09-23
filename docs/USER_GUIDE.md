@@ -2359,7 +2359,9 @@ because the loop is the only caller that is always flat by the bell, so it is
   (**`live_options_exit_corrected`**, `source: broker_history`). It re-records the affected
   day on the Results calendar. Webull keeps seven days of order history, so a hand close
   older than that stays at its estimate. So does a sale that does not add up to the position
-  (you sold part, or traded the same contract again), and so does a spread.
+  (you sold part, or traded the same contract again), and so does a spread. Once the day of
+  the close is over, an unmatched one is not checked again, and Recent activity says so once
+  (**`live_options_exit_correction_skipped`**), listing the sales of that contract it found.
   **A stock stop or target that fills is booked at its fill** (since 2026-09-23). When a
   bracket leg fills, the order check reads the fill from Webull's order lists, and those show
   a filled leg about two minutes late. Meanwhile the position check sees the shares gone. It
