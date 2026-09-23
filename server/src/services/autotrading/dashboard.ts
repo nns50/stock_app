@@ -37,6 +37,20 @@ import {
   DollarCapKey,
   handEditedDollarCaps,
 } from './targetTune';
+import { dailyHaltVerdict } from './riskCheck';
+import { haltMarkerExists, liveDrawdownHaltedOn } from './dailyHaltMarker';
+
+/** Whether a book's halt is holding, by the risk checks' own rule. An unset
+ *  equity makes the level 0, which is not a halt, so it never reads as one. */
+function haltHolding(dailyPnl: number, maxDailyDrawdownPct: number, dayStart: number, tripped: boolean): boolean {
+  const verdict = dailyHaltVerdict({
+    dailyPnl,
+    maxDailyDrawdownPct,
+    dayStartEquityUsd: dayStart,
+    dailyHaltTripped: tripped,
+  });
+  return verdict.level < 0 && !verdict.ok;
+}
 
 // ---------------------------------------------------------------------------
 // Phase 7 (docs/AUTOTRADING_SPEC.md — MONITORING & KILL SWITCH): a read-only
@@ -206,6 +220,14 @@ export interface AutotradeDashboard {
   dailyPnl: number;
   /** $ level (negative) at which daily_drawdown_halt blocks new entries. Shared with live. */
   dailyDrawdownHaltLevel: number;
+  /** Whether each book's daily-drawdown halt is holding now, by the rule the
+   *  risk checks apply (dailyHaltVerdict): at or below the level, or tripped
+   *  earlier today. Live is ONE pool, stock plus options, as both live checks
+   *  measure it. The card used to compare each sleeve's own figure with the
+   *  level, so it never showed 2026-09-23's live halt: at 10:23 stock
+   *  −$1,540.47 and options −$506 each sat above the −$1,941.67 line their
+   *  sum (−$2,046.47) was below. */
+  dailyHalt: { paper: boolean; live: boolean };
 
   /** Combined equity + options paper entries opened today. */
   tradesToday: number;
@@ -492,6 +514,20 @@ export function getAutotradeDashboard(): AutotradeDashboard {
       config.maxDailyDrawdownPct,
       dayStartEquityUsd(getDailyBaseline(), etToday(), equity).usd,
     ),
+    dailyHalt: {
+      paper: haltHolding(
+        snapshot.dailyPnl + optionsSnapshot.dailyPnl,
+        config.maxDailyDrawdownPct,
+        dayStartEquityUsd(getDailyBaseline(), etToday(), equity).usd,
+        haltMarkerExists('paper', etToday()),
+      ),
+      live: haltHolding(
+        liveSnapshot.dailyPnl + liveOptionsSnapshot.dailyPnl,
+        config.maxDailyDrawdownPct,
+        dayStartEquityUsd(getDailyBaseline(), etToday(), equity).usd,
+        liveDrawdownHaltedOn(etToday()),
+      ),
+    },
 
     tradesToday: snapshot.tradesToday + optionsSnapshot.tradesToday,
     maxTradesPerDay: config.maxTradesPerDay,

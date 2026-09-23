@@ -109,6 +109,8 @@ import {
 import { DailyResult, listDailyResults, saveDailyResult } from '../src/db/dailyResults';
 import { closeLiveOptionsAutotradePosition } from '../src/services/trading/closePosition';
 import { buildLiveTradingConfig } from '../src/services/autotrading/liveExecute';
+import { writeDailyHaltMarker } from '../src/services/autotrading/dailyHaltMarker';
+import { etToday } from '../src/util/marketDate';
 
 const mockGetProvider = vi.mocked(getProvider);
 const mockPreviewPositions = vi.mocked(previewWebullPositions);
@@ -248,6 +250,7 @@ const okResult = (signal: SingleLegOptionsSignal | DebitSpreadOptionsSignal): Op
   evaluateOptionsRiskCheck(signal, {
     equity: 100_000,
     dayStartEquityUsd: 100_000,
+    dailyHaltTripped: false,
     dailyPnl: 0,
     tradesToday: 0,
     consecutiveLosses: 0,
@@ -1332,6 +1335,24 @@ describe('runLiveOptionsExecution', () => {
       // Risk-check stage, so it lands where risk refusals are read — and the
       // throttle's own dedupe read has to look in that same stage.
       expect(rows[0].stage).toBe('risk_check');
+    });
+
+    // 2026-09-23: the live halt (stock plus options) held entries only while
+    // the day's realized P&L sat under the line, and lifted when a winner
+    // closed. It now holds for the rest of the day once tripped, in both sleeves.
+    it('holds the live halt for the rest of the day once tripped, even back above the line', async () => {
+      writeDailyHaltMarker({ pool: 'live', date: etToday(), dailyPnl: -2046.47, haltLevel: -1941.67 });
+      setAutotradeConfig(liveConfig());
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
+      mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+      mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-NEVER' });
+
+      const outcomes = await runLiveOptionsExecution([{ signal: optionSignal() }]);
+
+      expect(outcomes[0]).toMatchObject({ ok: false });
+      expect(mockPlaceOrder).not.toHaveBeenCalled();
+      const detail = JSON.parse(blockedEvents('live_options_risk_blocked')[0].detail!) as { failedRules: string[] };
+      expect(detail.failedRules).toEqual(['daily_drawdown_halt']);
     });
 
     it('throttles the risk-block row to once per symbol per day', async () => {

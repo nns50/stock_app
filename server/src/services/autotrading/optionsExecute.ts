@@ -47,6 +47,7 @@ import {
 } from './optionsExitPricing';
 import { etToday } from '../../util/marketDate';
 import { mapPool } from '../../util/async';
+import { haltMarkerExists } from './dailyHaltMarker';
 
 // ---------------------------------------------------------------------------
 // The options counterpart to execute.ts (docs/AUTOTRADING_SPEC.md, phase 12)
@@ -673,6 +674,9 @@ export async function runOptionsPaperExecution(
       equity,
       // See execute.ts: the day's opening equity, not this tick's.
       dayStartEquityUsd: dayStartEquityUsd(getDailyBaseline(), etDateStr(), equity).usd,
+      // Sticky for the rest of the day once the paper halt has tripped
+      // (dailyHaltVerdict), the same rule the live book runs.
+      dailyHaltTripped: haltMarkerExists('paper', etDateStr()),
       dailyPnl,
       tradesToday,
       consecutiveLosses,

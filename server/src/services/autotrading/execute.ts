@@ -39,6 +39,7 @@ import { evaluateEndOfDayFlatten } from './endOfDayFlatten';
 import { liveExitRules } from '../exitReplay';
 import { evaluateEntryExtension, REFERENCE_MAX_PCT_OF_RANGE, REFERENCE_MAX_VWAP_EXT_PCT } from './entryExtension';
 import { fetchTodaySessionContext } from './vwap';
+import { haltMarkerExists } from './dailyHaltMarker';
 
 // ---------------------------------------------------------------------------
 // The Execution stage of the Phase 6 paper loop (docs/AUTOTRADING_SPEC.md —
@@ -490,6 +491,9 @@ export async function runPaperExecution(
       // live book's halt and the +3% goal use, so the control arm is halted on
       // the same rule it is being compared against (dayLossBudget.ts).
       dayStartEquityUsd: dayStartEquityUsd(getDailyBaseline(), etDateStr(), equity).usd,
+      // Sticky for the rest of the day once the paper halt has tripped
+      // (dailyHaltVerdict), the same rule the live book runs.
+      dailyHaltTripped: haltMarkerExists('paper', etDateStr()),
       dailyPnl,
       tradesToday,
       consecutiveLosses,

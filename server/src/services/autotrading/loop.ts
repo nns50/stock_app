@@ -41,6 +41,7 @@ import {
   correctHandClosesFromHistory,
   liveOptionsSeedForEquity,
   getLiveOptionsPortfolioSnapshot,
+  type LiveOptionsRiskSeed,
 } from './liveOptionsExecute';
 import { maybeAlertLiveOrderFailures, maybeAlertLiveAmbiguity } from './liveFailureAlert';
 import { reanchorLiveCapsIfDrifted } from './liveCapsReanchor';
@@ -280,6 +281,15 @@ function emptySummary(skippedReason?: string): LoopTickSummary {
  *  cheap early check so the loop doesn't bother screening at all when live
  *  can't place anyway; attemptLiveEntry() re-checks TRADING_ENABLED itself
  *  as the authoritative, final gate — never rely on this one alone). */
+/** The live options sleeve's day, for the stock-side steps that judge the live
+ *  pool (stock plus options): the entries and the scale-in add-ons. One
+ *  derivation for both, read fresh at each call because the options exits that
+ *  run between them can move it. Scoped to the trading account, since both gate
+ *  orders. */
+function liveOptionsDay(): LiveOptionsRiskSeed {
+  return liveOptionsSeedForEquity(getLiveOptionsPortfolioSnapshot(getAutotradeConfig().liveAccountId ?? null));
+}
+
 function isLiveEntryActive(autotradeCfg: AutotradeConfig): boolean {
   const humanCfg = getTradingConfig();
   return (
@@ -481,7 +491,9 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       journalStageFailure('daily-target check', e);
     }
     const liveScaleInOutcomes =
-      isLiveEntryActive(getAutotradeConfig()) && !dailyTarget.entriesHalted ? await checkLiveScaleIns() : [];
+      isLiveEntryActive(getAutotradeConfig()) && !dailyTarget.entriesHalted
+        ? await checkLiveScaleIns(liveOptionsDay())
+        : [];
     // The SECOND lot of a per-lot bracketed entry (#26). Gated exactly like a
     // scale-in and for the same reason — it adds real shares — with its own
     // flag, session check and one-add-on-per-position rule inside. It is NOT a
@@ -1123,7 +1135,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
         // exactly as the paper batch is seeded from the options paper book just
         // above. The live options batch already folds equity in the other
         // direction; this closes the one-way gap.
-        liveOptionsSeedForEquity(getLiveOptionsPortfolioSnapshot(getAutotradeConfig().liveAccountId ?? null)),
+        liveOptionsDay(),
         regimeLabel,
         tickRegime,
       );

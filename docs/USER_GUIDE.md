@@ -2571,7 +2571,10 @@ because the loop is the only caller that is always flat by the bell, so it is
   **two stops** — original shares at the original stop, added shares at the tighter one — which
   stops the newer shares out first on a pullback. It runs behind the same kill-switch / market-
   hours / guardrail gates as a fresh entry, fails closed on any hiccup (logged, skipped, never
-  a naked position), and pushes a **scale-in** notification. The **Live positions** table then
+  a naked position), and pushes a **scale-in** notification. It also obeys the same daily-
+  drawdown halt as a fresh entry: live stock plus live options against the level, and no add
+  for the rest of a day once the halt has tripped. Until 2026-09-23 the add-on judged the stock
+  sleeve's day alone and re-checked it every tick. The **Live positions** table then
   badges that position with a **+N add** count so a pyramid is visible at a glance. Like the
   rest of the live-order surface, treat the first few real adds as confirmation before trusting
   it with size — **validate in paper + backtest first.**
@@ -2685,7 +2688,11 @@ because the loop is the only caller that is always flat by the bell, so it is
   Until 2026-09-23 live stock and live options alerted separately. A halt split across
   the two sleeves then pushed nothing, and options alone past the level on a green stock
   day pushed a halt no check was applying. Releasing the next day (a fresh day's P&L
-  starting over) needs no alert of its own, same reasoning as the kill switch's release. A
+  starting over) needs no alert of its own, same reasoning as the kill switch's release.
+  Once tripped, the halt holds for the rest of that day, as the alert says, even if a
+  position still open at the time closes green and lifts the day back above the level.
+  Until 2026-09-23 it did not: the live halt tripped at 10:23, CRWD's take-profit at 11:47
+  (+$382) put the day back above the line, and the loop bought VKTX at 11:49. A
   **stock split** on a symbol with an open autotrade position (paper or live, stocks
   or options) also notifies — checked at most once a day, since splits are rare and
   the underlying lookup is Yahoo-only (real detection needs `MARKET_DATA_PROVIDER` on
@@ -2768,10 +2775,16 @@ because the loop is the only caller that is always flat by the bell, so it is
   explicit dash rather than a blank. A cell goes red once its cap is reached; the day P&L
   cell specifically shows a distinct "HALT TRIGGERED" label (not just its ordinary
   red-for-a-loss coloring) once that book's daily-drawdown halt is actually breached, so
-  an ordinary down day and a halted one are never hard to tell apart. Only the **Paper**
+  an ordinary down day and a halted one are never hard to tell apart. The label is the
+  server's own verdict, by the rule the risk checks apply: it stays up for the rest of the
+  day once the halt has tripped, and the two live columns show it together, because the
+  live halt is measured on live stock plus live options. Until 2026-09-23 each live column
+  compared only its own day P&L with the level, so that morning's live halt (stock
+  −$1,540.47, options −$506, level −$1,941.67) showed in neither. Only the **Paper**
   column folds equity and options into one pool — its header says so, and its
   open-positions and open-risk cells carry a sub-label breaking the combined number back
-  out into its equity/options parts; the two live columns are each their own pool. Every
+  out into its equity/options parts; the two live columns are each their own pool, except
+  for the drawdown halt just described. Every
   figure in the table is a direct read of the same numbers the risk engine itself checks
   before approving a trade — this panel can't show you something the risk engine would
   disagree with. Below the table, an **Account-wide** row holds the three figures that

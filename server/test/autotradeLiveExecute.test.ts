@@ -101,6 +101,7 @@ import { createLiveOptionsPosition } from '../src/db/autotradeLiveOptionsPositio
 import { resetUnplaceableSymbols } from '../src/services/autotrading/unplaceableSymbols';
 import { runWebullPositionsSync } from '../src/providers/webull/positions';
 import { priceMap } from '../src/services/quotes';
+import { writeDailyHaltMarker } from '../src/services/autotrading/dailyHaltMarker';
 
 const mockGetProvider = vi.mocked(getProvider);
 const mockAccountState = vi.mocked(webullAccountState);
@@ -159,6 +160,7 @@ function baseRiskCtx() {
   return {
     equity: 100_000,
     dayStartEquityUsd: 100_000,
+    dailyHaltTripped: false,
     dailyPnl: 0,
     tradesToday: 0,
     consecutiveLosses: 0,
@@ -361,6 +363,7 @@ describe('getProbationStatus', () => {
     const okResult = evaluateRiskCheck(signal(), {
       equity: 100_000,
       dayStartEquityUsd: 100_000,
+      dailyHaltTripped: false,
       dailyPnl: 0,
       tradesToday: 0,
       consecutiveLosses: 0,
@@ -562,6 +565,7 @@ describe('attemptLiveEntry', () => {
   const okResult: RiskCheckResult = evaluateRiskCheck(signal(), {
     equity: 100_000,
     dayStartEquityUsd: 100_000,
+    dailyHaltTripped: false,
     dailyPnl: 0,
     tradesToday: 0,
     consecutiveLosses: 0,
@@ -2209,6 +2213,41 @@ describe('runLiveExecution — a live refusal is journaled with its reason', () 
     expect(listAutotradeEvents({ actions: ['live_risk_blocked'] })).toHaveLength(1);
   });
 
+  // 2026-09-23. The live halt tripped at 10:23; CRWD's target filled at 11:47
+  // (+$382) and put the day back above the line; the loop bought VKTX at 11:49.
+  // The halt's own notification says entries are blocked for the rest of the
+  // day. Here the day's realized P&L is 0, far above any line, and the only
+  // thing standing in the way is that the halt already tripped today.
+  it('holds the day’s halt once it has tripped, even with the day back above the line', async () => {
+    writeDailyHaltMarker({ pool: 'live', date: etToday(), dailyPnl: -2046.47, haltLevel: -1941.67 });
+    setAutotradeConfig({ ...liveConfig(), levelExitsEnabled: false });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-NEVER' });
+
+    const outcomes = await runLiveExecution([{ signal: signal() }]);
+
+    expect(outcomes[0]).toMatchObject({ symbol: 'AAPL', ok: false });
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    const detail = JSON.parse(listAutotradeEvents({ actions: ['live_risk_blocked'] })[0].detail!);
+    expect(detail.failedRules).toEqual(['daily_drawdown_halt']);
+    expect(detail.checks.find((c: { rule: string }) => c.rule === 'daily_drawdown_halt').detail).toMatch(
+      /halted for the rest of today/,
+    );
+  });
+
+  it('a paper halt does not hold the live book', async () => {
+    writeDailyHaltMarker({ pool: 'paper', date: etToday(), dailyPnl: -900, haltLevel: -800 });
+    setAutotradeConfig({ ...liveConfig(), levelExitsEnabled: false });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-OK' });
+
+    const outcomes = await runLiveExecution([{ signal: signal() }]);
+
+    expect(outcomes[0]).toMatchObject({ ok: true });
+  });
+
   it('stays quiet when the trade is APPROVED — the order event already says so', async () => {
     setAutotradeConfig({ ...liveConfig(), levelExitsEnabled: false });
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
@@ -2527,6 +2566,7 @@ describe('adoptOrphanedLivePositions', () => {
   const okCtx = {
     equity: 100_000,
     dayStartEquityUsd: 100_000,
+    dailyHaltTripped: false,
     dailyPnl: 0,
     tradesToday: 0,
     consecutiveLosses: 0,
@@ -3887,6 +3927,7 @@ describe('reconcileLiveOrders', () => {
     const okResult = evaluateRiskCheck(signal(), {
       equity: 100_000,
       dayStartEquityUsd: 100_000,
+      dailyHaltTripped: false,
       dailyPnl: 0,
       tradesToday: 0,
       consecutiveLosses: 0,
@@ -3965,6 +4006,7 @@ describe('reconcileLiveOrders', () => {
     const okResult = evaluateRiskCheck(signal(), {
       equity: 100_000,
       dayStartEquityUsd: 100_000,
+      dailyHaltTripped: false,
       dailyPnl: 0,
       tradesToday: 0,
       consecutiveLosses: 0,
@@ -4032,6 +4074,7 @@ describe('reconcileLiveOrders', () => {
     evaluateRiskCheck(signal(), {
       equity: 100_000,
       dayStartEquityUsd: 100_000,
+      dailyHaltTripped: false,
       dailyPnl: 0,
       tradesToday: 0,
       consecutiveLosses: 0,
@@ -4238,6 +4281,7 @@ describe('reconcileLiveOrders', () => {
     const res = evaluateRiskCheck(signal(), {
       equity: 100_000,
       dayStartEquityUsd: 100_000,
+      dailyHaltTripped: false,
       dailyPnl: 0,
       tradesToday: 0,
       consecutiveLosses: 0,
@@ -4308,6 +4352,7 @@ describe('reconcileLiveOrders', () => {
     const okResult = evaluateRiskCheck(signal(), {
       equity: 100_000,
       dayStartEquityUsd: 100_000,
+      dailyHaltTripped: false,
       dailyPnl: 0,
       tradesToday: 0,
       consecutiveLosses: 0,
@@ -4377,6 +4422,7 @@ describe('reconcileLiveOrders', () => {
     const okResult = evaluateRiskCheck(signal(), {
       equity: 100_000,
       dayStartEquityUsd: 100_000,
+      dailyHaltTripped: false,
       dailyPnl: 0,
       tradesToday: 0,
       consecutiveLosses: 0,
@@ -4445,6 +4491,7 @@ describe('reconcileLiveOrders', () => {
     const okResult = evaluateRiskCheck(signal(), {
       equity: 100_000,
       dayStartEquityUsd: 100_000,
+      dailyHaltTripped: false,
       dailyPnl: 0,
       tradesToday: 0,
       consecutiveLosses: 0,
@@ -4532,6 +4579,7 @@ describe('reconcileLiveOrders + adoptOrphanedLivePositions interaction', () => {
     const okResult = evaluateRiskCheck(signal(), {
       equity: 100_000,
       dayStartEquityUsd: 100_000,
+      dailyHaltTripped: false,
       dailyPnl: 0,
       tradesToday: 0,
       consecutiveLosses: 0,
@@ -4821,6 +4869,7 @@ describe('listPendingLiveOrders / terminal-state exclusion', () => {
     const okResult = evaluateRiskCheck(signal(), {
       equity: 100_000,
       dayStartEquityUsd: 100_000,
+      dailyHaltTripped: false,
       dailyPnl: 0,
       tradesToday: 0,
       consecutiveLosses: 0,
@@ -4890,6 +4939,7 @@ describe('listPendingLiveOrders / terminal-state exclusion', () => {
     const okResult = evaluateRiskCheck(signal(), {
       equity: 100_000,
       dayStartEquityUsd: 100_000,
+      dailyHaltTripped: false,
       dailyPnl: 0,
       tradesToday: 0,
       consecutiveLosses: 0,
@@ -4925,6 +4975,10 @@ describe('listPendingLiveOrders / terminal-state exclusion', () => {
   });
 });
 
+/** The live options sleeve's day, as loop.ts threads it into the scale-in
+ *  pass: nothing booked, so these cases judge the stock sleeve's day alone. */
+const NO_OPTIONS_DAY = { dailyPnl: 0, consecutiveLosses: 0, tradesToday: 0 };
+
 describe('checkLiveScaleIns', () => {
   it('places no add-on outside the session window', async () => {
     // A scale-in adds real risk to an open real position. loop.ts calls this
@@ -4936,7 +4990,7 @@ describe('checkLiveScaleIns', () => {
     // cheaper checks, so a queued one-shot could survive into the next test.
     vi.mocked(checkSessionWindow).mockReturnValue({ ok: false, reason: 'Market is closed' });
     try {
-      expect(await checkLiveScaleIns()).toEqual([]);
+      expect(await checkLiveScaleIns(NO_OPTIONS_DAY)).toEqual([]);
       expect(vi.mocked(webullPlaceOrder)).not.toHaveBeenCalled();
     } finally {
       vi.mocked(checkSessionWindow).mockReturnValue({ ok: true });
@@ -4946,6 +5000,7 @@ describe('checkLiveScaleIns', () => {
   const riskCtx = {
     equity: 100_000,
     dayStartEquityUsd: 100_000,
+    dailyHaltTripped: false,
     dailyPnl: 0,
     tradesToday: 0,
     consecutiveLosses: 0,
@@ -5013,7 +5068,7 @@ describe('checkLiveScaleIns', () => {
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 105 }) as ReturnType<typeof getProvider>);
     mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-ADD' });
 
-    const outcomes = await checkLiveScaleIns();
+    const outcomes = await checkLiveScaleIns(NO_OPTIONS_DAY);
     expect(outcomes).toEqual([{ symbol: 'AAPL', positionId: pos.id, requested: true }]);
     expect(countLiveAddOns(pos.id)).toBe(1);
 
@@ -5030,21 +5085,21 @@ describe('checkLiveScaleIns', () => {
   it('does nothing when the flag is off (even past the trigger)', async () => {
     const { pos } = await openLivePosition({ ...SCALE_ON, liveScaleInEnabled: false });
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 105 }) as ReturnType<typeof getProvider>);
-    expect(await checkLiveScaleIns()).toEqual([]);
+    expect(await checkLiveScaleIns(NO_OPTIONS_DAY)).toEqual([]);
     expect(countLiveAddOns(pos.id)).toBe(0);
   });
 
   it('does nothing when liveMaxAddOns is 0', async () => {
     await openLivePosition({ ...SCALE_ON, liveMaxAddOns: 0 });
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 105 }) as ReturnType<typeof getProvider>);
-    expect(await checkLiveScaleIns()).toEqual([]);
+    expect(await checkLiveScaleIns(NO_OPTIONS_DAY)).toEqual([]);
   });
 
   it('stops adding once the liveMaxAddOns cap is reached', async () => {
     const { pos } = await openLivePosition({ ...SCALE_ON, liveMaxAddOns: 1 });
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 105 }) as ReturnType<typeof getProvider>);
     mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-ADD1' });
-    await checkLiveScaleIns();
+    await checkLiveScaleIns(NO_OPTIONS_DAY);
     expect(countLiveAddOns(pos.id)).toBe(1);
 
     // Merge the add-on so it's no longer "in flight", then a second attempt at a
@@ -5060,7 +5115,7 @@ describe('checkLiveScaleIns', () => {
     await reconcileLiveOrders();
 
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 112 }) as ReturnType<typeof getProvider>);
-    const second = await checkLiveScaleIns();
+    const second = await checkLiveScaleIns(NO_OPTIONS_DAY);
     expect(second).toEqual([]);
     expect(countLiveAddOns(pos.id)).toBe(1);
   });
@@ -5073,7 +5128,7 @@ describe('checkLiveScaleIns', () => {
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 105 }) as ReturnType<typeof getProvider>);
     mockPlaceOrder.mockClear();
 
-    const outcomes = await checkLiveScaleIns();
+    const outcomes = await checkLiveScaleIns(NO_OPTIONS_DAY);
     expect(outcomes[0].requested).toBe(false);
     expect(outcomes[0].reason).toMatch(/Guardrails blocked/);
     expect(countLiveAddOns(pos.id)).toBe(0);
@@ -5087,7 +5142,7 @@ describe('checkLiveScaleIns', () => {
   it('does not fire below the trigger', async () => {
     await openLivePosition(SCALE_ON);
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 103 }) as ReturnType<typeof getProvider>); // +0.6R
-    expect(await checkLiveScaleIns()).toEqual([]);
+    expect(await checkLiveScaleIns(NO_OPTIONS_DAY)).toEqual([]);
   });
 
   it('fails closed (no add) when the add would exceed the aggregate open-risk cap', async () => {
@@ -5100,7 +5155,7 @@ describe('checkLiveScaleIns', () => {
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 105 }) as ReturnType<typeof getProvider>);
     mockPlaceOrder.mockClear();
 
-    const outcomes = await checkLiveScaleIns();
+    const outcomes = await checkLiveScaleIns(NO_OPTIONS_DAY);
     expect(outcomes[0].requested).toBe(false);
     expect(outcomes[0].reason).toMatch(/Aggregate open-risk cap/);
     expect(countLiveAddOns(pos.id)).toBe(0);
@@ -5111,18 +5166,58 @@ describe('checkLiveScaleIns', () => {
     expect(JSON.parse(blocked!.detail!)).toMatchObject({ reason: 'max_aggregate_open_risk' });
   });
 
+  it('refuses an add-on once the live halt has tripped today, with the day back above the line', async () => {
+    // The same rule every entry runs (dailyHaltVerdict): an add-on adds real
+    // risk, so a halted day refuses it for the rest of the day, not only while
+    // the day's figure sits at or below the level (2026-09-23).
+    const { pos } = await openLivePosition(SCALE_ON);
+    writeDailyHaltMarker({ pool: 'live', date: etToday(), dailyPnl: -2046.47, haltLevel: -1941.67 });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 105 }) as ReturnType<typeof getProvider>);
+    mockPlaceOrder.mockClear();
+
+    const outcomes = await checkLiveScaleIns(NO_OPTIONS_DAY);
+    expect(outcomes[0].requested).toBe(false);
+    expect(outcomes[0].reason).toMatch(/Daily drawdown halt \(halted for the rest of today, tripped earlier/);
+    expect(countLiveAddOns(pos.id)).toBe(0);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    const blocked = listAutotradeEvents({ symbol: 'AAPL', stage: 'execution' }).find(
+      (e) => e.action === 'live_scale_in_blocked',
+    );
+    expect(JSON.parse(blocked!.detail!)).toMatchObject({ reason: 'daily_drawdown_halt', dailyPnl: 0 });
+  });
+
+  it('judges the add-on on the live pool, stock plus options, not the stock sleeve alone', async () => {
+    // The stock sleeve's day is flat and would pass on its own; the options
+    // sleeve's loss puts the live pool past any level. The add-on used to read
+    // getLivePortfolioSnapshot() alone, so it placed here while every live
+    // entry beside it was refused.
+    const { pos } = await openLivePosition(SCALE_ON);
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 105 }) as ReturnType<typeof getProvider>);
+    mockPlaceOrder.mockClear();
+
+    const outcomes = await checkLiveScaleIns({ dailyPnl: -1_000_000, consecutiveLosses: 0, tradesToday: 0 });
+    expect(outcomes[0].requested).toBe(false);
+    expect(outcomes[0].reason).toMatch(/Daily drawdown halt/);
+    expect(countLiveAddOns(pos.id)).toBe(0);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    const blocked = listAutotradeEvents({ symbol: 'AAPL', stage: 'execution' }).find(
+      (e) => e.action === 'live_scale_in_blocked',
+    );
+    expect(JSON.parse(blocked!.detail!)).toMatchObject({ reason: 'daily_drawdown_halt', dailyPnl: -1_000_000 });
+  });
+
   it('no-ops when the server placement master (TRADING_ENABLED) is off', async () => {
     await openLivePosition(SCALE_ON);
     config.trading.placeEnabled = false;
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 105 }) as ReturnType<typeof getProvider>);
-    expect(await checkLiveScaleIns()).toEqual([]);
+    expect(await checkLiveScaleIns(NO_OPTIONS_DAY)).toEqual([]);
   });
 
   it('reconcile MERGES an add-on fill into the position (blended entry, bigger qty) — no duplicate row', async () => {
     const { pos, qty } = await openLivePosition(SCALE_ON);
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 105 }) as ReturnType<typeof getProvider>);
     mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-ADD' });
-    await checkLiveScaleIns();
+    await checkLiveScaleIns(NO_OPTIONS_DAY);
 
     mockOrderStatus.mockResolvedValue({
       ok: true,
@@ -5166,6 +5261,7 @@ describe('reconcileLiveOrders — partial fills', () => {
     const okResult = evaluateRiskCheck(signal(), {
       equity: 100_000,
       dayStartEquityUsd: 100_000,
+      dailyHaltTripped: false,
       dailyPnl: 0,
       tradesToday: 0,
       consecutiveLosses: 0,
@@ -5323,6 +5419,7 @@ describe('reconcileLiveOrders — booking and the materialization mark are atomi
     const okResult = evaluateRiskCheck(signal(), {
       equity: 100_000,
       dayStartEquityUsd: 100_000,
+      dailyHaltTripped: false,
       dailyPnl: 0,
       tradesToday: 0,
       consecutiveLosses: 0,
@@ -5585,7 +5682,7 @@ describe('manual positions are never auto-sold', () => {
     const touched = [
       ...(await checkLiveEquityScaleOuts()),
       ...(await checkLiveEquityStopAdjusts()),
-      ...(await checkLiveScaleIns()),
+      ...(await checkLiveScaleIns(NO_OPTIONS_DAY)),
       ...(await checkLiveBracketProtection()),
     ].map((o) => o.symbol);
 

@@ -1990,10 +1990,11 @@ function MonitoringDashboard({
   const positionsBusy = dash.openPositionsCount >= dash.maxConcurrentPositions;
   const tradesBusy = dash.tradesToday >= dash.maxTradesPerDay;
   const stepDownActive = dash.consecutiveLosses >= dash.stepDownAfterLosses;
-  // dailyDrawdownHaltLevel is 0 (equity unset) when the halt has no real
-  // meaning yet — guard the same way riskBusy guards an unconfigured $0 cap,
-  // so a fresh/unconfigured account never misreads as "halted."
-  const haltActive = dash.dailyDrawdownHaltLevel < 0 && dash.dailyPnl <= dash.dailyDrawdownHaltLevel;
+  // The server's own verdict, by the rule the risk checks apply (it holds for
+  // the rest of the day once tripped, and an unset equity never reads as a
+  // halt). Comparing a figure with the level here used to judge each live
+  // sleeve on its own share of a halt measured on their sum.
+  const haltActive = dash.dailyHalt.paper;
 
   // Phase 8: live is its OWN pool (see dashboard.ts's header comment) — the
   // caps are the same profile numbers as paper's above, but "used" is never
@@ -2003,7 +2004,7 @@ function MonitoringDashboard({
   const livePositionsBusy = dash.liveOpenPositionsCount >= dash.maxConcurrentPositions;
   const liveTradesBusy = dash.liveTradesToday >= dash.maxTradesPerDay;
   const liveStepDownActive = dash.liveConsecutiveLosses >= dash.stepDownAfterLosses;
-  const liveHaltActive = dash.dailyDrawdownHaltLevel < 0 && dash.liveDailyPnl <= dash.dailyDrawdownHaltLevel;
+  const liveHaltActive = dash.dailyHalt.live;
 
   // Task #70: live options — its own pool nested under live, same reasoning
   // as the live block above, just its own caps/probation (dashboard.ts's
@@ -2012,7 +2013,8 @@ function MonitoringDashboard({
   const liveOptPositionsBusy = dash.liveOptionsOpenPositionsCount >= dash.maxConcurrentPositions;
   const liveOptTradesBusy = dash.liveOptionsTradesToday >= dash.maxTradesPerDay;
   const liveOptStepDownActive = dash.liveOptionsConsecutiveLosses >= dash.stepDownAfterLosses;
-  const liveOptHaltActive = dash.dailyDrawdownHaltLevel < 0 && dash.liveOptionsDailyPnl <= dash.dailyDrawdownHaltLevel;
+  // The options sleeve halts on the same live pool as stock.
+  const liveOptHaltActive = dash.dailyHalt.live;
 
   const dt = dash.dailyTarget;
   const ev = dash.dailyGoalEvidence;

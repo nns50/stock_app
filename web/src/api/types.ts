@@ -2905,6 +2905,10 @@ export interface AutotradeDashboard {
   /** Combined equity + options today's realized paper P&L. */
   dailyPnl: number;
   dailyDrawdownHaltLevel: number;
+  /** Whether each book's daily-drawdown halt is holding now, by the risk checks'
+   *  own rule: at or below the level, or tripped earlier today. Live is one pool,
+   *  stock plus options. */
+  dailyHalt: { paper: boolean; live: boolean };
   /** Combined equity + options paper entries opened today. */
   tradesToday: number;
   maxTradesPerDay: number;

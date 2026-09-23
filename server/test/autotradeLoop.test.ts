@@ -104,6 +104,7 @@ import {
   checkLiveOptionsExits,
   reconcileLiveOptionsOrders,
   syncLiveOptionsPositionsFromBroker,
+  liveOptionsSeedForEquity,
 } from '../src/services/autotrading/liveOptionsExecute';
 import { runWebullPositionsSync } from '../src/providers/webull/positions';
 import { processMoversForPromotion } from '../src/services/autotrading/moversPromotion';
@@ -1771,6 +1772,28 @@ describe('runAutotradeLoopTick', () => {
       expect(mockCheckPerLotSecondLots).toHaveBeenCalledTimes(1);
       // And its outcome is CONSUMED, not just produced.
       expect(summary.perLotSecondLotsRequested).toBe(1);
+    });
+
+    // The scale-in pass judges the drawdown halt on the live POOL, stock plus
+    // options, like the entries beside it. It reads the options half from what
+    // the loop hands it, so the loop has to hand it the real one: a neutral
+    // seed here would pass every unit test and gate nothing (2026-09-23).
+    it('hands the scale-in pass the live options sleeve’s day, the pool its halt is measured on', async () => {
+      setAutotradeConfig({ enabled: false, liveTradingEnabled: true, liveAccountId: 'ACC1' });
+      setTradingConfig({ enabled: true, killSwitch: false });
+      armScreenAndDecide();
+      mockLiveExecute.mockResolvedValue([]);
+      const optionsDay = { dailyPnl: -506, consecutiveLosses: 1, tradesToday: 6 };
+      vi.mocked(liveOptionsSeedForEquity).mockReturnValue(optionsDay);
+      try {
+        await runAutotradeLoopTick();
+        expect(mockCheckLiveScaleIns).toHaveBeenCalledTimes(1);
+        expect(mockCheckLiveScaleIns).toHaveBeenCalledWith(optionsDay);
+        // The entries read the same derivation.
+        expect(mockLiveExecute.mock.calls[0][2]).toEqual(optionsDay);
+      } finally {
+        vi.mocked(liveOptionsSeedForEquity).mockReturnValue({ dailyPnl: 0, consecutiveLosses: 0, tradesToday: 0 });
+      }
     });
 
     it('runs live entries when paper is disabled but live is active', async () => {
