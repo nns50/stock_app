@@ -509,7 +509,12 @@ describe('correctEstimatedStockExits', () => {
   });
 
   it('keeps asking after a failed read, and gives up on a combo aged out of history', async () => {
-    const { pos, key } = bracketedCoin();
+    const { pos, key, intent } = bracketedCoin();
+    // An entry placed eight days ago: older than the history's seven-day window.
+    db.prepare('UPDATE order_intents SET created_at = ? WHERE id = ?').run(
+      Date.now() - 8 * 24 * 60 * 60 * 1000,
+      intent.id,
+    );
     estimatedExit(pos.id, etToday());
     const t0 = Date.now();
     mockBatch.mockResolvedValue(new Map([[key, { ok: false, found: false, error: '429' }]]));
@@ -527,6 +532,27 @@ describe('correctEstimatedStockExits', () => {
     expect(skipped.map((e) => JSON.parse(e.detail!))).toEqual([
       expect.objectContaining({ positionId: pos.id, cause: 'aged_out', exitPrice: 205.0451 }),
     ]);
+  });
+
+  // GRML and DELL, 2026-09-23. Each was asked about minutes after its stop
+  // filled, before the history listed the combo, and was marked final as "aged
+  // out" on an entry placed that morning. The estimate stood for good.
+  it('asks again about a same-week entry the lists have not caught up with, and corrects it when they do', async () => {
+    const { pos, key } = bracketedCoin();
+    estimatedExit(pos.id, etToday());
+    const t0 = Date.now();
+    mockBatch.mockResolvedValue(new Map([[key, { ok: true, found: false }]]));
+    await correctEstimatedStockExits('ACC1', t0);
+
+    const skipped = listAutotradeEvents({ actions: ['live_exit_correction_skipped'] });
+    expect(skipped.map((e) => JSON.parse(e.detail!))).toEqual([
+      expect.objectContaining({ positionId: pos.id, cause: 'not_listed_yet' }),
+    ]);
+    // Not final: the next pass asks again, and the combo is listed by then.
+    mockBatch.mockResolvedValue(combo(key, [stopLeg(), targetLeg({ status: 'CANCELLED', filledQty: 0 })]));
+    expect(await correctEstimatedStockExits('ACC1', t0 + STOCK_EXIT_CORRECTION_INTERVAL_MS)).toBe(1);
+    expect(mockBatch).toHaveBeenCalledTimes(2);
+    expect(getPosition(pos.id)!.exits[0]).toMatchObject({ exitPrice: 204.37, exitReason: 'stop' });
   });
 
   it('asks only about this account, and only inside the broker history window', async () => {

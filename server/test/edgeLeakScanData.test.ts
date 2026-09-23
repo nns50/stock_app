@@ -988,6 +988,27 @@ describe('the execution findings — any occurrence is one', () => {
     expect(byAction.get('live_exit_corrected|bracket_leg')).toBe(1);
   });
 
+  it('does not count a correction that is only waiting for the lists', () => {
+    // GRML, 2026-09-23: `not_listed_yet` means the order lists had not caught
+    // up yet, and the next pass decides. A pass that confirms the estimate to
+    // the cent writes no correction row, so a counted wait stayed open for ten
+    // sessions; and an exit that ended in another cause was counted twice.
+    const now = etDateTimeToMs('2026-09-23', '17:00') as number;
+    const at = etDateTimeToMs('2026-09-23', '09:52') as number;
+    db.prepare(
+      `INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) VALUES
+       ('GRML','execution','live_exit_correction_skipped','{"exitId":702,"cause":"not_listed_yet"}',NULL,?),
+       ('DELL','execution','live_exit_correction_skipped','{"exitId":709,"cause":"not_listed_yet"}',NULL,?),
+       ('DELL','execution','live_exit_correction_skipped','{"exitId":709,"cause":"aged_out"}',NULL,?)`,
+    ).run(at, at + 1, at + 60_000);
+
+    const actions = collectExecutionFindings(now).map((f) => [f.action, f.count]);
+    // Only DELL's final answer counts, once.
+    expect(actions.filter(([a]) => String(a).startsWith('live_exit_correction_skipped'))).toEqual([
+      ['live_exit_correction_skipped', 1],
+    ]);
+  });
+
   it('keeps a skip that came AFTER a correction of the same exit', () => {
     // Order matters: a later skip is news, whatever happened before it.
     const now = etDateTimeToMs('2026-09-23', '17:00') as number;

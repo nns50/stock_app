@@ -83,6 +83,8 @@ export const STOCK_EXIT_CORRECTION_LOOKBACK_DAYS = 7;
  *  leg the lists have not shown yet usually needs minutes, not seconds. */
 export const STOCK_EXIT_CORRECTION_INTERVAL_MS = 15 * 60 * 1000;
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 const LEG_TERMINAL = new Set(['FILLED', 'CANCELLED', 'CANCELED', 'REJECTED', 'EXPIRED', 'FAILED']);
 
 let lastPassAt = 0;
@@ -311,7 +313,8 @@ export function saleCorrectionNote(previousPrice: number, source: SaleOutsideBra
 }
 
 /** Why an estimate is left alone: the decision's own codes, plus the pass's. */
-type SkipCause = ExitCorrectionSkipCode | 'entry_order_missing' | 'no_matching_sale' | 'combo_working';
+type SkipCause =
+  ExitCorrectionSkipCode | 'entry_order_missing' | 'no_matching_sale' | 'combo_working' | 'not_listed_yet';
 
 /** The broker's legs as a skip row states them. */
 function legEvidence(legs: WebullOrderLeg[]) {
@@ -337,7 +340,7 @@ function journalSkip(
   evidence: Record<string, unknown>,
   now: number,
 ): void {
-  const perDay = cause === 'combo_working';
+  const perDay = cause === 'combo_working' || cause === 'not_listed_yet';
   const today = etToday(now);
   const prior = listAutotradeEvents({
     stage: 'execution',
@@ -405,6 +408,9 @@ export async function correctEstimatedStockExits(accountId: string, now: number 
   // position has no source_intent_id, and in production almost all are adopted.
   // Reading only that column is how this pass found nothing on its first deploy.
   const byKey = new Map<string, SyncEstimatedExit[]>();
+  /** When each entry order was placed: an order younger than the history's
+   *  window that neither list shows has not been LISTED yet, not aged out. */
+  const placedAtByKey = new Map<string, number>();
   for (const row of rows) {
     const intentId = entryIntentIdForPosition({ id: row.positionId, sourceIntentId: row.sourceIntentId });
     const intent = intentId === null ? undefined : getIntent(intentId);
@@ -416,6 +422,7 @@ export async function correctEstimatedStockExits(accountId: string, now: number 
     const list = byKey.get(intent.idempotencyKey) ?? [];
     list.push(row);
     byKey.set(intent.idempotencyKey, list);
+    placedAtByKey.set(intent.idempotencyKey, intent.createdAt);
   }
   if (byKey.size === 0) return 0;
   const statuses = await webullOrderStatusBatch(accountId, [...byKey.keys()]);
@@ -429,6 +436,25 @@ export async function correctEstimatedStockExits(accountId: string, now: number 
       // A failed read says nothing: asked again on a later pass.
       if (!broker || !broker.ok) continue;
       if (!broker.found) {
+        // NOT LISTED YET IS NOT AGED OUT (2026-09-23). The history keeps seven
+        // days of orders, so an entry placed inside that window that neither
+        // list shows is one the lists have not caught up with. They lag a fill
+        // by minutes: GRML was asked seconds after its stop filled at 09:52 and
+        // DELL four minutes after its stop at 10:47, while combos a quarter of
+        // an hour old were found. Both were marked final as "aged out" and kept
+        // their estimates for good. Only an entry older than the window has
+        // really aged out; a younger one is asked again on a later pass.
+        const placedAt = placedAtByKey.get(key);
+        if (placedAt !== undefined && now - placedAt < STOCK_EXIT_CORRECTION_LOOKBACK_DAYS * DAY_MS) {
+          journalSkip(
+            row,
+            'not_listed_yet',
+            "the entry's orders are not in the broker's order lists yet; asked again on a later pass",
+            {},
+            now,
+          );
+          continue;
+        }
         finalExitIds.add(row.exitId);
         journalSkip(row, 'aged_out', "the entry's orders are no longer in the broker's order lists", {}, now);
         continue;

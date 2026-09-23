@@ -13879,3 +13879,27 @@ bring a real halt back.
 point above −$1,941.67, the 09-23 results row reads `drawdownHalted: false`, and the sizing
 review's `haltsMaxIn5` does not count it. A retraction attempt against a day whose running
 total reached the line answers 409 with the reading.
+
+## 2026-09-23 (twenty-second) — an order the lists have not shown yet has not aged out
+
+The exit-correction pass reprices an exit the position sync booked at a quote, from the
+entry's bracket in the broker's order lists. When neither list showed the entry it concluded
+the combo had "aged out of history", marked the exit final, and never asked again. Webull's
+history keeps seven days of orders, and it lags a fill by minutes. GRML's stop filled in the
+09:52 minute, and the pass asked seconds later. DELL's stop filled at 10:47, and it asked
+at 10:51. Both combos had been placed that morning, both came back "not found", and both
+estimates (16.04 and 551.878) were frozen as final. A combo a quarter of an hour old (SMCI,
+10:22) was found the same morning.
+
+**The rule.** An entry placed less than `STOCK_EXIT_CORRECTION_LOOKBACK_DAYS` (7) ago that
+neither list shows is `not_listed_yet`. That skip is journaled once a day, is not final, and is
+asked about again on the pass's 15-minute cadence. Only an older entry is `aged_out`. So an
+entry the lists never show keeps the pass asking for seven days, not forever, and a pass
+that already runs every 15 minutes reads the two lists once for all its rows. The nightly
+scan does not count `not_listed_yet` at all: it is a wait, and what the next pass decides (a
+correction, another cause, `aged_out`) is the finding. Counting it left a finding open for
+ten sessions after a pass that confirmed the estimate to the cent, which writes no
+correction row, and doubled an exit that ended in another cause.
+
+**Check.** No `aged_out` skip names an entry placed within the last seven days. The next
+same-day stop the sync prices at a quote is corrected to its leg's fill within about 15 minutes.

@@ -2424,6 +2424,14 @@ because the loop is the only caller that is always flat by the bell, so it is
   position, or orders older than Webull's seven-day history. A bracket that still shows a
   working order a day after the shares left is reported the same way, once a day
   (`cause: combo_working`), because that order may still be live at Webull. Check it there.
+  Webull's order lists can lag a fill by a few minutes. So an entry placed within the last
+  seven days that neither list shows yet is not given up on: the row says
+  `cause: not_listed_yet`, once a day, and the app asks again about every 15 minutes until
+  the order appears, for up to seven days after it was placed. After that it is aged out.
+  The nightly scan does not count a `not_listed_yet` row, since the next pass decides what
+  happened. (Until 2026-09-23 that case was marked "aged out" for good. GRML's and DELL's
+  stops that morning kept their estimated prices because the check ran minutes before
+  Webull listed the fills.)
   A timed stock close or an options close first seen on a later day than it was placed
   (after an outage, say) is booked on the day its order was placed. Both are day orders, which
   can only fill on the day they were placed.
