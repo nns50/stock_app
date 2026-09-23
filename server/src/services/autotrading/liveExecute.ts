@@ -55,6 +55,7 @@ import {
   pendingLiveOrdersRisk,
   getLiveOrder,
   getLiveEntryOrderForPosition,
+  entryIntentIdForPosition,
   LiveOrderMeta,
 } from '../../db/autotradeLiveOrders';
 import { computeScaleIn } from './scaleIn';
@@ -3719,32 +3720,10 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
   return outcomes;
 }
 
-/**
- * The ENTRY intent behind a live position, by EITHER link.
- *
- * `positions.source_intent_id` is set only when a fill materializes through
- * materializeEntryFill's create path. A position ADOPTED from the broker sync
- * never gets one — adoption deliberately does not patch it, because a null
- * source_intent_id is itself the "orphan, needs linking" signal that path
- * matches on. What adoption DOES establish is the reverse link:
- * setLiveOrderPositionId writes position_id onto the entry order row.
- *
- * Reading only source_intent_id therefore makes every adopted position
- * invisible, and this is the SECOND time that has cost something. The first was
- * an adopted CTVA position that failed its stagnation close 21 ticks running
- * (see getLiveEntryOrderForPosition's own doc comment). The second was
- * checkLiveBracketProtection: from 2026-09-01, when the book flipped to almost
- * entirely adopted positions, it found ZERO candidates and returned before ever
- * querying the broker — so the naked-position alarm went quiet for ten days
- * while reading exactly like "nothing is wrong".
- *
- * Prefer source_intent_id when present (it is the precise link), fall back to
- * the entry order's own intentId, and return null only when neither exists.
- */
-export function entryIntentIdForPosition(pos: { id: number; sourceIntentId: number | null }): number | null {
-  if (pos.sourceIntentId !== null) return pos.sourceIntentId;
-  return getLiveEntryOrderForPosition(pos.id)?.intentId ?? null;
-}
+// entryIntentIdForPosition moved to db/autotradeLiveOrders.ts (2026-09-23), beside
+// the lookup it wraps, so readers below this layer can call the same function.
+// Re-exported here for the callers that already import it from this module.
+export { entryIntentIdForPosition };
 
 function alreadyObservedGroupsToday(positionId: number): boolean {
   const today = etDateStr();

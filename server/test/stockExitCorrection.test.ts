@@ -104,8 +104,12 @@ const targetLeg = (over: Partial<WebullOrderLeg> = {}): WebullOrderLeg => ({
 });
 
 /** An autotrade stock position with its bracket entry order on record, as the
- *  live path leaves it. */
-function bracketedCoin(opts: { key?: string; entryDate?: string; accountId?: string } = {}) {
+ *  live path leaves it in production: ADOPTED. The broker sync imports the
+ *  fill before the reconcile materializes it, so the position has no
+ *  source_intent_id and the entry order row points at it instead. The first
+ *  deploy of this pass read only source_intent_id and found nothing, because
+ *  its fixtures set one. `materialized: true` is the other, rarer shape. */
+function bracketedCoin(opts: { key?: string; entryDate?: string; accountId?: string; materialized?: boolean } = {}) {
   const key = opts.key ?? 'cid-coin-0921';
   const intent = createIntent(
     {
@@ -131,9 +135,9 @@ function bracketedCoin(opts: { key?: string; entryDate?: string; accountId?: str
     // the target is "between the levels" to the sync's inference.
     stopPrice: 204.39,
     targetPrice: 209.74,
-    tags: ['live', 'autotrade'],
+    tags: ['webull', 'live', 'autotrade'],
     accountId: opts.accountId ?? 'ACC1',
-    sourceIntentId: intent.id,
+    sourceIntentId: opts.materialized ? intent.id : null,
   });
   recordLiveOrder({
     intentId: intent.id,
@@ -415,6 +419,38 @@ describe('correctEstimatedStockExits', () => {
     // A past day keeps its account half.
     expect(after.baselineEquityUsd).toBe(30_401.8);
     expect(after.closeEquityUsd).toBe(27_776.75);
+  });
+
+  it('corrects a position materialized with its own source_intent_id the same way', async () => {
+    const { pos, key } = bracketedCoin({ materialized: true });
+    estimatedExit(pos.id, etToday());
+    mockBatch.mockResolvedValue(combo(key, [stopLeg(), targetLeg()]));
+    expect(await correctEstimatedStockExits('ACC1')).toBe(1);
+    expect(mockBatch).toHaveBeenCalledWith('ACC1', [key]);
+    expect(getPosition(pos.id)!.exits[0]).toMatchObject({ exitPrice: 204.37, exitReason: 'stop' });
+  });
+
+  it('never asks about an estimate with no entry order at all (a position the operator opened)', async () => {
+    const own = createPosition({
+      assetType: 'stock',
+      symbol: 'SPY',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 500,
+      entryDate: etToday(),
+      tags: ['webull'],
+      accountId: 'ACC1',
+    });
+    addExit(own.id, {
+      quantity: 10,
+      exitPrice: 501,
+      exitDate: etToday(),
+      exitReason: 'manual',
+      notes: `${SYNC_ESTIMATE_NOTE_PREFIX} from the latest quote (not a confirmed fill)`,
+    });
+    expect(listSyncEstimatedExits()).toHaveLength(0);
+    expect(await correctEstimatedStockExits('ACC1')).toBe(0);
+    expect(mockBatch).not.toHaveBeenCalled();
   });
 
   it('does nothing and reads nothing when there is no estimate to correct', async () => {
