@@ -203,6 +203,12 @@ export const EXECUTION_ACTIONS: {
       // did not hold.
       outside_bracket:
         "A stock exit filled on a stop or target placed outside the entry's bracket (a re-arm, or one placed by hand) was re-booked at that fill",
+      // The entry's own orders were in neither list (DELL, 2026-09-23: a
+      // bracket leg edited by hand in Webull), so the exit was booked from the
+      // history's fills with no way to say which bracket a stop belonged to.
+      // A defect by default: the app could not read its own order.
+      unlisted_entry:
+        "A stock exit whose entry the broker's order lists did not show was re-booked at its fill from the order history",
     },
     natureFor: { broker_history: 'operator' },
   },

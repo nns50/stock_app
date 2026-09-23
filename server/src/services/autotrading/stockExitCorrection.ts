@@ -309,9 +309,16 @@ function legClaimedElsewhere(
 
 /** The note on an exit corrected from the order history. Like the bracket
  *  note, it replaces the estimate note, so the row leaves the candidate set. */
-export function saleCorrectionNote(previousPrice: number, source: SaleOutsideBracket['source']): string {
-  const what =
-    source === 'outside_bracket'
+export function saleCorrectionNote(
+  previousPrice: number,
+  source: SaleOutsideBracket['source'],
+  entryListed = true,
+): string {
+  const what = !entryListed
+    ? source === 'outside_bracket'
+      ? "the fill of a stop or target (the entry's own orders were not in the lists, so which bracket it belonged to is not known)"
+      : "your own sale (the entry's own orders were not in the lists)"
+    : source === 'outside_bracket'
       ? 'the fill of a stop or target placed outside the entry bracket (a re-arm, or one placed by hand)'
       : 'your own sale';
   return (
@@ -391,7 +398,9 @@ function journalSkip(
  *   order lists show exactly one filled exit leg covering the booked quantity;
  * - the fills that closed it outside that bracket (a hand sale, or a stop or
  *   target placed by a re-arm or by hand), when the bracket finished without a
- *   leg filling and the history holds fills that add up exactly.
+ *   leg filling and the history holds fills that add up exactly;
+ * - the same fills when the lists do not show the entry at all (a bracket leg
+ *   edited by hand in Webull, DELL 2026-09-23), booked as `unlisted_entry`.
  * An estimate the fill matches to the cent is confirmed in place. One left alone
  * for good journals `live_exit_correction_skipped` with its cause.
  * Returns how many exits were corrected.
@@ -437,7 +446,11 @@ export async function correctEstimatedStockExits(accountId: string, now: number 
 
   let corrected = 0;
   const pastDays = new Set<string>();
-  const soldOutside: { row: SyncEstimatedExit; legs: WebullOrderLeg[] }[] = [];
+  /** Estimates to settle from the order history's fills: closed outside the
+   *  entry's bracket (its combo is listed and no exit leg filled), or with an
+   *  entry the lists do not show at all (`entryListed: false`). `young`: the
+   *  entry is inside the history's window, so its lists may still catch up. */
+  const fromHistory: { row: SyncEstimatedExit; legs: WebullOrderLeg[]; entryListed: boolean; young: boolean }[] = [];
   for (const [key, list] of byKey) {
     const broker = statuses.get(key);
     for (const row of list) {
@@ -452,19 +465,19 @@ export async function correctEstimatedStockExits(accountId: string, now: number 
         // an hour old were found. Both were marked final as "aged out" and kept
         // their estimates for good. Only an entry older than the window has
         // really aged out; a younger one is asked again on a later pass.
+        //
+        // AND THE SALE MAY BE IN THE HISTORY ALL THE SAME (2026-09-23, DELL).
+        // DELL's entry was still missing from both lists hours after its stop
+        // filled at 10:47: a bracket whose leg the operator had edited in
+        // Webull. Waiting could never settle it, and at seven days it would
+        // have aged out on its estimate. The fills that closed it are separate
+        // envelopes in the history, under the legs' own ids, which is what the
+        // hand-sale match below reads. So an entry the lists do not show goes
+        // to that match first, and waits (or ages out) only when no set of
+        // fills adds up.
         const placedAt = placedAtByKey.get(key);
-        if (placedAt !== undefined && now - placedAt < STOCK_EXIT_CORRECTION_LOOKBACK_DAYS * DAY_MS) {
-          journalSkip(
-            row,
-            'not_listed_yet',
-            "the entry's orders are not in the broker's order lists yet; asked again on a later pass",
-            {},
-            now,
-          );
-          continue;
-        }
-        finalExitIds.add(row.exitId);
-        journalSkip(row, 'aged_out', "the entry's orders are no longer in the broker's order lists", {}, now);
+        const young = placedAt !== undefined && now - placedAt < STOCK_EXIT_CORRECTION_LOOKBACK_DAYS * DAY_MS;
+        fromHistory.push({ row, legs: [], entryListed: false, young });
         continue;
       }
       const legs = broker.legs ?? [];
@@ -480,7 +493,7 @@ export async function correctEstimatedStockExits(accountId: string, now: number 
           finalExitIds.add(row.exitId);
           correctExitPrice(row.exitId, row.exitPrice, confirmationNote(row.exitPrice, "the bracket's exit leg"));
         } else if (closedOutsideTheBracket(broker)) {
-          soldOutside.push({ row, legs });
+          fromHistory.push({ row, legs, entryListed: true, young: true });
         } else if (stillOpen(broker)) {
           // The lists show a filled leg minutes late, so a working leg on the
           // day of the close is expected. From the next day it is not: the
@@ -534,18 +547,18 @@ export async function correctEstimatedStockExits(accountId: string, now: number 
     }
   }
 
-  // CLOSED OUTSIDE THE BRACKET. No leg of the entry's bracket filled, so it
-  // cannot say what the shares went for, but the broker's history holds what
-  // did: the operator's own sale, or a stop or target placed outside it. One
-  // read, and only when such a close exists.
-  if (soldOutside.length > 0) {
+  // CLOSED OUTSIDE THE BRACKET, OR BY AN ENTRY THE LISTS DO NOT SHOW. No leg
+  // of the entry's bracket can say what the shares went for, but the broker's
+  // history holds what did: the operator's own sale, or a stop or target the
+  // lists do not tie to the entry. One read, and only when such a close exists.
+  if (fromHistory.length > 0) {
     const history = await listBrokerEquityFills(accountId);
     // Oldest estimate first, so a position sold in pieces books each piece in
     // turn, and every fill booked to one exit is off the table for the rest,
     // this pass's and earlier passes' alike.
-    soldOutside.sort((a, b) => a.row.createdAt - b.row.createdAt || a.row.exitId - b.row.exitId);
+    fromHistory.sort((a, b) => a.row.createdAt - b.row.createdAt || a.row.exitId - b.row.exitId);
     const claimed = fillsClaimedByCorrections(now);
-    for (const { row, legs } of soldOutside) {
+    for (const { row, legs, entryListed, young } of fromHistory) {
       const pos = getPosition(row.positionId);
       const enteredAt = pos?.entryDate != null ? etDateTimeToMs(pos.entryDate, pos.entryTime ?? '00:00') : null;
       const window: SaleWindow & { quantity: number } = { ...row, after: previousExitBookedAt(row) };
@@ -553,6 +566,24 @@ export async function correctEstimatedStockExits(accountId: string, now: number 
         history.ok && pos && enteredAt !== null
           ? matchSaleOutsideBracket(window, enteredAt, history.fills, intentExistsForKey, claimed)
           : null;
+      if (!sale && !entryListed) {
+        // Nothing in the history adds up either. Inside the window the lists
+        // may still catch up, so it is asked again; past it, it has aged out.
+        if (young) {
+          journalSkip(
+            row,
+            'not_listed_yet',
+            "the entry's orders are not in the broker's order lists yet, and no set of closing fills in the " +
+              'history adds up to the quantity booked; asked again on a later pass',
+            {},
+            now,
+          );
+        } else {
+          finalExitIds.add(row.exitId);
+          journalSkip(row, 'aged_out', "the entry's orders are no longer in the broker's order lists", {}, now);
+        }
+        continue;
+      }
       if (!sale) {
         // The history can lag a sale by minutes. Keep asking through the day of
         // the close; after that, an unmatched close stays an estimate for good.
@@ -589,7 +620,7 @@ export async function correctEstimatedStockExits(accountId: string, now: number 
       const after = correctExitPrice(
         row.exitId,
         sale.price,
-        saleCorrectionNote(row.exitPrice, sale.source),
+        saleCorrectionNote(row.exitPrice, sale.source, entryListed),
         sale.reason,
       );
       if (!after) continue;
@@ -604,8 +635,12 @@ export async function correctEstimatedStockExits(accountId: string, now: number 
           exitId: row.exitId,
           // From the order history: the operator's own sale (`broker_history`,
           // the options twin's name), or a stop or target placed outside the
-          // entry's bracket (`outside_bracket`).
-          source: sale.source,
+          // entry's bracket (`outside_bracket`). When the lists did not show
+          // the entry at all, `unlisted_entry`, whatever the fill was: which
+          // bracket a stop belonged to cannot be told then, and "a bracket that
+          // did not hold" would be a guess. The fill's own kind rides along.
+          source: entryListed ? sale.source : 'unlisted_entry',
+          ...(entryListed ? {} : { fillKind: sale.source }),
           exitDate: row.exitDate,
           quantity: row.quantity,
           fromPrice: row.exitPrice,

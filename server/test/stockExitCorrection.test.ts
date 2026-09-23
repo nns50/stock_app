@@ -555,6 +555,93 @@ describe('correctEstimatedStockExits', () => {
     expect(getPosition(pos.id)!.exits[0]).toMatchObject({ exitPrice: 204.37, exitReason: 'stop' });
   });
 
+  // DELL, 2026-09-23: its entry was still in neither list hours after
+  // its stop filled — a bracket whose leg the operator had edited in Webull.
+  // Waiting could never settle it; the fill that closed it was in the history
+  // all along, under the leg's own id.
+  describe('an entry the lists do not show', () => {
+    const editedStop = (over: Partial<BrokerEquityFill> = {}): BrokerEquityFill =>
+      handSale({
+        clientOrderId: 'leg-sl-edited', // a leg's own id: never an intent of ours
+        comboType: 'STOP_LOSS',
+        orderType: 'STOP_LOSS',
+        filledPrice: 204.37,
+        ...over,
+      });
+
+    it("books the history's stop fill as unlisted_entry, and asks no more", async () => {
+      const { pos, key } = bracketedCoin();
+      estimatedExit(pos.id, etToday());
+      const t0 = Date.now();
+      mockBatch.mockResolvedValue(new Map([[key, { ok: true, found: false }]]));
+      mockEquityFills.mockResolvedValue({ ok: true, fills: [editedStop()] });
+
+      expect(await correctEstimatedStockExits('ACC1', t0)).toBe(1);
+
+      const fixed = getPosition(pos.id)!;
+      expect(fixed.exits[0]).toMatchObject({ exitPrice: 204.37, exitReason: 'stop', quantity: 161 });
+      expect(fixed.exits[0].notes).toMatch(/the entry's own orders were not in the lists/);
+      const rows = listAutotradeEvents({ actions: ['live_exit_corrected'] });
+      expect(rows.map((r) => JSON.parse(r.detail!))).toEqual([
+        expect.objectContaining({
+          positionId: pos.id,
+          source: 'unlisted_entry',
+          fillKind: 'outside_bracket',
+          fromPrice: 205.0451,
+          toPrice: 204.37,
+          toReason: 'stop',
+          fillClientOrderIds: ['leg-sl-edited'],
+        }),
+      ]);
+      // Settled: no "not listed yet" row, and nothing left to ask about.
+      expect(listAutotradeEvents({ actions: ['live_exit_correction_skipped'] })).toHaveLength(0);
+      expect(listSyncEstimatedExits()).toHaveLength(0);
+      // THE CONSUMER: the scan reads it under its own label, not as a bracket
+      // that did not hold.
+      const byAction = new Map(collectExecutionFindings(Date.now()).map((f) => [f.action, f]));
+      expect(byAction.get('live_exit_corrected|unlisted_entry')?.detail).toMatch(
+        /^A stock exit whose entry the broker's order lists did not show/,
+      );
+      expect(byAction.has('live_exit_corrected|outside_bracket')).toBe(false);
+    });
+
+    it('books a plain hand sale the same way, with its own kind and reason', async () => {
+      const { pos, key } = bracketedCoin();
+      estimatedExit(pos.id, etToday());
+      mockBatch.mockResolvedValue(new Map([[key, { ok: true, found: false }]]));
+      mockEquityFills.mockResolvedValue({ ok: true, fills: [handSale()] });
+
+      expect(await correctEstimatedStockExits('ACC1')).toBe(1);
+      expect(getPosition(pos.id)!.exits[0]).toMatchObject({ exitPrice: 204.95, exitReason: 'manual' });
+      const detail = JSON.parse(listAutotradeEvents({ actions: ['live_exit_corrected'] })[0].detail!);
+      expect(detail).toMatchObject({ source: 'unlisted_entry', fillKind: 'broker_history' });
+    });
+
+    it("never books one of the app's own orders, and waits instead", async () => {
+      const { pos, key } = bracketedCoin();
+      estimatedExit(pos.id, etToday());
+      // A close the app placed: its own reconcile books it, so the match must not.
+      createIntent(
+        { symbol: 'COIN', assetKind: 'stock', side: 'sell', openClose: 'close', quantity: 161, orderType: 'limit' },
+        'cid-app-close',
+      );
+      const t0 = Date.now();
+      mockBatch.mockResolvedValue(new Map([[key, { ok: true, found: false }]]));
+      mockEquityFills.mockResolvedValue({ ok: true, fills: [handSale({ clientOrderId: 'cid-app-close' })] });
+
+      expect(await correctEstimatedStockExits('ACC1', t0)).toBe(0);
+      expect(getPosition(pos.id)!.exits[0].exitPrice).toBe(205.0451);
+      const skipped = listAutotradeEvents({ actions: ['live_exit_correction_skipped'] });
+      expect(skipped.map((e) => JSON.parse(e.detail!))).toEqual([
+        expect.objectContaining({ positionId: pos.id, cause: 'not_listed_yet' }),
+      ]);
+      // Not final: asked again, and the history read again with it.
+      await correctEstimatedStockExits('ACC1', t0 + STOCK_EXIT_CORRECTION_INTERVAL_MS);
+      expect(mockBatch).toHaveBeenCalledTimes(2);
+      expect(mockEquityFills).toHaveBeenCalledTimes(2);
+    });
+  });
+
   it('asks only about this account, and only inside the broker history window', async () => {
     const other = bracketedCoin({ key: 'cid-other-acct', accountId: 'ACC2' });
     estimatedExit(other.pos.id, etToday());
