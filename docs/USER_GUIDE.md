@@ -2346,9 +2346,20 @@ because the loop is the only caller that is always flat by the bell, so it is
   because the options position check closes a contract Webull no longer holds. It closed it
   at an **estimate** from the delayed option chain, though, and labelled the exit `manual`.
   So the real fill price and the reason the exit fired were both lost. The order check runs
-  first in each cycle, so the real fill now lands first. The estimate path remains for
-  contracts that leave the account without an app order, such as a close you make by hand
-  in Webull. Those closes are still booked at a quote, not at your fill.
+  first in each cycle, so the real fill now lands first.
+  **A close you make by hand in Webull is booked at your fill** (since 2026-09-23). No app
+  order exists for the order check to read, so the position check handles it. It first asks
+  Webull's order history for your sale of that exact contract (underlying, call or put,
+  expiration, strike). If it finds sales adding up to the whole position, it books their
+  quantity-weighted price and time. The history can lag. Until your sale appears there, the
+  close is booked at an estimate: the real-time mid when a fresh quote exists, otherwise the
+  delayed chain. The Recent activity row says which (`pricedBy`). Every 15 minutes the app
+  re-checks the history for hand closes still at an estimate and rewrites them to your fill
+  (**`live_options_exit_corrected`**, `source: broker_history`). It re-records the affected
+  day on the Results calendar. Webull keeps seven days of order history, so a hand close
+  older than that stays at its estimate. So does a sale that does not add up to the position
+  (you sold part, or traded the same contract again), and so does a spread. Stock hand
+  closes are still booked at a real-time quote.
   A timed stock close or an options close first seen on a later day than it was placed
   (after an outage, say) is booked on the day its order was placed. Both are day orders, which
   can only fill on the day they were placed.

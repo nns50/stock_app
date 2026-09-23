@@ -38,6 +38,7 @@ import {
   checkLiveOptionsExits,
   reconcileLiveOptionsOrders,
   syncLiveOptionsPositionsFromBroker,
+  correctHandClosesFromHistory,
   liveOptionsSeedForEquity,
   getLiveOptionsPortfolioSnapshot,
 } from './liveOptionsExecute';
@@ -505,6 +506,16 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       if (liveOptionsCfg.liveAccountId) await syncLiveOptionsPositionsFromBroker(liveOptionsCfg.liveAccountId);
     } catch (e) {
       journalStageFailure('live options position-truth sync', e);
+    }
+    // A close the sync had to book at an estimate (a hand close in Webull)
+    // is rewritten to the broker's own fill once its order history shows it.
+    // Throttled to one history read per 15 minutes, and only while such a close
+    // is unconfirmed. See correctHandClosesFromHistory.
+    try {
+      const liveOptionsCfg = getAutotradeConfig();
+      if (liveOptionsCfg.liveAccountId) await correctHandClosesFromHistory(liveOptionsCfg.liveAccountId);
+    } catch (e) {
+      journalStageFailure('live options hand-close correction', e);
     }
     // An option held THROUGH expiry never produces a closing order, and neither
     // of the two mechanisms above can retire it: the reconcile has no order to

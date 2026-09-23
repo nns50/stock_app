@@ -304,14 +304,17 @@ export function correctLiveOptionsExit(
   id: number,
   exitPrice: number,
   exitReason: LiveOptionsExitReason,
+  /** The fill's own time, when the source knows it (a broker history fill).
+   *  Left unchanged when omitted. */
+  exitAt?: number,
 ): LiveOptionsPosition | null {
   const info = db
     .prepare(
       `UPDATE autotrade_live_options_positions
-       SET exit_price = ?, short_exit_price = NULL, exit_reason = ?, updated_at = ?
+       SET exit_price = ?, short_exit_price = NULL, exit_reason = ?, exit_at = COALESCE(?, exit_at), updated_at = ?
        WHERE id = ? AND status = 'closed'`,
     )
-    .run(exitPrice, exitReason, Date.now(), id);
+    .run(exitPrice, exitReason, exitAt ?? null, Date.now(), id);
   if (info.changes === 0) return null;
   const row = db.prepare('SELECT * FROM autotrade_live_options_positions WHERE id = ?').get(id) as Row;
   return map(row);

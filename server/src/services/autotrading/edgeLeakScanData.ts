@@ -127,13 +127,21 @@ export const EXECUTION_ACTIONS: {
     action: 'live_options_order_status_unresolved',
     label: 'An options order the broker accepted could not be found by any read',
   },
-  // The positions read saw a close before the order read did, and the sync
-  // booked an estimate that a confirmed fill later replaced
-  // (correctEstimatedOptionsCloses). The record is right after it; the finding
-  // is that the race happened at all.
+  // A broker-sync estimate replaced by a real fill. Split by where the fill
+  // came from, because the two are not the same kind of event:
+  // `app_order` is the app's own close, which the positions read saw before
+  // the order read did. The record is right afterwards, and the finding is
+  // that the race happened at all. `broker_history` is a hand close in Webull
+  // re-booked at the operator's own fill: not an app defect, but a trade the
+  // strategy figure carries and the operator made.
   {
     action: 'live_options_exit_corrected',
     label: 'A confirmed options fill replaced a broker-sync estimate',
+    splitOn: 'source',
+    labelFor: {
+      app_order: "The app's own options close was booked late: the order read lagged the positions read",
+      broker_history: "A hand close in Webull was re-booked at the operator's fill",
+    },
   },
   // Two RISK CONTROLS that fail open (2026-09-12). Neither is a crash and
   // neither stops the book — that is the point: on a provider or broker

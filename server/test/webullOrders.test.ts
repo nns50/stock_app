@@ -17,6 +17,7 @@ import {
   buildStandaloneBracketRequest,
   protectiveBracketIntent,
   webullOrderDetail,
+  parseBrokerOptionFills,
 } from '../src/providers/webull/orders';
 import type { WebullOpenOrder } from '../src/providers/webull/orders';
 import type { OrderIntent } from '../src/services/trading/guardrails';
@@ -1360,6 +1361,86 @@ describe('protectiveBracketIntent', () => {
 // in either list; this is the read that finds it. Contract from Webull's SDK:
 // GET /openapi/trade/order/detail?account_id=…&client_order_id=….
 // ---------------------------------------------------------------------------
+// The shape the broker's order history returned for the app's own NVDA close
+// on 2026-09-21: a single-leg OPTION order names its contract only on the leg.
+describe('parseBrokerOptionFills', () => {
+  const nvdaClose = {
+    client_order_id: 'CID-NVDA',
+    combo_type: 'NORMAL',
+    combo_order_id: 'COMBO-1',
+    orders: [
+      {
+        client_order_id: 'CID-NVDA',
+        symbol: 'NVDA',
+        side: 'SELL',
+        status: 'FILLED',
+        instrument_type: 'OPTION',
+        option_strategy: 'SINGLE',
+        position_intent: 'SELL_TO_CLOSE',
+        total_quantity: '6',
+        filled_quantity: '6',
+        filled_price: '0.25',
+        filled_time: '1789999401426',
+        filled_time_at: '2026-09-21T14:03:21.426Z',
+        legs: [
+          {
+            id: 'L1',
+            quantity: '6',
+            side: 'SELL',
+            symbol: 'NVDA',
+            option_type: 'CALL',
+            option_expire_date: '2026-09-21',
+            strike_price: '225.00',
+          },
+        ],
+      },
+    ],
+  };
+
+  it('reads the contract off the leg and the fill off the order', () => {
+    expect(parseBrokerOptionFills([nvdaClose])).toEqual([
+      {
+        clientOrderId: 'CID-NVDA',
+        side: 'SELL',
+        positionIntent: 'SELL_TO_CLOSE',
+        underlying: 'NVDA',
+        optionType: 'call',
+        strike: 225,
+        expiration: '2026-09-21',
+        filledQty: 6,
+        filledPrice: 0.25,
+        filledAt: 1789999401426,
+      },
+    ]);
+  });
+
+  it('falls back to filled_time_at when the millisecond field is absent', () => {
+    const o = { ...nvdaClose.orders[0], filled_time: undefined };
+    const [fill] = parseBrokerOptionFills([{ ...nvdaClose, orders: [o] }]);
+    expect(fill.filledAt).toBe(Date.parse('2026-09-21T14:03:21.426Z'));
+  });
+
+  it('skips what cannot be a single-leg options fill', () => {
+    const base = nvdaClose.orders[0];
+    const envelopes = [
+      // an equity order
+      { ...nvdaClose, orders: [{ ...base, instrument_type: 'EQUITY' }] },
+      // nothing filled
+      { ...nvdaClose, orders: [{ ...base, status: 'CANCELLED', filled_quantity: '0', filled_price: '0' }] },
+      // a spread: two legs, no per-leg fill
+      { ...nvdaClose, orders: [{ ...base, legs: [base.legs[0], { ...base.legs[0], strike_price: '230.00' }] }] },
+      // no parseable contract
+      { ...nvdaClose, orders: [{ ...base, legs: [{ ...base.legs[0], option_expire_date: 'soon' }] }] },
+    ];
+    expect(parseBrokerOptionFills(envelopes)).toEqual([]);
+  });
+
+  it('keeps a partial fill that was later cancelled: those contracts did trade', () => {
+    const o = { ...nvdaClose.orders[0], status: 'CANCELLED', filled_quantity: '2' };
+    expect(parseBrokerOptionFills([{ ...nvdaClose, orders: [o] }])).toMatchObject([{ filledQty: 2 }]);
+  });
+});
+
 describe('webullOrderDetail', () => {
   const cfg = () => Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
   const reply = (body: unknown, status = 200) =>
