@@ -256,6 +256,29 @@ export function fieldForUntakenReason(
   // manual one, or a working order). The detail carries that; a `code` action
   // asking for the breakdown is the honest recommendation.
   if (reason === 'live_symbol_held_skipped') return null;
+  // THE LEVEL VETO (an attribution class since 2026-09-23). Live-only by
+  // design: levelPlan.ts re-places a live equity signal's exits around real
+  // swing structure and refuses one whose capped target is worth less than
+  // levelMinRewardR. The paper book runs the plain ATR plan, so this bucket's
+  // paper R is exactly the counterfactual the veto needs.
+  if (reason === 'level_veto') {
+    return {
+      field: 'levelMinRewardR',
+      direction: 'exposure',
+      detail:
+        'The veto refuses a setup whose target, capped short of the opposing wall, is worth less than ' +
+        'levelMinRewardR. Lowering it admits those trades at the smaller reward the structure allows; ' +
+        'levelExitsEnabled off removes the whole level plan, stop widening and target caps included. Paper ' +
+        'runs without the plan, so this bucket is its control.',
+    };
+  }
+  // `live_entry_failed`, `live_entry_blocked` and `live_order_outcome_unknown`
+  // deliberately have NO field. The live book tried and the order did not go in
+  // (the broker refused it, a guardrail refused it, or nobody answered), and no
+  // setting widens that. A null field makes each a code action.
+  if (reason === 'live_entry_failed' || reason === 'live_entry_blocked' || reason === 'live_order_outcome_unknown') {
+    return null;
+  }
   // The END-OF-DAY entry cutoff (2026-09-12), and it is worth a lever rather
   // than a shrug. `endOfDayFlatten.ts` keeps the cutoff live-only ON PURPOSE —
   // paper flattens on the same window but keeps OPENING late entries, "which
@@ -368,6 +391,10 @@ function humanReason(reason: string): string {
   if (reason === 'risk_atr_unreachable_skipped') return "a stop wider than the name's daily range";
   if (reason === 'symbol_unplaceable_skipped') return 'a symbol the broker will not trade';
   if (reason === 'absorbed_price_skipped') return 'a price being absorbed at a level rather than moving';
+  if (reason === 'level_veto') return 'the level veto (a target the chart structure caps under the minimum reward)';
+  if (reason === 'live_entry_failed') return 'the broker refusing the order (buying power, or its preview)';
+  if (reason === 'live_entry_blocked') return 'a guardrail refusing the order at placement';
+  if (reason === 'live_order_outcome_unknown') return 'a placement the broker never answered';
   if (reason === NEVER_A_LEVER) return 'the live book standing down (banked day, give-back guard or kill switch)';
   return reason.replace(/_/g, ' ');
 }

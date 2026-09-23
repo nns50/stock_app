@@ -3024,7 +3024,11 @@ expected day it is estimated to add**. The equation is the app's own —
 **Recommendations are not only settings.** Where the data implies something with no
 config field, the action comes back as **code** — what to build — and where the honest
 next step is a measurement first, as **research**. Tuning here means the workflow, not
-just the knobs.
+just the knobs. A flow gate names its setting where one exists. The **level veto** names
+`levelMinRewardR`, with `levelExitsEnabled` as the off switch, and because the paper book
+runs without the level plan, the entries the veto refused are its own control. An order
+the broker refused, a guardrail refused at placement, or nobody answered has no setting
+to change, so it comes back as code.
 
 **Anything that widens exposure mid-trial is held.** The plan's pre-committed review runs
 over 10 active sessions with no mid-course knob turning, so a recommendation that would

@@ -624,6 +624,34 @@ describe('recommendations that are code, not settings', () => {
     // measurement rather than a recording gap — the advice must not read like
     // no_live_row's "unexplained".
     expect(cutoff?.detail).toMatch(/control/);
+    // The level veto (2026-09-23): live-only, paper is its control.
+    const veto = fieldForUntakenReason('level_veto');
+    expect(veto).toMatchObject({ field: 'levelMinRewardR', direction: 'exposure' });
+    expect(veto?.detail).toMatch(/levelExitsEnabled/);
+    expect(veto?.detail).toMatch(/control/);
+    // The live book tried and the order did not go in: no setting widens that.
+    for (const r of ['live_entry_failed', 'live_entry_blocked', 'live_order_outcome_unknown']) {
+      expect(fieldForUntakenReason(r)).toBeNull();
+    }
+  });
+
+  it("names the level veto's lever and a broker refusal in words, not action names", () => {
+    const a = advise({
+      scan: scan({
+        attribution: {
+          ...scan().attribution,
+          untaken: [
+            { reason: 'level_veto', n: 20, paperMeanR: 0.3, paperTotalR: 6, trades: [] },
+            { reason: 'live_entry_failed', n: 10, paperMeanR: 0.2, paperTotalR: 2, trades: [] },
+          ],
+        },
+      }),
+    });
+    const veto = a.recommendations.find((r) => r.id === 'flow:level_veto');
+    expect(veto?.action).toMatchObject({ kind: 'config', field: 'levelMinRewardR', direction: 'exposure' });
+    expect(JSON.stringify(veto)).toMatch(/the level veto/);
+    const failed = a.recommendations.find((r) => r.id === 'flow:live_entry_failed');
+    expect(JSON.stringify(failed)).toMatch(/the broker refusing the order/);
   });
 
   it('recommends RESEARCH before changing the exit that dominates red days', () => {
