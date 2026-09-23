@@ -825,6 +825,52 @@ export function buildAttribution(
 }
 
 /**
+ * Refusals the live path journals ONCE per symbol per ET day
+ * (`journalEntrySkipOncePerDay`, via journalDeclinedEntry, and the short
+ * skip's own `claimOncePerDay`). The first refusal of the day is the only row:
+ * every later refusal of the same name for the same reason is silent.
+ *
+ * NOT here: the re-entry cooldown and the risk check, which journal on every
+ * tick. For those, a row at 09:40 and nothing at 11:00 means the refusal no
+ * longer applied at 11:00, so an earlier row must not stand in for it.
+ */
+export const ONCE_PER_DAY_SKIP_ACTIONS: ReadonlySet<string> = new Set([
+  'live_score_floor_skipped',
+  'regime_score_floor_skipped',
+  'finish_line_skipped',
+  'symbol_cooldown_skipped',
+  'live_symbol_held_skipped',
+  'risk_atr_unreachable_skipped',
+  'symbol_unplaceable_skipped',
+  'absorbed_price_skipped',
+  'live_short_skipped',
+]);
+
+/**
+ * THE STANDING REASON (2026-09-23). A once-per-day refusal of this symbol
+ * journaled earlier the same ET day, the latest one at or before the paper
+ * entry, or null.
+ *
+ * `no_live_row` was carrying these. The live floor (81) refuses a name at
+ * 09:40 and journals it once; paper (floor 60) takes the same name at 11:00;
+ * the classifier looked for a row within a minute of 11:00, found none, and
+ * called it "nothing the journal explains". On the deployed book that bucket
+ * was the largest untaken class, 85 entries (+7.07R), and it was the evidence
+ * read for the pending question of lowering the live floor. A standing
+ * once-per-day refusal is the journal's own answer; filing it under "no row"
+ * made a gate doing its job read as a hole in the record.
+ */
+function standingSkipOf(paperTrade: LeakTrade, skips: JournalSkip[]): JournalSkip | null {
+  let best: JournalSkip | null = null;
+  for (const s of skips) {
+    if (s.symbol !== paperTrade.symbol || !ONCE_PER_DAY_SKIP_ACTIONS.has(s.action)) continue;
+    if (s.at > paperTrade.entryAt || etToday(s.at) !== paperTrade.etDate) continue;
+    if (best === null || s.at > best.at) best = s;
+  }
+  return best;
+}
+
+/**
  * The live journal's own word for why this name was not taken, read within the
  * minute of the paper entry. `no_live_row` is the honest answer when the
  * journal says nothing — it is a gap in the record, not a cause.
@@ -864,7 +910,9 @@ function classifyUntaken(paperTrade: LeakTrade, skips: JournalSkip[], batchRefus
   );
   if (near.length === 0) {
     const batched = batchRefusals.find((b) => Math.abs(b.at - paperTrade.entryAt) <= PAIR_TOLERANCE_MS);
-    return batched ? batched.action : 'no_live_row';
+    if (batched) return batched.action;
+    const standing = standingSkipOf(paperTrade, skips);
+    return standing ? standing.action : 'no_live_row';
   }
   const risk = near.find((s) => s.action === 'live_risk_blocked' && s.failedRule);
   if (risk) return `live_risk_blocked:${risk.failedRule}`;
