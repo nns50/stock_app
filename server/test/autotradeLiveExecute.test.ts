@@ -60,6 +60,8 @@ import {
 } from '../src/db/autotradeConfig';
 import { setTradingConfig } from '../src/db/trading';
 import { etDateTimeToMs, etToday } from '../src/util/marketDate';
+import { shortRefusedReason } from '../src/services/autotrading/refusedShorts';
+import { parseDeclinedEntry } from '../src/services/autotrading/declinedEntry';
 import { saveDailyBaseline } from '../src/db/dailyBaseline';
 import { listAutotradeEvents, logAutotradeEvent } from '../src/db/autotradeEvents';
 import { listPositions, createPosition, addExit } from '../src/db/positions';
@@ -683,6 +685,173 @@ describe('attemptLiveEntry', () => {
   });
 
   // -------------------------------------------------------------------------
+  // THE ENTRY PATH'S OWN GUARDS (2026-09-23, shorts pre-flight). Each one is
+  // something the broker, not the ledger, knows at placement time.
+  // -------------------------------------------------------------------------
+  const guardRows = () =>
+    listAutotradeEvents({ stage: 'execution', actions: ['live_entry_guard_refused'] }).map((e) =>
+      JSON.parse(e.detail ?? '{}'),
+    );
+  const shorts = () => liveConfig({ liveAllowNakedShort: true });
+
+  it('refuses a long whose quote is already at or below its stop, and journals it once a day', async () => {
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 94.9 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+
+    const first = await attemptLiveEntry(signal({ stop: 95 }), okResult, 'MODERATE', liveConfig());
+    const second = await attemptLiveEntry(signal({ stop: 95 }), okResult, 'MODERATE', liveConfig());
+
+    expect(first).toMatchObject({ ok: false });
+    expect(first.reason).toMatch(/through_stop/);
+    expect(second.ok).toBe(false);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    // The declined-entry shape every refusal writes (journalDeclinedEntry), so
+    // the replay can score it: the lean, not the order side, and the floor.
+    expect(guardRows()).toEqual([
+      expect.objectContaining({
+        guard: 'through_stop',
+        side: 'long',
+        last: 94.9,
+        stop: 95,
+        liveMinSignalScore: liveConfig().liveMinSignalScore,
+        liveEligible: expect.any(Boolean),
+      }),
+    ]);
+  });
+
+  it('refuses a short whose quote is already at or above its stop, and its row replays as a SHORT', async () => {
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 105 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+
+    const r = await attemptLiveEntry(signal({ side: 'sell', stop: 105, target: 90 }), okResult, 'MODERATE', shorts());
+
+    expect(r.reason).toMatch(/through_stop/);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    // THE CONSUMER: the declined-entry replay reads anything but 'short' as a
+    // long, and the first version of this row wrote the order side, 'sell'.
+    const [row] = listAutotradeEvents({ stage: 'execution', actions: ['live_entry_guard_refused'] });
+    expect(parseDeclinedEntry(row)?.side).toBe('short');
+  });
+
+  it('never sends a short against shares the broker holds LONG — it would sell them as a plain SELL', async () => {
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue({
+      ...okAccountState,
+      state: { ...okAccountState.state, currentPositionQty: 150 },
+    } as Awaited<ReturnType<typeof webullAccountState>>);
+
+    const r = await attemptLiveEntry(signal({ side: 'sell', stop: 105, target: 90 }), okResult, 'MODERATE', shorts());
+
+    expect(r.reason).toMatch(/opposite_holding/);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(guardRows()[0]).toMatchObject({ guard: 'opposite_holding', brokerPositionQty: 150 });
+  });
+
+  it('never sends a long against a short the broker holds — it would buy it back', async () => {
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue({
+      ...okAccountState,
+      state: { ...okAccountState.state, currentPositionQty: -50 },
+    } as Awaited<ReturnType<typeof webullAccountState>>);
+
+    const r = await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
+
+    expect(r.reason).toMatch(/opposite_holding/);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('still places a long beside a long the broker already holds — the same side is not a reversal', async () => {
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue({
+      ...okAccountState,
+      state: { ...okAccountState.state, currentPositionQty: 150 },
+    } as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-LONG-BESIDE' });
+
+    const r = await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
+
+    expect(r.ok).toBe(true);
+    expect(guardRows()).toEqual([]);
+  });
+
+  it('refuses a short when the holdings read failed, and lets a long through as before', async () => {
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue({ ...okAccountState, positionsUnavailable: true } as Awaited<
+      ReturnType<typeof webullAccountState>
+    >);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-LONG-UNREAD' });
+
+    const short = await attemptLiveEntry(
+      signal({ side: 'sell', stop: 105, target: 90 }),
+      okResult,
+      'MODERATE',
+      shorts(),
+    );
+    const long = await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
+
+    expect(short.reason).toMatch(/holding_unknown/);
+    expect(long.ok).toBe(true);
+    expect(mockPlaceOrder).toHaveBeenCalledTimes(1);
+  });
+
+  it('remembers a short the broker refused and does not send it again that day; a long in the name still goes', async () => {
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValueOnce({ ok: false, error: 'This stock is not available to short' });
+
+    const refused = await attemptLiveEntry(
+      signal({ side: 'sell', stop: 105, target: 90 }),
+      okResult,
+      'MODERATE',
+      shorts(),
+    );
+    const again = await attemptLiveEntry(
+      signal({ side: 'sell', stop: 105, target: 90 }),
+      okResult,
+      'MODERATE',
+      shorts(),
+    );
+
+    expect(refused.reason).toMatch(/Broker rejected/);
+    expect(again.reason).toMatch(/short_refused_today/);
+    expect(mockPlaceOrder).toHaveBeenCalledTimes(1);
+    // Refused before the quote and the account are read, since it needs neither.
+    expect(mockAccountState).toHaveBeenCalledTimes(1); // the refused attempt's read only
+    expect(guardRows()[0]).toMatchObject({
+      guard: 'short_refused_today',
+      brokerReason: 'This stock is not available to short',
+    });
+
+    mockPlaceOrder.mockResolvedValueOnce({ ok: true, orderId: 'WB-LONG-AFTER' });
+    const long = await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
+    expect(long.ok).toBe(true);
+  });
+
+  it("does not hold a symbol's shorts for the day on a BUYING-POWER refusal — the learned ceiling handles that", async () => {
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValueOnce({
+      ok: false,
+      error: 'Buying power is insufficient. Please cancel open buy orders (if any) and try again.',
+    });
+
+    await attemptLiveEntry(signal({ side: 'sell', stop: 105, target: 90 }), okResult, 'MODERATE', shorts());
+
+    expect(shortRefusedReason('AAPL', etToday())).toBeUndefined();
+  });
+
+  it('does not remember an UNANSWERED short — it may have gone through', async () => {
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValueOnce({ ok: false, ambiguous: true, error: 'timeout' });
+
+    await attemptLiveEntry(signal({ side: 'sell', stop: 105, target: 90 }), okResult, 'MODERATE', shorts());
+
+    expect(guardRows()).toEqual([]);
+    expect(shortRefusedReason('AAPL', etToday())).toBeUndefined();
+  });
+
+  // -------------------------------------------------------------------------
   // PER-LOT BRACKETS (#26), asserted at the ENTRY — the flag has to change what
   // is actually ordered, not just what a planner returns.
   // -------------------------------------------------------------------------
@@ -802,8 +971,9 @@ describe('attemptLiveEntry', () => {
   it('falls back to a full-size entry when the R geometry cannot price a near target', async () => {
     // Zero-width risk: entry == stop. lotTargetPrice returns null, and a
     // half-built position is worse than today's behaviour, so the split is
-    // abandoned rather than half-applied.
-    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    // abandoned rather than half-applied. The quote sits a cent above the stop:
+    // AT the stop, the entry is refused outright (through_stop, 2026-09-23).
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100.01 }) as ReturnType<typeof getProvider>);
     mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
     mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-DEGENERATE' });
 
@@ -2694,9 +2864,10 @@ describe('adoptOrphanedLivePositions', () => {
     const now = Date.now();
     db.prepare(
       `INSERT INTO positions (asset_type, symbol, side, quantity, entry_price, entry_date, fees, multiplier, status, tags, stop_price, target_price, source_intent_id, created_at, updated_at)
-       VALUES ('stock',?,'long',10,100,'2026-07-01',0,1,'open',?,?,?,?,?,?)`,
+       VALUES ('stock',?,?,10,100,'2026-07-01',0,1,'open',?,?,?,?,?,?)`,
     ).run(
       symbol,
+      overrides.side ?? 'long',
       JSON.stringify(tags),
       overrides.stopPrice ?? null,
       overrides.targetPrice ?? null,
@@ -2713,6 +2884,27 @@ describe('adoptOrphanedLivePositions', () => {
   // broker. The naked-position alarm went quiet for ten days and read exactly
   // like "nothing is wrong". Adoption does establish the reverse link
   // (setLiveOrderPositionId), so the lookup must accept EITHER.
+  // THE SAME SIDE (2026-09-23, shorts pre-flight): a buy fills a long and a
+  // short sale fills a short, so an order is never the fill of a holding the
+  // other way round — most likely the operator's own position in the name.
+  it('does not adopt a SHORT holding for a pending LONG entry on the same symbol', async () => {
+    await pendingEntryFor('AAPL');
+    insertOrphan('AAPL', ['webull'], { side: 'short' });
+
+    expect(adoptOrphanedLivePositions()).toEqual({ adopted: 0 });
+    expect(listPositions({ status: 'open', symbol: 'AAPL' })[0].tags).not.toContain('autotrade');
+  });
+
+  it('adopts the same-side holding beside an opposite one', async () => {
+    await pendingEntryFor('AAPL');
+    insertOrphan('AAPL', ['webull'], { side: 'short' });
+    insertOrphan('AAPL', ['webull']);
+
+    expect(adoptOrphanedLivePositions()).toEqual({ adopted: 1 });
+    const adopted = listPositions({ status: 'open', symbol: 'AAPL' }).filter((p) => p.tags.includes('autotrade'));
+    expect(adopted.map((p) => p.side)).toEqual(['long']);
+  });
+
   it('considers an ADOPTED position, which has no sourceIntentId but is linked via its entry order', async () => {
     await pendingEntryFor('AAPL');
     insertOrphan('AAPL', ['webull']);
@@ -2946,7 +3138,12 @@ describe('adoptOrphanedLivePositions', () => {
     // Shorts are off in production, so this is the side no live order has
     // exercised; the helper must still be right for it rather than right by
     // accident for the only side anyone has watched.
-    const pos = await agedProtectionCandidate('AAPL', 10);
+    //
+    // The broker reads a short as a NEGATIVE quantity (accountState.ts signs
+    // it). This case used to hand the sweep +10 for a short, a shape the
+    // reader never returns, and passed while every real short that lost its
+    // stop would have been paged and never re-armed (2026-09-23).
+    const pos = await agedProtectionCandidate('AAPL', -10);
     db.prepare("UPDATE positions SET side = 'short', stop_price = 105, target_price = 90 WHERE id = ?").run(pos.id);
     vi.mocked(listWebullOpenOrders).mockResolvedValueOnce({ ok: true, orders: [] });
     vi.mocked(webullPlaceStandaloneBracket).mockResolvedValueOnce({ ok: true, clientComboOrderId: 'GRP-SHORT' });
@@ -2957,6 +3154,22 @@ describe('adoptOrphanedLivePositions', () => {
       { comboType: 'STOP_PROFIT', side: 'BUY', price: '90', quantity: '10' },
       { comboType: 'STOP_LOSS', side: 'BUY', price: '105', quantity: '10' },
     ]);
+  });
+
+  it('acts on nothing when the broker holds the OTHER way round — that holding is not this position', async () => {
+    // A short row, and the broker reports 10 shares LONG: the operator's own
+    // trade in the name, most likely. It confirms nothing about the short.
+    const pos = await agedProtectionCandidate('AAPL', 10);
+    db.prepare("UPDATE positions SET side = 'short', stop_price = 105, target_price = 90 WHERE id = ?").run(pos.id);
+    vi.mocked(listWebullOpenOrders).mockResolvedValueOnce({ ok: true, orders: [] });
+
+    const out = await checkLiveBracketProtection();
+
+    expect(vi.mocked(webullPlaceStandaloneBracket)).not.toHaveBeenCalled();
+    expect(out[0].heldAtBroker).toBeNull();
+    const detail = JSON.parse(unprotectedEvents()[0].detail!);
+    expect(detail).toMatchObject({ state: 'unconfirmed', heldAtBroker: null, brokerPositionQty: 10 });
+    expect(detail.reason).toMatch(/holds 10 share\(s\) of AAPL the other way round \(long\), not this short/);
   });
 
   // -------------------------------------------------------------------------
@@ -2984,6 +3197,33 @@ describe('adoptOrphanedLivePositions', () => {
     // ordinary answer for an order that has aged out of the broker's window.
     mockOrderStatus.mockResolvedValue({ ok: true, found: false } as Awaited<ReturnType<typeof webullOrderStatus>>);
   };
+
+  // The same three facts for a SHORT (2026-09-23): the broker reads it as -10,
+  // "through the stop" is a quote AT OR ABOVE it, and the close BUYS. Before
+  // the sign was read by side, no short could ever reach this branch.
+  it('CLOSES a naked SHORT that the market has run through, with a BUY for the shares short', async () => {
+    const pos = await agedProtectionCandidate('AAPL', -10);
+    db.prepare("UPDATE positions SET side = 'short', stop_price = 105, target_price = 90 WHERE id = ?").run(pos.id);
+    vi.mocked(listWebullOpenOrders).mockResolvedValue({ ok: true, orders: [] });
+    vi.mocked(webullPlaceStandaloneBracket).mockResolvedValueOnce({ ok: false, error: 'stop through the market' });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 106 }) as ReturnType<typeof getProvider>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-BREACH-SHORT' });
+    armedForClose();
+
+    const outcomes = await checkLiveBracketProtection();
+
+    // A marketable BUY limit: 106 plus the 0.5% buffer.
+    expect(closeOrders()).toHaveLength(1);
+    expect(closeOrders()[0][1]).toMatchObject({
+      symbol: 'AAPL',
+      side: 'buy',
+      openClose: 'close',
+      quantity: 10,
+      limitPrice: 106.53,
+    });
+    expect(outcomes[0]).toMatchObject({ heldAtBroker: 10, breachClose: { requested: true, lastPrice: 106 } });
+    expect(unprotectedEvents()).toHaveLength(0);
+  });
 
   it('CLOSES a naked position whose stop the market has already passed, instead of paging', async () => {
     await agedProtectionCandidate('AAPL', 10); // stop 95, target 110
@@ -3834,6 +4074,48 @@ describe('reconcileLiveOrders vs a position-sync row for the same fill', () => {
     expect(open[0].stopPrice).toBe(95);
     expect(open[0].targetPrice).toBe(110);
     expect(getLiveOrder(intentId)?.positionId).toBe(imported.id);
+  });
+
+  // THE SAME SIDE (2026-09-23, shorts pre-flight). A buy's fill is a long, so
+  // an untagged SHORT row in the name (the operator's own trade) is not it, and
+  // adopting it would book this order's P&L with the sign reversed.
+  it('does not adopt an untagged row on the OTHER side — the fill gets its own row', async () => {
+    setAutotradeConfig({ liveAccountId: 'ACC1' });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-SIDES' });
+    const okResult = evaluateRiskCheck(signal(), baseRiskCtx());
+    await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
+    const intentId = listIntents()[0].id;
+
+    const operatorsShort = createPosition({
+      assetType: 'stock',
+      symbol: 'AAPL',
+      side: 'short',
+      quantity: 40,
+      entryPrice: 101,
+      entryDate: '2026-08-24',
+      tags: ['webull'],
+      accountId: 'ACC1',
+    });
+
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      filledQty: okResult.sizing.suggestedQuantity,
+      filledPrice: 100.5,
+      legs: [{ comboType: 'MASTER', status: 'FILLED' }],
+    } as WebullOrderStatus);
+    await reconcileLiveOrders();
+
+    const open = listPositions({ status: 'open', symbol: 'AAPL' });
+    expect(open).toHaveLength(2);
+    const short = open.find((p) => p.id === operatorsShort.id)!;
+    expect(short.tags).not.toContain('autotrade');
+    const long = open.find((p) => p.id !== operatorsShort.id)!;
+    expect(long).toMatchObject({ side: 'long', entryPrice: 100.5 });
+    expect(getLiveOrder(intentId)?.positionId).toBe(long.id);
   });
 
   // The healing block writes six at-entry fields onto an untagged orphan, and

@@ -3252,6 +3252,45 @@ it never applies the change, and it stops proposing once shorts are on. A replay
 fails (no bars) costs that evening's refresh and nothing else — the rule reads the last
 record it has.
 
+**What a live short needed before the rule could matter** (2026-09-23). No live short has
+ever traded, and an audit of every path a short would run for the first time found it
+unprotected in several places. Each of these is now fixed, and most also protect longs:
+
+- **A short that loses its stop is re-armed or closed like a long.** The broker reports a
+  short as a *negative* share count, and the protection sweep only acted on a positive
+  one, so a naked short would have been paged and never repaired.
+- **An entry never trades against a holding the other way round.** If the broker holds
+  the name long (your own shares, bought by hand since the last sync), a short would have
+  gone out as a plain sell of them. A long against a short you hold would have bought it
+  back. Both are now refused, and a short is also refused when the holdings read fails.
+- **An entry already through its stop is refused.** The quote at placement is checked
+  against the stop, not only the limit.
+- **The loop's own closes never buy or sell more than the broker holds.** A time exit or
+  a close through the stop is refused when the broker holds fewer shares than it would
+  order: none, only part of them, or the name the other way round. The next check asks
+  again, and the position keeps its bracket meanwhile. That rule used to come from the
+  naked-short guardrail, which switching shorts on turns off. The close does not sell
+  just the shares that are left. Those shares could be your own lot in the same name,
+  held after the loop's shares were gone. A close you place yourself from the Positions
+  page is unchanged: it still orders the position's remaining shares, and is still
+  checked by the manual guardrails.
+- **A short refused by the broker** (hard to borrow, no locate, the short-sale rule) is
+  not sent again that day. A refusal for buying power does not count: the app already
+  learns a smaller size from it.
+- **A short's fills book with the right sign.** Adoption only matches a holding on the
+  order's own side, and the exit correction reads a short's buy-to-cover.
+
+Every refusal writes `live_entry_guard_refused` once per symbol per day, naming the first
+guard that fired (`through_stop`, `opposite_holding`, `holding_unknown`,
+`short_refused_today`). The row has the same shape as every other declined live entry, so
+the declined-entry replay can score it as the long or short it was, and the attribution
+files the paper entries it kept out under it.
+Two things remain before shorts should be switched on. Nobody has yet seen how Webull
+reports a stock short in its positions, which a one-share test short and
+`npm run capture:broker` would settle. And the shadow replay behind the rule reads high:
+it fills at the signal price, books stops exactly at the stop, and counts a touch of the
+target as a fill.
+
 **Two brakes.** The **kill switch** stops every application, and the `gatedSwitchesEnabled`
 setting turns the engine off entirely. Neither stops the *evaluation*: a shadow record
 that froze while the engine was off would hand a rule a graduation it never lived through

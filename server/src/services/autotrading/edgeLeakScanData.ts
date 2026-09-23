@@ -348,6 +348,11 @@ export const SKIP_ACTIONS = [
   // - The placement went unanswered; if it never landed, the later
   //   `live_order_never_placed` row is minutes too late to match.
   'live_order_outcome_unknown',
+  // The live entry path's own guards (2026-09-23, shorts pre-flight): a quote
+  // already through the stop, a holding the other way round, a short with an
+  // unreadable holding, a short the broker refused earlier today. Live-only,
+  // once a day per symbol and guard.
+  'live_entry_guard_refused',
 ];
 // NOT here: `live_entry_cutoff_skipped`. It sat in this list from the day the
 // list was written and nothing has ever emitted it — the equity entry cutoff

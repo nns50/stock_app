@@ -1,6 +1,7 @@
 import { beforeEach } from 'vitest';
 import { resetOncePerDayEvents } from '../src/services/autotrading/oncePerDayEvents';
 import { resetUnplaceableSymbols } from '../src/services/autotrading/unplaceableSymbols';
+import { resetRefusedShorts } from '../src/services/autotrading/refusedShorts';
 import { resetBuyingPowerRefusals } from '../src/services/autotrading/buyingPowerRefusals';
 import { resetMarketDirectionState } from '../src/services/autotrading/marketDirection';
 
@@ -40,6 +41,8 @@ import { resetMarketDirectionState } from '../src/services/autotrading/marketDir
 // So does `marketDirection` (2026-09-23): the loop journals the market's
 // reading only when it changes, and a test that expects the day's first row
 // must not find the previous test's reading already claimed.
+// So does `refusedShorts` (2026-09-23): a short the broker refused holds that
+// symbol's shorts for the ET day, and every live-execution file trades AAPL.
 // It had to go here rather than in one file's beforeEach — the ceiling it
 // learns is keyed by account and ET day, both of which every live-execution
 // file shares, so one file's refusal shrank the next file's orders.
@@ -53,4 +56,5 @@ beforeEach(() => {
   resetUnplaceableSymbols();
   resetBuyingPowerRefusals();
   resetMarketDirectionState();
+  resetRefusedShorts();
 });

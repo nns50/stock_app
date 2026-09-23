@@ -49,6 +49,9 @@ export interface RecordedExit {
   /** The reason currently recorded — often 'manual' for a leg the sync priced
    *  between the levels (COIN's breakeven stop, 2026-09-21). */
   exitReason: PositionExitReason | null;
+  /** The position's side. A higher exit price is a gain on a long and a loss
+   *  on a short, so the P&L a correction moves carries this sign. */
+  positionSide: 'long' | 'short';
 }
 
 /** Why an exit was left alone, as a stable code a journal row can carry and a
@@ -154,7 +157,11 @@ export function decideExitCorrection(exit: RecordedExit, legs: WebullOrderLeg[])
     action: 'correct',
     realPrice,
     priceDelta,
-    pnlDelta: priceDelta * exit.quantity,
+    // Signed by the position's side (2026-09-23, shorts pre-flight): a cover
+    // that filled lower than its estimate is a GAIN on a short, and this used
+    // to journal it as a loss. The ledger was right all along (realizedPnlOf
+    // recomputes from the price); the journal's delta was not.
+    pnlDelta: priceDelta * exit.quantity * (exit.positionSide === 'short' ? -1 : 1),
     reason,
   };
 }

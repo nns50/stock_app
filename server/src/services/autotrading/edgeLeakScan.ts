@@ -1099,6 +1099,7 @@ export const ONCE_PER_DAY_SKIP_ACTIONS: ReadonlySet<string> = new Set([
   'absorbed_price_skipped',
   'live_short_skipped',
   'live_market_direction_skipped',
+  'live_entry_guard_refused',
 ]);
 
 /**

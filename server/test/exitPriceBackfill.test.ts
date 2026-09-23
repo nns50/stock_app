@@ -22,6 +22,7 @@ const exit = (over: Partial<RecordedExit> = {}): RecordedExit => ({
   exitPrice: 95,
   exitDate: '2026-03-20',
   exitReason: 'stop',
+  positionSide: 'long',
   ...over,
 });
 
@@ -50,6 +51,17 @@ describe('decideExitCorrection', () => {
   it('corrects an estimated price to the broker fill, and reports the P&L difference', () => {
     const d = decideExitCorrection(exit(), [entryLeg(), exitLeg({ filledPrice: 94.5 })]);
     expect(d).toEqual({ action: 'correct', realPrice: 94.5, priceDelta: -0.5, pnlDelta: -5, reason: 'stop' });
+  });
+
+  // A cover that filled BELOW its estimate is a gain on a short (2026-09-23).
+  // The ledger always got this right (realizedPnlOf recomputes from the
+  // price); the journaled delta read it as a loss.
+  it('signs the P&L difference by the position side — a lower cover is a gain on a short', () => {
+    const d = decideExitCorrection(exit({ positionSide: 'short', exitPrice: 98.5 }), [
+      entryLeg(),
+      exitLeg({ filledPrice: 98 }),
+    ]);
+    expect(d).toMatchObject({ action: 'correct', realPrice: 98, priceDelta: -0.5, pnlDelta: 5 });
   });
 
   // COIN 656, 2026-09-21: the breakeven stop filled at 204.37, the sync priced
