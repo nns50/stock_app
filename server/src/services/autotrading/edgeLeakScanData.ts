@@ -854,9 +854,13 @@ function collectJournalSkips(since: number): { skips: JournalSkip[]; truncated: 
  *
  * This is NOT an execution defect — no code is misbehaving. It is arithmetic
  * on a small account: one contract of a $2.93 option risks $205 at a 70%
- * disaster stop, and the sleeve's per-trade budget is a fraction of that. So
+ * disaster stop, and the sleeve's per-trade budget was a fraction of that. So
  * it is reported as a `configuration` finding, with the binding number said
  * out loud rather than left for the reader to derive.
+ *
+ * That example was the account at ~$5k. Since 2026-09-23 the example and the
+ * advice are computed from the refusals themselves, split against today's
+ * full-size ceiling (see WHICH KIND OF REFUSAL below).
  */
 export function collectOptionsFlowFindings(cfg: AutotradeConfig, now: number): ScanFinding[] {
   let date = etToday(now);
@@ -866,20 +870,28 @@ export function collectOptionsFlowFindings(cfg: AutotradeConfig, now: number): S
   const { events } = listAutotradeEventsInWindow({ actions: ['live_options_risk_blocked'], since });
   let sized = 0;
   let lastSeen: string | null = null;
+  /** Each refusal's own premium, when its row carries one (rows from before the
+   *  field existed do not). */
+  const refused: { premium: number; symbol: string | null; at: number }[] = [];
   // `failedRules` is an ARRAY, so detailValue (which returns a string) cannot
   // read it. Parsed directly rather than widening that helper for one caller.
   for (const e of events) {
     if (e.detail === null) continue;
     let rule: string | null = null;
+    let premium: number | null = null;
     try {
-      const parsed: unknown = JSON.parse(e.detail);
-      const rules = (parsed as { failedRules?: unknown }).failedRules;
+      const parsed = JSON.parse(e.detail) as { failedRules?: unknown; premium?: unknown };
+      const rules = parsed.failedRules;
       if (Array.isArray(rules) && typeof rules[0] === 'string') rule = rules[0];
+      if (typeof parsed.premium === 'number' && Number.isFinite(parsed.premium) && parsed.premium > 0) {
+        premium = parsed.premium;
+      }
     } catch {
       rule = null;
     }
     if (rule !== 'quantity') continue;
     sized += 1;
+    if (premium !== null) refused.push({ premium, symbol: e.symbol, at: e.createdAt });
     const d = etToday(e.createdAt);
     if (lastSeen === null || d > lastSeen) lastSeen = d;
   }
@@ -914,6 +926,49 @@ export function collectOptionsFlowFindings(cfg: AutotradeConfig, now: number): S
   });
 
   const pct = placed + sized > 0 ? Math.round((sized / (placed + sized)) * 100) : 0;
+
+  // WHICH KIND OF REFUSAL (2026-09-23). Measured against TODAY's ceiling (the
+  // most the sizer can reach: full risk at the largest method weight), a
+  // refused premium is one of two things. Above it, no trade at this equity
+  // could carry the contract. At or under it, the budget that refused it sat
+  // below its most: the step-down after losing trades or another cut, a method
+  // weight under its maximum, or a smaller account at the time. The first
+  // argues about the sleeve and the second does not.
+  //
+  // The lever used to hard-code a $5k-era example ("a $2.93 option risks $205
+  // … decide the sleeve does not suit an account this size"). At $26k it still
+  // said that over 32 refusals of which 22 fit today's ceiling: 20 from the $5k
+  // days, and MU at $8.77 on 09-22 under the step-down's 50% cut.
+  const above = refused.filter((r) => r.premium > ceiling + 1e-9);
+  const within = refused.filter((r) => r.premium <= ceiling + 1e-9);
+  const latest = refused.reduce<(typeof refused)[number] | null>((a, r) => (a === null || r.at > a.at ? r : a), null);
+  const splitClause =
+    refused.length > 0
+      ? ` Of the ${refused.length} with a recorded premium, ${above.length} cost more than that and ` +
+        `${within.length} did not (refused while the budget sat below its most: a step-down or other cut, a ` +
+        'method weight under its maximum, or a smaller account at the time)'
+      : '';
+  const example =
+    latest !== null
+      ? `The latest, ${latest.symbol ?? 'a contract'} on ${etToday(latest.at)}, was $${latest.premium.toFixed(2)}: ` +
+        // premium x (stop% / 100) x 100 shares, multiplied as premium x stop%
+        // so an exact $13.25 x 70 reads $928, not 927.4999… from x 0.7 x 100.
+        `one contract risks $${(latest.premium * cfg.optionsDisasterStopPct).toFixed(0)} at a ` +
+        `${cfg.optionsDisasterStopPct}% disaster stop, against the largest affordable premium of ` +
+        `$${ceiling.toFixed(2)}/share today. `
+      : '';
+  const aboveAdvice =
+    above.length > 0
+      ? `${above.length} were priced above the most any trade can carry at this equity: trade the sleeve on ` +
+        'names whose premium fits, or raise the equity behind it' +
+        (above.length > within.length ? ', or decide the sleeve does not suit an account this size' : '') +
+        '. '
+      : '';
+  const withinAdvice =
+    within.length > 0
+      ? `${within.length} fit that ceiling, so a budget below its most refused them (a cut, a method weight ` +
+        'under its maximum, or a smaller account), which is the sizing working rather than the sleeve failing. '
+      : '';
   return [
     {
       id: 'configuration:options_unsizable',
@@ -931,19 +986,21 @@ export function collectOptionsFlowFindings(cfg: AutotradeConfig, now: number): S
           ? ` — unchanged by probation (${probation.multiplier}x, ${probation.tradesRemaining} trades left), which ` +
             'scales the contract COUNT with a one-contract floor and so cannot lower what a contract may cost'
           : '') +
-        '.',
+        '.' +
+        (splitClause ? `${splitClause}.` : ''),
       lever: {
         kind: 'code',
         field: null,
         value: null,
         direction: 'research',
         detail:
-          'Not a defect and not a knob: one contract of a $2.93 option risks $205 at a 70% disaster stop, against a ' +
-          'per-trade budget a fraction of that. Probation is NOT the constraint — it scales the contract count, ' +
-          'not the premium a contract may cost, and at one contract it is inert — so waiting it out changes ' +
-          'nothing. The honest options are to trade the sleeve only on names whose premium fits the ceiling, to ' +
-          'raise the equity behind it, or to decide the sleeve does not suit an account this size. Decide ' +
-          'deliberately rather than letting it refuse quietly.',
+          'Not a defect and not a knob. ' +
+          example +
+          aboveAdvice +
+          withinAdvice +
+          'Probation is NOT the constraint — it scales the contract count, not the premium a contract may cost, ' +
+          'and at one contract it is inert — so waiting it out changes nothing. Decide deliberately rather than ' +
+          'letting it refuse quietly.',
       },
     },
   ];
