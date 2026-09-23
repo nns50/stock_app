@@ -13519,3 +13519,58 @@ the 09-23 close):
    `max_aggregate_open_risk` class. COIN 09-18 14:17 (+0.17R) moves from paired to
    untaken. Its 11:18 entry is now the one paired with the live stock trade.
 5. `GET /api/journal/tune-advice` carries no `flow:` recommendation.
+
+## 2026-09-23 (fifteenth) — paper runs the live book's exit shape
+
+**Result of #651's deploy (read 03:20 ET).** The (fourteenth) check held on every point:
+
+- `optionsExcluded` is `{ live: 14, paper: 37 }`.
+- 36 pairs at −0.18R (95% CI −0.43…+0.06), median gap 7.43 min.
+- `sameTick` is 14 pairs at −0.19R (CI −0.44…+0.02). The app rounds the mean to two
+  places, so the −0.1852 in the check reads −0.19.
+- 103 untaken entries, none an option: the floor 3, the ATR gate 3, `level_veto` 5,
+  `buying_power_sizing` 15 and `no_live_row` 30. There is no `max_aggregate_open_risk`
+  class. COIN 09-18 14:17 moved to the re-entry cooldown, which reads 15 entries at
+  +0.12R.
+- The tune advice carries no `flow:` recommendation.
+
+**What diverged.** Paper's `applyPositionManagement` read `partialExitRMultiple`,
+`partialExitPct` and the three stop fields directly. The live book reads them behind two
+flags: `liveScaleOutEnabled` (`scaleOut.ts`) and `liveTrailingEnabled`
+(`stopAdjust.ts`). The 09-12 plan switched the live scale-out off, but paper kept banking
+67% at +0.25R for eleven days. 85 of the 173 closed paper trades carry a partial.
+`execute.ts` says paper may differ from live in exactly three deliberate ways and
+"anything else that diverges is a bug". This divergence was never decided.
+
+**Why it matters.** Paper is the control every live-versus-paper comparison rests on. On
+the 36 stock pairs of the (fourteenth) reading, the scale-out cost paper 0.05R a trade on
+net. It banks about +0.17R on a trade that touches +0.25R and comes back, and caps the ones
+that reach target. The same-tick reading the tune advisor now prices refused entries with
+carried that difference too.
+
+**The change.** `liveExitRules` moves to `exitReplay.ts` and becomes the one statement of
+the live exit shape:
+
+- the scale-out, only while `liveScaleOutEnabled`;
+- breakeven and the trail, only while `liveTrailingEnabled`. The declined-entry shadow
+  and the exit-replay route lacked this gate too; the route also built its own copy of
+  the rules.
+
+Paper's position management, the exit-replay route's defaults and the declined-entry
+shadow all read it. Live sizing is untouched: the expectancy and method multipliers read
+the live book's own closed trades.
+
+**Series boundary.** From this deploy, paper stops scaling out, because live scale-out is
+off. Breakeven at 0.25R and the 0.5R/0.5R trail continue, because live trailing is on.
+Paper R from before this date includes the scale-out; compare across the date with that
+in mind. The scale-in (`addOnTriggerRMultiple`, `maxAddOns`) is off in both books and was
+left alone. It reads its own fields, so it would diverge the same way if only the live
+side were switched on.
+
+**Pre-committed check** (first session after the deploy):
+
+1. No `paper_partial_exit` row. `paper_stop_ratcheted` rows continue.
+2. The first paper trade that touches +0.25R and comes back books about 0R, not about
+   +0.17R.
+3. `GET /api/journal/exit-replay` reports `scaleOutR` 0, `breakevenTriggerR` 0.25,
+   `trailStartR` 0.5 and `trailStopR` 0.5.

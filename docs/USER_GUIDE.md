@@ -1988,6 +1988,13 @@ equally-weighted cards in the order they happened to be built:
   rest keeps running toward its original target or continues trailing). All five
   default to **0 (disabled)**, except partial exit size, which defaults to 50% for
   whenever its trigger gets turned on — so leaving them untouched changes nothing.
+  Since **2026-09-23** the switches govern the **paper** book too. Paper scales out
+  only while **live scale-out** is on, and moves its stop only while **live
+  trailing** is on, so it always runs the live book's exit shape. Before that,
+  paper read the five fields directly. When the 3% plan switched live scale-out off
+  on 2026-09-12, paper kept banking 67% at +0.25R for eleven days, and every
+  live-versus-paper comparison measured an exit the live book no longer ran. The
+  **exit replay** defaults to the same shape.
   R-multiples here are always measured against the position's own original stop
   distance, fixed at entry, even after the stop itself has since moved.
   A paper scale-out **banks** the closed slice's P&L onto the position

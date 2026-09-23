@@ -701,7 +701,7 @@ describe('checkPaperExits', () => {
     });
 
     it('moves the stop to breakeven once the trigger R-multiple is reached', async () => {
-      setAutotradeConfig({ breakevenTriggerRMultiple: 1 });
+      setAutotradeConfig({ breakevenTriggerRMultiple: 1, liveTrailingEnabled: true });
       const pos = openPos();
       mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 105 }) as never); // exactly 1R
       await checkPaperExits();
@@ -710,7 +710,7 @@ describe('checkPaperExits', () => {
     });
 
     it('never loosens an already-ratcheted stop when price pulls back below the trigger', async () => {
-      setAutotradeConfig({ breakevenTriggerRMultiple: 1 });
+      setAutotradeConfig({ breakevenTriggerRMultiple: 1, liveTrailingEnabled: true });
       const pos = openPos();
       mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 106 }) as never); // 1.2R -> ratchets to breakeven
       await checkPaperExits();
@@ -722,7 +722,7 @@ describe('checkPaperExits', () => {
     });
 
     it('trails the stop behind the best price once past the trailing-start R-multiple', async () => {
-      setAutotradeConfig({ trailStartRMultiple: 1, trailStopRMultiple: 0.5 });
+      setAutotradeConfig({ trailStartRMultiple: 1, trailStopRMultiple: 0.5, liveTrailingEnabled: true });
       const pos = openPos();
       // 109 (1.8R) — comfortably past the 1R trailing-start trigger, but below
       // the 110 target so the position doesn't just close outright.
@@ -733,7 +733,7 @@ describe('checkPaperExits', () => {
     });
 
     it('ratchets the trailing stop against the best price seen, not a later pullback', async () => {
-      setAutotradeConfig({ trailStartRMultiple: 1, trailStopRMultiple: 0.5 });
+      setAutotradeConfig({ trailStartRMultiple: 1, trailStopRMultiple: 0.5, liveTrailingEnabled: true });
       const pos = openPos();
       mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 109 }) as never); // best price 109 -> stop 106.5
       await checkPaperExits();
@@ -746,7 +746,7 @@ describe('checkPaperExits', () => {
     });
 
     it('closes the configured percentage once at the partial-exit trigger, leaving the rest open', async () => {
-      setAutotradeConfig({ partialExitRMultiple: 1, partialExitPct: 50 });
+      setAutotradeConfig({ partialExitRMultiple: 1, partialExitPct: 50, liveScaleOutEnabled: true });
       const pos = openPos();
       mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 105 }) as never); // exactly 1R
       const outcomes = await checkPaperExits();
@@ -763,7 +763,7 @@ describe('checkPaperExits', () => {
     });
 
     it('does not re-fire the partial exit on a later cycle once already taken', async () => {
-      setAutotradeConfig({ partialExitRMultiple: 1, partialExitPct: 50 });
+      setAutotradeConfig({ partialExitRMultiple: 1, partialExitPct: 50, liveScaleOutEnabled: true });
       const pos = openPos();
       mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 105 }) as never);
       await checkPaperExits();
@@ -775,8 +775,44 @@ describe('checkPaperExits', () => {
       expect(after.quantity).toBe(5); // unchanged — no second partial exit
     });
 
+    // 2026-09-23. The fields beneath the live flags used to drive paper on
+    // their own, so when the 09-12 plan switched the live scale-out off paper
+    // kept banking 67% at +0.25R, on 85 of its 173 closed trades. This is the
+    // production shape: the fields still set, the live flag off.
+    it('does not scale out while the live book does not', async () => {
+      setAutotradeConfig({ partialExitRMultiple: 0.25, partialExitPct: 67, liveScaleOutEnabled: false });
+      const pos = openPos();
+      mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 105 }) as never); // 1R, well past 0.25R
+      await checkPaperExits();
+      const after = listPaperPositions({ symbol: 'AAPL' }).find((p) => p.id === pos.id)!;
+      expect(after.quantity).toBe(10);
+      expect(after.partialExitTaken).toBe(false);
+      expect(
+        listAutotradeEvents({ symbol: 'AAPL', stage: 'execution' }).some((e) => e.action === 'paper_partial_exit'),
+      ).toBe(false);
+    });
+
+    it('does not move the stop while the live book does not trail', async () => {
+      setAutotradeConfig({
+        breakevenTriggerRMultiple: 0.25,
+        trailStartRMultiple: 0.5,
+        trailStopRMultiple: 0.5,
+        liveTrailingEnabled: false,
+      });
+      const pos = openPos();
+      mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 109 }) as never); // 1.8R, past both triggers
+      await checkPaperExits();
+      expect(listPaperPositions({ symbol: 'AAPL' }).find((p) => p.id === pos.id)!.stopPrice).toBe(95);
+    });
+
     it('lets a stop/target hit take priority over breakeven/trailing/partial-exit management', async () => {
-      setAutotradeConfig({ breakevenTriggerRMultiple: 1, partialExitRMultiple: 1, partialExitPct: 50 });
+      setAutotradeConfig({
+        breakevenTriggerRMultiple: 1,
+        partialExitRMultiple: 1,
+        partialExitPct: 50,
+        liveTrailingEnabled: true,
+        liveScaleOutEnabled: true,
+      });
       openPos();
       mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 110 }) as never); // hits the target outright
       const outcomes = await checkPaperExits();
@@ -825,6 +861,7 @@ describe('checkPaperExits', () => {
       setAutotradeConfig({
         partialExitRMultiple: 1,
         partialExitPct: 50,
+        liveScaleOutEnabled: true,
         addOnTriggerRMultiple: 1,
         addOnSizePct: 50,
         maxAddOns: 1,

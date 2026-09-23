@@ -52,6 +52,7 @@
 // live scale-out — this scores the shape, not the plumbing.
 // ---------------------------------------------------------------------------
 
+import type { AutotradeConfig } from '../db/autotradeConfig';
 import { Candle } from '../providers/types';
 import { computeSignificanceStats, SignificanceStats } from './autotrading/significance';
 
@@ -82,6 +83,43 @@ export interface ExitRules {
    *  this replays. The scarcity gate is not modelled. */
   stagnationMinutes?: number;
   stagnationMinR?: number;
+}
+
+/**
+ * The live book's own exit geometry: the rules a real entry is managed under,
+ * not a hypothetical set. Every field is read straight from config, and each
+ * rule the live book runs behind a flag is off here when its flag is off: the
+ * scale-out behind `liveScaleOutEnabled` (scaleOut.ts), breakeven and the trail
+ * behind `liveTrailingEnabled` (stopAdjust.ts). The replay treats 0 as
+ * "disabled", the config's own convention, so a rule the book switches off
+ * switches off here by construction rather than by anyone remembering to.
+ *
+ * ONE function, because there were three (2026-09-23). The declined-entry
+ * shadow read it from here. The exit-replay route built its own copy inline.
+ * The PAPER book read the raw fields: it kept banking 67% at +0.25R after the
+ * 09-12 plan switched the live scale-out off, on 85 of its 173 closed trades,
+ * so the control group every live-versus-paper comparison rests on ran an exit
+ * the live book no longer runs. Neither copy gated breakeven and the trail on
+ * the flag live gates them on.
+ *
+ * NOT modelled, and named here so the omission stays a decision: the
+ * scale-out's scarcity gate, its cancel/replace mechanics, whether the second
+ * lot's bracket actually got placed, and the day-protective stop (a rule about
+ * the day's P&L, not the trade). Those are execution questions; this is
+ * geometry.
+ */
+export function liveExitRules(cfg: AutotradeConfig): ExitRules {
+  const trailing = cfg.liveTrailingEnabled;
+  return {
+    breakevenTriggerR: trailing ? cfg.breakevenTriggerRMultiple : 0,
+    trailStartR: trailing ? cfg.trailStartRMultiple : 0,
+    trailStopR: trailing ? cfg.trailStopRMultiple : 0,
+    targetR: cfg.targetRMultiple,
+    scaleOutR: cfg.liveScaleOutEnabled ? cfg.partialExitRMultiple : 0,
+    scaleOutFraction: cfg.partialExitPct / 100,
+    stagnationMinutes: cfg.stagnationExitMinutes,
+    stagnationMinR: cfg.stagnationExitMinR,
+  };
 }
 
 export type ReplayExitReason = 'stop' | 'breakeven' | 'trail' | 'target' | 'time_exit' | 'stagnation';

@@ -1207,6 +1207,16 @@ unobservable there. A paper book running the same setups to stop, target or the
 flatten is the missing half — and it only became a *valid* missing half once the
 flatten landed, because before that "ran on" silently meant "held overnight."
 
+**The rule has to hold by construction, not by memory.** On 2026-09-12 the plan
+switched the live scale-out off with `liveScaleOutEnabled`, a flag only live reads.
+Paper read the fields under it (`partialExitRMultiple`, `partialExitPct`) and kept
+banking 67% at +0.25R for eleven days: 85 of its 173 closed trades carry a partial. A
+scale-out is structural, since it applies to every position that reaches the trigger,
+so paper should have followed. Since 2026-09-23, paper's scale-out, breakeven and trail
+read `liveExitRules`, the same function the exit replay and the declined-entry shadow
+read, so one live flag moves all of them. Paper R from before that date includes the
+scale-out; compare across the boundary with that in mind.
+
 While that reads out, the live side now records the other half of the question. The
 rule's justification is "recycle the slot for fresh signals", and over
 2026-08-24..09-04 that held in **7 of 31** firings: the other 24 fired while the book

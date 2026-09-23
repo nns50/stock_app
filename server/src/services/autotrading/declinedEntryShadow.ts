@@ -1,6 +1,6 @@
 import { AutotradeConfig } from '../../db/autotradeConfig';
 import { CandleSource, INTRADAY_TIMEFRAME } from '../excursion';
-import { ExitRules, replayExit } from '../exitReplay';
+import { ExitRules, liveExitRules, replayExit } from '../exitReplay';
 import { Candle } from '../../providers/types';
 import { DeclinedEntry } from './declinedEntry';
 
@@ -100,30 +100,10 @@ export interface DeclinedEntryShadow {
   exitRules: ExitRules;
 }
 
-/**
- * The live book's own exit geometry — the rules a real entry would have been
- * managed under, not a hypothetical set. Every field is read straight from
- * config so the two cannot drift: the replay treats 0 as "disabled", the same
- * convention the config uses, so a rule the book switches off switches off here
- * by construction rather than by anyone remembering to.
- *
- * NOT modelled, and named here so the omission stays a decision: the
- * scale-out's scarcity gate, its cancel/replace mechanics, and whether the
- * second lot's bracket actually got placed. Those are execution questions; this
- * measures geometry.
- */
-export function liveExitRules(cfg: AutotradeConfig): ExitRules {
-  return {
-    breakevenTriggerR: cfg.breakevenTriggerRMultiple,
-    trailStartR: cfg.trailStartRMultiple,
-    trailStopR: cfg.trailStopRMultiple,
-    targetR: cfg.targetRMultiple,
-    scaleOutR: cfg.liveScaleOutEnabled ? cfg.partialExitRMultiple : 0,
-    scaleOutFraction: cfg.partialExitPct / 100,
-    stagnationMinutes: cfg.stagnationExitMinutes,
-    stagnationMinR: cfg.stagnationExitMinR,
-  };
-}
+// The live book's exit geometry lives in exitReplay.ts, beside the rules type,
+// so the paper book and the exit-replay route read the same function this
+// shadow does. Re-exported for the callers that import it from here.
+export { liveExitRules };
 
 const etDate = (ms: number): string => new Date(ms).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
 
