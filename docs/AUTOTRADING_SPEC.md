@@ -12794,3 +12794,62 @@ the calendar). The next edge-leak scan listing `daily_halt_alerted|live` among i
 findings. If the alert fires and the row still reads false, the recorder is not reading
 the marker for that date. That is the finding, and nothing else is read until it is
 fixed.
+
+## 2026-09-23 (fourth) — the options reconcile asks Order Detail too
+
+Task #87, the follow-up the SHOP fix promised. The options reconcile read the same
+two order lists as the stock one and had the same blind spot. An acknowledged order
+that neither list showed fell to the `!found` branch and was left alone.
+
+**Why it cost less here, and what it still cost.** The stock sync deferred to the "exit
+in flight", so SHOP stayed open all evening. The options broker sync does not defer. It
+closes a contract Webull no longer holds on its second consecutive miss
+(`MISS_CONFIRM_THRESHOLD` 2). But it books the close at an **estimate** from the delayed
+chain, with exit reason `manual` and `via: 'broker_sync'`. So a filled options close the
+lists missed lost its real fill price, and it lost the rule that fired, which is what the
+options ladder is judged by. Four closes on 09-21 and 09-22 went through that path:
+TSLA #11, INTC #10, GOOGL #13 and AAPL #12. GOOGL's estimate equals its entry exactly
+($0.00). Both days include the operator's hand closes under the kill switch, which only
+that path can book. OPTIONS_TUNING_PLAN's data-quality notes carry the row.
+
+**Changes.**
+
+- `orderDetailFallback.ts` (new) holds the Order Detail lookup that #637 wrote inside
+  the stock reconcile, moved unchanged: same candidates, the same cap of three a tick
+  newest first, the same once-a-day rows. Both reconciles call it, with a `book`
+  argument that picks the journal names. The options rows are
+  `live_options_order_status_from_detail` and `live_options_order_status_unresolved`.
+- The options reconcile runs before the broker sync in every tick, so a close Order
+  Detail can see is booked at its fill with its own reason before the sync's second miss.
+  The sync's estimate remains the path for a contract that leaves the account without an
+  app order: a hand close in Webull.
+- A late-booked options close carries its order's date. `optionsExitAt` returns the
+  placement moment when the reconcile books a fill on a later ET date than the order was
+  placed. Options orders are DAY orders (`buildWebullOptionOrder`), and a DAY order fills
+  only on its placement date. Same reasoning as the stock time exit's `exitDate` (#637).
+- Both `…order_status_unresolved` actions (stock and options) are now in the
+  ambiguity push alert (`AMBIGUITY_ACTIONS`) and in the edge-leak scan's execution
+  catalog. Before this, the state that held SHOP open was journaled but alerted nobody.
+
+**Tested at the consumer.**
+- A filled close the lists never showed is closed at the Order Detail price with the
+  reason on its order row (`time_exit`), with one `…from_detail` row.
+- Run in the loop's order twice against a broker holding nothing, reconcile then sync,
+  exactly one close lands, and it is not a `broker_sync` estimate.
+- An order no read can find is journaled once across two ticks and the position stays
+  open.
+- An order the lists did answer costs no direct read.
+- A close first read on a later day carries its order's placement moment.
+- Four of these fail with the options call removed. The stock SHOP cases pass unchanged
+  after the move.
+
+**Pre-committed check.** Two things, whichever comes first:
+- The next options close whose order neither list shows must journal
+  `live_options_order_status_from_detail` and close at the broker's fill price, with no
+  `broker_sync` row for that position.
+- The next `live_options_order_status_unresolved` must reach the ambiguity push within
+  the hour.
+
+A `broker_sync` close of a position that still has an acknowledged app exit order is a
+finding. It means the direct read did not find that order, and the unresolved row says
+why.

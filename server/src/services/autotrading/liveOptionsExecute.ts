@@ -82,6 +82,7 @@ import { evaluateOptionsRiskCheck, OptionsRiskCheckResult, optionsPositionNotion
 import { journalMethodMultipliers, methodOfOptionsSignal } from './methodSizing';
 import { activeSymbolCooldowns, journalEntrySkipOncePerDay } from './symbolCooldown';
 import { claimOncePerDay } from './oncePerDayEvents';
+import { resolveUnlistedFromOrderDetail } from './orderDetailFallback';
 import { computeFinishLineFactor, finishLineScoreGate } from './finishLine';
 import {
   contractsWithinRiskBudget,
@@ -2593,6 +2594,23 @@ export async function reconcileLiveOptionsOrders(): Promise<LiveOptionsReconcile
     accountId,
     pending.map((p) => intentsById.get(p.intentId)?.idempotencyKey).filter((k): k is string => !!k),
   );
+  // THE SAME BLIND SPOT THE STOCK RECONCILE HAD (#87, 2026-09-23). An
+  // acknowledged order neither list shows used to fall to the `!found` branch
+  // below and be left alone. That cost less here than it did for stocks,
+  // because the broker sync (next in the tick) closes a vanished contract after
+  // two misses. It closes it at an ESTIMATE from the delayed chain, though, and
+  // labels it `manual`. So a filled close lost its real price and the exit
+  // reason the options ladder is judged by. This asks Order Detail first, and
+  // the reconcile runs before the sync, so the real fill lands first.
+  await resolveUnlistedFromOrderDetail(
+    'options',
+    accountId,
+    pending.flatMap((meta) => {
+      const intent = intentsById.get(meta.intentId);
+      return intent ? [{ intent, symbol: meta.symbol, role: meta.role, riskProfile: meta.riskProfile }] : [];
+    }),
+    statuses,
+  );
   const outcomes: LiveOptionsReconcileOutcome[] = [];
   for (const meta of pending) {
     const intent = intentsById.get(meta.intentId);
@@ -2888,6 +2906,22 @@ function materializeOptionsEntryFill(
  *  header comment) -- stored as exitPrice with shortExitPrice left at its
  *  default (null), same "whole spread as one number" convention
  *  materializeOptionsEntryFill() uses for entryPrice/shortEntryPrice. */
+/**
+ * When a filled close happened, as far as the reconcile can say: now, unless
+ * it is booking the fill on a later ET date than the order was placed.
+ *
+ * Every live options order is a DAY order (`buildWebullOptionOrder`), and a
+ * DAY order can fill only on the date it was placed. So a fill first seen
+ * after midnight, from Order Detail or after an outage, happened on the
+ * placement date, and booking it "now" would move its P&L into the next
+ * session's day, where the halt, the goal and the daily results all read it.
+ * The placement moment is used then: the right date, and a lower bound on the
+ * time. Same reasoning as the stock time exit's `exitDate` (2026-09-23, #637).
+ */
+export function optionsExitAt(intent: OrderIntentRecord, now: number = Date.now()): number {
+  return etToday(intent.createdAt) === etToday(now) ? now : intent.createdAt;
+}
+
 function materializeOptionsExitFill(
   intent: OrderIntentRecord,
   meta: LiveOptionsOrderMeta,
@@ -2929,6 +2963,7 @@ function materializeOptionsExitFill(
     // stored reason -- time_exit is the only trigger that existed back then,
     // so it's the correct fallback, not a guess.
     exitReason: meta.exitReason ?? 'time_exit',
+    exitAt: optionsExitAt(intent),
   });
   if (!closed) return undefined;
   logAutotradeEvent({

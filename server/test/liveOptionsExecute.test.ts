@@ -15,6 +15,10 @@ vi.mock('../src/providers/webull/orders', async (importOriginal) => {
     webullCancelOrder: vi.fn(),
     webullOrderStatus,
     webullOrderStatusBatch: batchFromSingle(webullOrderStatus),
+    // Order Detail, the direct read the reconcile makes when neither list shows
+    // an acknowledged order (#87). The default is "the broker does not know it
+    // either", so every pre-existing case reconciles exactly as before.
+    webullOrderDetail: vi.fn(async () => ({ ok: true, found: false })),
   };
 });
 // The real-time OPRA snapshot the exit path prefers over the ~15-minute
@@ -42,6 +46,7 @@ import { webullAccountState, webullAccountType } from '../src/providers/webull/a
 import {
   webullPlaceOrder,
   webullOrderStatus,
+  webullOrderDetail,
   webullCancelOrder,
   WebullOrderStatus,
 } from '../src/providers/webull/orders';
@@ -54,7 +59,14 @@ import { setTradingConfig } from '../src/db/trading';
 import { createPosition } from '../src/db/positions';
 import { addSymbols } from '../src/db/universe';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
-import { listIntents, createIntent, transitionIntent, advanceMaterialized } from '../src/db/orders';
+import {
+  listIntents,
+  createIntent,
+  transitionIntent,
+  advanceMaterialized,
+  getIntent,
+  OrderIntentRecord,
+} from '../src/db/orders';
 import { recordLiveOrder } from '../src/db/autotradeLiveOrders';
 import {
   getLiveOptionsOrder,
@@ -83,6 +95,7 @@ import {
   sellableExitLimit,
   sellableSpreadExitLimit,
   resetLiveOptionsProcessState,
+  optionsExitAt,
 } from '../src/services/autotrading/liveOptionsExecute';
 import { closeLiveOptionsAutotradePosition } from '../src/services/trading/closePosition';
 import { buildLiveTradingConfig } from '../src/services/autotrading/liveExecute';
@@ -93,6 +106,7 @@ const mockAccountState = vi.mocked(webullAccountState);
 const mockAccountType = vi.mocked(webullAccountType);
 const mockPlaceOrder = vi.mocked(webullPlaceOrder);
 const mockOrderStatus = vi.mocked(webullOrderStatus);
+const mockOrderDetail = vi.mocked(webullOrderDetail);
 const mockCancelOrder = vi.mocked(webullCancelOrder);
 const mockOptionQuotes = vi.mocked(webullOptionQuotes);
 
@@ -276,6 +290,8 @@ beforeEach(() => {
   mockAccountType.mockReset();
   mockPlaceOrder.mockReset();
   mockOrderStatus.mockReset();
+  mockOrderDetail.mockReset();
+  mockOrderDetail.mockResolvedValue({ ok: true, found: false });
   mockCancelOrder.mockReset();
   mockOptionQuotes.mockReset();
   // Default: no OPRA entitlement in play, so pricing falls back to the chain
@@ -2693,6 +2709,123 @@ describe('reconcileLiveOptionsOrders', () => {
     const second = await reconcileLiveOptionsOrders();
     expect(second[0]).toMatchObject({ changed: true, action: 'exit_filled' });
     expect(getLiveOptionsPosition(pos.id)!.status).toBe('closed');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #87 (2026-09-23): the options reconcile had the stock reconcile's blind spot.
+// An ACKNOWLEDGED close that neither order list showed was left alone. Here
+// the broker sync then closed the vanished contract on its second miss, at an
+// ESTIMATE from the delayed chain and labelled `manual`. So the fill's real
+// price and the exit reason the options ladder is judged by were both lost.
+// ---------------------------------------------------------------------------
+describe('reconcileLiveOptionsOrders — a close the order lists never showed (#87)', () => {
+  /** An open position whose time exit is placed and acknowledged, as the
+   *  'materializes a filled exit' case builds it. Then both order lists answer
+   *  and neither shows the order: the SHOP shape. */
+  async function optionsCloseInFlight() {
+    setAutotradeConfig(liveConfig());
+    const pos = openLivePosition({ expiration: '2024-06-05', entryPrice: 3, quantity: 2 });
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 5 } }) as never);
+    mockAccountState.mockResolvedValue(
+      holdingAccountState(pos.quantity) as Awaited<ReturnType<typeof webullAccountState>>,
+    );
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-UNLISTED' });
+    await checkLiveOptionsExits();
+    const exitIntentId = listPendingLiveOptionsOrders().find((o) => o.role === 'exit')!.intentId;
+    mockOrderStatus.mockResolvedValue({ ok: true, found: false } as WebullOrderStatus);
+    return { pos, exitIntentId };
+  }
+
+  const filled = { ok: true, found: true, status: 'FILLED', filledQty: 2, filledPrice: 4.75 } as WebullOrderStatus;
+
+  it('books the fill Order Detail reports, at its price and with the reason on the order row', async () => {
+    const { pos, exitIntentId } = await optionsCloseInFlight();
+    expect(getIntent(exitIntentId)?.state).toBe('acknowledged');
+    mockOrderDetail.mockResolvedValue(filled);
+
+    const outcomes = await reconcileLiveOptionsOrders();
+
+    expect(mockOrderDetail).toHaveBeenCalledWith('ACC1', getIntent(exitIntentId)!.idempotencyKey);
+    expect(outcomes).toEqual([{ intentId: exitIntentId, symbol: 'AAPL', changed: true, action: 'exit_filled' }]);
+    expect(getLiveOptionsPosition(pos.id)).toMatchObject({
+      status: 'closed',
+      exitPrice: 4.75,
+      exitReason: 'time_exit',
+    });
+    const rows = listAutotradeEvents({ actions: ['live_options_order_status_from_detail'] });
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0].detail!)).toMatchObject({
+      intentId: exitIntentId,
+      role: 'exit',
+      status: 'FILLED',
+      filledQty: 2,
+      filledPrice: 4.75,
+      listRead: 'not_found',
+    });
+  });
+
+  it('lands before the broker sync can book the contract at an estimate labelled manual', async () => {
+    const { pos } = await optionsCloseInFlight();
+    mockOrderDetail.mockResolvedValue(filled);
+    // The broker holds no contract. The sync closes a missing one on its
+    // second consecutive miss, so run the loop's order twice.
+    mockPreviewPositions.mockResolvedValue({ ok: true, positions: [] } as never);
+    for (let tick = 0; tick < 2; tick++) {
+      await reconcileLiveOptionsOrders();
+      await syncLiveOptionsPositionsFromBroker('ACC1');
+    }
+    expect(getLiveOptionsPosition(pos.id)).toMatchObject({
+      status: 'closed',
+      exitPrice: 4.75,
+      exitReason: 'time_exit',
+    });
+    const closes = listAutotradeEvents({ actions: ['live_options_position_closed'] });
+    expect(closes).toHaveLength(1);
+    expect(JSON.parse(closes[0].detail!).via).toBeUndefined();
+  });
+
+  it('journals an order no read can find once a day, and leaves the position alone', async () => {
+    const { pos, exitIntentId } = await optionsCloseInFlight();
+    await reconcileLiveOptionsOrders();
+    await reconcileLiveOptionsOrders();
+    expect(getLiveOptionsPosition(pos.id)!.status).toBe('open');
+    const rows = listAutotradeEvents({ actions: ['live_options_order_status_unresolved'] });
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0].detail!)).toMatchObject({
+      intentId: exitIntentId,
+      role: 'exit',
+      state: 'acknowledged',
+      listRead: 'not_found',
+      detailRead: 'not_found',
+    });
+  });
+
+  it('asks nothing about an order the lists DID answer', async () => {
+    await optionsCloseInFlight();
+    mockOrderStatus.mockResolvedValue({ ok: true, found: true, status: 'WORKING' } as WebullOrderStatus);
+    await reconcileLiveOptionsOrders();
+    expect(mockOrderDetail).not.toHaveBeenCalled();
+  });
+
+  it('dates a close first read on a later day by its order: a DAY order fills on its placement date', async () => {
+    const { pos, exitIntentId } = await optionsCloseInFlight();
+    // Twenty-four hours back is always an earlier ET date, DST included.
+    const placedAt = Date.now() - 24 * 60 * 60 * 1000;
+    db.prepare('UPDATE order_intents SET created_at = ? WHERE id = ?').run(placedAt, exitIntentId);
+    mockOrderDetail.mockResolvedValue(filled);
+
+    await reconcileLiveOptionsOrders();
+
+    expect(getLiveOptionsPosition(pos.id)).toMatchObject({ status: 'closed', exitAt: placedAt });
+  });
+
+  it('optionsExitAt: now on the placement date, the placement moment on any later one', () => {
+    const placed = Date.parse('2026-09-22T19:30:00Z'); // 15:30 ET
+    const intent = { createdAt: placed } as OrderIntentRecord;
+    const sameEvening = Date.parse('2026-09-23T03:50:00Z'); // 23:50 ET, still the 22nd
+    expect(optionsExitAt(intent, sameEvening)).toBe(sameEvening);
+    expect(optionsExitAt(intent, Date.parse('2026-09-23T04:10:00Z'))).toBe(placed); // 00:10 ET on the 23rd
   });
 });
 

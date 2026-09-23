@@ -76,6 +76,9 @@ export interface CloseLiveOptionsPositionInput {
   /** The short leg's filled exit premium — debit spreads only. */
   shortExitPrice?: number;
   exitReason: LiveOptionsExitReason;
+  /** When the exit happened, if not now: a close the reconcile books a day
+   *  late carries its order's date (see materializeOptionsExitFill). */
+  exitAt?: number;
 }
 
 export interface LiveOptionsPosition {
@@ -284,7 +287,7 @@ export function closeLiveOptionsPosition(id: number, input: CloseLiveOptionsPosi
        SET status = 'closed', exit_price = ?, short_exit_price = ?, exit_at = ?, exit_reason = ?, updated_at = ?
        WHERE id = ? AND status = 'open'`,
     )
-    .run(input.exitPrice, input.shortExitPrice ?? null, now, input.exitReason, now, id);
+    .run(input.exitPrice, input.shortExitPrice ?? null, input.exitAt ?? now, input.exitReason, now, id);
   if (info.changes === 0) return null;
   const row = db.prepare('SELECT * FROM autotrade_live_options_positions WHERE id = ?').get(id) as Row;
   return map(row);
