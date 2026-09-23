@@ -156,6 +156,26 @@ export const EXECUTION_ACTIONS: {
     labelFor: {
       bracket_leg: "A stock bracket exit was booked at a quote before the reconcile read the leg's fill",
       broker_history: "A stock the operator sold by hand in Webull was re-booked at the operator's fill",
+      // The protection the entry's bracket should have held was placed again
+      // outside it, by a re-arm or by hand (LITE, 2026-09-21), and that order
+      // is what closed the position. Worth a count: each one is a bracket that
+      // did not hold.
+      outside_bracket:
+        "A stock exit filled on a stop or target placed outside the entry's bracket (a re-arm, or one placed by hand) was re-booked at that fill",
+    },
+  },
+  // An estimate the correction pass had to leave in the record (2026-09-23).
+  // Until this row existed the pass skipped silently, so three of the first
+  // eight estimates it read stayed estimates with nothing saying why.
+  {
+    action: 'live_exit_correction_skipped',
+    label: 'A stock exit the position sync priced at a quote could not be corrected and stays an estimate',
+    splitOn: 'cause',
+    labelFor: {
+      no_matching_sale:
+        "A stock exit closed outside its bracket matched no set of fills in the broker's history, and stays an estimate",
+      combo_working:
+        "A stock position's bracket still showed a working leg a day after the shares left (an order still live at the broker)",
     },
   },
   // Two RISK CONTROLS that fail open (2026-09-12). Neither is a crash and

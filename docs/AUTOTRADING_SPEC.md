@@ -13218,3 +13218,81 @@ not split. Every row in the current window has one.
 that enters or leaves the window. Its lever must not contain "$2.93". As the 09-09 rows age
 out of the ten-session window, the split turns toward refusals above the ceiling, and the
 small-account advice returns. That is correct at this equity for LITE, SNDK and GEV.
+
+## 2026-09-23 (tenth) — a skipped exit correction says why, and a leg outside the bracket is read
+
+**Result of #643's deploy (first pass 01:10 ET).** The pre-committed check held on its main
+line. The pass corrected COIN #656 to $204.37 `stop` (+$105.47 → −$3.22), exactly as
+predicted, and four more with it:
+
+| position | day | source | booked → fill | P&L moved |
+| --- | --- | --- | --- | ---: |
+| COIN #651 | 09-18 | `bracket_leg` | 189.68 → 189.06, `target` | −$69.44 |
+| COIN #656 | 09-21 | `bracket_leg` | 205.0451 → 204.37, `manual` → `stop` | −$108.69 |
+| MRVL #678 | 09-22 | `broker_history` | 261.00 → 261.54 | +$51.30 |
+| SNOW #677 | 09-22 | `broker_history` | 337.695 → 338.76 | +$64.96 |
+| SNDK #682 | 09-22 | `broker_history` | 1,888.00 → 1,881.42 | −$32.90 |
+
+The days were re-recorded. 09-18 moved by −$69.44 to +$386.82, 09-21 from +$9.64 to
+−$99.05, and 09-22 from −$128.96 to −$45.59.
+
+The other half of the check failed. **HOOD #650** (09-18), **LITE #661** (09-21) and **MRNA
+#680** (09-22) stayed at their quotes, and nothing in the journal said why. The check asked
+for "a stated skip", and the pass had no way to state one.
+
+**LITE, from the journal.** Its bracket's legs never rested. At 10:07 the protection check
+found none, and its automatic re-arm failed (the inverted-side bug fixed that night). A
+bracket then appeared whose order group was not the entry's (`bracket_groups_observed`,
+`attributedByEntryOrderId: false`): one placed by hand. The loop ratcheted that bracket's
+stop to breakeven at 10:27, the stop filled, and at 10:40 the sync booked the $969.88
+quote. The entry's own order group shows no filled leg, so the pass went to the hand-sale
+match. That match read only plain (`NORMAL`) orders and could not see a stop leg in another
+order group. It gave up without a word.
+
+**HOOD and MRNA** show their entry's own order group on the journal
+(`attributedByEntryOrderId: true`). Their cause cannot be read from here: the app's broker
+probe reads one page of the order history, and neither is on it. HOOD's quote ($117.5999)
+sits four cents above its target limit ($117.56), so its leg may have filled at the
+estimate. The next pass will say which.
+
+**Change.**
+
+- The match reads any closing fill that is not an opening order (`MASTER`), filled after
+  the entry and no later than the day the sync booked the close. That covers a hand sale,
+  and also a stop or target placed outside the entry's bracket, by a re-arm or by hand. A
+  fill after that day belongs to a later position.
+- The reason comes from the fills. All stop legs book `stop` and all take-profit legs book
+  `target`. Anything else books `manual`, including a hand sale where the quote had crossed a
+  level and the sync had labelled it `stop`.
+- `live_exit_corrected` gains `source: outside_bracket` for a close by a stop or target
+  outside the entry's bracket. Each one is a bracket that did not hold.
+- An estimate the fill matches to the cent is **confirmed**. Its note is replaced, its price
+  kept, and it leaves the candidates for good.
+- Every estimate left alone for good journals **`live_exit_correction_skipped`** once. The
+  row carries its `cause` (`aged_out`, `quantity_mismatch`, `ambiguous_legs`,
+  `no_fill_price`, `no_matching_sale`, `entry_order_missing`) and the broker's evidence: the
+  entry's legs and, for an unmatched close, the sells it read.
+- A leg still working the day after the close is stated once a day (`combo_working`). The
+  shares are gone and the order may still be live at the broker.
+- Both are leak-scan execution findings, split by source and by cause.
+
+**Tested.**
+
+- LITE's shape, end to end. A cancelled entry bracket plus a stop leg in another order
+  group books the fill as `stop` with `source: outside_bracket`. The live snapshot's
+  `consecutiveLosses` goes from 0 to 1, and the scan's finding reads the row the pass wrote.
+- A hand sale books `manual` over the sync's `stop`.
+- A matching estimate is confirmed and never re-read, a restart included.
+- Each skip cause is stated once, a restart included. A working leg is stated once a day,
+  and never on the close's own day.
+- Five negative checks each fail their cases: the NORMAL-only filter, no exit-day bound,
+  silent skips, no confirmation, and the sync's reason kept.
+
+**Pre-committed check.** A deploy restarts the process, so the first pass re-reads every
+estimate still in the record. On that pass:
+
+- **LITE #661** must be corrected with `source: outside_bracket` and reason `stop`, or carry
+  a `live_exit_correction_skipped` row whose evidence shows why not.
+- **HOOD #650** and **MRNA #680** must each be corrected, confirmed, or carry a skip row
+  with its cause.
+- No estimate in the seven-day window may remain without one of the three.
