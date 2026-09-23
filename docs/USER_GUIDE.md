@@ -1015,7 +1015,8 @@ tabs of one **Analytics** button (top right) — pick a tab, the report loads on
   no setting expresses it, plus the **R it has left on the table**. Alongside the buckets
   it reports the **day level** (how often the stored goal was actually reached, the same
   count at 1R, and what the red days were made of), the **paper-vs-live attribution**
-  (the same decision in both books, and why the live book skipped what paper took), and
+  (the same decision in both books, and why the live book skipped what paper took, with
+  each skipped entry listed by symbol, date, time and paper R), and
   **findings** — anything that simply went wrong (an exit that failed, a position with no
   stop, a cap that no longer matches its own formula, a tuner row on a day the tuner is
   off, or **entries being placed at a worse price than they were decided at**, past the

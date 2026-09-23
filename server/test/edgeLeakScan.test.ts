@@ -430,6 +430,24 @@ describe('attribution — where the live book loses the paper book’s edge', ()
     expect(byReason.get('no_live_row')?.n).toBe(1);
   });
 
+  it('lists each class’s entries newest first, so a count can be checked trade by trade', () => {
+    // 2026-09-23: `no_live_row` read 53 entries (+4.42R) and nothing said which,
+    // so "explain the 53" had nothing to check against the journal.
+    const paper = [
+      trade({ symbol: 'HOOD', book: 'paper', entryAt: at('09:35'), entryMinuteEt: 9 * 60 + 35, r: 0.9 }),
+      trade({ symbol: 'QQQ', book: 'paper', entryAt: at('11:35'), entryMinuteEt: 11 * 60 + 35, r: 0.2 }),
+      trade({ symbol: 'IWM', book: 'paper', entryAt: at('10:05'), entryMinuteEt: null, r: -0.12344 }),
+    ];
+    const a = buildAttribution([], paper, [], [], [], MARKETABLE_LIMIT_BUFFER_PCT, RNG());
+    expect(a.untaken).toHaveLength(1);
+    expect(a.untaken[0]).toMatchObject({ reason: 'no_live_row', n: 3 });
+    expect(a.untaken[0].trades).toEqual([
+      { symbol: 'QQQ', etDate: date, entryTimeEt: '11:35', r: 0.2 },
+      { symbol: 'IWM', etDate: date, entryTimeEt: null, r: -0.1234 },
+      { symbol: 'HOOD', etDate: date, entryTimeEt: '09:35', r: 0.9 },
+    ]);
+  });
+
   it('attributes a batch entry_window_closed refusal BY TIME, not by symbol', () => {
     // The end-of-day cutoff refuses the whole batch before the per-candidate
     // loop, so its journal row carries a count and NO symbol — the one live
