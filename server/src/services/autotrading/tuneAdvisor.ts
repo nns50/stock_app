@@ -242,6 +242,17 @@ export function fieldForUntakenReason(
   // whose stop the session is unlikely to reach either way, so the paper R here
   // is the whole question.
   if (reason === 'risk_atr_unreachable_skipped') return { field: 'maxRiskAtrFraction', direction: 'exposure' };
+  // The market-direction gate (2026-09-23). Its breadth bar is the dial that
+  // decides how one-sided a market has to be before the gate refuses: raising it
+  // refuses only on broader red (or green) days. The paper R here is what the
+  // gate's refusals would have earned, which is the whole question.
+  if (reason === 'live_market_direction_skipped') {
+    return {
+      field: 'marketDirectionBreadthPct',
+      direction: 'exposure',
+      detail: 'raise the breadth bar so the gate refuses only on broader one-sided days, or turn the gate off',
+    };
+  }
   // Two thresholds, one verdict, so there is no single field to name: loosening
   // means admitting names trading heavily inside a dead range. Reported with a
   // null field rather than pointing at one of the pair, since moving either
@@ -431,6 +442,9 @@ function humanReason(reason: string): string {
   if (reason === 'entry_window_closed') return 'the end-of-day entry cutoff';
   if (reason === 'regime_score_floor_skipped') return 'the High-Vol conviction bar';
   if (reason === 'risk_atr_unreachable_skipped') return "a stop wider than the name's daily range";
+  if (reason === 'live_market_direction_skipped') {
+    return 'the market-direction gate (a long on a broad red day, or a short on a broad green one)';
+  }
   if (reason === 'symbol_unplaceable_skipped') return 'a symbol the broker will not trade';
   if (reason === 'absorbed_price_skipped') return 'a price being absorbed at a level rather than moving';
   if (reason === 'level_veto') return 'the level veto (a target the chart structure caps under the minimum reward)';

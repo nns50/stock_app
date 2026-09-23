@@ -724,6 +724,65 @@ three compose, and whichever is strictest at that moment is the one that decides
 ships at 0 (off) and gets its number from the walk-forward grid's second stage (off / 72 /
 76 on regime days), never from taste.
 
+### Don't buy into a falling market: the market-direction gate (2026-09-23)
+
+On 2026-09-23 the live book bought SHOP, GRML, SMCI and DELL between 09:50 and 10:13. SPY sat
+0.3–0.5% under its prior close and about three stocks in four were red. All four lost, 4.1R
+between them. Nothing on the entry path looked at the market's direction:
+
+- the regime overlay reads a daily model;
+- the ATR guard and the shock nowcast read volatility, and a quiet red day is neither;
+- the screener scores each name on its own tape, so a stock holding up on a red day scores
+  as strength.
+
+The gate reads two legs every tick. It calls the market one-sided only when both agree:
+
+| leg     | reads                                              | red when                               | green when       |
+| ------- | -------------------------------------------------- | -------------------------------------- | ---------------- |
+| index   | SPY against its prior close                        | down at least `marketDirectionIndexPct` | up at least that |
+| breadth | the scored universe, each name against its own prior close | at least `marketDirectionBreadthPct` of names red | that share green |
+
+With the gate on, the live books refuse an entry that leans against a one-sided market: a
+long or a call on a red day, a short or a put on a green one. Paper keeps taking them.
+
+**The record the bars came from.** The sample was 22 sessions (2026-08-24 to 09-23). Breadth
+came from minute bars of a 60-name random sample of the universe. Each trade was placed
+against the reading at its entry minute:
+
+| SPY / breadth bar | live longs refused | their R | paper longs in the same readings | their R |
+| ----------------- | ------------------ | ------- | -------------------------------- | ------- |
+| **0.2% / 65%**    | 30                 | −6.50   | 24                               | +5.09   |
+| 0.2% / 70%        | 24                 | −6.23   | 20                               | +4.66   |
+| 0.25% / 65%       | 27                 | −5.06   | 23                               | +4.83   |
+| 0.3% / 65%        | 22                 | −3.15   | 14                               | +4.48   |
+
+The defaults are the first row. It is the one that catches all four of 2026-09-23's live
+longs; 0.3% misses SHOP, bought with SPY at −0.29%. At those bars the reading was red on 31%
+of session minutes, on some part of 10 of the 22 sessions, and green on 13%. It flips about
+ten times a day around the bars, and each flip is one journal row. In production the reading
+counts the whole scored universe, about 500 names rather than 60, so it is less noisy than
+the sample it was chosen from.
+
+**Read the paper column before trusting the live one.** The live longs the gate would have
+refused lost 0.22R a trade. Paper's longs in the same readings made 0.21R a trade, most of it
+on 2026-09-09 (IRD, CHYM) and 09-18. The live loss sits on two days: 09-09 (−2.20R over 12
+trades) and 09-23 (−4.09R over 4). So part of what the gate removes may be live execution on
+a falling tape (stops filling through, entries chasing) rather than the market's direction
+alone. The gate is on because the operator asked for it and the live record, which is real
+money, supports it. From here on, paper decides.
+
+**Pre-committed review.** After 20 refused live entries (`live_market_direction_skipped`),
+read the attribution's class of the same name in the edge-leak scan:
+
+- if paper's mean R on those entries has a 95% interval above zero, the gate is refusing
+  winners: raise `marketDirectionBreadthPct` to 70, the second row above. If the class still
+  reads above zero after another 20, turn the gate off.
+- if it reads at or below zero, keep the gate.
+
+The tune advisor ranks the same class with `marketDirectionBreadthPct` as its lever. The
+scan's **Market direction at entry** cut shows the live book's with and mixed buckets with
+paper beside them. An `against` bucket appears on live only while the gate is off.
+
 One mechanical thing worth knowing, because it decides whether an exit is placeable at
 all: **an option under $3 of premium can only be priced in nickels.** Webull rejects
 anything else outright, so the live path snaps every option limit onto that grid — a buy
@@ -2034,7 +2093,9 @@ book" read differently.
 **The catalog (v1).** Round within symbol-day · entry half-hour and the after-13:00
 aggregate · score band · VWAP extension · % of session range · exit reason · hold time ·
 symbol (n ≥ 5) · sector · weekday · ML regime · asset · position size · stop width per
-share. Plus three non-behavioural groups: the **day level** (goal reached on N of M active sessions, the
+share · market direction at entry (with, against or mixed, from the `market_direction_read`
+rows in force at the entry; see "Don't buy into a falling market" above). Plus three
+non-behavioural groups: the **day level** (goal reached on N of M active sessions, the
 1R comparison, the red-day decomposition), the **attribution** (paper-versus-live on the
 same decision, and why the live book skipped what paper took), and **findings** —
 execution occurrences and configuration mismatches, where any occurrence is one. The

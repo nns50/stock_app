@@ -1633,6 +1633,7 @@ describe('health (integration)', () => {
       moversCandidates: 0,
       moversFetchError: null,
       mlRegime: null,
+      marketDirection: null,
     });
     const after = (await getJson('/api/health')) as { loopLastTickAgeMs: number | null };
     expect(after.loopLastTickAgeMs).toBeGreaterThanOrEqual(0);
@@ -1956,6 +1957,25 @@ describe('autotrade config routes (integration)', () => {
       giveBackArmPct: null,
       giveBackFloorPct: null,
     });
+  });
+
+  // The market-direction gate (2026-09-23). Driven by hand as well as by the
+  // sweep below, because the sweep probes every number with 1 or 2 and skips a
+  // field whose own rule refuses that — and the breadth bar's floor is 50, so
+  // the sweep alone would prove nothing about it.
+  it('applies the market-direction gate’s three fields and refuses bars outside their ranges', async () => {
+    const patch = { marketDirectionGateEnabled: true, marketDirectionIndexPct: 0.25, marketDirectionBreadthPct: 70 };
+    expect((await put('/api/autotrade/config', patch)).status).toBe(200);
+    expect((await getJson('/api/autotrade/config')) as Record<string, unknown>).toMatchObject(patch);
+    for (const bad of [
+      { marketDirectionBreadthPct: 49 },
+      { marketDirectionBreadthPct: 101 },
+      { marketDirectionIndexPct: 5.5 },
+      { marketDirectionIndexPct: -0.1 },
+    ]) {
+      expect((await put('/api/autotrade/config', bad)).status, JSON.stringify(bad)).toBe(400);
+    }
+    expect((await getJson('/api/autotrade/config')) as Record<string, unknown>).toMatchObject(patch);
   });
 
   it('every numeric field the schema accepts is actually applied by the handler', async () => {

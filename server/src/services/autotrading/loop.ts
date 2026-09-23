@@ -59,9 +59,17 @@ import {
   checkMacroEventBlackout,
   checkVolatility,
   getMarketAtrPct,
+  getMarketChangePct,
   getMarketRangePct,
   VolatilityFilterConfig,
 } from './executionGuards';
+import {
+  MARKET_DIRECTION_ACTION,
+  MARKET_DIRECTION_INDEX_SYMBOL,
+  MarketDirectionReading,
+  claimDirectionChange,
+  readMarketDirection,
+} from './marketDirection';
 import { listMacroEvents } from '../../db/macroEvents';
 import { runWebullPositionsSync } from '../../providers/webull/positions';
 import { correctEstimatedStockExits } from './stockExitCorrection';
@@ -210,6 +218,10 @@ export interface LoopTickSummary {
    *  or null when the read did not run (a tick that ended before it, or a
    *  read that threw — runStage journals that). */
   mlRegime: MlRegimeTickSummary | null;
+  /** Which way the whole market leaned this tick (marketDirection.ts): SPY's
+   *  move and the universe's breadth, and the verdict read from them. Null on a
+   *  tick that ended before the screen ran. */
+  marketDirection: MarketDirectionReading | null;
 }
 
 /** Ticker-level volatility pre-filter, applied between Screen and Decision —
@@ -270,6 +282,7 @@ function emptySummary(skippedReason?: string): LoopTickSummary {
     moversCandidates: 0,
     moversFetchError: null,
     mlRegime: null,
+    marketDirection: null,
   };
 }
 
@@ -897,6 +910,29 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       }
     }
 
+    // WHICH WAY THE WHOLE MARKET LEANS (2026-09-23; marketDirection.ts). Read
+    // every tick the screen runs, whether or not the gate is on: the reading is
+    // journaled on each change so the edge-leak scan can place every entry of
+    // BOTH books against the tape, which is how the gate is measured before and
+    // after it acts. Only the live executors act on it, and only with
+    // marketDirectionGateEnabled; they read that flag from their own config.
+    const marketDirection = readMarketDirection({
+      indexSymbol: MARKET_DIRECTION_INDEX_SYMBOL,
+      indexChangePct: await getMarketChangePct(MARKET_DIRECTION_INDEX_SYMBOL),
+      breadth: screenResult.breadth,
+      indexPct: config.marketDirectionIndexPct,
+      breadthPct: config.marketDirectionBreadthPct,
+    });
+    summary.marketDirection = marketDirection;
+    if (claimDirectionChange(etToday(), marketDirection.direction)) {
+      logAutotradeEvent({
+        stage: 'screen',
+        action: MARKET_DIRECTION_ACTION,
+        detail: { ...marketDirection, gateEnabled: config.marketDirectionGateEnabled },
+        riskProfile: config.riskProfile,
+      });
+    }
+
     const passedVolatility = filterByVolatility(screenResult.candidates, marketAtrPct, volCfg);
     summary.candidatesPassedVolatility = passedVolatility.length;
 
@@ -1138,6 +1174,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
         liveOptionsDay(),
         regimeLabel,
         tickRegime,
+        marketDirection,
       );
       summary.liveEntriesOpened = liveOutcomes.filter((o) => o.ok).length;
     }
@@ -1147,6 +1184,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
         marketAtrPct,
         regimeLabel,
         tickRegime,
+        marketDirection,
       );
       summary.liveOptionsEntriesOpened = liveOptionsOutcomes.filter((o) => o.ok).length;
     }

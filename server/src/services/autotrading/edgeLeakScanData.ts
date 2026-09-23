@@ -44,6 +44,7 @@ import {
   ScanFinding,
 } from './edgeLeakScan';
 import { liveDrawdownHaltRetracted } from './dailyHaltMarker';
+import { MARKET_DIRECTION_ACTION, Lean, MarketDirection, tapeAlignment } from './marketDirection';
 
 // ---------------------------------------------------------------------------
 // The DB half of the edge-leak scan: turn both books' closed positions into
@@ -327,6 +328,10 @@ export const SKIP_ACTIONS = [
   // bid). Live-only for the same reason the ATR one is: paper keeps taking
   // these, which is what makes this attribution a control rather than a tally.
   'absorbed_price_skipped',
+  // The market-direction gate (2026-09-23): a long refused on a broad red day,
+  // a short on a broad green one. Live-only, so the paper entries it explains
+  // are the gate's counterfactual.
+  'live_market_direction_skipped',
   // FOUR WRITTEN PER EVENT THAT THE ATTRIBUTION NEVER READ (2026-09-23). Each
   // is logged with a symbol at the moment the live book declined, or failed to
   // place, a candidate paper also saw, so every paper entry they explain read
@@ -448,6 +453,46 @@ function extensionKey(book: 'live' | 'paper', symbol: string, etDate: string, mi
   return `${book}|${symbol}|${etDate}|${minute}`;
 }
 
+/** The market-direction readings the loop journaled (`market_direction_read`,
+ *  one row per change — marketDirection.ts), grouped by ET date, oldest first.
+ *  The reading in force at any moment is the latest row at or before it. */
+export type DirectionIndex = Map<string, { at: number; direction: MarketDirection }[]>;
+
+const MARKET_DIRECTIONS: ReadonlySet<string> = new Set(['red', 'green', 'mixed', 'unknown']);
+
+export function directionIndex(since: number): DirectionIndex {
+  const out: DirectionIndex = new Map();
+  for (const e of listAutotradeEventsInWindow({ actions: [MARKET_DIRECTION_ACTION], since }).events) {
+    if (!e.detail) continue;
+    let direction: unknown;
+    try {
+      direction = (JSON.parse(e.detail) as { direction?: unknown }).direction;
+    } catch {
+      continue;
+    }
+    if (typeof direction !== 'string' || !MARKET_DIRECTIONS.has(direction)) continue;
+    const day = etToday(e.createdAt);
+    const rows = out.get(day) ?? [];
+    rows.push({ at: e.createdAt, direction: direction as MarketDirection });
+    out.set(day, rows);
+  }
+  for (const rows of out.values()) rows.sort((a, b) => a.at - b.at);
+  return out;
+}
+
+/** The reading in force at `at` on `etDate`: the latest row at or before it,
+ *  never one from a later minute and never one from another day. Null when the
+ *  loop had journaled none yet that day. */
+export function directionAt(index: DirectionIndex, etDate: string, at: number | null): MarketDirection | null {
+  if (at === null) return null;
+  let found: MarketDirection | null = null;
+  for (const r of index.get(etDate) ?? []) {
+    if (r.at > at) break;
+    found = r.direction;
+  }
+  return found;
+}
+
 /** Attributes for one collector id, before the round number is assigned. */
 type PartialLeakTrade = Omit<LeakTrade, 'round' | 'r' | 'entryAt' | 'exitAt'>;
 
@@ -473,6 +518,7 @@ function attributesForLiveBook(
   liveOptionsClosed: LiveOptionsPosition[],
   sectorOf: (symbol: string) => string | null,
   extensions: Map<string, ExtensionRow>,
+  directions: DirectionIndex,
 ): Map<string, PartialLeakTrade> {
   const out = new Map<string, PartialLeakTrade>();
   for (const p of closed) {
@@ -500,6 +546,7 @@ function attributesForLiveBook(
       vwapExtPct: ext?.vwapExtPct ?? null,
       pctOfRange: ext?.pctOfRange ?? null,
       stopWidthUsd: liveStopWidthUsd(p),
+      marketTape: tapeAlignment(directionAt(directions, etDate, entryAt), p.side),
     });
   }
   for (const p of liveOptionsClosed) {
@@ -528,6 +575,7 @@ function attributesForLiveBook(
       // An option's stop is on premium; a width in dollars per share means
       // nothing for it.
       stopWidthUsd: null,
+      marketTape: tapeAlignment(directionAt(directions, etDate, p.entryAt), leanOfOption(p.side)),
     });
   }
   return out;
@@ -538,6 +586,7 @@ function attributesForPaperBook(
   optionsPaper: OptionsPaperPosition[],
   sectorOf: (symbol: string) => string | null,
   extensions: Map<string, ExtensionRow>,
+  directions: DirectionIndex,
 ): Map<string, PartialLeakTrade> {
   const out = new Map<string, PartialLeakTrade>();
   for (const p of paper) {
@@ -568,6 +617,7 @@ function attributesForPaperBook(
       vwapExtPct: ext?.vwapExtPct ?? null,
       pctOfRange: ext?.pctOfRange ?? null,
       stopWidthUsd: paperStopWidthUsd(p),
+      marketTape: tapeAlignment(directionAt(directions, etDate, p.entryAt), p.side === 'sell' ? 'short' : 'long'),
     });
   }
   for (const p of optionsPaper) {
@@ -591,9 +641,15 @@ function attributesForPaperBook(
       vwapExtPct: null,
       pctOfRange: null,
       stopWidthUsd: null,
+      marketTape: tapeAlignment(directionAt(directions, etDate, p.entryAt), leanOfOption(p.side)),
     });
   }
   return out;
+}
+
+/** A call leans long the underlying and a put short it. */
+function leanOfOption(side: 'call' | 'put'): Lean {
+  return side === 'call' ? 'long' : 'short';
 }
 
 /**
@@ -1445,6 +1501,7 @@ export function runEdgeLeakScanFromDb(opts: EdgeLeakScanOptions = {}): EdgeLeakS
   // One scan of the journal, read by both books — the index is keyed by book,
   // so each takes its own rows out of it.
   const { rows: extensions, quality: extensionQuality } = extensionIndex(windowStart);
+  const directions = directionIndex(windowStart);
   const live = joinLeakTrades(
     liveCollected,
     attributesForLiveBook(
@@ -1452,6 +1509,7 @@ export function runEdgeLeakScanFromDb(opts: EdgeLeakScanOptions = {}): EdgeLeakS
       listLiveOptionsPositions({ status: 'closed' }),
       sectorOf,
       extensions,
+      directions,
     ),
   );
   const paper = joinLeakTrades(
@@ -1461,6 +1519,7 @@ export function runEdgeLeakScanFromDb(opts: EdgeLeakScanOptions = {}): EdgeLeakS
       listOptionsPaperPositions({ status: 'closed' }),
       sectorOf,
       extensions,
+      directions,
     ),
   );
 

@@ -14043,3 +14043,95 @@ the old code; the four route cases pass on both, since they pin the page the UI 
 `coverage.paperTrades + paperOutsideWindow + paperDropped` equal to the closed rows of
 `/api/autotrade/paper-positions` plus `/api/autotrade/options-paper-positions`, each read with
 `?status=closed&limit=1000`.
+
+## 2026-09-23 (twenty-sixth) — the market-direction gate
+
+On 2026-09-23 the live book bought SHOP (09:50), GRML (09:52), SMCI (10:08) and DELL (10:13)
+with SPY 0.29–0.51% under its prior close and 68–75% of a sampled universe red. All four lost,
+−4.09R between them. The operator asked for the market's overall direction to be read and
+acted on: "make sure it takes into account red days like today. They may not seem violent
+but can be outreaching to all stocks and vice versa for green days." Nothing on the entry path
+read direction:
+- the ML regime overlay reads a daily model (Low-Vol Bullish that morning);
+- the ATR guard and the shock nowcast read volatility;
+- the marketRegime gauge (trend, breadth, volatility) is display-only;
+- the screener scores each name on its own tape.
+
+**The reading** (`services/autotrading/marketDirection.ts`, pure). It has two legs:
+- the index: SPY's move against its prior close, from the quote's `changePct` or derived from
+  `last` and `prevClose` (`getMarketChangePct`). It is null on the synthetic provider or a
+  failed read.
+- breadth: the count of scored universe names below, above and at their own prior close,
+  pass or fail (`ScreenResult.breadth`). Movers-only names are left out, since premarket
+  gainers are green by selection. Only a move read from the name's own quote counts: when a
+  quote fails, the indicator falls back to the last two daily bars, which during the session
+  can be yesterday's move, so that name is left out rather than counted.
+
+The reading is red when SPY is down at least `marketDirectionIndexPct` AND at least
+`marketDirectionBreadthPct` of the measured names are red. Green is the mirror; anything else
+is mixed. It is unknown without an index move or with fewer than 100 names measured. Both
+comparisons use the raw values, not the rounded ones shown. The loop reads the market once a
+tick after the screen, puts it on the tick summary (the Monitoring card's Last cycle line),
+and journals `market_direction_read` when it changes (`claimDirectionChange`), with the gate
+on or off.
+
+**The gate.** The loop hands the reading to both live executors, the same object to each.
+With `marketDirectionGateEnabled` on:
+- the stock book refuses a long on a red reading and a short on a green one, after the score
+  gate. Each refusal is therefore an entry the book otherwise wanted. It is journaled as
+  `live_market_direction_skipped` through `journalDeclinedEntry`, so it carries the replay
+  fields.
+- the options sleeve refuses a call on red and a put on green, after its finish-line gate,
+  journaled as `live_options_market_direction_skipped`.
+
+Paper is not gated; it is the control.
+
+**Measured.**
+- The attribution reads `live_market_direction_skipped` as a standing once-a-day refusal, so
+  paper entries the gate refused file under their own class. The tune advisor names
+  `marketDirectionBreadthPct` as that class's lever.
+- The edge-leak scan gains a **Market direction at entry** dimension (with, against or mixed).
+  It places each trade in both books against the `market_direction_read` row in force at its
+  entry, the latest at or before it on the same ET day. Its lever on `against` is the gate
+  itself, and it is not writable by the gated switches.
+
+**Config.**
+
+| Field | Default | Range | Classification |
+| --- | --- | --- | --- |
+| `marketDirectionGateEnabled` | false | boolean | never tuned |
+| `marketDirectionIndexPct` | 0.2 | [0, 5], a 400 outside it | never tuned |
+| `marketDirectionBreadthPct` | 65 | [50, 100], a 400 outside it | never tuned |
+
+The three are read in `loop.ts`, `liveExecute.ts` and `liveOptionsExecute.ts`.
+
+**The calibration.** Breadth was rebuilt for 22 sessions (2026-08-24..09-23) from Polygon minute
+bars of a 60-name random sample of the universe, and each of the 242 trades on the tape was
+placed against the reading at its entry minute. At 0.2% / 65%:
+
+| Book | Trades refused | Mean R | Total R | Winners |
+| --- | --- | --- | --- | --- |
+| Live longs | 30 | −0.217 | −6.50 | 37% |
+| Paper longs, same readings | 24 | +0.212 | +5.09 | 83% |
+
+The live loss sits on 09-09 (−2.20R over 12) and 09-23 (−4.09R over 4). The paper gain sits on
+09-09 (IRD, CHYM) and 09-18. The books disagree, so part of what the gate removes may be live
+execution on a falling tape rather than direction alone. The alternatives:
+
+| SPY / breadth | Live refused | Live R | Paper R |
+| --- | --- | --- | --- |
+| 0.2% / 70% | 24 | −6.23 | +4.66 |
+| 0.25% / 65% | 27 | −5.06 | +4.83 |
+| 0.3% / 65% | 22 | −3.15 | +4.48 |
+
+0.2% / 65% is the only row that catches all four of 09-23's entries. At it the reading was red
+on 31% of session minutes and green on 13%, and it flipped about ten times a day on the
+60-name sample.
+
+**Pre-committed check.**
+1. On 2026-09-24 the first `market_direction_read` row lands within a minute of the first
+   screened tick. The Last cycle line shows it, and with the gate on a red reading journals
+   `live_market_direction_skipped` for every floor-passing long.
+2. After 20 live refusals, read the attribution class `live_market_direction_skipped`. If
+   paper's mean R there has a 95% interval above zero, raise `marketDirectionBreadthPct` to
+   70. If it still reads above zero after another 20, turn the gate off. Otherwise keep it.

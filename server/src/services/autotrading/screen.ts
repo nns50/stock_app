@@ -25,6 +25,7 @@ import { claimOncePerDay } from './oncePerDayEvents';
 import { getSymbolEvents } from '../events';
 import { getNews } from '../news';
 import { computeHeadlineSentiment } from '../sentiment';
+import { MarketBreadth, breadthOf } from './marketDirection';
 
 // ---------------------------------------------------------------------------
 // The Research & Screen stage (docs/AUTOTRADING_SPEC.md — EXECUTION LOOP,
@@ -92,6 +93,15 @@ export interface ScreenResult {
    *  figure in the journal can always be checked against what it was divided
    *  by. */
   relVolMedian: number | null;
+  /** How widely red or green the UNIVERSE is this tick (2026-09-23): every
+   *  scored universe name's move vs its own prior close, counted pass or fail,
+   *  like the relVolume median above — the market's breadth cannot come from
+   *  the survivors of a filter that itself reads the move. Movers-only names
+   *  are left out: premarket gainers are green by selection. Only a move read
+   *  from the name's own QUOTE counts; a name whose quote failed is left out
+   *  rather than read from yesterday's daily bar. Read by the loop for the
+   *  market-direction reading (marketDirection.ts). */
+  breadth: MarketBreadth;
   /** `moversError` is the message from a FAILED movers fetch, null when the
    *  fetch succeeded or was never attempted. Movers discovery used to swallow
    *  every error with a bare catch, so a provider outage and "the provider
@@ -133,6 +143,7 @@ export function resolveAutotradeScreenerConfig(patch?: Partial<ScreenerConfig>):
  *  unplugging Webull, which live trading still needs. */
 async function discoverSymbols(moversEnabled: boolean): Promise<{
   symbols: string[];
+  universe: Set<string>;
   universeCount: number;
   moversCount: number;
   fromMovers: Set<string>;
@@ -161,7 +172,14 @@ async function discoverSymbols(moversEnabled: boolean): Promise<{
   }
 
   const symbols = Array.from(new Set([...universeSymbols, ...fromMovers]));
-  return { symbols, universeCount: universeSymbols.length, moversCount: fromMovers.size, fromMovers, moversError };
+  return {
+    symbols,
+    universe: new Set(universeSymbols),
+    universeCount: universeSymbols.length,
+    moversCount: fromMovers.size,
+    fromMovers,
+    moversError,
+  };
 }
 
 export interface RunScreenOptions {
@@ -421,14 +439,20 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
   // IDENTICAL behavior to before this option existed.
   const directionMode = opts.directionMode ?? cfg.direction;
   const provider = getProvider();
-  const { symbols, universeCount, moversCount, fromMovers, moversError } = opts.symbols?.length
-    ? {
-        symbols: Array.from(new Set(opts.symbols.map((s) => s.toUpperCase()))),
-        universeCount: 0,
-        moversCount: 0,
-        fromMovers: new Set<string>(),
-        moversError: null,
-      }
+  const { symbols, universe, universeCount, moversCount, fromMovers, moversError } = opts.symbols?.length
+    ? (() => {
+        const given = Array.from(new Set(opts.symbols.map((s) => s.toUpperCase())));
+        return {
+          symbols: given,
+          // A caller that names its own symbols has named the set breadth is
+          // measured over too.
+          universe: new Set(given),
+          universeCount: 0,
+          moversCount: 0,
+          fromMovers: new Set<string>(),
+          moversError: null,
+        };
+      })()
     : await discoverSymbols(opts.moversEnabled ?? true);
 
   const candidates: ScreenCandidate[] = [];
@@ -439,7 +463,18 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
   // can re-score without a second fetch or a second indicator computation.
   // Flat objects of ~17 numbers each; a 560-symbol universe is nothing next to
   // the candle arrays already held during the fetch.
-  const scoredSnapshots: { symbol: string; ind: IndicatorSnapshot | null; fallbackPrice: number }[] = [];
+  //
+  // `quoteChangePct` is the name's move from its own real-time quote, kept apart
+  // from `ind.changePct` for breadth: when a quote fails, the indicator falls
+  // back to the last two DAILY bars, which during the session can be
+  // yesterday's move — and a quote outage that hit every name would then read
+  // yesterday's breadth as today's.
+  const scoredSnapshots: {
+    symbol: string;
+    ind: IndicatorSnapshot | null;
+    fallbackPrice: number;
+    quoteChangePct: number | null;
+  }[] = [];
   // candidate_found is journaled AFTER the pace filter, so the journal never
   // announces a candidate this screen then discards.
   const pendingCandidates: { symbol: string; candidate: ScreenCandidate }[] = [];
@@ -626,7 +661,7 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
       // until all of them have been read. Retaining the snapshot is what makes
       // that orderable; it is also what lets both scorings be compared without
       // a second fetch.
-      scoredSnapshots.push({ symbol, ind, fallbackPrice });
+      scoredSnapshots.push({ symbol, ind, fallbackPrice, quoteChangePct: quote?.changePct ?? null });
     } catch (err) {
       errors.push({ symbol, message: (err as Error).message });
     }
@@ -886,6 +921,7 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
     errors,
     rejected,
     relVolMedian: median,
+    breadth: breadthOf(scoredSnapshots.filter((s) => universe.has(s.symbol)).map((s) => s.quoteChangePct)),
     discovery: { universeCount, moversCount, scannedCount: symbols.length, moversError },
   };
 }

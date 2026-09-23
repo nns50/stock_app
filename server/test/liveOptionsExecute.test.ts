@@ -111,6 +111,7 @@ import { closeLiveOptionsAutotradePosition } from '../src/services/trading/close
 import { buildLiveTradingConfig } from '../src/services/autotrading/liveExecute';
 import { writeDailyHaltMarker } from '../src/services/autotrading/dailyHaltMarker';
 import { etToday } from '../src/util/marketDate';
+import { readMarketDirection, type MarketDirectionReading } from '../src/services/autotrading/marketDirection';
 
 const mockGetProvider = vi.mocked(getProvider);
 const mockPreviewPositions = vi.mocked(previewWebullPositions);
@@ -1268,6 +1269,68 @@ describe('runLiveOptionsExecution', () => {
     ]);
     expect(outcomes.map((o) => o.ok)).toEqual([true, true]);
     expect(mockPlaceOrder).toHaveBeenCalledTimes(2);
+  });
+
+  // The options twin of the stock gate: a call leans long the underlying and a
+  // put short it, so a call on a broad red day and a put on a broad green one
+  // are refused, and each leaves a row (2026-09-23).
+  describe('the market-direction gate (2026-09-23)', () => {
+    const tape = (indexChangePct: number, red: number, green: number) =>
+      readMarketDirection({
+        indexSymbol: 'SPY',
+        indexChangePct,
+        breadth: { red, green, flat: 500 - red - green, sample: 500 },
+        indexPct: 0.2,
+        breadthPct: 65,
+      });
+    const RED = tape(-0.35, 365, 135);
+    const GREEN = tape(0.9, 125, 375);
+    const rows = () => listAutotradeEvents({ actions: ['live_options_market_direction_skipped'] });
+    const run = (sig: SingleLegOptionsSignal, reading: MarketDirectionReading | null) =>
+      runLiveOptionsExecution([{ signal: sig }], null, null, undefined, reading);
+    function arm(side: 'call' | 'put', gate = true) {
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side, strike: 100, mark: 4 } }) as never);
+      mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+      mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-MDG' });
+      setAutotradeConfig({ ...liveConfig(), marketDirectionGateEnabled: gate });
+    }
+
+    it('refuses a call on a broad red day, with the reading on the row', async () => {
+      arm('call');
+      const outcomes = await run(optionSignal(), RED);
+      expect(outcomes[0]).toMatchObject({ ok: false, reason: expect.stringMatching(/^Market direction: Broad red/) });
+      expect(mockPlaceOrder).not.toHaveBeenCalled();
+      expect(rows()).toHaveLength(1);
+      expect(JSON.parse(rows()[0].detail!)).toMatchObject({
+        side: 'call',
+        score: 70,
+        direction: 'red',
+        indexChangePct: -0.35,
+        redPct: 73,
+        breadthSample: 500,
+        indexPct: 0.2,
+        breadthPct: 65,
+      });
+    });
+
+    it('refuses a put on a broad green day', async () => {
+      arm('put');
+      const outcomes = await run(optionSignal({ side: 'put' }), GREEN);
+      expect(outcomes[0].reason).toMatch(/^Market direction: Broad green/);
+      expect(JSON.parse(rows()[0].detail!)).toMatchObject({ side: 'put', direction: 'green' });
+    });
+
+    it('takes a put on a red day, and a call on a red day while the gate is off', async () => {
+      arm('put');
+      expect((await run(optionSignal({ side: 'put' }), RED))[0]).toMatchObject({ ok: true });
+      // A different underlying, so the put just placed on AAPL cannot be what
+      // decides this one.
+      arm('call', false);
+      mockGetProvider.mockReturnValue(chainsFor({ MSFT: { side: 'call', strike: 300, mark: 5 } }) as never);
+      const call = optionSignal({ symbol: 'MSFT', contractSymbol: 'MSFT-fixture', strike: 300 });
+      expect((await run(call, RED))[0]).toMatchObject({ ok: true });
+      expect(rows()).toHaveLength(0);
+    });
   });
 
   it('counts a pending (unmaterialized) live EQUITY order against the combined budget — blocking an options entry a position-only seed would allow', async () => {

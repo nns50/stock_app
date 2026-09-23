@@ -1982,9 +1982,13 @@ function RegimeReadinessLine({ r }: { r: MlRegimeReadiness }) {
 function MonitoringDashboard({
   dash,
   portfolioGreeks,
+  marketDirectionGateEnabled,
 }: {
   dash: AutotradeDashboard;
   portfolioGreeks: AsyncState<PortfolioGreeks>;
+  /** Whether the live books act on the market-direction reading shown under
+   *  Last tick — the reading alone refuses nothing. */
+  marketDirectionGateEnabled: boolean;
 }) {
   const riskBusy = dash.maxAggregateOpenRisk > 0 && dash.openRisk >= dash.maxAggregateOpenRisk;
   const positionsBusy = dash.openPositionsCount >= dash.maxConcurrentPositions;
@@ -2240,6 +2244,20 @@ function MonitoringDashboard({
                 · {dash.lastTick.summary.mlRegime.source}
                 {dash.lastTick.summary.mlRegime.stale ? ' · stale' : ''}
                 {dash.lastTick.summary.mlRegime.drift ? ' · drift' : ''}
+              </p>
+            )}
+            {/* Which way the whole market leaned this tick (2026-09-23): SPY and
+                the universe's breadth. Older persisted ticks lack the field. */}
+            {dash.lastTick.summary.marketDirection && (
+              <p data-testid="last-cycle-market-direction">
+                Market: {dash.lastTick.summary.marketDirection.detail}
+                {marketDirectionGateEnabled &&
+                  dash.lastTick.summary.marketDirection.direction === 'red' &&
+                  ' · live longs and calls refused'}
+                {marketDirectionGateEnabled &&
+                  dash.lastTick.summary.marketDirection.direction === 'green' &&
+                  ' · live shorts and puts refused'}
+                {!marketDirectionGateEnabled && ' · gate off (reading only)'}
               </p>
             )}
             {/* The LIVE side of the tick. Every number below was already
@@ -3213,6 +3231,9 @@ export default function AutoTradePage() {
   const [regimeShockRangeRatioDraft, setRegimeShockRangeRatioDraft] = useState<number | undefined>();
   const [mlRegimeTargetTightenPctDraft, setMlRegimeTargetTightenPctDraft] = useState<number | undefined>();
   const [mlRegimeHighVolMinSignalScoreDraft, setMlRegimeHighVolMinSignalScoreDraft] = useState<number | undefined>();
+  const [marketDirectionGateEnabled, setMarketDirectionGateEnabled] = useState(false);
+  const [marketDirectionIndexPctDraft, setMarketDirectionIndexPctDraft] = useState<number | undefined>();
+  const [marketDirectionBreadthPctDraft, setMarketDirectionBreadthPctDraft] = useState<number | undefined>();
   const [equityCurveDeriskEnabled, setEquityCurveDeriskEnabled] = useState(false);
   const [equityCurveLookbackDaysDraft, setEquityCurveLookbackDaysDraft] = useState<number | undefined>();
   const [equityCurveDeriskCutPctDraft, setEquityCurveDeriskCutPctDraft] = useState<number | undefined>();
@@ -3358,6 +3379,9 @@ export default function AutoTradePage() {
     sync('regimeShockRangeRatio', setRegimeShockRangeRatioDraft);
     sync('mlRegimeTargetTightenPct', setMlRegimeTargetTightenPctDraft);
     sync('mlRegimeHighVolMinSignalScore', setMlRegimeHighVolMinSignalScoreDraft);
+    sync('marketDirectionGateEnabled', setMarketDirectionGateEnabled);
+    sync('marketDirectionIndexPct', setMarketDirectionIndexPctDraft);
+    sync('marketDirectionBreadthPct', setMarketDirectionBreadthPctDraft);
     sync('equityCurveDeriskEnabled', setEquityCurveDeriskEnabled);
     sync('equityCurveLookbackDays', setEquityCurveLookbackDaysDraft);
     sync('equityCurveDeriskCutPct', setEquityCurveDeriskCutPctDraft);
@@ -3477,6 +3501,9 @@ export default function AutoTradePage() {
     regimeShockRangeRatio?: number;
     mlRegimeTargetTightenPct?: number;
     mlRegimeHighVolMinSignalScore?: number;
+    marketDirectionGateEnabled?: boolean;
+    marketDirectionIndexPct?: number;
+    marketDirectionBreadthPct?: number;
     equityCurveDeriskEnabled?: boolean;
     equityCurveLookbackDays?: number;
     equityCurveDeriskCutPct?: number;
@@ -5218,6 +5245,87 @@ export default function AutoTradePage() {
                           mlRegimeHighVolMinSignalScoreDraft < 0 ||
                           mlRegimeHighVolMinSignalScoreDraft > 100 ||
                           mlRegimeHighVolMinSignalScoreDraft === config.data?.mlRegimeHighVolMinSignalScore
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <label className="flex items-start gap-2 text-sm sm:col-span-2">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      aria-label="Market-direction gate"
+                      checked={marketDirectionGateEnabled}
+                      onChange={(e) => saveConfig({ marketDirectionGateEnabled: e.target.checked })}
+                    />
+                    <span>
+                      Market-direction gate
+                      <span className="block text-[11px] text-slate-500">
+                        Off by default. Each tick the loop reads which way the whole market leans: SPY&apos;s move vs
+                        its prior close, and the share of the universe below (red) or above (green) its own prior close.
+                        A day is one-sided only when both agree. When on, the LIVE books refuse an entry that leans
+                        against it: a stock long or a call on a broad red day, a short or a put on a broad green one.
+                        Mixed and unknown markets refuse nothing. Paper keeps taking every signal as the control, and
+                        each refusal journals live_market_direction_skipped (options:
+                        live_options_market_direction_skipped). The reading shows under Last tick.
+                      </span>
+                    </span>
+                  </label>
+                  <Field
+                    label="Market direction: SPY move (%)"
+                    hint="The index leg: SPY must be at least this far from its prior close, in the day's direction, for the market to count as one-sided (0–5). 0 = SPY only has to be red (or green) at all. Default 0.2."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={marketDirectionIndexPctDraft}
+                        onChange={setMarketDirectionIndexPctDraft}
+                        min={0}
+                        max={5}
+                        step={0.05}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save market direction SPY move"
+                        onClick={() =>
+                          marketDirectionIndexPctDraft != null &&
+                          saveConfig({ marketDirectionIndexPct: marketDirectionIndexPctDraft })
+                        }
+                        disabled={
+                          marketDirectionIndexPctDraft == null ||
+                          marketDirectionIndexPctDraft < 0 ||
+                          marketDirectionIndexPctDraft > 5 ||
+                          marketDirectionIndexPctDraft === config.data?.marketDirectionIndexPct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Market direction: breadth (%)"
+                    hint="The breadth leg: at least this % of the scored universe must be on the same side of its own prior close (50–100). Higher = the gate acts only on broader red or green days. Default 65."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={marketDirectionBreadthPctDraft}
+                        onChange={setMarketDirectionBreadthPctDraft}
+                        min={50}
+                        max={100}
+                        step={1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save market direction breadth"
+                        onClick={() =>
+                          marketDirectionBreadthPctDraft != null &&
+                          saveConfig({ marketDirectionBreadthPct: marketDirectionBreadthPctDraft })
+                        }
+                        disabled={
+                          marketDirectionBreadthPctDraft == null ||
+                          marketDirectionBreadthPctDraft < 50 ||
+                          marketDirectionBreadthPctDraft > 100 ||
+                          marketDirectionBreadthPctDraft === config.data?.marketDirectionBreadthPct
                         }
                       >
                         Save
@@ -7062,7 +7170,11 @@ export default function AutoTradePage() {
             ) : dashboard.error ? (
               <ErrorState error={dashboard.error} onRetry={dashboard.reload} />
             ) : dashboard.data ? (
-              <MonitoringDashboard dash={dashboard.data} portfolioGreeks={portfolioGreeks} />
+              <MonitoringDashboard
+                dash={dashboard.data}
+                portfolioGreeks={portfolioGreeks}
+                marketDirectionGateEnabled={config.data?.marketDirectionGateEnabled ?? false}
+              />
             ) : null}
           </CollapsibleCard>
 

@@ -1671,6 +1671,17 @@ export interface AutotradeConfig {
   regimeShockRangeRatio: number;
   mlRegimeTargetTightenPct: number;
   mlRegimeHighVolMinSignalScore: number;
+  // --- The market-direction gate (2026-09-23; LIVE only; off by default) ---
+  /** When on, the live books refuse an entry that leans against a one-sided
+   *  market: a long or a call on a broad red day, a short or a put on a broad
+   *  green one. Paper keeps taking them as the control. */
+  marketDirectionGateEnabled: boolean;
+  /** SPY's move vs its prior close, in the day's direction, that the index leg
+   *  needs (0–5). */
+  marketDirectionIndexPct: number;
+  /** The share of the universe on the same side of its prior close that the
+   *  breadth leg needs (50–100). */
+  marketDirectionBreadthPct: number;
   equityCurveDeriskEnabled: boolean;
   equityCurveLookbackDays: number;
   equityCurveDeriskCutPct: number;
@@ -2640,6 +2651,24 @@ export interface LoopTickSummary {
   /** Today's ML market-regime reading as this tick saw it, or null when the
    *  read did not run (older persisted ticks lack the field entirely). */
   mlRegime: MlRegimeTickSummary | null;
+  /** Which way the whole market leaned this tick (server
+   *  services/autotrading/marketDirection.ts), or null when the screen did not
+   *  run. Ticks persisted before 2026-09-23 lack the field entirely. */
+  marketDirection?: MarketDirectionReading | null;
+}
+
+/** The market-direction reading: SPY's move and the universe's breadth, and the
+ *  verdict read from them. */
+export interface MarketDirectionReading {
+  direction: 'red' | 'green' | 'mixed' | 'unknown';
+  indexSymbol: string;
+  indexChangePct: number | null;
+  redPct: number | null;
+  greenPct: number | null;
+  sample: number;
+  indexPct: number;
+  breadthPct: number;
+  detail: string;
 }
 
 /** The automated loop's most recently completed tick, persisted rather than

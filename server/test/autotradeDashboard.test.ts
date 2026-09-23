@@ -155,6 +155,7 @@ describe('getAutotradeDashboard', () => {
       moversCandidates: 0,
       moversFetchError: null,
       mlRegime: null,
+      marketDirection: null,
     });
     const dash = getAutotradeDashboard();
     expect(dash.lastTick).not.toBeNull();

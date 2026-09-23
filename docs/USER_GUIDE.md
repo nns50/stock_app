@@ -1441,6 +1441,31 @@ equally-weighted cards in the order they happened to be built:
   The three bars compose, and whichever is strictest at that moment decides; a
   refusal is journaled as `live_score_floor_skipped`, `finish_line_skipped` or
   `regime_score_floor_skipped` depending on which one bit.
+  The **market-direction gate** (`marketDirectionGateEnabled`, 2026-09-23, off by
+  default) looks at the whole market rather than at the name. Every tick the loop reads
+  two things: SPY's move against its prior close, and **breadth**, the share of the
+  scored universe trading below (red) or above (green) its own prior close, read from each
+  name's live quote. Premarket movers are left out of breadth because they are green by
+  selection, and so is a name whose quote failed, since its fallback can be yesterday's move. The market counts
+  as one-sided only when **both agree**: red means SPY is down at least
+  **`marketDirectionIndexPct`** (default 0.2%) and at least
+  **`marketDirectionBreadthPct`** (default 65%) of names are red. Green is the mirror. A
+  quiet red day like 2026-09-23 (SPY −0.3% to −0.5%, about 73% of names red) counts as
+  red; a day where SPY is up while most names are red counts as mixed. With the gate on,
+  the **live** books refuse an entry that leans against a one-sided market:
+  - a stock long or a call on a broad red day;
+  - a stock short or a put on a broad green day.
+
+  A mixed or unknown market refuses nothing. Paper keeps taking every signal as the
+  control. A refusal is journaled as `live_market_direction_skipped` (stock, with the
+  entry, stop and score a replay needs) or `live_options_market_direction_skipped`
+  (options). The reading itself is journaled as `market_direction_read` each time it
+  changes, whether the gate is on or off, and it shows on the Monitoring card's Last
+  cycle. The edge-leak scan cuts both books by it (**Market direction at entry**: with,
+  against or mixed). The paper-vs-live attribution files the paper entries the gate
+  refused under their own class, so what the gate costs or saves is measured on paper
+  rather than assumed. The thresholds and the record they were chosen from are in the
+  [Strategy Playbook](STRATEGY_PLAYBOOK.md).
   Separately, a **symbol loss cooldown** (also 2026-08-22, off by default) gives the
   loop a memory of losing on a name: once a symbol takes the configured number of
   losing live trades (2+) within a rolling window of calendar days, its new live
@@ -2727,7 +2752,11 @@ because the loop is the only caller that is always flat by the bell, so it is
   actual last tick (not recomputed), so it reads "hasn't run yet" only before the loop's
   very first cycle, and survives the page being closed and reopened. Since 2026-09-08 it
   also shows the **ML regime** the tick read (label, probability, source, and whether the
-  reading was stale or drifting) — see the Today page's Market regime tile. The same line now
+  reading was stale or drifting) — see the Today page's Market regime tile. Since
+  2026-09-23 it also shows the **market direction** the tick read: red, green, mixed or
+  unknown, with SPY's move and the share of names red and green. It adds what the gate
+  did with that reading ("live longs and calls refused" on a red day with the gate on), or
+  "gate off (reading only)". The same line now
   reports **how many of the premarket movers fetched actually became candidates**
   ("Movers discovery contributed 1 of 35 fetched"), or, if the fetch itself failed, says
   so in amber with the reason. Read the pair together: a high fetched count with zero

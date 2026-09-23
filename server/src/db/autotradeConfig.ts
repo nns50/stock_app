@@ -229,6 +229,31 @@ export interface AutotradeConfig {
    *  and for the same reason — paper keeps screening at minSignalScore and
    *  stays the control group. 0 = off (default). Needs mlRegimeEnabled. */
   mlRegimeHighVolMinSignalScore: number;
+  /** The market-direction gate (2026-09-23; services/autotrading/
+   *  marketDirection.ts). Each tick the loop reads which way the WHOLE market
+   *  leans: SPY's move vs its prior close, and the share of the scored universe
+   *  red or green vs ITS OWN prior close (breadth). When on, the LIVE books
+   *  refuse an entry that leans against a one-sided market: a stock long or a
+   *  call on a broad red day, a stock short or a put on a broad green one.
+   *  Journaled `live_market_direction_skipped` /
+   *  `live_options_market_direction_skipped`. The paper book keeps taking every
+   *  signal as the control; the reading itself (`market_direction_read`) is
+   *  journaled whether or not the gate is on, so both books' trades are cut by
+   *  it in the edge-leak scan. Default off. LIVE only. */
+  marketDirectionGateEnabled: boolean;
+  /** The index leg: SPY must be at least this % from its prior close, in the
+   *  day's direction, for the day to count as one-sided. 0 = the index only has
+   *  to be red (or green) at all. Clamped to [0, 5]. Default 0.2 with a 65%
+   *  breadth bar: over 22 sessions (2026-08-24..09-23, breadth from a 60-name
+   *  sample of the universe) that pair read red on 31% of session minutes and
+   *  on all four of 2026-09-23's live entries; the 30 live longs it would have
+   *  refused made −6.50R, the paper book's 24 twins +5.09R
+   *  (docs/AUTOTRADING_SPEC.md, 2026-09-23 section). */
+  marketDirectionIndexPct: number;
+  /** The breadth leg: at least this % of the measured universe must be on the
+   *  same side of its own prior close. Clamped to [50, 100]: at 50 a coin-flip
+   *  market would read as one-sided. */
+  marketDirectionBreadthPct: number;
   /** Equity-curve de-risking (2026-07-24, services/autotrading/equityCurveDerisk.ts):
    *  a SOFTER, graduated companion to the binary `maxDailyDrawdownPct` halt.
    *  When on, and the strategy's OWN realized equity curve (cumulative closed
@@ -1306,6 +1331,9 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     regimeShockRangeRatio: 0,
     mlRegimeTargetTightenPct: 30,
     mlRegimeHighVolMinSignalScore: 0,
+    marketDirectionGateEnabled: false,
+    marketDirectionIndexPct: 0.2,
+    marketDirectionBreadthPct: 65,
     equityCurveDeriskEnabled: false,
     equityCurveLookbackDays: 10,
     equityCurveDeriskCutPct: 50,
@@ -1518,6 +1546,14 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     const n = Number(v);
     return Number.isFinite(n) ? Math.min(10, Math.max(0, n)) : fallback;
   };
+  // A number clamped to a closed range — the market-direction thresholds,
+  // whose meaningful ranges are not 0-100: an index move over 5% is a crash
+  // threshold nobody means to set, and a breadth bar under 50% would call a
+  // coin-flip market one-sided.
+  const clampTo = (v: unknown, lo: number, hi: number, fallback: number) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : fallback;
+  };
   // A screener weight set — coerce every known IndicatorKey to a non-negative
   // number, filling any missing/invalid key from the fallback (so a partial
   // preset from an older client, or one missing a newly-added weight key, still
@@ -1570,6 +1606,12 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     regimeShockRangeRatio: rangeRatio(input.regimeShockRangeRatio, d.regimeShockRangeRatio),
     mlRegimeTargetTightenPct: pct(input.mlRegimeTargetTightenPct, d.mlRegimeTargetTightenPct),
     mlRegimeHighVolMinSignalScore: pct(input.mlRegimeHighVolMinSignalScore, d.mlRegimeHighVolMinSignalScore),
+    marketDirectionGateEnabled:
+      typeof input.marketDirectionGateEnabled === 'boolean'
+        ? input.marketDirectionGateEnabled
+        : d.marketDirectionGateEnabled,
+    marketDirectionIndexPct: clampTo(input.marketDirectionIndexPct, 0, 5, d.marketDirectionIndexPct),
+    marketDirectionBreadthPct: clampTo(input.marketDirectionBreadthPct, 50, 100, d.marketDirectionBreadthPct),
     equityCurveDeriskEnabled:
       typeof input.equityCurveDeriskEnabled === 'boolean' ? input.equityCurveDeriskEnabled : d.equityCurveDeriskEnabled,
     equityCurveLookbackDays: posIntMin1(input.equityCurveLookbackDays, d.equityCurveLookbackDays),

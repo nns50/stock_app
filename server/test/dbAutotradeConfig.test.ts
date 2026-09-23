@@ -639,6 +639,28 @@ describe('autotrade config persistence', () => {
     });
   });
 
+  describe('the market-direction gate (2026-09-23)', () => {
+    it('ships off, at the calibrated bars: SPY 0.2% and 65% of names the same way', () => {
+      const d = defaultAutotradeConfig();
+      expect(d.marketDirectionGateEnabled).toBe(false);
+      expect(d.marketDirectionIndexPct).toBe(0.2);
+      expect(d.marketDirectionBreadthPct).toBe(65);
+    });
+
+    it('round-trips, and clamps the index bar to [0, 5] and the breadth bar to [50, 100]', () => {
+      const patch = { marketDirectionGateEnabled: true, marketDirectionIndexPct: 0.35, marketDirectionBreadthPct: 70 };
+      expect(setAutotradeConfig(patch)).toMatchObject(patch);
+      expect(getAutotradeConfig()).toMatchObject(patch);
+      expect(setAutotradeConfig({ marketDirectionIndexPct: 9 }).marketDirectionIndexPct).toBe(5);
+      expect(setAutotradeConfig({ marketDirectionIndexPct: -1 }).marketDirectionIndexPct).toBe(0);
+      // Under 50 a coin-flip market would read as one-sided.
+      expect(setAutotradeConfig({ marketDirectionBreadthPct: 40 }).marketDirectionBreadthPct).toBe(50);
+      expect(setAutotradeConfig({ marketDirectionBreadthPct: 120 }).marketDirectionBreadthPct).toBe(100);
+      expect(setAutotradeConfig({ marketDirectionBreadthPct: 'x' as never }).marketDirectionBreadthPct).toBe(65);
+      expect(setAutotradeConfig({ marketDirectionGateEnabled: 'yes' as never }).marketDirectionGateEnabled).toBe(false);
+    });
+  });
+
   describe('the ML regime overlay (2026-09-08)', () => {
     it('ships off, with the 35% cut, the 0.6 switch, the nowcast off and a 30% target tighten', () => {
       const d = defaultAutotradeConfig();

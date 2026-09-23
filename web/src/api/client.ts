@@ -535,6 +535,9 @@ export const client = {
     regimeShockRangeRatio?: number;
     mlRegimeTargetTightenPct?: number;
     mlRegimeHighVolMinSignalScore?: number;
+    marketDirectionGateEnabled?: boolean;
+    marketDirectionIndexPct?: number;
+    marketDirectionBreadthPct?: number;
     tradeDirection?: AutotradeTradeDirectionMode;
     minRelVol?: number;
     relVolUsePaceScoring?: boolean;
