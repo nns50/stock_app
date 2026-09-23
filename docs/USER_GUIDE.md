@@ -2352,6 +2352,14 @@ because the loop is the only caller that is always flat by the bell, so it is
   A timed stock close or an options close first seen on a later day than it was placed
   (after an outage, say) is booked on the day its order was placed. Both are day orders, which
   can only fill on the day they were placed.
+  **A confirmed fill always replaces an estimate.** If the position check books an estimate
+  first and the app's own close order is later confirmed filled, the app rewrites the exit to
+  the real fill price and the reason on the order. It journals **`live_options_exit_corrected`**
+  with the before and after, and re-records that day's result on the Results calendar. It
+  acts only when exactly one filled close order covers the whole position and the recorded
+  exit disagrees with it. This repaired 2026-09-22's GOOGL call: the take-profit sold at an
+  average $2.57, but the row said $1.55 (the entry price) and $0.00. Corrected, it is +$510,
+  and that session's strategy result moves from −$382.96 to about +$127.
 
   A **Live positions** table (Dashboard tab) shows every real position the loop has actually
   placed — the exact same `positions` rows your own manual trades use on the

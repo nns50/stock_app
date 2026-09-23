@@ -12853,3 +12853,55 @@ that path can book. OPTIONS_TUNING_PLAN's data-quality notes carry the row.
 A `broker_sync` close of a position that still has an acknowledged app exit order is a
 finding. It means the direct read did not find that order, and the unresolved row says
 why.
+
+## 2026-09-23 (fifth) — a confirmed fill replaces a broker-sync estimate
+
+Found while checking what the four broker-sync estimates of 09-21 and 09-22 had cost.
+One of them was not a hand close. GOOGL #13's take-profit (intent 35962, sell 5 at a
+$2.55 limit, 09:49:40) filled at an average **$2.57**. The broker sync closed the row
+first, on its second miss, at a $1.55 estimate labelled `manual`. That is the entry price
+exactly, so the trade read $0.00. When the reconcile later saw the order FILLED,
+`closeLiveOptionsPosition` returned null because the row was already closed. The
+reconcile marked the fill materialized and dropped it. The day's strategy result read
+**−$382.96**. With the real fill it is **+$127.04**, a green session recorded as red.
+
+The Order Detail lookup of "(fourth)" makes this race rarer. It cannot make it
+impossible: the positions read can still see a close before any order read does.
+
+**Change.** `correctEstimatedOptionsCloses` runs at the end of every options reconcile.
+It lists filled exit orders whose position is closed (last seven days). It rewrites the
+position's exit to the order's confirmed fill (materialized notional ÷ quantity), with
+the reason on the order row, and clears any short-leg estimate. It acts only when all of
+these hold:
+- exactly one filled exit order links to the position;
+- that order's materialized quantity is the whole closed quantity;
+- the recorded exit disagrees with it (price by half a cent, a short-leg estimate, or the
+  reason).
+
+A close the reconcile booked itself already agrees and is never rewritten. A hand close
+in Webull has no app order and keeps its estimate. Each correction journals
+`live_options_exit_corrected` (before and after price, reason and P&L). It is also a
+leak-scan execution finding, because the race happening at all is the defect. A
+correction to a past date re-records that day's daily result, if one exists, keeping its
+account half. The day's own row is re-recorded by the loop after the close anyway.
+
+**Tested at the consumer**, through the real paths: a close in flight, the sync booking
+its estimate on the second miss, then the lists catching up with the fill. The estimate
+becomes the fill with the order's reason, and one correction row carries (5 → 4.75,
+`manual` → `time_exit`, $400 → $350). Also tested:
+- a close the reconcile booked itself is never rewritten;
+- a hand close is left alone;
+- two filled exits for one position stand the correction aside;
+- a past date's daily result is re-recorded with its account half kept.
+
+Both rewrite cases fail with the call removed. The "(fourth)" test of the loop's order
+now runs against positions the sync genuinely considers: the fixture had no account id,
+so the sync had skipped them and the "no broker_sync row" half of that test was vacuous.
+It now fails on the estimate when the Order Detail call is removed.
+
+**Pre-committed check.** On the first options reconcile after the deploy there must be
+exactly one `live_options_exit_corrected` row, for position 13: from $1.55 `manual` to
+$2.57 `take_profit`, P&L $0.00 → +$510.00. After it, the 2026-09-22 daily result must read
+a strategy P&L of +$127.04 over 11 closes. Any other position corrected is a finding: read
+its intent before trusting the new number. MU #14, NVDA #9, TSLA #8, COIN #7 and HOOD #6
+were closed by the reconcile at their fills and must not move.
