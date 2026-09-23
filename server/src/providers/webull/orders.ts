@@ -1016,6 +1016,12 @@ export function parseBrokerOptionFills(envelopes: unknown[]): BrokerOptionFill[]
   return out;
 }
 
+/** How far the broker's fill clock may run ahead of this server's when a fill
+ *  is compared with the moment the app booked a close. The position syncs book
+ *  well after the sale (a miss, then a grace), so this only has to absorb clock
+ *  skew, never a real delay. Read by both exit corrections (stock and options). */
+export const FILL_CLOCK_SLACK_MS = 60_000;
+
 /** One stock order from the broker's order history that filled some quantity,
  *  reduced to what matching a hand sale needs. */
 export interface BrokerEquityFill {

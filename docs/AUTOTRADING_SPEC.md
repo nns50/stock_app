@@ -13653,3 +13653,50 @@ keep the plain label.
 row carries `state`, and the scan's execution findings show the state split. A kill-switch
 halt that ends with a failed re-arm shows two rows for the position that day,
 `kill_switch` then `naked`.
+
+## 2026-09-23 (eighteenth) — each broker fill is booked to one exit
+
+A second adversarial review, this time of the booking path (#638–#649), found one confirmed
+wrong-booking bug that today's settings can reach, and a weaker twin on the options side. Both
+are fixed here. Neither has fired yet: none of the 14 corrections and skips journaled in the
+last nine days used a fill twice, and every corrected position had a single exit.
+
+**1. One fill could be booked to more than one estimated exit (stock).** `matchSaleOutsideBracket`
+matched each estimate on its own against the same fill list, oldest first, bounded above only by
+the ET date the sync booked it. Nothing recorded which fills an earlier exit had used. A position
+sold by hand in two pieces is the reachable case: 50 at 200 at 10:00 and 50 at 210 at 11:00, each
+drop booked by the sync as it sees it. Both exits were corrected to 200, −$500 of P&L that never
+happened, and the step-down, the halt, the give-back guard, the re-recorded daily rows and the
+expectancy sizing all read it. The same held for two estimated positions on one symbol sold in
+equal pieces, and for the bracket-leg path: two same-size estimates under one entry were both
+corrected to the one filled leg, so a stop-out could read as a target win.
+
+Now:
+- each estimate's window is **time**, not a date (`SaleWindow`): a fill must land after the
+  position's previous exit was booked (the sync saw shares still held then) and before this
+  exit was booked, with `FILL_CLOCK_SLACK_MS` (60 s) for the broker's clock;
+- estimates are matched oldest first, and a fill booked to one exit is off the table for every
+  other one, both in the pass and across passes (read back from `live_exit_corrected`'s
+  `fillClientOrderIds`, so a restart cannot forget it);
+- a filled bracket leg closes at most one exit. Two same-size estimates under one entry are both
+  left alone, and so is an estimate whose position already books an exit at the leg's own fill
+  and size. Either way the skip row reads `cause: ambiguous_legs` with the reason.
+
+**2. An options hand close could be rewritten after a restart.** The set of confirmed hand closes
+is process memory, and the match had no upper time bound. After a deploy the pass re-read every
+hand close from the last seven days. If the fresh history read missed the original sale (the
+list read reports `ok` at its 20-page cap), a later same-size sale of the contract rewrote the
+corrected row's price and `exit_at`, moving its P&L to another day. Otherwise it journaled a
+false "stays an estimate" finding. Now a sale must fill at or before the recorded close (plus the
+same slack), and a position already priced from a fill (`live_options_exit_corrected`, or the
+sync's close with `pricedBy: broker_fill`, whose row now carries `positionId`) is not re-read.
+
+**Not changed:** a scale-in's or per-lot add-on's entry order is found in place of the original
+(`getLiveEntryOrderForPosition` takes the newest `role='entry'` row), latent while both are off;
+the day stamps (give-back arm, goal reached, halt marker) are set from P&L a correction can later
+move, which errs toward fewer entries rather than more; and a correction that lands on a non-final
+exit re-records that exit's day rather than the day `strategyDayFor` files the position under.
+
+**Check.** Any `live_exit_corrected` rows after the deploy name disjoint `fillClientOrderIds`, and
+no hand close already priced from a fill is re-read after a restart (no second
+`live_options_exit_corrected` row for the same position).

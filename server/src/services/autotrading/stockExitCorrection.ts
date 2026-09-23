@@ -1,9 +1,10 @@
-import { listAutotradeEvents, logAutotradeEvent } from '../../db/autotradeEvents';
+import { listAutotradeEvents, listAutotradeEventsInWindow, logAutotradeEvent } from '../../db/autotradeEvents';
 import { getDailyResult } from '../../db/dailyResults';
 import { getIntent, intentExistsForKey } from '../../db/orders';
 import { correctExitPrice, getPosition, listSyncEstimatedExits, SyncEstimatedExit } from '../../db/positions';
 import {
   BrokerEquityFill,
+  FILL_CLOCK_SLACK_MS,
   isExitLeg,
   listBrokerEquityFills,
   webullOrderStatusBatch,
@@ -142,10 +143,10 @@ export interface SaleOutsideBracket {
  *
  * Only reached when the entry's own bracket finished with no leg filled, so
  * whatever sold the shares was some other order. A candidate is a SELL of this
- * symbol that is not an opening order (combo MASTER), filled at or after the
- * entry and on or before the day the sync booked the close (the shares were
- * gone by then, so a later fill belongs to a later position), and is not one of
- * the app's own orders (an order with an intent: its own reconcile books it).
+ * symbol that is not an opening order (combo MASTER), filled inside the exit's
+ * SaleWindow (after the entry and the position's previous exit, before the sync
+ * booked this one), is not one of the app's own orders (an order with an
+ * intent: its own reconcile books it), and is not `claimed` by another exit.
  * A leg of a bracket placed outside the entry's (a re-arm, or one the operator
  * placed by hand) is a candidate; until 2026-09-23 only NORMAL orders were,
  * which is how LITE's stop fill on 09-21 went unread. Taken oldest first until
@@ -154,12 +155,16 @@ export interface SaleOutsideBracket {
  * again) or fall short (part went some other way) leave the estimate alone.
  */
 export function matchSaleOutsideBracket(
-  exit: { symbol: string; quantity: number; exitDate: string },
+  exit: SaleWindow & { quantity: number },
   enteredAt: number,
   fills: BrokerEquityFill[],
   isAppOrder: (clientOrderId: string) => boolean,
+  /** Fills another exit already booked: never booked twice. */
+  claimed: ReadonlySet<string> = new Set(),
 ): SaleOutsideBracket | null {
-  const mine = closingFills(exit, enteredAt, fills).filter((f) => !isAppOrder(f.clientOrderId));
+  const mine = closingFills(exit, enteredAt, fills).filter(
+    (f) => !isAppOrder(f.clientOrderId) && !claimed.has(f.clientOrderId),
+  );
   let qty = 0;
   let notional = 0;
   const used: BrokerEquityFill[] = [];
@@ -190,13 +195,32 @@ export function matchSaleOutsideBracket(
   return null;
 }
 
+/**
+ * The stretch of time a fill has to fall in to have closed one estimated exit
+ * (2026-09-23, from the review of the booking path).
+ *
+ * The upper bound used to be the ET DATE the sync booked, and every estimate
+ * was matched on its own against the same fills, oldest first. Two estimates
+ * of one position (the operator sells 100 shares by hand as 50 at 200, then 50
+ * at 210, and the sync books each drop as it sees it) were both booked at 200:
+ * -$500 of P&L that never happened, fed to the step-down, the halt and the
+ * expectancy sizing. The window is now TIME:
+ * - `createdAt`: the sync booked this exit after the shares were gone, so the
+ *   sale that closed it filled before then (FILL_CLOCK_SLACK_MS for skew);
+ * - `after`: when the position's previous exit was booked, if it had one. The
+ *   sync saw the remaining shares still held then, so this exit's sale came
+ *   later. Null for a first exit, bounded by the entry instead.
+ */
+export interface SaleWindow {
+  symbol: string;
+  exitDate: string;
+  createdAt: number;
+  after?: number | null;
+}
+
 /** Every SELL of the symbol that could have closed the exit, oldest first, the
  *  app's own orders included (the matcher drops those; a skip row lists them). */
-function closingFills(
-  exit: { symbol: string; exitDate: string },
-  enteredAt: number,
-  fills: BrokerEquityFill[],
-): BrokerEquityFill[] {
+function closingFills(exit: SaleWindow, enteredAt: number, fills: BrokerEquityFill[]): BrokerEquityFill[] {
   const symbol = exit.symbol.toUpperCase();
   return fills
     .filter(
@@ -205,9 +229,72 @@ function closingFills(
         f.symbol === symbol &&
         f.comboType !== 'MASTER' &&
         f.filledAt >= enteredAt &&
-        etToday(f.filledAt) <= exit.exitDate,
+        etToday(f.filledAt) <= exit.exitDate &&
+        f.filledAt <= exit.createdAt + FILL_CLOCK_SLACK_MS &&
+        (exit.after == null || f.filledAt > exit.after),
     )
     .sort((a, b) => a.filledAt - b.filledAt);
+}
+
+/** When this position's exit before `row` was booked, or null for its first.
+ *  Read from the ledger, so an exit the reconcile booked or one already
+ *  corrected bounds the next as surely as an estimate does. */
+function previousExitBookedAt(row: SyncEstimatedExit): number | null {
+  const earlier = (getPosition(row.positionId)?.exits ?? [])
+    .filter(
+      (e) =>
+        e.id !== row.exitId && (e.createdAt < row.createdAt || (e.createdAt === row.createdAt && e.id < row.exitId)),
+    )
+    .map((e) => e.createdAt);
+  return earlier.length > 0 ? Math.max(...earlier) : null;
+}
+
+/** Fills a correction in the lookback already booked to an exit, from the
+ *  journal (`live_exit_corrected.fillClientOrderIds`), so a later pass or a
+ *  restart cannot book one of them to a second exit. */
+function fillsClaimedByCorrections(now: number): Set<string> {
+  const since = now - (STOCK_EXIT_CORRECTION_LOOKBACK_DAYS + 1) * 24 * 60 * 60 * 1000;
+  const claimed = new Set<string>();
+  for (const e of listAutotradeEventsInWindow({ actions: ['live_exit_corrected'], since }).events) {
+    try {
+      const ids = (JSON.parse(e.detail ?? 'null') as { fillClientOrderIds?: unknown } | null)?.fillClientOrderIds;
+      if (Array.isArray(ids)) for (const id of ids) if (typeof id === 'string') claimed.add(id);
+    } catch {
+      // An unparseable row claims nothing.
+    }
+  }
+  return claimed;
+}
+
+/**
+ * Why the one filled leg of an entry's bracket cannot be booked to `row`, or
+ * null when it can. A bracket leg is ONE fill, so it explains at most one exit
+ * of the position (2026-09-23, from the review of the booking path). Two
+ * estimates of the same size under one entry would each have been corrected to
+ * it, a stop-out booked as a second target win; and an exit already booked at
+ * the leg's own fill and size (by the reconcile, or confirmed) has used it.
+ */
+function legClaimedElsewhere(
+  row: SyncEstimatedExit,
+  rivals: SyncEstimatedExit[],
+  legs: WebullOrderLeg[],
+): string | null {
+  const filled = legs.filter((l) => isExitLeg(l) && (l.status ?? '').toUpperCase() === 'FILLED');
+  if (filled.length !== 1) return null; // decideExitCorrection says what is wrong with that
+  const leg = filled[0];
+  const sameSize = (qty: number) => leg.filledQty === undefined || Math.abs(qty - leg.filledQty) < 1e-9;
+  const twins = rivals.filter((r) => r.exitId !== row.exitId && sameSize(r.quantity));
+  if (twins.length > 0 && sameSize(row.quantity)) {
+    return `${twins.length + 1} estimated exits of this entry could each be its one filled leg, so none is booked to it`;
+  }
+  const booked = (getPosition(row.positionId)?.exits ?? []).some(
+    (e) =>
+      e.id !== row.exitId &&
+      sameSize(e.quantity) &&
+      leg.filledPrice !== undefined &&
+      Math.abs(e.exitPrice - leg.filledPrice) < PRICE_EPS,
+  );
+  return booked ? "another exit of this position is already booked at the leg's own fill and size" : null;
 }
 
 /** The note on an exit corrected from the order history. Like the bracket
@@ -347,6 +434,12 @@ export async function correctEstimatedStockExits(accountId: string, now: number 
         continue;
       }
       const legs = broker.legs ?? [];
+      const claimedBy = legClaimedElsewhere(row, list, legs);
+      if (claimedBy !== null) {
+        finalExitIds.add(row.exitId);
+        journalSkip(row, 'ambiguous_legs', claimedBy, { legs: legEvidence(legs) }, now);
+        continue;
+      }
       const decision = decideExitCorrection(row, legs);
       if (decision.action === 'skip') {
         if (decision.code === 'already_matches') {
@@ -413,19 +506,25 @@ export async function correctEstimatedStockExits(accountId: string, now: number 
   // read, and only when such a close exists.
   if (soldOutside.length > 0) {
     const history = await listBrokerEquityFills(accountId);
+    // Oldest estimate first, so a position sold in pieces books each piece in
+    // turn, and every fill booked to one exit is off the table for the rest,
+    // this pass's and earlier passes' alike.
+    soldOutside.sort((a, b) => a.row.createdAt - b.row.createdAt || a.row.exitId - b.row.exitId);
+    const claimed = fillsClaimedByCorrections(now);
     for (const { row, legs } of soldOutside) {
       const pos = getPosition(row.positionId);
       const enteredAt = pos?.entryDate != null ? etDateTimeToMs(pos.entryDate, pos.entryTime ?? '00:00') : null;
+      const window: SaleWindow & { quantity: number } = { ...row, after: previousExitBookedAt(row) };
       const sale =
         history.ok && pos && enteredAt !== null
-          ? matchSaleOutsideBracket(row, enteredAt, history.fills, intentExistsForKey)
+          ? matchSaleOutsideBracket(window, enteredAt, history.fills, intentExistsForKey, claimed)
           : null;
       if (!sale) {
         // The history can lag a sale by minutes. Keep asking through the day of
         // the close; after that, an unmatched close stays an estimate for good.
         if (history.ok && row.exitDate < today) {
           finalExitIds.add(row.exitId);
-          const candidates = enteredAt === null ? [] : closingFills(row, enteredAt, history.fills);
+          const candidates = enteredAt === null ? [] : closingFills(window, enteredAt, history.fills);
           journalSkip(
             row,
             'no_matching_sale',
@@ -448,6 +547,7 @@ export async function correctEstimatedStockExits(accountId: string, now: number 
         continue;
       }
       finalExitIds.add(row.exitId);
+      for (const id of sale.clientOrderIds) claimed.add(id);
       if (Math.abs(sale.price - row.exitPrice) < PRICE_EPS && sale.reason === row.exitReason) {
         correctExitPrice(row.exitId, row.exitPrice, confirmationNote(row.exitPrice, "Webull's order history"));
         continue;

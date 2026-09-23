@@ -3079,6 +3079,8 @@ describe('hand closes: the broker\u2019s own fill, not an estimate', () => {
     expiration: '2030-01-18',
     quantity: 2,
     entryAt: ENTRY_AT,
+    // Still open: the sync is deciding how to book it, so no close bounds the fills.
+    exitAt: null,
   };
   const notApp = () => false;
 
@@ -3125,6 +3127,24 @@ describe('hand closes: the broker\u2019s own fill, not an estimate', () => {
     it('never matches a spread: its legs are not reported separately', () => {
       expect(matchHandCloseFill({ ...position, kind: 'debit_spread' }, [handFill()], notApp)).toBeNull();
     });
+
+    // A closed row's exitAt is when the sync saw the contract gone, or the fill
+    // it was already corrected to. A sale after it is a later trade of the same
+    // contract, and taking it moved a corrected row's price and day on the
+    // first pass after a restart whose history read missed the original sale.
+    it('never takes a sale after the recorded close', () => {
+      const closedAt = ENTRY_AT + 2 * 60 * 60 * 1000;
+      const later = handFill({ clientOrderId: 'LATER', filledPrice: 5.1, filledAt: closedAt + 30 * 60_000 });
+      expect(matchHandCloseFill({ ...position, exitAt: closedAt }, [later], notApp)).toBeNull();
+      // The original sale, when the read holds it, still matches, and first.
+      expect(
+        matchHandCloseFill({ ...position, exitAt: closedAt }, [handFill({ filledAt: closedAt }), later], notApp),
+      ).toMatchObject({ price: 3.7, clientOrderIds: ['HAND-1'] });
+      // A broker clock a few seconds ahead of the server's is not a later sale.
+      expect(
+        matchHandCloseFill({ ...position, exitAt: closedAt }, [handFill({ filledAt: closedAt + 20_000 })], notApp),
+      ).toMatchObject({ clientOrderIds: ['HAND-1'] });
+    });
   });
 
   describe('the broker sync', () => {
@@ -3154,12 +3174,20 @@ describe('hand closes: the broker\u2019s own fill, not an estimate', () => {
         exitReason: 'manual',
       });
       expect(closedRow()).toMatchObject({
+        positionId: pos.id,
         via: 'broker_sync',
         pricedBy: 'broker_fill',
         fillClientOrderIds: ['HAND-1'],
       });
       // The history is read only when something is being closed.
       expect(mockBrokerFills).toHaveBeenCalledTimes(1);
+
+      // Already the broker's fill, so the correction pass leaves it alone, a
+      // restart (the confirmed set is process memory) included.
+      resetLiveOptionsProcessState();
+      mockBrokerFills.mockClear();
+      expect(await correctHandClosesFromHistory('ACC1')).toBe(0);
+      expect(mockBrokerFills).not.toHaveBeenCalled();
     });
 
     it('estimates from the real-time OPRA mid before the delayed chain', async () => {
@@ -3285,6 +3313,28 @@ describe('hand closes: the broker\u2019s own fill, not an estimate', () => {
       await correctHandClosesFromHistory('ACC1', t0 + 32 * 60_000);
       expect(mockBrokerFills).toHaveBeenCalledTimes(2);
       expect(skipped()).toHaveLength(1);
+    });
+
+    // 2026-09-23, from the review of the booking path: the confirmed set is
+    // process memory, so after a restart a corrected close was read again. A
+    // fresh history read that missed its sale then matched the next same-size
+    // sale of the contract, moving the row's price and day, or stated it
+    // unmatched: a false finding for a close already booked at its fill.
+    it('never re-reads a close already corrected to its fill, a restart included', async () => {
+      const pos = await estimatedHandClose();
+      const fill = handFill({ filledAt: pos.entryAt + 60_000 });
+      mockBrokerFills.mockResolvedValue({ ok: true, fills: [fill] });
+      expect(await correctHandClosesFromHistory('ACC1')).toBe(1);
+
+      resetLiveOptionsProcessState(); // a deploy
+      const later = handFill({ clientOrderId: 'LATER', filledPrice: 5.1, filledAt: Date.now() + 60 * 60_000 });
+      mockBrokerFills.mockClear();
+      mockBrokerFills.mockResolvedValue({ ok: true, fills: [later] });
+
+      expect(await correctHandClosesFromHistory('ACC1', Date.now() + 2 * 60 * 60_000)).toBe(0);
+      expect(mockBrokerFills).not.toHaveBeenCalled();
+      expect(getLiveOptionsPosition(pos.id)).toMatchObject({ exitPrice: 3.7, exitAt: fill.filledAt });
+      expect(listAutotradeEvents({ actions: ['live_options_exit_correction_skipped'] })).toHaveLength(0);
     });
 
     it('never touches a close the app\u2019s own order made, manual or not', async () => {

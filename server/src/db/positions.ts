@@ -675,6 +675,9 @@ export interface SyncEstimatedExit {
    *  entryIntentIdForPosition (db/autotradeLiveOrders.ts), never with this alone. */
   sourceIntentId: number | null;
   positionAccountId: string | null;
+  /** When the sync booked this exit (`position_exits.created_at`). The shares
+   *  were gone by then, so a fill after it cannot be the one that closed it. */
+  createdAt: number;
 }
 
 /**
@@ -709,11 +712,12 @@ export function listSyncEstimatedExits(filter: { since?: string; accountId?: str
     .prepare(
       `SELECT e.id AS exitId, e.position_id AS positionId, p.symbol, e.quantity,
               e.exit_price AS exitPrice, e.exit_date AS exitDate, e.exit_reason AS exitReason,
-              p.source_intent_id AS sourceIntentId, p.account_id AS positionAccountId
+              p.source_intent_id AS sourceIntentId, p.account_id AS positionAccountId,
+              e.created_at AS createdAt
          FROM position_exits e
          JOIN positions p ON p.id = e.position_id
         WHERE ${clauses.join(' AND ')}
-        ORDER BY e.exit_date ASC, e.id ASC`,
+        ORDER BY e.created_at ASC, e.id ASC`,
     )
     .all(...params) as SyncEstimatedExit[];
   return rows;

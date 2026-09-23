@@ -19,7 +19,7 @@ import {
 } from '../src/db/positions';
 import { createIntent } from '../src/db/orders';
 import { recordLiveOrder, setLiveOrderPositionId } from '../src/db/autotradeLiveOrders';
-import { listAutotradeEvents } from '../src/db/autotradeEvents';
+import { listAutotradeEvents, logAutotradeEvent } from '../src/db/autotradeEvents';
 import { DailyResult, listDailyResults, saveDailyResult } from '../src/db/dailyResults';
 import { bumpMissStreak, clearMissStreak, missStreakStartedAt } from '../src/db/webullMissStreak';
 import {
@@ -615,6 +615,186 @@ describe('correctEstimatedStockExits', () => {
     expect(await correctEstimatedStockExits('ACC1')).toBe(0);
     expect(mockBatch).not.toHaveBeenCalled();
   });
+
+  // -------------------------------------------------------------------------
+  // ONE FILL, ONE EXIT (2026-09-23, from the review of the booking path).
+  //
+  // Every estimate was matched on its own against the same fills, bounded only
+  // by the ET date the sync booked it. A position sold by hand in two pieces
+  // (50 at 200, then 50 at 210, each drop booked by the sync as it saw it) had
+  // BOTH pieces booked at 200: -$500 that never happened, read by the
+  // step-down, the halt and the expectancy sizing.
+  // -------------------------------------------------------------------------
+  describe('each broker fill is booked to one exit', () => {
+    const day = '2026-09-21';
+    const at = (hhmm: string) => etDateTimeToMs(day, hhmm) as number;
+    const now = at('17:00');
+
+    function lot(opts: { key?: string; qty?: number; entryTime?: string } = {}) {
+      const key = opts.key ?? 'cid-lot';
+      const qty = opts.qty ?? 100;
+      const intent = createIntent(
+        {
+          symbol: 'COIN',
+          assetKind: 'stock',
+          side: 'buy',
+          openClose: 'open',
+          quantity: qty,
+          orderType: 'limit',
+          limitPrice: 205,
+          bracket: { takeProfitPrice: 215, stopLossPrice: 195 },
+        },
+        key,
+      );
+      const pos = createPosition({
+        assetType: 'stock',
+        symbol: 'COIN',
+        side: 'long',
+        quantity: qty,
+        entryPrice: 205,
+        entryDate: day,
+        entryTime: opts.entryTime ?? '09:45',
+        stopPrice: 195,
+        targetPrice: 215,
+        tags: ['webull', 'live', 'autotrade'],
+        accountId: 'ACC1',
+        sourceIntentId: null,
+      });
+      recordLiveOrder({
+        intentId: intent.id,
+        symbol: 'COIN',
+        stopPrice: 195,
+        targetPrice: 215,
+        riskAmount: 1000,
+        riskProfile: 'MODERATE',
+        accountId: 'ACC1',
+      });
+      setLiveOrderPositionId(intent.id, pos.id);
+      return { pos, key };
+    }
+    /** An exit the sync booked at a quote, `bookedAt` being when it saw the drop. */
+    function piece(positionId: number, qty: number, price: number, bookedAt: number, estimate = true): number {
+      const before = new Set(getPosition(positionId)!.exits.map((e) => e.id));
+      addExit(positionId, {
+        quantity: qty,
+        exitPrice: price,
+        exitDate: day,
+        exitReason: estimate ? 'manual' : 'stop',
+        notes: estimate
+          ? `${SYNC_ESTIMATE_NOTE_PREFIX} from the latest quote (not a confirmed fill); edit it if you have your broker confirmation.`
+          : null,
+      });
+      const id = getPosition(positionId)!.exits.find((e) => !before.has(e.id))!.id;
+      db.prepare('UPDATE position_exits SET created_at = ? WHERE id = ?').run(bookedAt, id);
+      return id;
+    }
+    const sold = (clientOrderId: string, qty: number, price: number, filledAt: number): BrokerEquityFill => ({
+      clientOrderId,
+      comboType: 'NORMAL',
+      orderType: 'LIMIT',
+      side: 'SELL',
+      symbol: 'COIN',
+      filledQty: qty,
+      filledPrice: price,
+      filledAt,
+    });
+    const priceOf = (positionId: number, exitId: number) =>
+      getPosition(positionId)!.exits.find((e) => e.id === exitId)!.exitPrice;
+
+    it("books a position sold in two pieces at each piece's own fill", async () => {
+      const { pos, key } = lot();
+      const first = piece(pos.id, 50, 201.5, at('10:02'));
+      const second = piece(pos.id, 50, 209, at('11:02'));
+      mockBatch.mockResolvedValue(cancelledBracket(key));
+      mockEquityFills.mockResolvedValue({
+        ok: true,
+        fills: [sold('HAND-A', 50, 200, at('10:00')), sold('HAND-B', 50, 210, at('11:00'))],
+      });
+
+      expect(await correctEstimatedStockExits('ACC1', now)).toBe(2);
+
+      expect(priceOf(pos.id, first)).toBe(200);
+      expect(priceOf(pos.id, second)).toBe(210);
+      const claimed = listAutotradeEvents({ actions: ['live_exit_corrected'] })
+        .map((e) => (JSON.parse(e.detail!) as { fillClientOrderIds: string[] }).fillClientOrderIds)
+        .sort();
+      expect(claimed).toEqual([['HAND-A'], ['HAND-B']]);
+    });
+
+    it('never takes a sale made after the sync booked the close: it belongs to a later trade', async () => {
+      const { pos, key } = lot({ qty: 50 });
+      const only = piece(pos.id, 50, 201.5, at('10:02'));
+      mockBatch.mockResolvedValue(cancelledBracket(key));
+      mockEquityFills.mockResolvedValue({ ok: true, fills: [sold('LATER', 50, 190, at('10:30'))] });
+
+      expect(await correctEstimatedStockExits('ACC1', now)).toBe(0);
+      expect(priceOf(pos.id, only)).toBe(201.5);
+    });
+
+    it('never books a fill a correction on an earlier pass already booked', async () => {
+      // Two positions on one symbol: the first was corrected a deploy ago to
+      // HAND-A. The second's own sale is HAND-B; HAND-A sits inside its window
+      // too, and is older, so only the journal can say it is taken.
+      const a = lot({ key: 'cid-a', qty: 50 });
+      const firstExit = piece(a.pos.id, 50, 200, at('10:02'), false);
+      logAutotradeEvent({
+        symbol: 'COIN',
+        stage: 'execution',
+        action: 'live_exit_corrected',
+        detail: { positionId: a.pos.id, exitId: firstExit, source: 'broker_history', fillClientOrderIds: ['HAND-A'] },
+      });
+      const b = lot({ key: 'cid-b', qty: 50, entryTime: '09:50' });
+      const secondExit = piece(b.pos.id, 50, 206, at('10:08'));
+      mockBatch.mockResolvedValue(cancelledBracket('cid-b'));
+      mockEquityFills.mockResolvedValue({
+        ok: true,
+        fills: [sold('HAND-A', 50, 200, at('10:00')), sold('HAND-B', 50, 205, at('10:06'))],
+      });
+
+      expect(await correctEstimatedStockExits('ACC1', now)).toBe(1);
+      expect(priceOf(b.pos.id, secondExit)).toBe(205);
+    });
+
+    it('books one filled bracket leg to neither of two same-size estimates it could explain', async () => {
+      const { pos, key } = lot();
+      const first = piece(pos.id, 50, 201.5, at('10:02'));
+      const second = piece(pos.id, 50, 199, at('11:02'));
+      mockBatch.mockResolvedValue(
+        combo(key, [stopLeg({ filledQty: 50, filledPrice: 196 }), targetLeg({ status: 'CANCELLED' })]),
+      );
+
+      expect(await correctEstimatedStockExits('ACC1', now)).toBe(0);
+
+      expect(priceOf(pos.id, first)).toBe(201.5);
+      expect(priceOf(pos.id, second)).toBe(199);
+      const skips = listAutotradeEvents({ actions: ['live_exit_correction_skipped'] }).map(
+        (e) => JSON.parse(e.detail!) as { cause: string; why: string },
+      );
+      expect(skips).toHaveLength(2);
+      expect(skips.every((d) => d.cause === 'ambiguous_legs')).toBe(true);
+      expect(skips[0].why).toMatch(/could each be its one filled leg/);
+    });
+
+    it('never books a leg a second time when another exit is already booked at its fill', async () => {
+      // The reconcile booked the stop leg (50 at 196); the other 50 left some
+      // other way and the sync estimated it. The leg is spent.
+      const { pos, key } = lot();
+      piece(pos.id, 50, 196, at('10:02'), false);
+      const estimate = piece(pos.id, 50, 199, at('11:02'));
+      mockBatch.mockResolvedValue(
+        combo(key, [stopLeg({ filledQty: 50, filledPrice: 196 }), targetLeg({ status: 'CANCELLED' })]),
+      );
+
+      expect(await correctEstimatedStockExits('ACC1', now)).toBe(0);
+
+      expect(priceOf(pos.id, estimate)).toBe(199);
+      const [skip] = listAutotradeEvents({ actions: ['live_exit_correction_skipped'] }).map(
+        (e) => JSON.parse(e.detail!) as { cause: string; why: string },
+      );
+      expect(skip).toMatchObject({ cause: 'ambiguous_legs' });
+      expect(skip.why).toMatch(/already booked at the leg's own fill and size/);
+    });
+  });
 });
 
 describe('matchSaleOutsideBracket', () => {
@@ -630,7 +810,13 @@ describe('matchSaleOutsideBracket', () => {
     filledAt: entered + 15 * 60_000,
     ...over,
   });
-  const exit = { symbol: 'MRNA', quantity: 23, exitDate: '2026-09-22' };
+  // Booked by the sync at the close of the session, after every sale below.
+  const exit = {
+    symbol: 'MRNA',
+    quantity: 23,
+    exitDate: '2026-09-22',
+    createdAt: Date.parse('2026-09-22T20:05:00Z'),
+  };
   const none = () => false;
 
   it('takes one sale of the whole quantity, or several adding up exactly, at their weighted price', () => {
@@ -701,5 +887,20 @@ describe('matchSaleOutsideBracket', () => {
   it('refuses sales that overshoot or fall short of the booked quantity', () => {
     expect(matchSaleOutsideBracket(exit, entered, [fill({ filledQty: 50 })], none)).toBeNull();
     expect(matchSaleOutsideBracket(exit, entered, [fill({ filledQty: 20 })], none)).toBeNull();
+  });
+
+  it('reads only its own window: after the previous exit, before this one was booked, and nothing claimed', () => {
+    const early = fill({ clientOrderId: 'early', filledAt: entered + 5 * 60_000 });
+    const mid = fill({ clientOrderId: 'mid', filledAt: entered + 30 * 60_000 });
+    // The position's previous exit was booked between the two sales.
+    const window = { ...exit, after: entered + 10 * 60_000 };
+    expect(matchSaleOutsideBracket(window, entered, [early, mid], none)).toMatchObject({ clientOrderIds: ['mid'] });
+    // Booked before the later sale: only the earlier one could have closed it.
+    const booked = { ...exit, createdAt: entered + 10 * 60_000 };
+    expect(matchSaleOutsideBracket(booked, entered, [early, mid], none)).toMatchObject({ clientOrderIds: ['early'] });
+    // A fill another exit already booked is never taken again.
+    expect(matchSaleOutsideBracket(exit, entered, [early, mid], none, new Set(['early']))).toMatchObject({
+      clientOrderIds: ['mid'],
+    });
   });
 });
