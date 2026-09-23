@@ -19,6 +19,7 @@ import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { createIntent, transitionIntent } from '../src/db/orders';
 import { recordLiveExitOrder, recordLiveOrder, setLiveOrderPositionId } from '../src/db/autotradeLiveOrders';
 import { etToday } from '../src/util/marketDate';
+import { bumpMissStreak, missStreakStartedAt } from '../src/db/webullMissStreak';
 
 vi.mock('../src/services/quotes', () => ({ priceMap: vi.fn() }));
 
@@ -1608,6 +1609,140 @@ describe('syncClosedWebullPositions vs an autotrade close already in flight', ()
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // 2026-09-23. The miss count outlived the position it was counted against.
+  // GRML's take-profit filled on 2026-09-22. The sync counted the shares
+  // missing and deferred, and the entry order's reconcile booked the fill.
+  // Nothing ended the count, so the next morning's GRML position started with
+  // its debounce and its bracket grace already spent. Its stop filled at once,
+  // and the sync booked a 16.04 quote one second later.
+  it("counts a new position's misses from zero after the last one closed elsewhere (GRML)", async () => {
+    const bracketed = (o: { qty: number; entry: number; stop: number; target: number; cid: string }) => {
+      const p = createPosition({
+        assetType: 'stock',
+        symbol: 'GRML',
+        side: 'long',
+        quantity: o.qty,
+        entryPrice: o.entry,
+        entryDate: etToday(),
+        tags: ['live', 'autotrade'],
+        accountId: 'ACC1',
+      });
+      const intent = createIntent(
+        {
+          symbol: 'GRML',
+          assetKind: 'stock',
+          side: 'buy',
+          openClose: 'open',
+          quantity: o.qty,
+          orderType: 'limit',
+          limitPrice: o.entry,
+          bracket: { takeProfitPrice: o.target, stopLossPrice: o.stop },
+        },
+        o.cid,
+      );
+      recordLiveOrder({
+        intentId: intent.id,
+        symbol: 'GRML',
+        stopPrice: o.stop,
+        targetPrice: o.target,
+        riskAmount: 330,
+        riskProfile: 'MODERATE',
+        accountId: 'ACC1',
+      });
+      setLiveOrderPositionId(intent.id, p.id);
+      return p;
+    };
+
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      // 09-22: the target fills. Three misses, all left for the reconcile.
+      const t0 = Date.parse('2026-09-22T14:29:55Z');
+      const first = bracketed({ qty: 578, entry: 13.63, stop: 13.06, target: 13.72, cid: 'cid-grml-0922' });
+      mockPositions([]);
+      for (let i = 0; i < 3; i++) {
+        vi.setSystemTime(t0 + i * 30_000);
+        await syncClosedWebullPositions('ACC1');
+      }
+      expect(getPosition(first.id)!.status).toBe('open');
+      // The entry order's reconcile books the leg. The sync never closed it.
+      addExit(first.id, { quantity: 578, exitPrice: 13.72, exitDate: '2026-09-22', exitReason: 'target' });
+      vi.setSystemTime(t0 + 90_000);
+      await syncClosedWebullPositions('ACC1'); // the ordinary sync that follows
+
+      // 09-23: a new GRML position, and its stop fills at once.
+      const t1 = Date.parse('2026-09-23T13:52:55Z');
+      const second = bracketed({ qty: 786, entry: 16.71, stop: 16.2, target: 17.04, cid: 'cid-grml-0923' });
+      vi.setSystemTime(t1);
+      await syncClosedWebullPositions('ACC1');
+      // One miss is not a close. Before the fix the count stood at four,
+      // started on 09-22, so this sync closed it at the quote.
+      expect(getPosition(second.id)!.status).toBe('open');
+      expect(listAutotradeEvents({ actions: ['position_reconciled_from_broker'] })).toHaveLength(0);
+
+      vi.setSystemTime(t1 + 30_000);
+      await syncClosedWebullPositions('ACC1');
+      expect(getPosition(second.id)!.status).toBe('open');
+      const skips = listAutotradeEvents({ actions: ['position_reconcile_skipped'] }).map(
+        (e) => JSON.parse(e.detail!) as { reason: string; missingSince: number | null; streak: number },
+      );
+      // The new position's grace runs from ITS first miss, not 09-22's.
+      expect(skips.find((d) => d.missingSince === t1)).toMatchObject({
+        reason: 'bracket_leg_reconcile_pending',
+        streak: 2,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('ends only its own counts: another account and the options sleeve keep theirs', async () => {
+    bumpMissStreak('ACC1', 'GRML|stock');
+    bumpMissStreak('ACC1', 'HOOD|option|call|116|2026-09-25');
+    bumpMissStreak('ACC1', 'opt:15');
+    bumpMissStreak('ACC2', 'GRML|stock');
+    const held = createPosition({
+      assetType: 'stock',
+      symbol: 'CRWD',
+      side: 'long',
+      quantity: 52,
+      entryPrice: 254.14,
+      entryDate: etToday(),
+      tags: ['live', 'autotrade'],
+      accountId: 'ACC1',
+    });
+    bumpMissStreak('ACC1', 'CRWD|stock');
+    mockPositions([{ symbol: 'CRWD', asset_type: 'STOCK', quantity: '52', cost_price: '254.14' }]);
+    await syncClosedWebullPositions('ACC1');
+
+    // No open lot: this sync's counts end.
+    expect(missStreakStartedAt('ACC1', 'GRML|stock')).toBeNull();
+    expect(missStreakStartedAt('ACC1', 'HOOD|option|call|116|2026-09-25')).toBeNull();
+    // Not this sync's to end.
+    expect(missStreakStartedAt('ACC1', 'opt:15')).not.toBeNull();
+    expect(missStreakStartedAt('ACC2', 'GRML|stock')).not.toBeNull();
+    // Held in full: cleared by the rule that was already there.
+    expect(missStreakStartedAt('ACC1', 'CRWD|stock')).toBeNull();
+    expect(getPosition(held.id)!.status).toBe('open');
+  });
+
+  it('keeps counting a contract that still has an open lot', async () => {
+    const p = createPosition({
+      assetType: 'stock',
+      symbol: 'IOTR',
+      side: 'long',
+      quantity: 2,
+      entryPrice: 3.79,
+      entryDate: '2026-07-09',
+      tags: ['webull'],
+      accountId: 'ACC1',
+    });
+    mockPositions([]);
+    await syncClosedWebullPositions('ACC1');
+    expect(missStreakStartedAt('ACC1', 'IOTR|stock')).not.toBeNull();
+    await syncClosedWebullPositions('ACC1');
+    expect(getPosition(p.id)!.status).toBe('closed');
   });
 
   // 2026-09-10: the grace window above is bounded, so a bracket leg whose own

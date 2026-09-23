@@ -13903,3 +13903,54 @@ correction row, and doubled an exit that ended in another cause.
 
 **Check.** No `aged_out` skip names an entry placed within the last seven days. The next
 same-day stop the sync prices at a quote is corrected to its leg's fill within about 15 minutes.
+
+## 2026-09-23 (twenty-third) — a miss count ends with the position it counted
+
+The broker sync books a close only after Webull has left a position out of two consecutive
+syncs. For a position with a resting bracket it also waits four syncs and four minutes from the
+first miss, so the entry order's own reconcile can book the leg's fill. The count lives in
+`webull_miss_streak`, one row per account and contract. Until now two things ended it: a sync
+that found the contract held, or the sync closing the lots itself.
+
+An exit the loop books itself does neither. A leg fills, or a time exit fills, the sync starts
+counting, and the order's own reconcile books the fill. The contract then has no open lot, so no
+sync looks at it again, and its row keeps its count and its start time. On 2026-09-22 and 09-23
+that happened four times: GRML's take-profit, the NVAX and MU time exits, and SHOP's stop. The
+other deferred exits were booked by the sync after its grace, which does clear the count. The
+four-minute floor (#641, 2026-09-23) gives the reconcile longer to get there first, so this
+will happen more often.
+
+The next position on that contract inherited it. GRML's take-profit filled on 2026-09-22 at
+10:29. The sync counted it missing and deferred, and the reconcile booked the 13.72 fill at
+10:31:01. On 2026-09-23 a new GRML position (786 @ 16.71) had its stop fill within about a
+minute. The first sync after the fill ran one second after the position was booked. It read the
+old count and the 09-22 start time, so the two-sync debounce and the four-minute grace both read
+as spent. It booked the 16.04 quote as the stop before the entry's reconcile could book the leg.
+The exit correction gave up four seconds later because the order lists had not shown the entry
+yet (the (twenty-second) section).
+
+A leftover count also defeats what the debounce was built for in 2026-07: one incomplete
+positions read no longer closes a held position. With a count left behind, one read that lags a
+fresh entry's fill is enough.
+
+**Change.** Each sync first ends every count in its account for a contract it has no open lot
+for (`clearMissStreaksWithoutLots`). The options sleeve keeps its own counts in the same table
+as `opt:<position id>`, and those are left alone.
+
+**Scope, measured.** Since 2026-09-08, one live position was booked from a quote without the
+sync deferring it first: GRML, one second after the fill. The rest of the quote-priced closes
+with no deferral were hand trades, which have no bracket and close after two misses by design.
+GRML's shares were really sold, so the harm is the price: 16.04 is a quote, not the stop's
+fill. The correction pass keeps its "aged out" verdicts in memory only. After the next restart
+it reads GRML's bracket again, and by then the lists show the stop. NVAX, MU and SHOP still have
+a count left behind in production; the first sync after this deploys ends them.
+
+**Not covered.** The count ends on the first sync after the old position closes. A new
+position on the same contract booked before any sync runs in between would still start with
+it. Syncs run at least once a minute, and the loop's 390-minute re-entry cooldown keeps it
+off the same name for the rest of the day, so only a hand trade could reach that window.
+
+**Check.** A bracketed position's first `position_reconcile_skipped` row carries a
+`missingSince` within a minute of its stop or target filling, never from an earlier day. No
+`position_reconciled_from_broker` row for a bracketed position lands within four minutes of its
+first miss.

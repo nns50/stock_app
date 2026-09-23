@@ -45,3 +45,38 @@ export function missStreakStartedAt(accountId: string, contractKey: string): num
 export function clearMissStreak(accountId: string, contractKey: string): void {
   db.prepare('DELETE FROM webull_miss_streak WHERE account_id = ? AND contract_key = ?').run(accountId, contractKey);
 }
+
+/**
+ * End every run of misses in `accountId` that `owns` claims but the caller no
+ * longer has an open lot for (2026-09-23). Returns how many were ended.
+ *
+ * A run is counted against open journal lots, and until now only two things
+ * ended it: a sync that found the contract held, or that same sync closing the
+ * lots itself. A position usually closes some other way. A bracket leg fills,
+ * the sync defers to the entry order's reconcile, and that reconcile books the
+ * fill. The key then has no lots, so no sync looks at it again, and its run
+ * stays in the table with its count and start time.
+ *
+ * The next position on the same contract inherits that run. GRML's take-profit
+ * filled on 2026-09-22 after the sync had counted it missing two or more times.
+ * On 2026-09-23 a new GRML position had its stop fill at once, and the first
+ * miss read the old count and the old start time. Both the two-sync debounce
+ * and the four-minute bracket grace looked spent. The sync booked a 16.04 quote
+ * one second after the fill, before the entry's reconcile could book the leg.
+ *
+ * `owns` limits the purge to the caller's own keys. Other code keeps runs in
+ * the same table (the options sleeve uses `opt:<position id>`).
+ */
+export function clearMissStreaksWithoutLots(
+  accountId: string,
+  lotKeys: ReadonlySet<string>,
+  owns: (contractKey: string) => boolean,
+): number {
+  const rows = db
+    .prepare('SELECT contract_key AS contractKey FROM webull_miss_streak WHERE account_id = ?')
+    .all(accountId) as { contractKey: string }[];
+  const stale = rows.map((r) => r.contractKey).filter((k) => owns(k) && !lotKeys.has(k));
+  const del = db.prepare('DELETE FROM webull_miss_streak WHERE account_id = ? AND contract_key = ?');
+  for (const k of stale) del.run(accountId, k);
+  return stale.length;
+}
