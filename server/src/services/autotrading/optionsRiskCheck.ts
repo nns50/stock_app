@@ -6,6 +6,7 @@ import { OptionsTradeSignal } from './optionsDecide';
 import { optionsMaxLossFraction } from './optionsAffordability';
 import {
   correlatedNotional,
+  dailyHaltVerdict,
   sectorNotional,
   buildSectorOf,
   getPortfolioSnapshot,
@@ -24,11 +25,12 @@ import {
   NEUTRAL,
   type SizingFactors,
 } from './effectiveRisk';
-import { dayLossBudgetUsd, dayStartEquityUsd } from './dayLossBudget';
+import { dayStartEquityUsd } from './dayLossBudget';
 import { getDailyBaseline } from '../../db/dailyBaseline';
 import { etToday } from '../../util/marketDate';
 import { ML_REGIME_LABELS } from '../regimeModel';
 import { actionableRegime, peekMarketRegime } from '../mlRegime';
+import { haltMarkerExists } from './dailyHaltMarker';
 
 // ---------------------------------------------------------------------------
 // The options counterpart to riskCheck.ts (docs/AUTOTRADING_SPEC.md, phase 10)
@@ -416,13 +418,8 @@ export function evaluateOptionsRiskCheck(signal: OptionsTradeSignal, ctx: RiskCh
 
   // The day's OPENING equity, not this tick's — the equity twin's reasoning
   // applies verbatim here (dayLossBudget.ts).
-  const dailyHaltLevel = -dayLossBudgetUsd(ctx.maxDailyDrawdownPct, ctx.dayStartEquityUsd);
-  const haltOk = ctx.dailyPnl > dailyHaltLevel;
-  check(
-    'daily_drawdown_halt',
-    haltOk,
-    `today ${usd(ctx.dailyPnl)} vs halt at ${usd(dailyHaltLevel)} (${ctx.maxDailyDrawdownPct}% of the day's opening ${usd(ctx.dayStartEquityUsd)})`,
-  );
+  const halt = dailyHaltVerdict(ctx);
+  check('daily_drawdown_halt', halt.ok, halt.detail);
 
   const tradesOk = ctx.tradesToday < ctx.maxTradesPerDay;
   check('max_trades_per_day', tradesOk, `${ctx.tradesToday} placed vs ${ctx.maxTradesPerDay}/day`);
@@ -556,6 +553,9 @@ export async function runOptionsRiskCheck(
       equity: snapshot.equity ?? 0,
       // See riskCheck.ts's preview: the day's opening equity.
       dayStartEquityUsd: dayStartEquityUsd(getDailyBaseline(), etToday(), snapshot.equity ?? 0).usd,
+      // Sticky for the rest of the day once the paper halt has tripped
+      // (dailyHaltVerdict), the same rule the live book runs.
+      dailyHaltTripped: haltMarkerExists('paper', etToday()),
       dailyPnl: snapshot.dailyPnl,
       tradesToday: snapshot.tradesToday,
       consecutiveLosses: snapshot.consecutiveLosses,

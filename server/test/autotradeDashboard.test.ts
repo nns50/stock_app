@@ -22,6 +22,8 @@ import { loadRegimeModel } from '../src/services/regimeModel';
 import { etToday } from '../src/util/marketDate';
 import { runEdgeLeakScanFromDb } from '../src/services/autotrading/edgeLeakScanData';
 import { saveEdgeLeakScan } from '../src/db/edgeLeakScans';
+import { closeLiveOptionsPosition, createLiveOptionsPosition } from '../src/db/autotradeLiveOptionsPositions';
+import { writeDailyHaltMarker } from '../src/services/autotrading/dailyHaltMarker';
 
 // Unit coverage for the Phase 7 dashboard snapshot (docs/AUTOTRADING_SPEC.md —
 // MONITORING & KILL SWITCH). Every "used vs limit" figure here is meant to be
@@ -186,6 +188,65 @@ describe('getAutotradeDashboard', () => {
     expect(dash.maxTradesPerDay).toBe(10);
     expect(dash.maxAggregateOpenRisk).toBeCloseTo(4_500, 5); // 4.5% of 100k
     expect(dash.dailyDrawdownHaltLevel).toBeCloseTo(-5_000, 5); // -(5% of 100k)
+  });
+
+  // 2026-09-23. The live halt is ONE pool, stock plus options, and it holds for
+  // the rest of the day once tripped. The card read each sleeve's own figure
+  // against the level, so it showed neither, and it would have cleared the
+  // moment a winner lifted the day. It reads this verdict now.
+  describe('dailyHalt — the risk checks\u2019 own verdict, per book', () => {
+    const closeLiveStock = (pnl: number) => {
+      const p = createPosition({
+        assetType: 'stock',
+        symbol: 'AAA',
+        side: 'long',
+        quantity: 100,
+        entryPrice: 100,
+        entryDate: etToday(),
+        tags: ['live', 'autotrade'],
+      });
+      addExit(p.id, { quantity: 100, exitPrice: 100 + pnl / 100, exitDate: etToday() });
+    };
+    const closeLiveOption = (pnl: number) => {
+      const p = createLiveOptionsPosition({
+        symbol: 'BBB',
+        side: 'call',
+        contractSymbol: 'BBB-fixture',
+        strike: 100,
+        expiration: '2026-12-18',
+        quantity: 1,
+        entryPrice: 5,
+        riskAmount: 500,
+        riskProfile: 'MODERATE',
+        rationale: 'fixture',
+      });
+      closeLiveOptionsPosition(p.id, { exitPrice: 5 + pnl / 100, exitReason: 'stop_loss', exitAt: Date.now() });
+    };
+
+    it('halts live on the sum of the sleeves when neither alone reaches the line', () => {
+      setAutotradeConfig({ accountEquityUsd: 100_000 }); // MODERATE: halt at -3,000
+      closeLiveStock(-2_000);
+      closeLiveOption(-1_200);
+      const dash = getAutotradeDashboard();
+      expect(dash.liveDailyPnl).toBeGreaterThan(dash.dailyDrawdownHaltLevel);
+      expect(dash.liveOptionsDailyPnl).toBeGreaterThan(dash.dailyDrawdownHaltLevel);
+      expect(dash.dailyHalt).toEqual({ paper: false, live: true });
+    });
+
+    it('keeps the live halt once tripped today, with the day back above the line', () => {
+      setAutotradeConfig({ accountEquityUsd: 100_000 });
+      writeDailyHaltMarker({ pool: 'live', date: etToday(), dailyPnl: -3_100, haltLevel: -3_000 });
+      closeLiveStock(400);
+      expect(getAutotradeDashboard().dailyHalt).toEqual({ paper: false, live: true });
+    });
+
+    it('reads no halt on a quiet day, and none while equity is unset', () => {
+      setAutotradeConfig({ accountEquityUsd: 100_000 });
+      closeLiveStock(-500);
+      expect(getAutotradeDashboard().dailyHalt).toEqual({ paper: false, live: false });
+      setAutotradeConfig({ accountEquityUsd: null });
+      expect(getAutotradeDashboard().dailyHalt).toEqual({ paper: false, live: false });
+    });
   });
 
   it('sums openRisk across open paper positions and counts them', () => {

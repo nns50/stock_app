@@ -13954,3 +13954,61 @@ off the same name for the rest of the day, so only a hand trade could reach that
 `missingSince` within a minute of its stop or target filling, never from an earlier day. No
 `position_reconciled_from_broker` row for a bracketed position lands within four minutes of its
 first miss.
+
+## 2026-09-23 (twenty-fourth) — the drawdown halt holds for the rest of the day
+
+Every risk check compared the day's realized P&L with the halt level on its own, tick by tick.
+So the halt lifted as soon as a position still open when it tripped closed green. The live halt
+tripped at 10:23 on −$2,046.47 against −$1,941.67. CRWD's take-profit filled at 11:47 for
++$382.20, the day read about −$1,822, and the loop bought 415 VKTX at 11:49 (stopped at 12:02,
+−$16.60). The operator had asked for the day to stay stopped, and the kill switch was engaged
+by hand. The halt's own notification says new entries are blocked "for the rest of today", and
+the User Guide's risk settings say the drawdown "halts new entries until tomorrow". The code
+did neither.
+
+**The rule.** `dailyHaltVerdict` in `riskCheck.ts` is now the one halt rule for every book;
+the stock and options risk checks both call it. It fails while the day is at or below the
+level, as before, and also whenever `ctx.dailyHaltTripped` is set. That input is required, so
+every caller has to set it:
+
+- the live stock and live options sleeves pass `liveDrawdownHaltedOn(today)`, the live pool's
+  marker (stock plus options, as both live checks measure), less a retraction that holds;
+- the paper books and the two risk-check previews pass `haltMarkerExists('paper', today)`;
+- the backtests pass `false`. A replayed day books all its closes before the day's checks run,
+  so its one check already sees the day's net, and there is no intraday order of closes to
+  reproduce the live stickiness from.
+
+The marker is written by the first tick that finds the pool at or below its level
+(`dailyHaltAlert.ts`). So a day that dips through the line and recovers between two ticks
+never trips, as before. The detail line reads "halted for the rest of today, tripped earlier"
+so the refusal says why when the day's figure is above the level.
+
+A halt that tripped on a booking error holds too. The retraction (the twenty-first section)
+is refused while the session is open, so it corrects the day's record after the close and
+never re-opens entries the same day.
+
+**The Monitoring card.** The dashboard gains `dailyHalt: { paper, live }`, each read through
+`dailyHaltVerdict` with the same inputs the checks use: paper on the paper pool (equity plus
+options) and its marker, live on live stock plus live options and `liveDrawdownHaltedOn`.
+An unset equity makes the level 0, which never reads as a halt. The card's "HALT TRIGGERED"
+label reads that field. It used to compare each column's own day P&L with the level, so the
+two live columns judged each sleeve against a halt measured on their sum: at 10:23 stock
+read −$1,540.47 and options −$506 against −$1,941.67, and neither column showed the halt
+every live check was applying.
+
+**The live add-on gate.** A third copy of the rule lived in the live scale-in
+(`placeLiveScaleInAddOn`, off in production: `liveScaleInEnabled` false). It compared the stock
+sleeve's P&L alone with the level, each tick. It now calls `dailyHaltVerdict` on the live pool
+with `liveDrawdownHaltedOn`, the same verdict as the entries. `checkLiveScaleIns` takes the
+options sleeve's day as a required argument, and `loop.ts` passes it from `liveOptionsDay()`,
+the one derivation the entries read too. It is required and not defaulted because a default of
+zero is how a caller would judge the stock sleeve alone again.
+
+**Not covered.** The second lot of a per-lot bracketed entry (`checkLivePerLotSecondLots`, off in
+production) is not gated by the halt. It completes an entry that was sized and risk-checked in
+full before the halt tripped, and its own comment says so. Whether a halted day should also stop
+that second lot is the operator's call.
+
+**Check.** On the next live halt, no `live_order_placed` or `live_options_order_placed` row
+appears later that ET day, and every `live_risk_blocked` row after the marker names
+`daily_drawdown_halt`.

@@ -245,7 +245,8 @@ record is reliable. The Monitoring card carries the same expected-day figure nex
 goal every minute.
 
 **A softer brake than the daily halt.** The daily-drawdown halt is all-or-nothing — full
-size until a hard floor, then nothing. **Equity-curve de-risking** (Config → risk settings,
+size until a hard floor, then nothing for the rest of the day, even if a winner still open
+lifts the day back above the floor (that re-opening was a bug until 2026-09-23). **Equity-curve de-risking** (Config → risk settings,
 off by default) is the graduated version, keyed to your own results rather than the clock:
 it tracks the strategy's cumulative closed-P&L curve (paper and live kept separate) and,
 whenever the latest point sits below its N-day moving average, cuts new-position size by a

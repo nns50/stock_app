@@ -957,6 +957,11 @@ export function simulateBacktest(
         // incremented by the same amounts on every close and `dailyPnl` resets
         // each replayed day, so the difference is what the day started at.
         dayStartEquityUsd: equity - dailyPnl,
+        // The live halt holds for the rest of the day once tripped. A replayed
+        // day books all its closes before the day's risk checks, so the halt is
+        // judged once, on the day's net: there is no later tick for a recovery
+        // to lift it on, and no intraday order of closes to trip it earlier.
+        dailyHaltTripped: false,
         dailyPnl,
         // Trades actually filled today (step 1, above) — matches the live
         // system's getPortfolioSnapshot().tradesToday, which counts orders

@@ -117,6 +117,7 @@ import { getLivePortfolioSnapshot, combinedLiveOpenRisk, ProbationStatus } from 
 import { liveExposureCapUsd } from './liveCaps';
 import { previewWebullPositions, contractKey } from '../../providers/webull/positions';
 import { bumpMissStreak, clearMissStreak, MISS_CONFIRM_THRESHOLD } from '../../db/webullMissStreak';
+import { liveDrawdownHaltedOn } from './dailyHaltMarker';
 
 // ---------------------------------------------------------------------------
 // Task #70: the LIVE counterpart to optionsExecute.ts's paper options
@@ -1296,6 +1297,9 @@ export async function runLiveOptionsExecution(
       // See dayLossBudget.ts: the halt's denominator is the day's opening
       // equity; sizing above still uses the current reading.
       dayStartEquityUsd: dayStartEquityUsd(getDailyBaseline(), etToday(), equity).usd,
+      // Sticky for the rest of the day once the live halt has tripped
+      // (dailyHaltVerdict): the live pool is stock plus options, as both checks.
+      dailyHaltTripped: liveDrawdownHaltedOn(etToday()),
       dailyPnl,
       tradesToday,
       consecutiveLosses,

@@ -1029,6 +1029,11 @@ export async function simulateCombinedBacktest(
         // `dailyPnl` sums BOTH books — which is right, because `equity` is the
         // one account both books trade.
         dayStartEquityUsd: equity - dailyPnl,
+        // The live halt holds for the rest of the day once tripped. A replayed
+        // day books all its closes before the day's risk checks, so the halt is
+        // judged once, on the day's net: there is no later tick for a recovery
+        // to lift it on, and no intraday order of closes to trip it earlier.
+        dailyHaltTripped: false,
         dailyPnl,
         tradesToday,
         consecutiveLosses,
@@ -1273,6 +1278,11 @@ export async function simulateCombinedBacktest(
         // `dailyPnl` sums BOTH books — which is right, because `equity` is the
         // one account both books trade.
         dayStartEquityUsd: equity - dailyPnl,
+        // The live halt holds for the rest of the day once tripped. A replayed
+        // day books all its closes before the day's risk checks, so the halt is
+        // judged once, on the day's net: there is no later tick for a recovery
+        // to lift it on, and no intraday order of closes to trip it earlier.
+        dailyHaltTripped: false,
         dailyPnl,
         tradesToday,
         consecutiveLosses,

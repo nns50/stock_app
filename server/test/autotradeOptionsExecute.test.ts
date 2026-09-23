@@ -141,6 +141,7 @@ describe('attemptOptionsPaperEntry', () => {
   const okResult: OptionsRiskCheckResult = evaluateOptionsRiskCheck(optionSignal(), {
     equity: 100_000,
     dayStartEquityUsd: 100_000,
+    dailyHaltTripped: false,
     dailyPnl: 0,
     tradesToday: 0,
     consecutiveLosses: 0,
@@ -262,6 +263,7 @@ describe('attemptOptionsPaperEntry', () => {
     const spreadOkResult: OptionsRiskCheckResult = evaluateOptionsRiskCheck(spreadSignal(), {
       equity: 100_000,
       dayStartEquityUsd: 100_000,
+      dailyHaltTripped: false,
       dailyPnl: 0,
       tradesToday: 0,
       consecutiveLosses: 0,
@@ -1306,6 +1308,7 @@ describe('short-dated options — the paper book', () => {
     const risk = evaluateOptionsRiskCheck(optionSignal({ underlyingPrice: 143.2 }), {
       equity: 100_000,
       dayStartEquityUsd: 100_000,
+      dailyHaltTripped: false,
       dailyPnl: 0,
       tradesToday: 0,
       consecutiveLosses: 0,

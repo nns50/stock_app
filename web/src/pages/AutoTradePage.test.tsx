@@ -403,6 +403,7 @@ function dashboardFixture(overrides: Partial<AutotradeDashboard> = {}): Autotrad
     maxSectorExposure: 20_000,
     dailyPnl: 0,
     dailyDrawdownHaltLevel: -3_000,
+    dailyHalt: { paper: false, live: false },
     tradesToday: 0,
     maxTradesPerDay: 6,
     consecutiveLosses: 0,
@@ -4243,7 +4244,34 @@ describe('AutoTradePage', () => {
 
     it('shows a distinct HALT TRIGGERED signal when the daily drawdown halt is actually breached', async () => {
       vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
-        dashboardFixture({ dailyPnl: -3_200, dailyDrawdownHaltLevel: -3_000 }), // breached
+        dashboardFixture({ dailyPnl: -3_200, dailyDrawdownHaltLevel: -3_000, dailyHalt: { paper: true, live: false } }),
+      );
+      renderDashboard();
+      expect(await screen.findByText(/HALT TRIGGERED/)).toBeInTheDocument();
+    });
+
+    // 2026-09-23: the live halt is measured on stock PLUS options. Stock alone
+    // (-$1,742) and options alone (-$462) each sat above the -$1,942 line, so a
+    // card comparing each sleeve with the level showed no halt at all. It reads
+    // the server's verdict now, and both live cells say so.
+    it('shows the live halt on both live cells from the server verdict, not each sleeve’s own figure', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({
+          liveDailyPnl: -1_742.67,
+          liveOptionsDailyPnl: -462,
+          dailyDrawdownHaltLevel: -1_941.67,
+          dailyHalt: { paper: false, live: true },
+        }),
+      );
+      renderDashboard();
+      await screen.findByText('Monitoring');
+      expect(await screen.findAllByText(/HALT TRIGGERED/)).toHaveLength(2);
+    });
+
+    // …and after a winner lifts the day back above the line, the halt still holds.
+    it('keeps HALT TRIGGERED after the day recovers, while the server says the halt holds', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({ dailyPnl: -50, dailyDrawdownHaltLevel: -3_000, dailyHalt: { paper: true, live: false } }),
       );
       renderDashboard();
       expect(await screen.findByText(/HALT TRIGGERED/)).toBeInTheDocument();

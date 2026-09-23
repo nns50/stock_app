@@ -35,6 +35,7 @@ function baseCtx(overrides: Partial<RiskCheckContext> = {}): RiskCheckContext {
   return {
     equity: 100_000,
     dayStartEquityUsd: 100_000,
+    dailyHaltTripped: false,
     dailyPnl: 0,
     tradesToday: 0,
     consecutiveLosses: 0,
@@ -605,6 +606,14 @@ describe('evaluateRiskCheck — pure evaluator', () => {
       const result = evaluateRiskCheck(signal(), baseCtx({ dailyPnl: -3000 }));
       expect(result.ok).toBe(false);
       expect(findCheck(result, 'daily_drawdown_halt').passed).toBe(false);
+    });
+
+    it('holds for the rest of the day once tripped, even back above the line', () => {
+      const result = evaluateRiskCheck(signal(), baseCtx({ dailyPnl: -1000, dailyHaltTripped: true }));
+      expect(result.ok).toBe(false);
+      const halt = findCheck(result, 'daily_drawdown_halt');
+      expect(halt.passed).toBe(false);
+      expect(halt.detail).toMatch(/^halted for the rest of today, tripped earlier — today \$-1,000\.00 vs halt at/);
     });
   });
 

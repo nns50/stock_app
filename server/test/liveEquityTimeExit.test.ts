@@ -163,6 +163,7 @@ async function openAgedLivePosition(ageDays: number) {
   const okResult = evaluateRiskCheck(signal(), {
     equity: 100_000,
     dayStartEquityUsd: 100_000,
+    dailyHaltTripped: false,
     dailyPnl: 0,
     tradesToday: 0,
     consecutiveLosses: 0,

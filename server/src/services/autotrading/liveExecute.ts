@@ -146,12 +146,14 @@ import {
   correlatedNotional,
   sectorNotional,
   buildSectorOf,
+  dailyHaltVerdict,
   evaluateRiskCheck,
 } from './riskCheck';
 import { listAutotradeEvents, logAutotradeEvent } from '../../db/autotradeEvents';
 import { getProvider } from '../../providers';
 import { dispatchAutotradeNotification } from './notify';
 import { UnprotectedReportState, unprotectedReportState } from './unprotectedReport';
+import { liveDrawdownHaltedOn } from './dailyHaltMarker';
 
 // ---------------------------------------------------------------------------
 // The LIVE counterpart to execute.ts's paper execution (Phase 8 — see
@@ -2053,6 +2055,9 @@ export async function runLiveExecution(
       repeatEntrySizeCutPct: cfg.repeatEntrySizeCutPct,
       equity,
       dayStartEquityUsd: dayStart,
+      // Sticky for the rest of the day once the live halt has tripped
+      // (dailyHaltVerdict): the live pool is stock plus options, as both checks.
+      dailyHaltTripped: liveDrawdownHaltedOn(etToday()),
       dailyPnl,
       tradesToday,
       consecutiveLosses,
@@ -4979,7 +4984,14 @@ export interface LiveScaleInOutcome {
   reason?: string;
 }
 
-export async function checkLiveScaleIns(): Promise<LiveScaleInOutcome[]> {
+export async function checkLiveScaleIns(
+  /** The live OPTIONS sleeve's day, threaded in by loop.ts exactly as
+   *  runLiveExecution's is (reading it here would be an import cycle). The
+   *  add-on's drawdown halt is the live pool's, stock plus options. REQUIRED,
+   *  not defaulted: a default of zero is how a caller would silently judge the
+   *  stock sleeve alone, which is what this gate did until 2026-09-23. */
+  optionsSeed: LiveOptionsRiskSeed,
+): Promise<LiveScaleInOutcome[]> {
   if (!config.trading.placeEnabled) return []; // server master (TRADING_ENABLED)
   const cfg = getAutotradeConfig();
   if (!cfg.liveAccountId) return [];
@@ -5059,7 +5071,7 @@ export async function checkLiveScaleIns(): Promise<LiveScaleInOutcome[]> {
       );
       if (!add) continue;
 
-      outcomes.push(await placeLiveScaleInAddOn(pos, add, last, targetPrice, cfg));
+      outcomes.push(await placeLiveScaleInAddOn(pos, add, last, targetPrice, cfg, optionsSeed));
     } catch (err) {
       // Fail closed per position — a broker hiccup never crashes the loop.
       outcomes.push({
@@ -5083,6 +5095,7 @@ async function placeLiveScaleInAddOn(
   last: number,
   targetPrice: number,
   cfg: AutotradeConfig,
+  optionsSeed: LiveOptionsRiskSeed,
 ): Promise<LiveScaleInOutcome> {
   const symbol = pos.symbol.toUpperCase();
   // Fresh account id per position — a kill switch flipped mid-loop must stop
@@ -5108,23 +5121,34 @@ async function placeLiveScaleInAddOn(
   // the cap is 0, so any add is blocked — same as a fresh entry.
   const equity = cfg.accountEquityUsd ?? 0;
   const addRisk = orderRiskAmount(limitPrice, add.newStopPrice, add.addQty);
-  const dailyPnl = getLivePortfolioSnapshot().dailyPnl;
-  // Through dayLossBudgetUsd and the day's OPENING equity, like every other
-  // copy of this rule — an add-on that re-derived it from the current reading
-  // would halt at a different level than the entry it is adding to.
-  const dailyHaltLevel = -dayLossBudgetUsd(
-    cfg.maxDailyDrawdownPct,
-    dayStartEquityUsd(getDailyBaseline(), etToday(), equity).usd,
-  );
-  if (!(dailyPnl > dailyHaltLevel)) {
+  // The one halt rule every entry runs (dailyHaltVerdict), on the same pool and
+  // the same day-opening equity: live stock PLUS live options, and held for the
+  // rest of the day once tripped. Until 2026-09-23 this was a third copy of the
+  // rule, on the stock sleeve's P&L alone and re-checked each tick, so an add
+  // could fire on a day the entries beside it were halted.
+  const dailyPnl = getLivePortfolioSnapshot().dailyPnl + optionsSeed.dailyPnl;
+  const today = etToday();
+  const halt = dailyHaltVerdict({
+    dailyPnl,
+    maxDailyDrawdownPct: cfg.maxDailyDrawdownPct,
+    dayStartEquityUsd: dayStartEquityUsd(getDailyBaseline(), today, equity).usd,
+    dailyHaltTripped: liveDrawdownHaltedOn(today),
+  });
+  if (!halt.ok) {
     logAutotradeEvent({
       symbol,
       stage: 'execution',
       action: 'live_scale_in_blocked',
-      detail: { reason: 'daily_drawdown_halt', dailyPnl, dailyHaltLevel, positionId: pos.id },
+      detail: {
+        reason: 'daily_drawdown_halt',
+        dailyPnl,
+        dailyHaltLevel: halt.level,
+        haltDetail: halt.detail,
+        positionId: pos.id,
+      },
       riskProfile,
     });
-    return { symbol, positionId: pos.id, requested: false, reason: `Daily drawdown halt (today ${dailyPnl})` };
+    return { symbol, positionId: pos.id, requested: false, reason: `Daily drawdown halt (${halt.detail})` };
   }
   const aggregateCap = (cfg.maxAggregateOpenRiskPct / 100) * equity;
   const aggregateAfter = combinedLiveOpenRisk().risk + addRisk;

@@ -29,6 +29,7 @@ import { dayLossBudgetUsd, dayStartEquityUsd } from './dayLossBudget';
 import { getDailyBaseline } from '../../db/dailyBaseline';
 import { listLiveOptionsPositions } from '../../db/autotradeLiveOptionsPositions';
 import { TradeSignal, convictionGrade } from './decide';
+import { haltMarkerExists } from './dailyHaltMarker';
 
 // ---------------------------------------------------------------------------
 // The Risk Check stage (docs/AUTOTRADING_SPEC.md — EXECUTION LOOP, stage 3;
@@ -149,6 +150,29 @@ export interface PortfolioSnapshot {
    *  (2026-08-21); empty when method weighting is off. */
   methodMultipliers: Record<string, number>;
   openPositions: OpenRiskItem[];
+}
+
+/**
+ * The daily-drawdown halt, one rule for every book (the stock and options risk
+ * checks both call this). Of the equity the DAY OPENED at, not of this tick's
+ * reading — the same denominator the +3% goal uses, so the two day-level rules
+ * are percentages of the same dollars (dayLossBudget.ts).
+ *
+ * STICKY FOR THE DAY (2026-09-23). The level used to be re-checked on its own
+ * each tick, so the halt lifted the moment a still-open position closed green:
+ * the live halt tripped at 10:23 on −$2,046 against −$1,942, CRWD's target
+ * filled at 11:47 for +$382, the day read −$1,822, and the loop bought VKTX at
+ * 11:49. The halt's own notification says new entries are blocked "for the rest
+ * of today"; `ctx.dailyHaltTripped` makes that true.
+ */
+export function dailyHaltVerdict(
+  ctx: Pick<RiskCheckContext, 'dailyPnl' | 'maxDailyDrawdownPct' | 'dayStartEquityUsd' | 'dailyHaltTripped'>,
+): { ok: boolean; level: number; detail: string } {
+  const level = -dayLossBudgetUsd(ctx.maxDailyDrawdownPct, ctx.dayStartEquityUsd);
+  const base = `today ${usd(ctx.dailyPnl)} vs halt at ${usd(level)} (${ctx.maxDailyDrawdownPct}% of the day's opening ${usd(ctx.dayStartEquityUsd)})`;
+  if (ctx.dailyHaltTripped)
+    return { ok: false, level, detail: `halted for the rest of today, tripped earlier — ${base}` };
+  return { ok: ctx.dailyPnl > level, level, detail: base };
 }
 
 /** Assemble current portfolio state from the journal + config. No provider/
@@ -379,6 +403,12 @@ export interface RiskCheckContext {
    *  of measuring the day's drawdown against the day's current value, which is
    *  the bug (see dayLossBudget.ts). `dayStartEquityUsd()` produces it. */
   dayStartEquityUsd: number;
+  /** Whether this book's daily-drawdown halt has already tripped today: its
+   *  pool's `daily_halt_alerted` marker exists (dailyHaltMarker.ts). Required,
+   *  so every caller decides. Once tripped the halt holds for the rest of the
+   *  ET day, as its notification says, even if a later winning close lifts the
+   *  day's realized P&L back above the line (2026-09-23, VKTX). */
+  dailyHaltTripped: boolean;
   stepDownAfterLosses: number;
   stepDownSizeCutPct: number;
   maxAggregateOpenRiskPct: number;
@@ -793,13 +823,8 @@ export function evaluateRiskCheck(signal: TradeSignal, ctx: RiskCheckContext): R
   // denominator the +3% goal uses, so the two day-level rules are percentages
   // of the same dollars. See dayLossBudget.ts for what they cost when they
   // were not.
-  const dailyHaltLevel = -dayLossBudgetUsd(ctx.maxDailyDrawdownPct, ctx.dayStartEquityUsd);
-  const haltOk = ctx.dailyPnl > dailyHaltLevel;
-  check(
-    'daily_drawdown_halt',
-    haltOk,
-    `today ${usd(ctx.dailyPnl)} vs halt at ${usd(dailyHaltLevel)} (${ctx.maxDailyDrawdownPct}% of the day's opening ${usd(ctx.dayStartEquityUsd)})`,
-  );
+  const halt = dailyHaltVerdict(ctx);
+  check('daily_drawdown_halt', halt.ok, halt.detail);
 
   const tradesOk = ctx.tradesToday < ctx.maxTradesPerDay;
   check('max_trades_per_day', tradesOk, `${ctx.tradesToday} placed vs ${ctx.maxTradesPerDay}/day`);
@@ -941,6 +966,9 @@ export async function runAutotradeRiskCheck(signals: TradeSignal[]): Promise<Ris
       // same day-start equity the live path does (dayLossBudget.ts), falling
       // back to the snapshot's own equity before the day's baseline exists.
       dayStartEquityUsd: dayStartEquityUsd(getDailyBaseline(), etDateStr(), snapshot.equity ?? 0).usd,
+      // Sticky for the rest of the day once the paper halt has tripped
+      // (dailyHaltVerdict), the same rule the live book runs.
+      dailyHaltTripped: haltMarkerExists('paper', etDateStr()),
       dailyPnl: snapshot.dailyPnl,
       tradesToday: snapshot.tradesToday,
       consecutiveLosses: snapshot.consecutiveLosses,
