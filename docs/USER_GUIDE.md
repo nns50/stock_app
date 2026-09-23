@@ -2399,6 +2399,11 @@ because the loop is the only caller that is always flat by the bell, so it is
   rewrites the exit to that leg's price and to `stop` or `target`
   (**`live_exit_corrected`** on Recent activity), and re-records the day on the Results
   calendar. The same seven-day window applies.
+  The count of missed checks belongs to the position it was counted for. Since 2026-09-23 it
+  ends once that position is closed, whoever closed it. Before, a bracket fill booked by the
+  order check left its count behind, and the next position on the same stock started with the
+  wait already used up: GRML's stop on 2026-09-23 was booked from a quote one second after it
+  filled.
   **A stock you sell by hand in Webull is booked at your fill**, the same way as an option.
   When the app's bracket for that position finished with no leg filled (you cancelled it
   and sold), the app looks in Webull's order history for what closed the position between

@@ -18,6 +18,7 @@ import { webullClient, webullConfigured } from './account';
 import {
   bumpMissStreak,
   clearMissStreak,
+  clearMissStreaksWithoutLots,
   missStreakStartedAt,
   MISS_CONFIRM_THRESHOLD,
 } from '../../db/webullMissStreak';
@@ -434,6 +435,12 @@ export function contractKey(p: ContractLike): string {
   return `${p.symbol.toUpperCase()}|option|${p.optionType ?? ''}|${p.strike ?? ''}|${p.expiration ?? ''}`;
 }
 
+/** Whether a miss-streak key is one contractKey() produces. The options
+ *  sleeve keeps its runs in the same table as `opt:<position id>`. */
+function isContractKey(key: string): boolean {
+  return key.endsWith('|stock') || key.includes('|option|');
+}
+
 export interface ImportSummary {
   ok: boolean;
   accountId: string;
@@ -645,6 +652,13 @@ async function closePositionsFromPreview(
     const key = contractKey(p);
     (lotsByKey.get(key) ?? lotsByKey.set(key, []).get(key)!).push(p);
   }
+
+  // A run of misses belongs to the lots it was counted against. When they
+  // were closed some other way (usually the entry order's reconcile booking
+  // a bracket leg), end the run here, or the next position on the same name
+  // starts with its debounce and bracket grace already used up. See
+  // clearMissStreaksWithoutLots for GRML, 2026-09-23.
+  clearMissStreaksWithoutLots(preview.accountId, new Set(lotsByKey.keys()), isContractKey);
 
   // Symbols whose broker rows (partly) failed to parse THIS preview. A row we
   // couldn't map still proves the broker holds SOMETHING in that symbol, so a
