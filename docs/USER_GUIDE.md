@@ -2575,7 +2575,10 @@ because the loop is the only caller that is always flat by the bell, so it is
   current market price", is its rule for a buy stop. No such order was ever accepted.)
   Several rules keep the automatic fix from being worse than the gap, and most exist because
   two orders against one position sell it twice:
-  - an **unanswered** placement is never retried, because the orders may well be resting;
+  - an **unanswered** placement is never retried, because the orders may well be resting.
+    That holds at the connection too: a re-arm whose answer is lost is sent once, never
+    re-sent automatically, and reads as unanswered. (Until 2026-09-23 a lost answer was
+    re-sent, and the broker's refusal of the duplicate read as an explicit rejection.);
   - while a **kill switch** is engaged, nothing is placed or cancelled. The position is still
     reported, marked as held by the kill switch. The alert goes out once per position per day
     **for each state it finds**: held by a kill switch, a close of the app's already working,
@@ -2588,7 +2591,13 @@ because the loop is the only caller that is always flat by the bell, so it is
     cancelled and both legs are re-armed together on the next cycle
     (`live_bracket_rearm_target_cancelled`, then `live_bracket_rearmed`). The broker refuses
     a stop added on its own under a resting take-profit, because it counts the shares held
-    minus the shares resting exits already cover, and the take-profit covers them all;
+    minus the shares resting exits already cover, and the take-profit covers them all.
+    Only a take-profit the broker labels as a bracket's own (`STOP_PROFIT`) is cancelled. A
+    plain limit order on the exit side, such as a sell limit you placed by hand after
+    cancelling the bracket, is never cancelled to make room: the position pages instead,
+    saying the order may be yours. (Until 2026-09-23 any limit on the exit side counted, so
+    releasing the kill switch before your own exit filled let the app cancel it and re-arm its
+    bracket over it.);
   - a resting order the check cannot identify is never cancelled; it pages instead.
 
   Since **2026-09-15**, a naked position whose price is already **through** its recorded

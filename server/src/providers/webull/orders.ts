@@ -498,6 +498,15 @@ export async function webullPlaceStandaloneBracket(
   const r = await webullClient().call('POST', '/openapi/trade/order/place', {
     body: { account_id: accountId, ...request },
     surface: 'trade',
+    // Never transparently retried, like webullPlaceOrder (2026-09-23, from the
+    // #637 review). This call used to omit it, so a timeout, a network error or
+    // a 429 re-sent the same body up to maxRetries times, and the caller saw the
+    // RETRY's answer: most likely a refusal of the duplicate ids, which reads as
+    // an explicit rejection rather than an unanswered placement. The protection
+    // sweep treats an explicit refusal as corroboration for a breach close, and
+    // the scale-out's rollback treats one as licence to restore the full-size
+    // bracket, both on top of a bracket that may have landed.
+    nonIdempotent: true,
   });
   if (!r.ok) {
     const j = (r.data ?? {}) as { msg?: string; message?: string; error_msg?: string };

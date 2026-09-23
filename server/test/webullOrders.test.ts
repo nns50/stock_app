@@ -16,6 +16,7 @@ import {
   committedProtectiveQuantity,
   buildStandaloneBracketRequest,
   protectiveBracketIntent,
+  webullPlaceStandaloneBracket,
   webullOrderDetail,
   parseBrokerOptionFills,
   parseBrokerEquityFills,
@@ -1369,6 +1370,54 @@ describe('committedProtectiveQuantity', () => {
 // "protective" re-arm of a long was a BUY stop plus a BUY take-profit limit.
 // These pin the only thing that matters — what the broker receives.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// A standalone bracket is a PLACEMENT, and a placement is never retried
+// (2026-09-23, from the #637 review). The call omitted nonIdempotent, so a lost
+// response re-sent the same body and the caller saw the retry's answer — most
+// likely a refusal of the duplicate ids, which reads as a known rejection
+// instead of an unanswered placement that may be resting.
+// ---------------------------------------------------------------------------
+describe('webullPlaceStandaloneBracket', () => {
+  const place = () => webullPlaceStandaloneBracket('ACC1', protectiveBracketIntent('AAPL', 'long', 7), 110, 95);
+
+  it('sends a lost response ONCE and reports it unanswered, not refused', async () => {
+    // The failure it replaces: the first POST lands but its answer is lost; the
+    // retry of the same body is refused as a duplicate, and that refusal is
+    // what the caller used to see.
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const f = vi
+      .spyOn(globalThis, 'fetch')
+      .mockRejectedValueOnce(Object.assign(new Error('The operation was aborted'), { name: 'AbortError' }))
+      .mockResolvedValue({
+        ok: false,
+        status: 400,
+        headers: new Headers(),
+        text: async () => JSON.stringify({ msg: 'duplicate client_order_id' }),
+      } as Response);
+
+    const r = await place();
+
+    expect(f).toHaveBeenCalledTimes(1);
+    expect(r).toMatchObject({ ok: false, ambiguous: true });
+    expect(r.error).not.toMatch(/duplicate/);
+  });
+
+  it('does not retry a 429 either: it can post-date acceptance', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const f = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: false,
+      status: 429,
+      headers: new Headers(),
+      text: async () => JSON.stringify({ msg: 'too many requests' }),
+    } as Response);
+
+    const r = await place();
+
+    expect(f).toHaveBeenCalledTimes(1);
+    expect(r).toMatchObject({ ok: false, ambiguous: true });
+  });
+});
+
 describe('protectiveBracketIntent', () => {
   const wire = (positionSide: 'long' | 'short', target: number | undefined, stop: number | undefined) =>
     buildStandaloneBracketRequest(protectiveBracketIntent(' aapl ', positionSide, 7), target, stop)!.new_orders.map(

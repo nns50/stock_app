@@ -13653,3 +13653,49 @@ keep the plain label.
 row carries `state`, and the scan's execution findings show the state split. A kill-switch
 halt that ends with a failed re-arm shows two rows for the position that day,
 `kill_switch` then `naked`.
+
+## 2026-09-23 (eighteenth) — the take-profit cancel touches only its own leg, and a re-arm is sent once
+
+Two of the (seventeenth) section's findings change which orders the app cancels or sends, so
+they shipped on the operator's word, as #637 did.
+
+**1. The take-profit cancel could cancel the operator's own exit.** `classifyExitLeg` reads
+`combo_type` first and falls back to the order type, so a plain LIMIT on the exit side reads as
+a take-profit whoever placed it. The cancel branch cancelled every leg once they all read that
+way, and only the app's own closes were exempt (a working close takes the branch before it).
+The User Guide's own hand-trading workflow reaches it: engage the switch, cancel the bracket,
+rest a sell limit in Webull, release the switch before it fills. The next sweep cancelled that
+limit within a minute, the sweep after re-armed the app's bracket at the ledger's stop and
+target, and the row it wrote (`live_bracket_rearm_target_cancelled`) pages nobody.
+
+Every leg of every bracket this app places carries `combo_type` `STOP_PROFIT` or `STOP_LOSS`
+(`bracketExit`), and its plain orders carry `NORMAL`. The branch now cancels only when every
+resting leg is labelled `STOP_PROFIT`. An exit-side limit labelled anything else, or nothing,
+is someone else's order: nothing is cancelled, and the position pages with the labels it saw.
+The cost is bounded: if a parse regression ever strips the label from the app's own orphaned
+take-profit, the sweep pages instead of repairing, which is what it did before 2026-09-12.
+
+**2. A timed-out re-arm was re-sent.** `webullPlaceStandaloneBracket` did not set
+`nonIdempotent`, so a timeout, a network error or a 429 re-sent the same body up to the
+client's retry limit, and the caller saw the retry's answer. If the first POST had landed, that
+answer is most likely a refusal of the duplicate ids, which reads as an explicit rejection
+rather than an unanswered placement. The protection sweep treats an explicit refusal as fact
+(2) of the breach close, and the scale-out's rollback treats one as licence to restore the
+full-size bracket, both on top of a bracket that may be resting. It is now sent once, as
+`webullPlaceOrder` and `webullReplaceOrders` are.
+
+**Not changed, with the reason:**
+
+- After a take-profit cancel, the next sweep sizes the pair from a fresh holdings read, and
+  does not ask whether the cancelled leg filled first. A stale read would size legs over
+  shares no longer held. The legs are `SELL`, not `SHORT`, so the broker refuses them rather
+  than opening a short; the cost is a false "re-arm failed" page.
+- An unknown-outcome placement is retired after five minutes absent from both lists without
+  an Order Detail read. No `live_order_outcome_unknown` row has been written in the last ten
+  sessions, so the case this guards has not occurred on this account.
+- The scale-out's "close working" lock-in and the unhandled short holding stay latent while
+  `liveScaleOutEnabled` and shorts are off.
+
+**Check.** No `live_bracket_rearm_target_cancelled` row names a leg whose `combo_type` was not
+`STOP_PROFIT`. A position with a hand-placed sell limit and no stop pages with "not labelled as
+a bracket's take-profit".
