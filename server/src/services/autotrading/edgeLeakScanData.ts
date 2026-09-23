@@ -32,6 +32,7 @@ import {
   EdgeLeakScanResult,
   equivalentPaceFloor,
   paceFloorDrift,
+  ExecutionNature,
   ExecutionOccurrence,
   ExtensionQuality,
   JournalSkip,
@@ -73,7 +74,8 @@ export const EXECUTION_LOOKBACK_SESSIONS = 10;
 
 /** Execution classes worth a finding on ANY occurrence, with the plain-English
  *  label a report shows. These are things that went wrong, not distributions
- *  that read badly — one is already too many.
+ *  that read badly — one is already too many. Or they are things the operator
+ *  or a control did, recorded for the record and marked so (`nature`).
  *
  *  The list is the answer to "what would have caught the HOOD day": an exit
  *  decided and never filled shows up as `live_options_exit_failed` plus a
@@ -81,10 +83,15 @@ export const EXECUTION_LOOKBACK_SESSIONS = 10;
 export const EXECUTION_ACTIONS: {
   action: string;
   label: string;
+  /** What kind of occurrence this is; `defect` when unset. See
+   *  ExecutionNature. */
+  nature?: ExecutionNature;
   /** A `detail` key whose value splits this action into separate findings,
    *  for an action that carries more than one severity. */
   splitOn?: string;
   labelFor?: Record<string, string>;
+  /** The nature of a split variant, where it differs from the action's. */
+  natureFor?: Record<string, ExecutionNature>;
   /** A row of this action stops counting once a LATER row of `action` carries
    *  the same `key` in its detail: a skip that a later pass overcame is not an
    *  open finding, and reporting it for ten more sessions would send the reader
@@ -112,6 +119,7 @@ export const EXECUTION_ACTIONS: {
       mid_fill: 'An options exit re-price stood aside for a partial fill (benign)',
       daily_cap: 'An options exit exhausted its re-price budget and is still resting',
     },
+    natureFor: { mid_fill: 'control' },
   },
   { action: 'live_options_expired_worthless', label: 'An options position expired worthless' },
   { action: 'live_time_exit_failed', label: 'A timed stock exit failed' },
@@ -132,6 +140,10 @@ export const EXECUTION_ACTIONS: {
       unconfirmed: 'A live position showed no resting stop and the holdings read failed, so it was not confirmed held',
       naked: 'A live position was confirmed held with no resting stop, and the automatic repair did not save it',
     } satisfies Record<UnprotectedReportState, string>,
+    // `exit_working` stays a defect: the position really is without a stop for
+    // as long as the app's close rests, and a close that rests is the thing to
+    // look at.
+    natureFor: { kill_switch: 'operator' },
   },
   { action: 'live_bracket_rearmed', label: 'A missing protective bracket had to be re-armed' },
   { action: 'live_stop_adjust_blocked', label: 'A stop ratchet could not find its resting leg' },
@@ -170,6 +182,7 @@ export const EXECUTION_ACTIONS: {
       app_order: "The app's own options close was booked late: the order read lagged the positions read",
       broker_history: "A hand close in Webull was re-booked at the operator's fill",
     },
+    natureFor: { broker_history: 'operator' },
   },
   // The stock twin (2026-09-23), split the same way. `bracket_leg`: the
   // position sync priced a bracket exit at a quote before the entry's
@@ -191,6 +204,7 @@ export const EXECUTION_ACTIONS: {
       outside_bracket:
         "A stock exit filled on a stop or target placed outside the entry's bracket (a re-arm, or one placed by hand) was re-booked at that fill",
     },
+    natureFor: { broker_history: 'operator' },
   },
   // The options twin (2026-09-23): a hand close no set of the contract's sells
   // in the history adds up to, left an estimate once its day is over.
@@ -244,6 +258,10 @@ export const EXECUTION_ACTIONS: {
   {
     action: 'daily_halt_alerted',
     label: 'A daily drawdown halt tripped',
+    // The halt doing its job, not a defect: the review rule counts halts from
+    // the daily results, and the booking error that trips one falsely is its
+    // own defect class (`daily_halt_retracted`, below).
+    nature: 'control',
     splitOn: 'pool',
     labelFor: {
       live: 'The LIVE daily drawdown halt tripped (stock + options)',
@@ -267,7 +285,7 @@ export const EXECUTION_ACTIONS: {
       return date !== null && liveDrawdownHaltRetracted(date);
     },
   },
-  { action: 'daily_give_back_halted', label: 'The give-back guard halted the day' },
+  { action: 'daily_give_back_halted', label: 'The give-back guard halted the day', nature: 'control' },
 ];
 
 /** The two rows that record the tuner's SWITCH rather than a tuner RUN. They
@@ -754,11 +772,16 @@ export function collectExecutionFindings(now: number): ExecutionOccurrence[] {
   }
   const out: ExecutionOccurrence[] = [];
   for (const a of EXECUTION_ACTIONS) {
+    const actionNature: ExecutionNature = a.nature ?? 'defect';
     const variants =
       a.labelFor === undefined
         ? []
-        : Object.keys(a.labelFor).map((v) => ({ key: `${a.action}|${v}`, label: a.labelFor![v] }));
-    for (const { key, label } of [...variants, { key: a.action, label: a.label }]) {
+        : Object.keys(a.labelFor).map((v) => ({
+            key: `${a.action}|${v}`,
+            label: a.labelFor![v],
+            nature: a.natureFor?.[v] ?? actionNature,
+          }));
+    for (const { key, label, nature } of [...variants, { key: a.action, label: a.label, nature: actionNature }]) {
       const n = counts.get(key) ?? 0;
       if (n === 0) continue;
       const seen = lastSeen.get(key) ?? null;
@@ -766,6 +789,7 @@ export function collectExecutionFindings(now: number): ExecutionOccurrence[] {
       out.push({
         action: key,
         count: n,
+        nature,
         detail: `${label} — ${n} in the last ${EXECUTION_LOOKBACK_SESSIONS} sessions`,
         lastSeenEtDate: seen,
         // Not found in the window's session list means the row landed on a day

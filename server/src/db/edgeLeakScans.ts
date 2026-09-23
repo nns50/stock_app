@@ -1,6 +1,6 @@
 import { db } from './index';
 import { etToday } from '../util/marketDate';
-import type { EdgeLeakScanResult } from '../services/autotrading/edgeLeakScan';
+import { findingNeedsAction, type EdgeLeakScanResult } from '../services/autotrading/edgeLeakScan';
 
 // ---------------------------------------------------------------------------
 // The last edge-leak scan, persisted (2026-09-12).
@@ -18,6 +18,7 @@ export interface EdgeLeakScanRecord {
   etDate: string;
   leaks: number;
   watches: number;
+  /** Findings that ask for action (findingNeedsAction), not every finding. */
   findings: number;
   result: EdgeLeakScanResult;
   createdAt: number;
@@ -43,7 +44,10 @@ export function saveEdgeLeakScan(result: EdgeLeakScanResult): void {
     etToday(result.asOf),
     result.leaks.length,
     result.watches.length,
-    result.findings.length,
+    // The findings that ask for action (2026-09-23): the operator's own hand
+    // closes and a control doing its job stay in `result`, but are not counted
+    // here, so the Auto page's "N findings" stays silent on a clean day.
+    result.findings.filter(findingNeedsAction).length,
     JSON.stringify(result),
     result.asOf,
   );

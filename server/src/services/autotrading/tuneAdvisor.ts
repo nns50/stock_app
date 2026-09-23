@@ -1,6 +1,6 @@
 import type { AutotradeConfig } from '../../db/autotradeConfig';
 import type { DailyGoalEvidence } from './targetTune';
-import { WATCH_MIN_TRADES } from './edgeLeakScan';
+import { findingNeedsAction, WATCH_MIN_TRADES } from './edgeLeakScan';
 import type { AttributionReport, EdgeLeakScanResult, UntakenClass } from './edgeLeakScan';
 import type { SizingReview } from './gatedSwitches';
 
@@ -532,44 +532,50 @@ function edgeRecommendations(input: TuneAdvisorInput, gap: GoalGap): TuneRecomme
 function executionRecommendations(input: TuneAdvisorInput): TuneRecommendation[] {
   const scan = input.scan;
   if (!scan) return [];
-  return scan.findings
-    .filter((f) => f.kind === 'execution')
-    .map((f) => {
-      // Recency decides whether this is work or history. The scan cannot know
-      // a deploy happened, so it never claims a class is fixed — but a class
-      // whose last occurrence predates the latest session is not something to
-      // go and do TONIGHT, and ranking it as though it were is what teaches a
-      // reader to skip the section. See the 2026-09-12 production read.
-      const ago = f.sessionsSinceLastSeen ?? null;
-      const current = ago === null || ago === 0;
-      return {
-        id: `execution:${f.id}`,
-        factor: 'execution' as const,
-        title: f.label,
-        evidence: f.detail,
-        // Deliberately null. An exit that failed cost whatever that trade would
-        // have made, which is not knowable from a count — and a fabricated
-        // number would rank a defect against a distribution as though the two
-        // were measured the same way.
-        expectedDayPctDelta: null,
-        sampleSize: f.count,
-        confidence: confidenceFor(f.count),
-        status: 'actionable' as const,
-        lastSeenEtDate: f.lastSeenEtDate ?? null,
-        sessionsSinceLastSeen: ago,
-        statusReason: current
-          ? 'an execution defect is a fix, not a setting — it is never held by the review rule'
-          : `last occurred ${f.lastSeenEtDate}, ${ago} session(s) ago — confirm it is fixed rather than dormant before spending on it`,
-        action: {
-          kind: 'code' as const,
-          field: null,
-          detail: current
-            ? `Root-cause the ${f.count} occurrence(s) and fix the path. A decided trade that does not execute is edge the book already paid for.`
-            : `Check whether the fix for this landed after ${f.lastSeenEtDate}. If it did, this is history the ten-session window is still carrying; if it did not, the class has simply not recurred yet and the ${f.count} occurrence(s) still need root-causing.`,
-          direction: 'neutral' as const,
-        },
-      };
-    });
+  return (
+    scan.findings
+      // A DEFECT only (2026-09-23). The operator's own hand close and a control
+      // doing its job are recorded by the scan, but "root-cause it and fix the
+      // path" is wrong advice for either, and the headline counted them among
+      // the "execution defect(s)" that outrank everything measurable.
+      .filter((f) => f.kind === 'execution' && findingNeedsAction(f))
+      .map((f) => {
+        // Recency decides whether this is work or history. The scan cannot know
+        // a deploy happened, so it never claims a class is fixed — but a class
+        // whose last occurrence predates the latest session is not something to
+        // go and do TONIGHT, and ranking it as though it were is what teaches a
+        // reader to skip the section. See the 2026-09-12 production read.
+        const ago = f.sessionsSinceLastSeen ?? null;
+        const current = ago === null || ago === 0;
+        return {
+          id: `execution:${f.id}`,
+          factor: 'execution' as const,
+          title: f.label,
+          evidence: f.detail,
+          // Deliberately null. An exit that failed cost whatever that trade would
+          // have made, which is not knowable from a count — and a fabricated
+          // number would rank a defect against a distribution as though the two
+          // were measured the same way.
+          expectedDayPctDelta: null,
+          sampleSize: f.count,
+          confidence: confidenceFor(f.count),
+          status: 'actionable' as const,
+          lastSeenEtDate: f.lastSeenEtDate ?? null,
+          sessionsSinceLastSeen: ago,
+          statusReason: current
+            ? 'an execution defect is a fix, not a setting — it is never held by the review rule'
+            : `last occurred ${f.lastSeenEtDate}, ${ago} session(s) ago — confirm it is fixed rather than dormant before spending on it`,
+          action: {
+            kind: 'code' as const,
+            field: null,
+            detail: current
+              ? `Root-cause the ${f.count} occurrence(s) and fix the path. A decided trade that does not execute is edge the book already paid for.`
+              : `Check whether the fix for this landed after ${f.lastSeenEtDate}. If it did, this is history the ten-session window is still carrying; if it did not, the class has simply not recurred yet and the ${f.count} occurrence(s) still need root-causing.`,
+            direction: 'neutral' as const,
+          },
+        };
+      })
+  );
 }
 
 /**

@@ -21,7 +21,8 @@ import { getMlRegimeReadiness } from '../src/services/mlRegimeReadiness';
 import { loadRegimeModel } from '../src/services/regimeModel';
 import { etToday } from '../src/util/marketDate';
 import { runEdgeLeakScanFromDb } from '../src/services/autotrading/edgeLeakScanData';
-import { saveEdgeLeakScan } from '../src/db/edgeLeakScans';
+import { getLastEdgeLeakScan, saveEdgeLeakScan } from '../src/db/edgeLeakScans';
+import type { ScanFinding } from '../src/services/autotrading/edgeLeakScan';
 import { closeLiveOptionsPosition, createLiveOptionsPosition } from '../src/db/autotradeLiveOptionsPositions';
 import { writeDailyHaltMarker } from '../src/services/autotrading/dailyHaltMarker';
 
@@ -709,6 +710,36 @@ describe('edgeLeakSummary — the dashboard reads the last scan, it does not run
       leaks: 1,
       topLeak: { dimension: 'round', bucket: '2', n: 20, severityR: 2.72 },
     });
+  });
+
+  // The line exists to be silent on a clean day (EdgeLeakLine), so the count
+  // it shows is of findings that ask for action (2026-09-23). The operator's
+  // own hand close and a control doing its job stay in the stored result.
+  it('counts only the findings that ask for action', () => {
+    const scan = runEdgeLeakScanFromDb({ now: Date.parse('2026-09-11T21:00:00Z') });
+    const finding = (id: string, extra: Partial<ScanFinding>): ScanFinding => ({
+      id,
+      kind: 'execution',
+      label: id,
+      count: 1,
+      detail: '1 in the last 10 sessions',
+      lever: null,
+      ...extra,
+    });
+    saveEdgeLeakScan({
+      ...scan,
+      findings: [
+        finding('execution:live_options_exit_failed', { nature: 'defect' }),
+        finding('execution:live_exit_corrected|broker_history', { nature: 'operator' }),
+        finding('execution:daily_give_back_halted', { nature: 'control' }),
+        // A scan persisted before natures existed names none: it still counts.
+        finding('execution:live_time_exit_failed', {}),
+        finding('configuration:frozen_cap', { kind: 'configuration' }),
+      ],
+    });
+    expect(getAutotradeDashboard().edgeLeakSummary?.findings).toBe(3);
+    // The stored result keeps every finding for the full table.
+    expect(getLastEdgeLeakScan()?.result.findings).toHaveLength(5);
   });
 });
 

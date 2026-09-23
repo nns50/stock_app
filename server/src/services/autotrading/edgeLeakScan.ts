@@ -185,6 +185,10 @@ export interface DimensionReport {
 export interface ScanFinding {
   id: string;
   kind: 'execution' | 'configuration';
+  /** An execution finding's nature (ExecutionNature). Absent on a
+   *  configuration finding, and on an execution finding from a scan persisted
+   *  before 2026-09-23, which both read as needing action. */
+  nature?: ExecutionNature;
   /** For an execution finding: when the class was last seen, and how many
    *  sessions ago. Null on a configuration finding, which is a state rather
    *  than an occurrence. */
@@ -196,11 +200,53 @@ export interface ScanFinding {
   lever: LeakLever | null;
 }
 
+/**
+ * What an execution occurrence IS, which decides who acts on it (2026-09-23).
+ *
+ *  - `defect`: the app did something wrong, or failed to do something it
+ *    decided. A fix in the code. The default.
+ *  - `operator`: the operator's own action, which the app recorded correctly —
+ *    a hand close in Webull re-booked at the operator's fill, a kill switch
+ *    holding the sweep while they trade by hand. Nothing to fix.
+ *  - `control`: a risk control, or a deliberate stand-aside, doing its job —
+ *    a daily halt, the give-back guard, a re-price that waited out a partial
+ *    fill. Nothing to fix either; the review rule reads the halts.
+ *
+ * Every occurrence stays a finding, so the scan's table is still the whole
+ * record. But only a `defect` is counted as one: the tune advisor used to rank
+ * each of these as "an execution defect — root-cause it and fix the path",
+ * and on 2026-09-23 its headline read "5 execution defect(s) outrank
+ * everything measurable" with the operator's own three hand sales as one of
+ * the five.
+ */
+export type ExecutionNature = 'defect' | 'operator' | 'control';
+
+/** What each nature asks of the reader, as the finding's lever says it. */
+const EXECUTION_LEVER_DETAIL: Record<ExecutionNature, string> = {
+  defect: 'An execution failure is a defect to fix, not a setting to change.',
+  operator: 'Your own action, recorded as it happened. Nothing to fix; listed so the record is complete.',
+  control: 'A control doing its job. Nothing to fix; the review rule reads the halts from the daily results.',
+};
+
+/**
+ * Does this finding ask for action? A configuration finding always does, and
+ * an execution finding does when it is a defect — or names no nature, which a
+ * scan persisted before 2026-09-23 does not. The ONE test both the persisted
+ * count (the Auto page's "N findings") and the tune advisor read, so the two
+ * cannot disagree about what a finding is.
+ */
+export function findingNeedsAction(f: Pick<ScanFinding, 'kind' | 'nature'>): boolean {
+  return f.kind !== 'execution' || f.nature === undefined || f.nature === 'defect';
+}
+
 /** One class of execution occurrence, as counted from the journal. */
 export interface ExecutionOccurrence {
   action: string;
   count: number;
   detail?: string;
+  /** Who acts on it. Optional so a caller building occurrences by hand (the
+   *  tests, an older persisted scan) reads as `defect`, the old behaviour. */
+  nature?: ExecutionNature;
   /**
    * The most recent session this class occurred on, and how many sessions ago
    * that was (0 = the latest session in the window).
@@ -1494,6 +1540,7 @@ export function runEdgeLeakScan(input: EdgeLeakScanInput): EdgeLeakScanResult {
     ...input.execution.map((e): ScanFinding => ({
       id: `execution:${e.action}`,
       kind: 'execution',
+      nature: e.nature ?? 'defect',
       label: e.action,
       count: e.count,
       lastSeenEtDate: e.lastSeenEtDate ?? null,
@@ -1506,7 +1553,7 @@ export function runEdgeLeakScan(input: EdgeLeakScanInput): EdgeLeakScanResult {
         field: null,
         value: null,
         direction: 'safe',
-        detail: 'An execution failure is a defect to fix, not a setting to change.',
+        detail: EXECUTION_LEVER_DETAIL[e.nature ?? 'defect'],
       },
     })),
     ...slippageFinding(input.entrySlippagePct, input.entryLimitBufferPct),
