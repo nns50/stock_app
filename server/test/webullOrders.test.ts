@@ -18,6 +18,7 @@ import {
   protectiveBracketIntent,
   webullOrderDetail,
   parseBrokerOptionFills,
+  parseBrokerEquityFills,
 } from '../src/providers/webull/orders';
 import type { WebullOpenOrder } from '../src/providers/webull/orders';
 import type { OrderIntent } from '../src/services/trading/guardrails';
@@ -1502,5 +1503,81 @@ describe('webullOrderDetail', () => {
     cfg();
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(reply({ msg: 'boom' }, 500));
     expect(await webullOrderDetail('ACC1', 'CID-SHOP')).toMatchObject({ ok: false, found: false, error: 'boom' });
+  });
+});
+
+describe('parseBrokerEquityFills', () => {
+  // The shapes the history returned on 2026-09-21: a plain sell (SMCI's
+  // stagnation close), a bracket's filled stop leg (COIN), its cancelled
+  // sibling, and an option, each its own envelope with combo_type on it.
+  const env = (combo: string, order: Record<string, unknown>) => ({
+    client_order_id: order.client_order_id,
+    combo_type: combo,
+    combo_order_id: 'C',
+    orders: [order],
+  });
+  const smci = env('NORMAL', {
+    client_order_id: 'f2b2e47c',
+    symbol: 'SMCI',
+    side: 'SELL',
+    status: 'FILLED',
+    instrument_type: 'EQUITY',
+    filled_quantity: '373',
+    filled_price: '40.90',
+    filled_time: '1790005419217',
+    filled_time_at: '2026-09-21T15:43:39.217Z',
+  });
+  const coinStop = env('STOP_LOSS', {
+    client_order_id: '8db1d316',
+    symbol: 'COIN',
+    side: 'SELL',
+    status: 'FILLED',
+    instrument_type: 'EQUITY',
+    order_type: 'STOP_LOSS',
+    filled_quantity: '161',
+    filled_price: '204.37',
+    filled_time_at: '2026-09-21T13:41:48.045Z',
+  });
+  const coinTarget = env('STOP_PROFIT', {
+    client_order_id: 'caec553a',
+    symbol: 'COIN',
+    side: 'SELL',
+    status: 'CANCELLED',
+    instrument_type: 'EQUITY',
+    filled_quantity: '0',
+  });
+  const option = env('NORMAL', {
+    client_order_id: 'o',
+    symbol: 'NVDA',
+    side: 'SELL',
+    status: 'FILLED',
+    instrument_type: 'OPTION',
+    filled_quantity: '6',
+    filled_price: '0.25',
+    filled_time: '1789999401426',
+  });
+
+  it('reads every filled stock order, with its combo type and time, and skips the rest', () => {
+    expect(parseBrokerEquityFills([smci, coinStop, coinTarget, option])).toEqual([
+      {
+        clientOrderId: 'f2b2e47c',
+        comboType: 'NORMAL',
+        side: 'SELL',
+        symbol: 'SMCI',
+        filledQty: 373,
+        filledPrice: 40.9,
+        filledAt: 1790005419217,
+      },
+      {
+        clientOrderId: '8db1d316',
+        comboType: 'STOP_LOSS',
+        side: 'SELL',
+        symbol: 'COIN',
+        filledQty: 161,
+        filledPrice: 204.37,
+        // No epoch field: the ISO one is read instead.
+        filledAt: Date.parse('2026-09-21T13:41:48.045Z'),
+      },
+    ]);
   });
 });

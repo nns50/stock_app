@@ -2028,7 +2028,14 @@ execution occurrences and configuration mismatches, where any occurrence is one.
 execution findings include the day-level halts (the live and paper drawdown halts, each
 its own finding, and the give-back guard) and any order whose outcome could not be
 resolved. All three were catalogued under journal names nothing writes until
-2026-09-23, so none of them could appear before then.
+2026-09-23, so none of them could appear before then. They also include every exit the
+app had to **correct** from an estimate to a fill: an options close
+(`live_options_exit_corrected`, split into the app's own late-read close and a hand close
+re-booked at the operator's fill) and, since the same date, a stock bracket exit the
+position sync priced at a quote before the reconcile read the leg (`live_exit_corrected`).
+Those matter to sizing, not only to the record: the step-down, the halt and expectancy
+sizing read these rows, and one such estimate (COIN, 2026-09-21) turned a loss into a win
+and sent the next entry in at full size.
 
 One configuration finding is a standing re-fit rather than a mismatch (2026-09-19). The
 live score floor was raised from 72 to 81 when pace scoring went on, as the pace-scored

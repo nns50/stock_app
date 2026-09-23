@@ -2358,8 +2358,27 @@ because the loop is the only caller that is always flat by the bell, so it is
   (**`live_options_exit_corrected`**, `source: broker_history`). It re-records the affected
   day on the Results calendar. Webull keeps seven days of order history, so a hand close
   older than that stays at its estimate. So does a sale that does not add up to the position
-  (you sold part, or traded the same contract again), and so does a spread. Stock hand
-  closes are still booked at a real-time quote.
+  (you sold part, or traded the same contract again), and so does a spread.
+  **A stock stop or target that fills is booked at its fill** (since 2026-09-23). When a
+  bracket leg fills, the order check reads the fill from Webull's order lists, and those show
+  a filled leg about two minutes late. Meanwhile the position check sees the shares gone. It
+  now waits at least **four minutes** from the first miss (and four checks) before pricing
+  the close itself. It used to wait four checks. But two checks run each minute (the loop's
+  own and the background Webull sync under Settings), so on 2026-09-21 it booked COIN's
+  breakeven stop, a $3.22 loss filled at $204.37, as a `manual` +$105 win at a $205.05 quote.
+  The step-down counts losing trades in a row from these rows, so the next entry went in at
+  full size. If a close is still booked from a quote, the app reads that position's bracket
+  from Webull on the next cycle, then every 15 minutes. Once Webull shows the leg filled, it
+  rewrites the exit to that leg's price and to `stop` or `target`
+  (**`live_exit_corrected`** on Recent activity), and re-records the day on the Results
+  calendar. The same seven-day window applies.
+  **A stock you sell by hand in Webull is booked at your fill**, the same way as an option.
+  When the app's bracket for that position finished with no leg filled (you cancelled it
+  and sold), the app looks in Webull's order history for your own sale of that stock since
+  the entry, and rewrites the exit to it. The reason stays `manual`, and the row says
+  `source: broker_history`. It keeps checking through the day of the close, because the
+  history can lag a sale. Sales that do not add up to the position (you sold part, or
+  traded the same stock again) leave the quote in place.
   A timed stock close or an options close first seen on a later day than it was placed
   (after an outage, say) is booked on the day its order was placed. Both are day orders, which
   can only fill on the day they were placed.

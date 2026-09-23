@@ -626,7 +626,15 @@ export function addExit(positionId: number, input: ExitInput): Position | undefi
  *
  * Returns the refreshed position, or undefined if the exit id is unknown.
  */
-export function correctExitPrice(exitId: number, exitPrice: number, notes: string): Position | undefined {
+export function correctExitPrice(
+  exitId: number,
+  exitPrice: number,
+  notes: string,
+  /** The reason the broker's fill proves (which bracket leg filled). Left
+   *  unchanged when omitted. Like the price, a fact about the same event, so
+   *  it stays inside this function's narrow remit. */
+  exitReason?: PositionExitReason,
+): Position | undefined {
   const row = db.prepare('SELECT position_id FROM position_exits WHERE id = ?').get(exitId) as
     { position_id: number } | undefined;
   if (!row) return undefined;
@@ -635,10 +643,69 @@ export function correctExitPrice(exitId: number, exitPrice: number, notes: strin
   // and kept in one transaction with the price update for the same
   // all-or-nothing reason as addExit.
   db.transaction(() => {
-    db.prepare('UPDATE position_exits SET exit_price = ?, notes = ? WHERE id = ?').run(exitPrice, notes, exitId);
+    db.prepare(
+      'UPDATE position_exits SET exit_price = ?, notes = ?, exit_reason = COALESCE(?, exit_reason) WHERE id = ?',
+    ).run(exitPrice, notes, exitReason ?? null, exitId);
     recomputeStatus(row.position_id);
   })();
   return getPosition(row.position_id);
+}
+
+/**
+ * How the Webull position sync marks an exit it had to PRICE ITSELF (a quote,
+ * not a fill). providers/webull/positions.ts builds its note from this, and the
+ * candidate query below matches on it, so the two cannot drift apart.
+ */
+export const SYNC_ESTIMATE_NOTE_PREFIX =
+  'Auto-closed via Webull sync — no longer held at the broker. Exit price is an ESTIMATE';
+
+export interface SyncEstimatedExit {
+  exitId: number;
+  positionId: number;
+  symbol: string;
+  /** Quantity this exit row booked. */
+  quantity: number;
+  /** The estimated price currently recorded. */
+  exitPrice: number;
+  exitDate: string;
+  exitReason: PositionExitReason | null;
+  /** The position's entry order: its client_order_id reaches the broker's combo. */
+  sourceIntentId: number;
+  positionAccountId: string | null;
+}
+
+/**
+ * Exits the Webull position sync recorded at an estimated price, for positions
+ * whose ENTRY order is known. One query for both readers: the automatic pass in
+ * the loop (services/autotrading/stockExitCorrection.ts, which passes `since`,
+ * the broker history's window) and the one-shot CLI (scripts/backfillExitPrices.ts).
+ * Not limited to autotrade's own rows: any position the app placed through a
+ * bracket has a combo the broker can answer for, and a corrected price is
+ * right for the journal whoever placed the order.
+ */
+export function listSyncEstimatedExits(filter: { since?: string; accountId?: string } = {}): SyncEstimatedExit[] {
+  const clauses = ['e.notes LIKE ?', 'p.source_intent_id IS NOT NULL'];
+  const params: unknown[] = [`${SYNC_ESTIMATE_NOTE_PREFIX}%`];
+  if (filter.since !== undefined) {
+    clauses.push('e.exit_date >= ?');
+    params.push(filter.since);
+  }
+  if (filter.accountId !== undefined) {
+    clauses.push('p.account_id = ?');
+    params.push(filter.accountId);
+  }
+  const rows = db
+    .prepare(
+      `SELECT e.id AS exitId, e.position_id AS positionId, p.symbol, e.quantity,
+              e.exit_price AS exitPrice, e.exit_date AS exitDate, e.exit_reason AS exitReason,
+              p.source_intent_id AS sourceIntentId, p.account_id AS positionAccountId
+         FROM position_exits e
+         JOIN positions p ON p.id = e.position_id
+        WHERE ${clauses.join(' AND ')}
+        ORDER BY e.exit_date ASC, e.id ASC`,
+    )
+    .all(...params) as SyncEstimatedExit[];
+  return rows;
 }
 
 export function deleteExit(exitId: number): boolean {

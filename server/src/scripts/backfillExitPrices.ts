@@ -1,5 +1,5 @@
-import { initDb, db } from '../db';
-import { correctExitPrice } from '../db/positions';
+import { initDb } from '../db';
+import { correctExitPrice, listSyncEstimatedExits } from '../db/positions';
 import { getIntent } from '../db/orders';
 import { getAutotradeConfig } from '../db/autotradeConfig';
 import { webullConfigured } from '../providers/webull/account';
@@ -58,18 +58,9 @@ interface CandidateRow extends RecordedExit {
  * skipped rather than being excluded by a guess up front.
  */
 function candidates(): CandidateRow[] {
-  return db
-    .prepare(
-      `SELECT e.id AS exitId, e.position_id AS positionId, p.symbol, e.quantity,
-              e.exit_price AS exitPrice, e.exit_date AS exitDate,
-              p.source_intent_id AS sourceIntentId, p.account_id AS positionAccountId
-         FROM position_exits e
-         JOIN positions p ON p.id = e.position_id
-        WHERE e.notes LIKE 'Auto-closed via Webull sync%'
-          AND p.source_intent_id IS NOT NULL
-        ORDER BY e.exit_date ASC, e.id ASC`,
-    )
-    .all() as CandidateRow[];
+  // The same query the loop's automatic pass reads (stockExitCorrection.ts),
+  // without its seven-day window: this CLI reports the old rows too, as final.
+  return listSyncEstimatedExits();
 }
 
 function fmt(n: number): string {
@@ -169,7 +160,8 @@ async function main(): Promise<void> {
         `${row.exitPrice} → ${decision.realPrice}   P&L ${fmt(decision.pnlDelta)}`,
     );
 
-    if (apply) correctExitPrice(row.exitId, decision.realPrice, correctionNote(row.exitPrice));
+    if (apply)
+      correctExitPrice(row.exitId, decision.realPrice, correctionNote(row.exitPrice), decision.reason ?? undefined);
   }
 
   if (skips.length) {
