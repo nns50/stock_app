@@ -928,6 +928,39 @@ describe('the execution findings — any occurrence is one', () => {
     expect(byAction.has('live_options_exit_reprice_deferred')).toBe(false);
   });
 
+  it('stops counting a skipped exit correction once a later pass corrected that exit', () => {
+    // HOOD and MRNA, 2026-09-23: skipped at 01:42 because a paging overlap
+    // showed each filled leg twice, then corrected by the fix. A skip the next
+    // pass overcame is history, not an open "stays an estimate" finding.
+    const now = etDateTimeToMs('2026-09-23', '17:00') as number;
+    const at = etDateTimeToMs('2026-09-23', '01:42') as number;
+    db.prepare(
+      `INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) VALUES
+       ('HOOD','execution','live_exit_correction_skipped','{"exitId":661,"cause":"ambiguous_legs"}',NULL,?),
+       ('MRNA','execution','live_exit_correction_skipped','{"exitId":689,"cause":"ambiguous_legs"}',NULL,?),
+       ('HOOD','execution','live_exit_corrected','{"exitId":661,"source":"bracket_leg"}',NULL,?)`,
+    ).run(at, at + 1, at + 60_000);
+
+    const byAction = new Map(collectExecutionFindings(now).map((f) => [f.action, f.count]));
+    // HOOD's skip is superseded by its correction; MRNA's still stands.
+    expect(byAction.get('live_exit_correction_skipped')).toBe(1);
+    expect(byAction.get('live_exit_corrected|bracket_leg')).toBe(1);
+  });
+
+  it('keeps a skip that came AFTER a correction of the same exit', () => {
+    // Order matters: a later skip is news, whatever happened before it.
+    const now = etDateTimeToMs('2026-09-23', '17:00') as number;
+    const at = etDateTimeToMs('2026-09-23', '01:42') as number;
+    db.prepare(
+      `INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) VALUES
+       ('HOOD','execution','live_exit_corrected','{"exitId":661,"source":"bracket_leg"}',NULL,?),
+       ('HOOD','execution','live_exit_correction_skipped','{"exitId":661,"cause":"combo_working"}',NULL,?)`,
+    ).run(at, at + 60_000);
+
+    const byAction = new Map(collectExecutionFindings(now).map((f) => [f.action, f.count]));
+    expect(byAction.get('live_exit_correction_skipped|combo_working')).toBe(1);
+  });
+
   it('keeps an occurrence whose reason is missing rather than dropping it', () => {
     // An occurrence we cannot classify is still an occurrence; losing it
     // silently is the worse failure.

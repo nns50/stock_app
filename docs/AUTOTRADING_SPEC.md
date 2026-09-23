@@ -13296,3 +13296,47 @@ estimate still in the record. On that pass:
 - **HOOD #650** and **MRNA #680** must each be corrected, confirmed, or carry a skip row
   with its cause.
 - No estimate in the seven-day window may remain without one of the three.
+
+## 2026-09-23 (eleventh) — overlapping history pages showed one filled leg twice
+
+**Result of #645's deploy (first pass 01:42 ET).** The pre-committed check held for LITE and
+turned up a new defect for the other two.
+
+- **LITE #661** was corrected as predicted: `source: outside_bracket`, reason `stop`, $969.88
+  → $972.00 on the bracket placed by hand. Its P&L moved from −$58.17 to −$13.65.
+- **HOOD #650** and **MRNA #680** were skipped with cause `ambiguous_legs`, "2 filled exit
+  legs". The skip rows' own evidence showed why: each combo's three legs appear **twice**,
+  identically. HOOD's take-profit filled once, 179 @ $117.56. MRNA's stop filled once, 23 @
+  $179.67: its trailing stop, booked by the sync as a $181.735 `manual` win.
+
+The skip row did its job on its first deploy: before it, these two were left at their quotes
+with no statement of any kind.
+
+**Cause.** `fetchFullOrderList` walks the order history in pages of 100 with a
+`last_client_order_id` cursor. Its only guard against repeats catches a page replayed from its
+first envelope. On the deployed account two consecutive pages both carried HOOD's bracket, and
+two carried MRNA's. `collectLegs` gathers every envelope sharing a combo id, so every leg came
+back twice and the one filled exit leg counted as two. The same repeat would double-count a
+sale for both hand-close matchers (stock and options) and push their sum past the position.
+
+**Change.**
+
+- While walking pages, an envelope whose `client_order_id` was already taken replaces the
+  earlier copy in its original position. An order is one envelope with its own id, so a repeat
+  is the same order again, and the later copy was read after the first.
+- A `live_exit_correction_skipped` row stops counting as a scan finding once a later
+  `live_exit_corrected` row carries the same `exitId`. HOOD's and MRNA's 01:42 rows are
+  history once the fix corrects them. A skip made **after** a correction still counts.
+
+**Tested.** HOOD's bracket spread across overlapping pages reads back as three legs, with the
+take-profit taken from the later copy. `decideExitCorrection` on those legs corrects the
+$117.5999 quote to $117.56 `target`. Restoring the old page walk fails the case. The scan drops
+a skip its exit's later correction superseded and keeps one made after it.
+
+**Pre-committed check.** The deploy restarts the process, so the first pass re-reads both
+estimates:
+
+- **HOOD #650** must be corrected to $117.56 `target` (P&L +$418.84 → +$411.70, −$7.14).
+- **MRNA #680** must be corrected to $179.67 `stop` (P&L +$49.34 → +$1.84, about −$47.49).
+- 09-18 and 09-22 must be re-recorded by those amounts.
+- The scan's `live_exit_correction_skipped` finding must then read zero.

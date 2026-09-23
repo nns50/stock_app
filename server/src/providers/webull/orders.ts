@@ -896,6 +896,8 @@ interface OrderListFetch {
  */
 async function fetchFullOrderList(accountId: string, path: string): Promise<OrderListFetch> {
   const envelopes: OrderEnvelope[] = [];
+  /** client_order_id → its index in `envelopes` (see PAGES OVERLAP below). */
+  const indexById = new Map<string, number>();
   let cursor: string | undefined;
   let prevFirst: string | undefined;
   for (let page = 0; page < ORDER_LIST_MAX_PAGES; page++) {
@@ -909,7 +911,25 @@ async function fetchFullOrderList(accountId: string, path: string): Promise<Orde
     // pushing duplicates (duplicate legs would break combo-leg counting).
     if (page > 0 && first !== undefined && first === prevFirst) break;
     prevFirst = first;
-    envelopes.push(...batch);
+    // PAGES OVERLAP (2026-09-23). The cursor does not guarantee disjoint pages.
+    // On the deployed account two consecutive history pages both carried a
+    // whole bracket (HOOD 09-18, MRNA 09-22), so every leg of it was read
+    // twice: its one filled exit leg counted as two, and the exit correction
+    // refused it as ambiguous. The same repeat double-counts a sale for the
+    // hand-close matchers. The check above only catches a page replayed from
+    // its first envelope. An order is one envelope with its own
+    // client_order_id, so a repeat is the same order again: it keeps its first
+    // position and takes the later copy, which was read after the first.
+    for (const e of batch) {
+      const id = typeof e?.client_order_id === 'string' && e.client_order_id.length > 0 ? e.client_order_id : null;
+      const at = id === null ? undefined : indexById.get(id);
+      if (at !== undefined) {
+        envelopes[at] = e;
+        continue;
+      }
+      if (id !== null) indexById.set(id, envelopes.length);
+      envelopes.push(e);
+    }
     if (batch.length < ORDER_LIST_PAGE_SIZE) break;
     const last = batch[batch.length - 1]?.client_order_id;
     // No cursor to advance with — stop with what we have rather than loop.

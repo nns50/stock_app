@@ -82,6 +82,11 @@ export const EXECUTION_ACTIONS: {
    *  for an action that carries more than one severity. */
   splitOn?: string;
   labelFor?: Record<string, string>;
+  /** A row of this action stops counting once a LATER row of `action` carries
+   *  the same `key` in its detail: a skip that a later pass overcame is not an
+   *  open finding, and reporting it for ten more sessions would send the reader
+   *  after something already fixed. */
+  supersededBy?: { action: string; key: string };
 }[] = [
   { action: 'live_options_exit_failed', label: 'An options exit could not be placed' },
   { action: 'live_options_stale_exit_unjudgeable', label: 'An options exit could not be priced' },
@@ -171,6 +176,10 @@ export const EXECUTION_ACTIONS: {
     action: 'live_exit_correction_skipped',
     label: 'A stock exit the position sync priced at a quote could not be corrected and stays an estimate',
     splitOn: 'cause',
+    // HOOD and MRNA were skipped at 01:42 on 2026-09-23 because a paging
+    // overlap showed each filled leg twice; the fix corrected both on its
+    // first pass. Their skip rows are history, not open findings.
+    supersededBy: { action: 'live_exit_corrected', key: 'exitId' },
     labelFor: {
       no_matching_sale:
         "A stock exit closed outside its bracket matched no set of fills in the broker's history, and stays an estimate",
@@ -553,11 +562,30 @@ export function collectExecutionFindings(now: number): ExecutionOccurrence[] {
   }
   const counts = new Map<string, number>();
   const lastSeen = new Map<string, string>();
-  for (const e of listAutotradeEventsInWindow({
+  const { events } = listAutotradeEventsInWindow({
     actions: EXECUTION_ACTIONS.map((a) => a.action),
     since,
-  }).events) {
+  });
+  // The latest row of each superseding action, by the value of its key.
+  const supersededAt = new Map<string, number>();
+  for (const spec of EXECUTION_ACTIONS) {
+    if (spec.supersededBy === undefined) continue;
+    const { action, key } = spec.supersededBy;
+    for (const e of events) {
+      if (e.action !== action) continue;
+      const v = detailKey(e.detail, key);
+      if (v === null) continue;
+      const k = `${action}|${v}`;
+      supersededAt.set(k, Math.max(supersededAt.get(k) ?? 0, e.createdAt));
+    }
+  }
+  for (const e of events) {
     const spec = EXECUTION_ACTIONS.find((a) => a.action === e.action);
+    if (spec?.supersededBy !== undefined) {
+      const v = detailKey(e.detail, spec.supersededBy.key);
+      const later = v === null ? undefined : supersededAt.get(`${spec.supersededBy.action}|${v}`);
+      if (later !== undefined && later >= e.createdAt) continue;
+    }
     let key = e.action;
     if (spec?.splitOn !== undefined) {
       // An unparseable or absent detail falls back to the unsplit action
@@ -595,6 +623,20 @@ export function collectExecutionFindings(now: number): ExecutionOccurrence[] {
     }
   }
   return out;
+}
+
+/** One key out of a journal row's JSON `detail` as a string, numbers included
+ *  (an id), or null when it is absent or the detail does not parse. */
+function detailKey(detail: string | null, key: string): string | null {
+  if (detail === null) return null;
+  try {
+    const parsed: unknown = JSON.parse(detail);
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    const v = (parsed as Record<string, unknown>)[key];
+    return typeof v === 'string' || (typeof v === 'number' && Number.isFinite(v)) ? String(v) : null;
+  } catch {
+    return null;
+  }
 }
 
 /** One key out of a journal row's JSON `detail`, or null when it is absent or
