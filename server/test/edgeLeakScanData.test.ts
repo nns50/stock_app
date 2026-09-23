@@ -30,6 +30,7 @@ import { seedClosedAutotradeSessions, weekdaysEndingAt } from './helpers/autotra
 import { etDateTimeToMs } from '../src/util/marketDate';
 import { writeDailyHaltMarker } from '../src/services/autotrading/dailyHaltMarker';
 import { readFileSync } from 'node:fs';
+import { UNPROTECTED_REPORT_STATES } from '../src/services/autotrading/unprotectedReport';
 import { join } from 'node:path';
 import { computeRiskSizing } from '../src/services/riskSizing';
 import { maxAffordablePremiumPerShare, riskPctUpperBound } from '../src/services/autotrading/optionsAffordability';
@@ -927,6 +928,45 @@ describe('the execution findings — any occurrence is one', () => {
     expect(byAction.get('live_options_exit_reprice_deferred|daily_cap')?.detail).toMatch(/still resting/);
     // Nothing is left under the unsplit action, so a reader cannot double-count.
     expect(byAction.has('live_options_exit_reprice_deferred')).toBe(false);
+  });
+
+  it('splits an unprotected position by the state the sweep wrote it in', () => {
+    // A kill-switch row is the operator trading the position by hand, which the
+    // sweep reports on purpose. Under one label it reads as a stop that failed.
+    // A row from before the state field existed keeps the plain label.
+    const now = etDateTimeToMs('2026-09-23', '17:00') as number;
+    const at = etDateTimeToMs('2026-09-23', '10:00') as number;
+    db.prepare(
+      `INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) VALUES
+       ('AAPL','execution','live_position_unprotected','{"positionId":1,"state":"kill_switch"}',NULL,?),
+       ('MSFT','execution','live_position_unprotected','{"positionId":2,"state":"kill_switch"}',NULL,?),
+       ('AAPL','execution','live_position_unprotected','{"positionId":1,"state":"naked"}',NULL,?),
+       ('NVDA','execution','live_position_unprotected','{"positionId":3,"heldByKillSwitch":true}',NULL,?)`,
+    ).run(at, at + 1, at + 2, at + 3);
+
+    const byAction = new Map(collectExecutionFindings(now).map((f) => [f.action, f]));
+    expect(byAction.get('live_position_unprotected|kill_switch')?.count).toBe(2);
+    expect(byAction.get('live_position_unprotected|kill_switch')?.detail).toMatch(/expected when trading by hand/);
+    expect(byAction.get('live_position_unprotected|naked')?.count).toBe(1);
+    expect(byAction.get('live_position_unprotected|naked')?.detail).toMatch(/confirmed held with no resting stop/);
+    expect(byAction.get('live_position_unprotected')?.count).toBe(1);
+  });
+
+  it('labels every state the protection sweep can write', () => {
+    // The sweep's vocabulary and the scan's labels are one list: a state the
+    // sweep writes that the scan has no label for would count under the plain
+    // label and read as a naked position.
+    const now = etDateTimeToMs('2026-09-23', '17:00') as number;
+    const at = etDateTimeToMs('2026-09-23', '10:00') as number;
+    const insert = db.prepare(
+      `INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at)
+       VALUES ('AAPL','execution','live_position_unprotected',?,NULL,?)`,
+    );
+    UNPROTECTED_REPORT_STATES.forEach((state, i) => insert.run(JSON.stringify({ positionId: 1, state }), at + i));
+
+    const actions = collectExecutionFindings(now).map((f) => f.action);
+    for (const state of UNPROTECTED_REPORT_STATES) expect(actions).toContain(`live_position_unprotected|${state}`);
+    expect(actions).not.toContain('live_position_unprotected');
   });
 
   it('stops counting a skipped exit correction once a later pass corrected that exit', () => {

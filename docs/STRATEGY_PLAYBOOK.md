@@ -2038,7 +2038,11 @@ execution occurrences and configuration mismatches, where any occurrence is one.
 execution findings include the day-level halts (the live and paper drawdown halts, each
 its own finding, and the give-back guard) and any order whose outcome could not be
 resolved. All three were catalogued under journal names nothing writes until
-2026-09-23, so none of them could appear before then. They also include every exit the
+2026-09-23, so none of them could appear before then. A position with **no resting stop**
+(`live_position_unprotected`) is split by the state the sweep found it in: held by a kill
+switch (you trading it by hand, which is expected), a close of the app's already working,
+holdings unconfirmed, or confirmed naked. Only the last is a stop that failed, and it is
+the one to act on. Rows from before 2026-09-23 name no state and keep the plain label. They also include every exit the
 app had to **correct** from an estimate to a fill: an options close
 (`live_options_exit_corrected`, split into the app's own late-read close and a hand close
 re-booked at the operator's fill) and, since the same date, a stock bracket exit the

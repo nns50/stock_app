@@ -13599,3 +13599,57 @@ paper is a watch whose lever is code: a live-only floor on the stop width in cen
 
 **Check.** The first scan after the deploy lists `stopWidth` among its dimensions, with
 the live `<$0.30` bucket at 9 trades, verdict `ok`.
+
+## 2026-09-23 (seventeenth) — the protection alarm's own two blind spots
+
+An adversarial review of PR #637, the first two sections of this date (the protective
+re-arm, the kill switch, the take-profit cancel, the working-close rule, the ratchet and
+Order Detail), passed the side fix and the kill-switch coverage, and found two ways the
+naked-position alarm could go quiet on a position that was naked. Both are in how the
+alarm reports, not in what it places. Both are fixed here.
+
+**1. A halt used up the day's page.** The `live_position_unprotected` row is the page
+(`liveFailureAlert.ts`'s ambiguity actions), and the sweep wrote it once per position per
+ET day whatever it said. Since the first section a kill switch writes one that reads "if
+you are managing this position by hand, this is expected". Release the switch, have the
+re-arm refused (or the breach close fail, when the price is through the stop), and nothing
+more was written or sent: the position sat naked until the next ET day. The row now names its **state**
+(`kill_switch`, `exit_working`, `unconfirmed`, `naked`,
+`services/autotrading/unprotectedReport.ts`) and the sweep writes once per position per
+state per day. A row from before this deploy is read by the flags it does carry
+(`heldByKillSwitch`, `exitWorking`, `heldAtBroker`), so today's earlier rows suppress only
+their own state.
+
+**2. A failed holdings read looked like a closed position.** `webullAccountState` answers
+`ok` with a quantity of 0 when the balance call succeeds and the positions call fails,
+flagging `positionsUnavailable`. The sweep read 0 as "closed, awaiting the reconcile" and
+paged nobody, for as long as the positions call kept failing. It now reads that answer as
+unknown: nothing is placed, cancelled or closed, and the page goes out as `unconfirmed`.
+
+The leak scan splits the action by the same states, from the same list (`satisfies
+Record<UnprotectedReportState, string>`), so the operator's hand trading under the kill
+switch no longer counts as a stop that failed. Rows before this deploy name no state and
+keep the plain label.
+
+**Found and NOT changed here, because each changes what orders the app sends or cancels
+(the operator's word, as for the first section):**
+
+- The take-profit cancel classifies a plain LIMIT on the exit side as the bracket's
+  take-profit (`classifyExitLeg` falls back to the order type), so with no stop resting it
+  cancels an exit the operator placed by hand once the switch is released, then re-arms
+  the app's bracket. Proposed: cancel only a leg whose `combo_type` is `STOP_PROFIT`, and
+  page on anything else.
+- `webullPlaceStandaloneBracket` does not set `nonIdempotent`, so a timed-out re-arm is
+  re-sent with the same body, and the retry's answer replaces the ambiguity the caller
+  relies on. Proposed: set it, as `webullPlaceOrder` does.
+- After a take-profit cancel, the next sweep sizes the pair from the holdings it reads,
+  without asking whether the cancelled leg filled first.
+- Latent while their settings are off: after a live scale-out partial fills, the position
+  reads as "close working" for the rest of its life (the sweep, the ratchet and the timed
+  exits all skip it); and a short, which the broker reports as a negative holding, is never
+  re-armed.
+
+**Check.** On the first session after the deploy, every new `live_position_unprotected`
+row carries `state`, and the scan's execution findings show the state split. A kill-switch
+halt that ends with a failed re-arm shows two rows for the position that day,
+`kill_switch` then `naked`.
