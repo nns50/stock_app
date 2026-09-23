@@ -39,6 +39,49 @@ export interface SlippageRow extends SlippageInput {
   pct: number;
 }
 
+/** The fields of an order that decide whether its limit is a fair reference. */
+export interface SlippageIntentShape {
+  assetKind: 'stock' | 'option';
+  openClose: 'open' | 'close';
+  isBracket: boolean;
+  limitPrice: number | null;
+}
+
+/**
+ * Whether a fill can be judged against this order's limit at all (2026-09-23).
+ *
+ * Two readers measured fills against the wrong order and reported the result as
+ * execution:
+ *
+ *   - An ENTRY whose linked order is a different instrument. On 2026-09-23 the
+ *     MRNA stock entry order was linked to the MRNA CALL's row, so a $2.84
+ *     option fill was measured against a $187 share limit: -98.5%, in a mean
+ *     that the leak scan reads as "fills land 0.85% better than the quote" on
+ *     40 sessions of entries. That one row held the slippage alarm off for all
+ *     of them.
+ *   - An EXIT booked from a bracket LEG. A leg fill is booked against the
+ *     bracket's own order, which is the ENTRY (materializeExitFill), so its
+ *     "limit" is the entry price and the "slippage" is the trade's own move:
+ *     DELL's +4.6% run to its target on 2026-09-02 read as 4.6% of execution
+ *     cost. 35 of 106 exit rows were this. A resting leg has no marketable
+ *     reference anyway — a take-profit fills at its price or better, and a
+ *     stop's overrun is its own report (/journal/stop-overrun).
+ *
+ * So an entry counts only against an OPENING order of the same instrument, and
+ * an exit only against a CLOSING order of the same instrument that the app
+ * priced itself (a time exit, a stagnation close, a hand close from the app) —
+ * never against a bracket.
+ */
+export function limitIsReference(
+  kind: 'entry' | 'exit',
+  positionAssetType: 'stock' | 'option',
+  intent: SlippageIntentShape,
+): boolean {
+  if (intent.limitPrice === null) return false;
+  if (intent.assetKind !== positionAssetType) return false;
+  return kind === 'entry' ? intent.openClose === 'open' : intent.openClose === 'close' && !intent.isBracket;
+}
+
 export function computeSlippage(input: SlippageInput): SlippageRow {
   const perUnit = input.side === 'buy' ? input.fillPrice - input.limitPrice : input.limitPrice - input.fillPrice;
   const totalUsd = perUnit * input.quantity * input.multiplier;

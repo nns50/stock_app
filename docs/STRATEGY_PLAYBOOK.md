@@ -2094,7 +2094,13 @@ book" read differently.
 aggregate · score band · VWAP extension · % of session range · exit reason · hold time ·
 symbol (n ≥ 5) · sector · weekday · ML regime · asset · position size · stop width per
 share · market direction at entry (with, against or mixed, from the `market_direction_read`
-rows in force at the entry; see "Don't buy into a falling market" above). Plus three
+rows in force at the entry; see "Don't buy into a falling market" above). **Exit reason and hold time
+are reported, never judged** (2026-09-23): both are known only once the trade has ended,
+so a bucket of them is chosen by the outcome. A stop exit loses by construction, and on
+2026-09-23 "exit reason = stop" cleared the bar (31 live stop exits at −0.27R, paper
+agreeing) and was priced by the tune advisor at +1.06% a day for a lever that does not
+exist. Their verdict is `descriptive`. The bar is for what the book chooses, which trades
+to take. The exit replay answers what a different exit would have kept. Plus three
 non-behavioural groups: the **day level** (goal reached on N of M active sessions, the
 1R comparison, the red-day decomposition), the **attribution** (paper-versus-live on the
 same decision, and why the live book skipped what paper took), and **findings** —

@@ -744,6 +744,30 @@ describe('recommendations that are code, not settings', () => {
     expect(rec?.action.kind).toBe('research');
     expect(rec?.action.detail).toMatch(/is not always the reason that caused the loss/);
   });
+
+  // 2026-09-23: this line priced the whole "stop" driver as a +0.93% day lift,
+  // and with the scan's exit-reason "leak" it made up all 1.99 points the
+  // headline said everything measurable adds. An exit reason is how a losing
+  // trade ENDED, not a setting that removes its loss.
+  it('carries no day-% estimate for a red-day driver, so it cannot inflate the headline', () => {
+    const drivers = {
+      scan: scan({
+        dayLevel: {
+          ...scan().dayLevel,
+          redSessions: 6,
+          meanRedSessionR: -1.4,
+          worstSessionR: -3.3,
+          redSessionDrivers: [{ reason: 'stop', totalR: -8, trades: 12 }],
+        },
+      }),
+    };
+    const a = advise(drivers);
+    const rec = a.recommendations.find((r) => r.id === 'edge:red_day_driver:stop');
+    expect(rec).toBeDefined();
+    expect(rec?.expectedDayPctDelta).toBeNull();
+    // The headline is the same with or without the driver.
+    expect(a.headline).toBe(advise().headline);
+  });
 });
 
 describe('the headline can say "this will not get you there"', () => {

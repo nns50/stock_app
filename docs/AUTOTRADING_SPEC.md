@@ -14135,3 +14135,76 @@ on 31% of session minutes and green on 13%, and it flipped about ten times a day
 2. After 20 live refusals, read the attribution class `live_market_direction_skipped`. If
    paper's mean R there has a 95% interval above zero, raise `marketDirectionBreadthPct` to
    70. If it still reads above zero after another 20, turn the gate off. Otherwise keep it.
+
+## 2026-09-23 (twenty-seventh) — three numbers the evening review read wrong
+
+The post-close review on 2026-09-23 read three figures that were wrong at the source.
+None of them moves an order. Each one fed a check that tells the operator whether
+something needs fixing.
+
+**1. The entry-fill check read one option fill against a stock limit.** The MRNA stock
+entry order had been linked to the MRNA call's row that morning. #658 stops a stock order
+adopting an option holding, and the hand correction of the ledger fixed the prices and
+tags, but the order row's `position_id` still pointed at the call. `buildLiveSlippageRows`
+then measured the call's $2.84 fill against the shares' $187 limit: −98.5%. One row was
+enough to move every window.
+
+| Window | `meanEntryBufferConsumedPct` read | Without the row |
+| --- | --- | --- |
+| 1 session | −13.9 | about +0.05 |
+| 10 sessions | −1.93 | about +0.05 |
+| 40 sessions | −0.85 | about +0.05 |
+
+A negative figure means fills landed better than the quote, which a marketable limit
+cannot do on average. The `execution:entry_slippage` finding fires above half the 0.5%
+buffer, so it could not have fired for 40 sessions whatever the fills were.
+
+The fix is on both ends:
+- `getLiveEntryOrderForPosition` answers only for a stock row. It reads the stock sleeve's
+  order table, so a link from it to an option row is a cross-link by definition. That
+  covers every reader of links written before #658: bracket ownership, the Auto-page
+  close, the exit correction, the fill check.
+- The row builder asks whether the order could have produced the fill at all
+  (`slippage.ts`'s `limitIsReference`). An entry counts only against an opening order of
+  the same instrument. That also catches a cross-link carried on `source_intent_id`.
+
+The shares' row (690) has no entry link as a result, so its entry fill is not measured.
+That is one entry in about 110.
+
+**2. The Journal's slippage report measured bracket legs against the entry.** A stop or
+take-profit leg fill is booked against the bracket's own order, which is the entry
+(`materializeExitFill`). The report compared the leg's fill with the ENTRY limit, so the
+"slippage" was the trade's own move. DELL's run to its target on 2026-09-02 read as +4.6%
+of cost. That was true of 35 of 106 exit rows. An exit now counts only against a closing
+order the app priced itself (a time exit, a stagnation close, a close from the app), never
+a bracket.
+
+The route also walked positions on its own, reading `source_intent_id` only, so it missed
+every adopted entry. It now serves the same `buildLiveSlippageRows` the leak scan and the
+per-symbol exclusion read, so none of the three can disagree about which fills count.
+The exclusion read a target fill as cost, and so leaned toward excluding the names whose
+trades worked. It never fired: production has no `auto_tune_symbol_excluded` row, and none
+of the nine current exclusions is slippage-based. It is dormant while `autoTuneEnabled` is
+off.
+
+**3. The leak scan judged a cut chosen by the outcome.** "Exit reason = stop" became a leak
+that evening: 31 live stop exits at −0.27R (95% −0.47…−0.07), paper's 93 at −0.11R. A
+stop exit loses by construction, so the bucket clears the bar on any book that uses stops
+once enough have fired. The tune advisor priced it at +1.06% a day. It priced the
+red-day decomposition's own "stop" driver at +0.93% more. Together those were all of the
+1.99 points its headline said "everything measurable" adds. The fix:
+- Exit reason and hold time, the two cuts known only at the exit, now report their buckets
+  with the verdict `descriptive`. They are never a leak or a watch, and carry no lever.
+  The `DimensionReport` says why (`descriptive`).
+- The advisor's red-day driver stays a research item and carries no estimate.
+- What a different exit would have kept is the exit replay's question.
+
+**Pre-committed check (the first scan after the deploy).**
+- `GET /journal/edge-leaks?sessions=40&book=both&persist=false`:
+  - `attribution.meanEntryBufferConsumedPct` reads between 0 and 0.5, near the +0.05
+    baseline of 2026-09-12. A negative figure means another cross-instrument row is still
+    in the fills.
+  - Neither `exitReason` nor `holdMinutes` appears in `leaks` or `watches`.
+- `GET /journal/slippage`: no exit row whose `side` is the position's opening side.
+- `GET /journal/tune-advice`: no `edge:exitReason:*` recommendation, and every
+  `edge:red_day_driver:*` has `expectedDayPctDelta: null`.

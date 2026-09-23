@@ -962,10 +962,18 @@ tabs of one **Analytics** button (top right) — pick a tab, the report loads on
 - **Execution quality (slippage)** — for each **live-traded** entry/exit that came from an
   order with a limit price, compares the actual **broker fill** to the **limit you set**.
   Positive $ always means it cost you money, whichever side you were on (a buy filled
-  above your limit, or a sell filled below it); sorted worst-first. Only live fills placed
-  through the app's Trade builder count — a pure stop-market fill has no limit to compare
-  against, and a manually logged or imported trade was never a live order at all, so
-  neither is included. A consistent positive bias points at marketable limits or wide
+  above your limit, or a sell filled below it); sorted worst-first. A fill counts only
+  against an order it could have come from (2026-09-23): an **entry** against its own
+  opening order of the **same instrument**, and an **exit** against a **closing order the
+  app priced itself** — a time exit, a stagnation close, a close from the Auto page or the
+  Trade builder. A **bracket leg** (the stop or take-profit that rests at the broker) is
+  left out: its fill is booked against the bracket's own order, which is the entry, so
+  measuring it there reported the trade's own move as execution cost (DELL's run to its
+  target on 2026-09-02 read as +4.6% of "slippage"). A take-profit fills at its price or
+  better, and a stop's overrun has its own report (**Stop overrun**, below). A manually
+  logged or imported trade was never a live order at all, so it is not included either.
+  The same rows feed the edge-leak scan's entry-fill check, so the two can never disagree
+  about which fills count. A consistent positive bias points at marketable limits or wide
   spreads at entry/exit.
   This is **not** the same number as the Auto page's entry *drift* (2026-09-13): slippage
   compares the fill to **your own limit** and so can only be zero or better, while drift
@@ -1008,7 +1016,12 @@ tabs of one **Analytics** button (top right) — pick a tab, the report loads on
   one: a bucket is a **leak** when it has at least 15 trades, its whole 95% interval sits
   below zero, and the **paper book agrees in sign**; **unconfirmed** when paper has fewer
   than 10 trades to say so; a **watch** when it is within 0.05R of the bar with at least
-  10 trades. The paper control is the point of the design — both books see the same
+  10 trades. **Exit reason and hold time are reported but never judged** (2026-09-23):
+  both are only known once a trade has ended, so they describe how trades turned out
+  rather than which to take. A stop exit loses by construction, so "exit reason = stop is
+  losing money" would clear the bar on any book that uses stops. Their buckets come back
+  with their numbers and the verdict `descriptive`, and never count as a leak or a watch.
+  Whether a different exit would have done better is the exit replay's question. The paper control is the point of the design — both books see the same
   signals in the same tick, so a bucket that loses in both is the *decision* (a setting
   fixes it) while one that loses only live is *execution* (code fixes it). Every leak
   carries its **lever**: the exact setting and value that closes it, or the code path when
@@ -3171,6 +3184,13 @@ day is well under its goal, the sum of everything measurable is usually a fracti
 gap, and the advice says so in those words rather than ranking a small thing first. When
 execution defects are open it leads with them: fix what is broken before tuning what is
 merely small.
+
+**The exit that closed the red days is not a number to add** (2026-09-23). The
+recommendation "Red days are driven by … exits" is research, and carries no estimate: an
+exit reason is how a losing trade ended, not a setting that could have removed its loss.
+On 2026-09-23 it was priced at +0.93% a day and, with the leak scan's "exit reason = stop"
+at +1.06%, made up all of the 1.99 points the headline said everything measurable adds.
+Neither is counted now. What a different exit would have kept is the exit replay's number.
 
 **"Open" means it happened in the latest session.** Execution findings are counted over a
 ten-session window, so a defect fixed on Monday is still in the window on Friday. Each one

@@ -2,7 +2,7 @@ import { listPositions, Position } from '../../db/positions';
 import { getIntents } from '../../db/orders';
 import { entryIntentIdForPosition } from '../../db/autotradeLiveOrders';
 import { getProvider } from '../../providers';
-import { computeSlippage, groupSlippageBySymbol, SlippageRow } from '../slippage';
+import { computeSlippage, groupSlippageBySymbol, limitIsReference, SlippageRow } from '../slippage';
 import { computeJournalStats, initialRiskOf, realizedPnlOf } from '../pnl';
 import { aggregateExcursions, excursionForTrade, ExcursionReport, TradeExcursion } from '../excursion';
 import { computeExcursionTune } from './excursionTune';
@@ -55,11 +55,13 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
-/** Every live-traded fill (entry or exit) that traces back to an order with a
- *  persisted limit price — same scope and shape as routes/journal.ts's own
- *  '/slippage' route, batching the order_intents lookup (getIntents) instead
- *  of that route's one-by-one getIntent() calls, since this walks the WHOLE
- *  journal rather than serving a single on-demand request. */
+/** Every live-traded fill (entry or exit) that traces back to an order whose
+ *  limit is a fair reference for it (slippage.ts's limitIsReference). The ONE
+ *  builder: the Journal's '/slippage' route, the leak scan's entry slippage and
+ *  the per-symbol exclusion below all read these rows, so they cannot disagree
+ *  about which fills count. The route used to walk positions itself, reading
+ *  only source_intent_id, and kept doing so after this builder learned the
+ *  adopted link. */
 export function buildLiveSlippageRows(): SlippageRow[] {
   const positions = listPositions();
   // The ENTRY order behind each position, by EITHER link (2026-09-23). This read
@@ -88,7 +90,7 @@ export function buildLiveSlippageRows(): SlippageRow[] {
     if (entryIntentId !== undefined && p.entryDate !== null) {
       const entryDate = p.entryDate;
       const intent = intents.get(entryIntentId);
-      if (intent?.limitPrice != null) {
+      if (intent && intent.limitPrice !== null && limitIsReference('entry', p.assetType, intent)) {
         rows.push(
           computeSlippage({
             positionId: p.id,
@@ -107,7 +109,7 @@ export function buildLiveSlippageRows(): SlippageRow[] {
     for (const e of p.exits) {
       if (e.sourceIntentId == null) continue;
       const intent = intents.get(e.sourceIntentId);
-      if (intent?.limitPrice == null) continue;
+      if (!intent || intent.limitPrice === null || !limitIsReference('exit', p.assetType, intent)) continue;
       rows.push(
         computeSlippage({
           positionId: p.id,

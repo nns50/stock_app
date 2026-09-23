@@ -284,13 +284,25 @@ export function getLiveOrder(intentId: number): LiveOrderMeta | undefined {
  *
  * Newest entry row wins: a scale-in adds further rows for the same position,
  * and the most recent one carries the live risk profile.
+ *
+ * ONLY FOR A STOCK POSITION (2026-09-23). This is the stock sleeve's order
+ * table, so a link from it to an option row is a cross-link by definition. One
+ * exists: on 2026-09-23 the MRNA stock entry order was linked to the MRNA call's
+ * row before #658 stopped a stock order adopting an option holding, and the
+ * hand correction of the ledger fixed the prices and tags but not this link. The
+ * leak scan then measured the call's $2.84 fill against the shares' $187 limit.
+ * #658 guards the WRITE; this guards every reader of links written before it.
+ * A position id with no row at all still resolves, as it always did.
  */
 export function getLiveEntryOrderForPosition(positionId: number): LiveOrderMeta | undefined {
   const row = db
     .prepare(
-      `SELECT * FROM autotrade_live_orders
-        WHERE position_id = ? AND role = 'entry'
-        ORDER BY created_at DESC, intent_id DESC
+      `SELECT alo.* FROM autotrade_live_orders alo
+        WHERE alo.position_id = ? AND alo.role = 'entry'
+          AND NOT EXISTS (
+            SELECT 1 FROM positions p WHERE p.id = alo.position_id AND p.asset_type <> 'stock'
+          )
+        ORDER BY alo.created_at DESC, alo.intent_id DESC
         LIMIT 1`,
     )
     .get(positionId) as Row | undefined;
