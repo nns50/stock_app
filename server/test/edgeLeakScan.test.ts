@@ -12,6 +12,7 @@ import {
   ONCE_PER_DAY_SKIP_ACTIONS,
   LEAK_MIN_TRADES,
   mulberry32,
+  PAIR_TOLERANCE_MS,
   paceFloorDrift,
   paperControlDrift,
   reentryCooldownFinding,
@@ -423,6 +424,98 @@ describe('attribution — where the live book loses the paper book’s edge', ()
         expect.objectContaining({ reason: 'symbol_reentry_cooldown_skipped', n: 1, paperTotalR: -1.1 }),
       ]);
     }
+  });
+
+  // 2026-09-23. Both books carry their option trades, and the pairing matched
+  // on symbol and date alone: COIN 09-18's paper stock entry at 11:18 was set
+  // against the live OPTION at 11:10 rather than the live stock trade at 09:56,
+  // and an untaken paper option was filed under whatever stock refusal hit the
+  // same name that minute (7 of the 10 under the live floor were options).
+  it('keeps option trades out of the stock attribution, and counts them', () => {
+    const live = [
+      trade({ symbol: 'COIN', assetKind: 'options', entryAt: at('11:10'), r: 0.84 }),
+      trade({ symbol: 'COIN', entryAt: at('09:56'), r: 0.63 }),
+    ];
+    const paper = [
+      trade({ symbol: 'COIN', book: 'paper', entryAt: at('11:18'), r: 0.27 }),
+      trade({ symbol: 'SMCI', book: 'paper', assetKind: 'options', entryAt: at('10:00'), r: 0.3 }),
+    ];
+    const floor: JournalSkip = {
+      symbol: 'SMCI',
+      at: at('10:00'),
+      action: 'live_score_floor_skipped',
+      failedRule: null,
+    };
+    const a = buildAttribution(live, paper, [floor], [], [], MARKETABLE_LIMIT_BUFFER_PCT, RNG());
+    expect(a.pairedTrades).toBe(1);
+    // The stock trade, 82 minutes away, not the option 8 minutes away.
+    expect(a.pairs).toEqual([expect.objectContaining({ symbol: 'COIN', liveR: 0.63, paperR: 0.27 })]);
+    expect(a.meanDiffR).toBeCloseTo(0.36, 4);
+    // The paper option is not a stock refusal's: it is counted, not classified.
+    expect(a.untaken).toEqual([]);
+    expect(a.optionsExcluded).toEqual({ live: 1, paper: 1 });
+  });
+
+  // IRD, 09-09: paper entered at 09:36:31, live placed at 09:36:34. Live's
+  // resting stop filled at 6.13 inside three minutes; paper's once-a-minute
+  // quote never read under its stop and it went on to +0.40R. TNON, 09-11:
+  // the same name 22 minutes apart, a pair but not the same entry.
+  it('lists every pair, newest first, and marks the ones made in one tick', () => {
+    const live = [
+      trade({ symbol: 'IRD', entryAt: at('09:36'), entryMinuteEt: 576, r: -1.18, exitReason: 'stop' }),
+      trade({ symbol: 'TNON', entryAt: at('12:16'), entryMinuteEt: 736, r: -1.16, exitReason: 'stop' }),
+    ];
+    const paper = [
+      trade({
+        symbol: 'IRD',
+        book: 'paper',
+        entryAt: at('09:36') + 31_000,
+        entryMinuteEt: 576,
+        r: 0.4,
+        exitReason: 'stop',
+      }),
+      trade({ symbol: 'TNON', book: 'paper', entryAt: at('11:54'), entryMinuteEt: 714, r: 1.25, exitReason: 'target' }),
+    ];
+    const a = buildAttribution(live, paper, [], [], [], MARKETABLE_LIMIT_BUFFER_PCT, RNG());
+    expect(a.pairs.map((p) => p.symbol)).toEqual(['TNON', 'IRD']);
+    expect(a.pairs[1]).toEqual({
+      symbol: 'IRD',
+      etDate: date,
+      paperEntryTimeEt: '09:36',
+      liveEntryTimeEt: '09:36',
+      liveLagMinutes: -0.52,
+      paperR: 0.4,
+      liveR: -1.18,
+      diffR: -1.58,
+      paperExitReason: 'stop',
+      liveExitReason: 'stop',
+      sameTick: true,
+    });
+    expect(a.pairs[0]).toMatchObject({ liveLagMinutes: 22, sameTick: false, paperExitReason: 'target' });
+    // The same-tick reading is IRD alone; TNON's later entry is not in it.
+    expect(a.sameTick).toMatchObject({ n: 1, meanDiffR: -1.58 });
+    expect(a.pairedTrades).toBe(2);
+  });
+
+  it('counts a pair as one tick up to PAIR_TOLERANCE_MS and no further', () => {
+    const live = [
+      trade({ symbol: 'AAA', entryAt: at('10:00'), r: 0 }),
+      trade({ symbol: 'BBB', entryAt: at('10:00'), r: 0 }),
+    ];
+    const paper = [
+      trade({ symbol: 'AAA', book: 'paper', entryAt: at('10:00') + PAIR_TOLERANCE_MS, r: 0.2 }),
+      trade({ symbol: 'BBB', book: 'paper', entryAt: at('10:00') + PAIR_TOLERANCE_MS + 1000, r: 0.5 }),
+    ];
+    const a = buildAttribution(live, paper, [], [], [], MARKETABLE_LIMIT_BUFFER_PCT, RNG());
+    expect(a.pairedTrades).toBe(2);
+    expect(a.sameTick).toMatchObject({ n: 1, meanDiffR: -0.2 });
+  });
+
+  it('reads nothing into the same tick when no pair was made in one', () => {
+    const a = buildAttribution([], [], [], [], [], MARKETABLE_LIMIT_BUFFER_PCT, RNG());
+    expect(a.sameTick).toEqual({ n: 0, meanDiffR: null, ciLow: null, ciHigh: null });
+    expect(a.pairs).toEqual([]);
+    expect(a.optionsExcluded).toEqual({ live: 0, paper: 0 });
   });
 
   it('still refuses to pair across DIFFERENT sessions', () => {

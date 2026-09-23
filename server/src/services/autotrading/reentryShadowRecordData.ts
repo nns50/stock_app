@@ -35,8 +35,9 @@ import type { ReentryShadowEvidence } from './edgeLeakScan';
 // record the leak scan judges at its own bar.
 //
 // THE SAME CAVEATS AS EVERY SHADOW: not a P&L (slots and risk room ignored),
-// not a fill (the signal's price, no slippage — the attribution's paired
-// live-minus-paper difference is what a live entry gives up against it), and
+// not a fill (the signal's price, no slippage — the attribution's same-tick
+// difference, live minus paper on the same entry, is what a live entry gives
+// up against it), and
 // resolved against the trade on every intrabar collision.
 // ---------------------------------------------------------------------------
 

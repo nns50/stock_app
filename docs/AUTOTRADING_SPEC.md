@@ -13442,3 +13442,80 @@ yesterday:
 - The scan counts it.
 - The next pass reads nothing, and a restart re-reads once without a second row.
 - On the close's own day an unmatched read states nothing.
+
+## 2026-09-23 (fourteenth) — stock pairs only, and what the live book makes of paper's trade
+
+**#648's reading is withdrawn.** #648's pairing held its own pre-committed check. The
+median gap between paired entries fell from 34.3 to 5.0 minutes. But decomposing the
+paired difference showed the attribution was pairing and classifying **option trades with
+stock trades**. Both books carry their option trades for the scan's cuts by asset, and
+`buildAttribution` matched on symbol and date alone:
+
+- 2 of its 42 pairs set an option in one book against a stock trade in the other (SMCI
+  09-04, COIN 09-18), and 4 more paired options with options.
+- The 32 paper option entries left unpaired were filed under **stock** refusals, because
+  the skip list holds nothing else. 7 of the 10 entries under `live_score_floor_skipped`
+  were options (−1.03R of them). So were 8 of the 11 under `risk_atr_unreachable_skipped`,
+  and the only entry under `live_risk_blocked:max_aggregate_open_risk`.
+
+The attribution is now stock-only by construction. Option trades are counted
+(`optionsExcluded`), not paired or classified. The live options sleeve refuses through
+its own gates (one at a time, the entry cutoff, the premium ceiling), none of them on the
+list, so there is no honest class to file an option under.
+
+**The corrected reading.** Computed from the deployed rows before this change ships. The
+same computation reproduces the deployed scan exactly: 42 pairs, −0.1709R, median 5.0 min.
+
+| | as deployed (mixed) | stock only |
+| --- | ---: | ---: |
+| pairs | 42 | 36 |
+| median gap | 5.0 min | 7.4 min |
+| `meanDiffR` | −0.17R | −0.18R |
+| same-tick pairs | — | 14, **−0.185R** a trade |
+
+**Where the gap comes from.** The 14 same-tick pairs were entered within a minute of each
+other. They differ at entry by 0.00R on average. So the whole −0.185R (bootstrap 95% about
+−0.45…+0.02) comes after the fill:
+
+- **Paper's stop is kinder than a real one.** Paper checks its stop on a once-a-minute
+  quote and books a stop at the stop price. The live stop rests at the broker and fills on
+  the first trade through it. IRD 09-09 is the clearest case. Paper entered at 09:36:31 at
+  6.31 and live placed at 09:36:34. The live stop at 6.15 had filled at 6.13 by 09:39:45.
+  None of paper's quotes read at or under 6.15, its 09:39:42 quote read 6.39, and it went
+  on to +0.40R. That one pair is −1.58R. Without it, the other 13 average −0.08R.
+- **Paper still scales out and live does not.** Paper banks 67% at +0.25R off the shared
+  `partialExitRMultiple`/`partialExitPct`. Live has had `liveScaleOutEnabled` false since
+  the 09-12 plan. On a trade that touches +0.25R and comes back, paper books about +0.17R
+  and live books 0 at its breakeven stop. On a trade that reaches its target, the order
+  reverses. Across all 36 stock pairs the scale-out cost paper 0.05R a trade on net.
+  `execute.ts` says paper may differ from live in exactly three deliberate ways and
+  "anything else that diverges is a bug". This one was never decided, so the next change
+  makes paper follow the live flags.
+
+**What it changes in the advice.** A refused class was priced at paper's R. The advisor
+now adds the same-tick difference once it rests on 10 or more pairs, and drops a class the
+live book would not have made money on. On this record no class clears it:
+
+| class (stock only) | n | paper R | at live's fill |
+| --- | ---: | ---: | ---: |
+| `symbol_reentry_cooldown_skipped` | 14 | +0.11 | −0.07 |
+| `entry_window_closed` | 9 | +0.10 | −0.09 |
+| `no_live_row` | 30 | +0.03 | −0.15 |
+| `live_score_floor_skipped` | 3 | +0.43 | under 5 entries |
+| `risk_atr_unreachable_skipped` | 3 | +0.15 | under 5 entries |
+| `level_veto` | 5 | −0.34 | refusing losers |
+
+The floor question and the ATR watch both rested on option trades. The stock entries under
+them are three each.
+
+**Pre-committed check** (the first scan after this deploys, inside the same window, before
+the 09-23 close):
+
+1. `attribution.optionsExcluded` reads `{ live: 14, paper: 37 }`.
+2. `pairedTrades` 36, `meanDiffR` about −0.179, `medianPairGapMinutes` about 7.4.
+3. `sameTick.n` 14, `sameTick.meanDiffR` −0.1852.
+4. 103 untaken entries and none of them an option: the floor class 3, the ATR class 3,
+   `level_veto` 5, `live_risk_blocked:buying_power_sizing` 15, `no_live_row` 30, and no
+   `max_aggregate_open_risk` class. COIN 09-18 14:17 (+0.17R) moves from paired to
+   untaken. Its 11:18 entry is now the one paired with the live stock trade.
+5. `GET /api/journal/tune-advice` carries no `flow:` recommendation.

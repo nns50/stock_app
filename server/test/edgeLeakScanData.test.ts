@@ -3,6 +3,7 @@ import { initDb, db } from '../src/db';
 import { defaultAutotradeConfig, getAutotradeConfig, setAutotradeConfig } from '../src/db/autotradeConfig';
 import { logAutotradeEvent } from '../src/db/autotradeEvents';
 import { closePaperPosition, openPaperPosition } from '../src/db/autotradePaperPositions';
+import { closeOptionsPaperPosition, openOptionsPaperPosition } from '../src/db/autotradeOptionsPaperPositions';
 import {
   concentrationCapFloorPct,
   dailyGainStepPct,
@@ -1155,6 +1156,51 @@ describe('the execution findings — any occurrence is one', () => {
         expect.objectContaining({ symbol: 'COIN', entryTimeEt: '10:02' }),
       ]);
       expect(byReason.has('no_live_row')).toBe(false);
+    });
+
+    // 2026-09-23, on the report the route returns. COIN 09-18: the paper stock
+    // entry was set against the live OPTION rather than the live stock trade,
+    // and paper options were filed under whatever stock refusal hit the name.
+    it('pairs no option with a stock trade, and files no option under a stock refusal', () => {
+      const paperOption = (symbol: string, at: number) => {
+        const o = openOptionsPaperPosition({
+          symbol,
+          side: 'call',
+          contractSymbol: `${symbol}260918C00100000`,
+          strike: 100,
+          expiration: '2026-09-18',
+          quantity: 1,
+          entryPrice: 2,
+          riskAmount: 140,
+          riskProfile: 'MODERATE',
+          rationale: 'fixture',
+        });
+        db.prepare('UPDATE autotrade_options_paper_positions SET entry_at = ? WHERE id = ?').run(at, o.id);
+        closeOptionsPaperPosition(o.id, { exitPrice: 2.6, exitReason: 'take_profit' });
+      };
+      const at = (time: string) => etDateTimeToMs('2026-09-10', time) as number;
+      seedClosedAutotradeSessions({
+        sessions: { '2026-09-10': [{ entryTime: '09:56', exitTime: '10:24', r: 0.6, symbol: 'COIN' }] },
+      });
+      paperAt('COIN', at('11:18'), 105);
+      // Thirty seconds from the live stock entry: the nearest paper entry, and an option.
+      paperOption('COIN', at('09:56') + 30_000);
+      paperOption('SMCI', at('10:00'));
+      journal('SMCI', 'live_score_floor_skipped', at('10:00'));
+
+      const { attribution } = runEdgeLeakScanFromDb({ now: Date.parse('2026-09-11T21:00:00Z') });
+      expect(attribution.pairedTrades).toBe(1);
+      expect(attribution.pairs).toEqual([
+        expect.objectContaining({
+          symbol: 'COIN',
+          paperEntryTimeEt: '11:18',
+          liveEntryTimeEt: '09:56',
+          liveR: 0.6,
+          sameTick: false,
+        }),
+      ]);
+      expect(attribution.untaken).toEqual([]);
+      expect(attribution.optionsExcluded).toEqual({ live: 0, paper: 2 });
     });
   });
 

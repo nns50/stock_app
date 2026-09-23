@@ -1,6 +1,7 @@
 import type { AutotradeConfig } from '../../db/autotradeConfig';
 import type { DailyGoalEvidence } from './targetTune';
-import type { EdgeLeakScanResult, UntakenClass } from './edgeLeakScan';
+import { WATCH_MIN_TRADES } from './edgeLeakScan';
+import type { AttributionReport, EdgeLeakScanResult, UntakenClass } from './edgeLeakScan';
 import type { SizingReview } from './gatedSwitches';
 
 // ---------------------------------------------------------------------------
@@ -184,6 +185,7 @@ const STRONG_N = 20;
 const MODERATE_N = 10;
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
+const round4 = (n: number): number => Math.round(n * 10_000) / 10_000;
 const round3 = (n: number): number => Math.round(n * 1000) / 1000;
 
 function confidenceFor(n: number): TuneRecommendation['confidence'] {
@@ -308,16 +310,51 @@ export function fieldForUntakenReason(
   return null;
 }
 
+/** Below this many same-tick pairs the live book's difference from paper on
+ *  one decision is not measured, and a refused entry is priced at paper's R as
+ *  it stands, saying so. The scan's own WATCH_MIN_TRADES, for the same reason:
+ *  under ten, a mean is an anecdote. */
+export const SAME_TICK_MIN_PAIRS = WATCH_MIN_TRADES;
+
+/**
+ * What the live book makes of an entry, less what paper makes of it: the mean
+ * difference over the attribution's same-tick pairs (one decision, one price).
+ * Null when too few pairs have been seen to say.
+ *
+ * Read defensively: the advisor prices off the last PERSISTED scan, and one
+ * saved before 2026-09-23 has no `sameTick` at all. That reads as unmeasured.
+ */
+export function liveDifferenceOnSameEntryR(attribution: AttributionReport): number | null {
+  const s = attribution.sameTick ?? null;
+  if (s === null || s.n < SAME_TICK_MIN_PAIRS || s.meanDiffR === null) return null;
+  return s.meanDiffR;
+}
+
 function flowRecommendations(input: TuneAdvisorInput, gap: GoalGap): TuneRecommendation[] {
   const scan = input.scan;
   if (!scan || gap.activeSessions === 0) return [];
   const riskPct = gap.riskPerTradePct;
   const out: TuneRecommendation[] = [];
+  // PAPER'S R IS NOT LIVE'S (2026-09-23). Every class below is a set of paper
+  // entries the live book refused, priced at what PAPER made of them. Paper
+  // checks its stop on a once-a-minute quote and books a stop at the stop
+  // price. The live stop rests at the broker and fills on the first print
+  // through it. On fourteen same-tick pairs the live book made 0.19R a trade
+  // less than paper on the very same entries. A refused entry admitted to the
+  // live book would be filled the live way, so it is priced the live way. A
+  // class paper made +0.15R on is not a gate costing money if live would have
+  // made -0.04R of it.
+  const liveDifference = liveDifferenceOnSameEntryR(scan.attribution);
+  const sameTickPairs = scan.attribution.sameTick?.n ?? 0;
 
   for (const u of scan.attribution.untaken) {
     // Only a class the CONTROL made money on is a candidate: refusing trades
     // that lose in paper too is the gate working, not a gap.
     if (u.paperMeanR === null || u.paperTotalR <= 0 || u.n < 5) continue;
+    // …and only one the LIVE book would have made money on, once its measured
+    // difference on the same entry is applied.
+    const liveMeanR = liveDifference === null ? u.paperMeanR : round4(u.paperMeanR + liveDifference);
+    if (liveMeanR <= 0) continue;
     // `live_entries_halted` is never a recommendation, however much paper R it
     // carries (2026-09-12). It is the day already BANKED at +3%, the give-back
     // guard protecting a fading green day, or the kill switch — the plan's own
@@ -327,7 +364,7 @@ function flowRecommendations(input: TuneAdvisorInput, gap: GoalGap): TuneRecomme
     // the attribution, where it explains the paper entries it explains.
     if (u.reason === NEVER_A_LEVER) continue;
     const perSession = u.n / gap.activeSessions;
-    const delta = dayPctFromTrades(perSession, riskPct, u.paperMeanR);
+    const delta = dayPctFromTrades(perSession, riskPct, liveMeanR);
     const governed = fieldForUntakenReason(u.reason);
     // `no_live_row` means "the live journal says nothing about this name at
     // that minute". That is only evidence of a recording gap if the journal
@@ -344,7 +381,12 @@ function flowRecommendations(input: TuneAdvisorInput, gap: GoalGap): TuneRecomme
       title: `The live book refuses ${u.n} trades on ${humanReason(u.reason)}; paper made money on them`,
       evidence:
         `${u.n} paper entries with no live twin over ${gap.activeSessions} active sessions ` +
-        `(${round2(perSession)}/session), mean ${u.paperMeanR}R, ${u.paperTotalR}R total in paper`,
+        `(${round2(perSession)}/session), mean ${u.paperMeanR}R, ${u.paperTotalR}R total in paper` +
+        (liveDifference === null
+          ? `; the live book's difference on the same entry is not measured yet (${sameTickPairs} same-tick ` +
+            `pairs, ${SAME_TICK_MIN_PAIRS} needed), so this is paper's R as it stands`
+          : `; ${liveMeanR}R a trade once the live book's measured difference on the same entry ` +
+            `(${liveDifference >= 0 ? '+' : ''}${liveDifference}R over ${sameTickPairs} same-tick pairs) is applied`),
       expectedDayPctDelta: delta,
       sampleSize: u.n,
       confidence: confidenceFor(u.n),

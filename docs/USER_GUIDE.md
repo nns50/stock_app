@@ -1016,7 +1016,8 @@ tabs of one **Analytics** button (top right) — pick a tab, the report loads on
   it reports the **day level** (how often the stored goal was actually reached, the same
   count at 1R, and what the red days were made of), the **paper-vs-live attribution**
   (the same decision in both books, and why the live book skipped what paper took, with
-  each skipped entry listed by symbol, date, time and paper R), and
+  each skipped entry listed by symbol, date, time and paper R, and each pair listed with
+  both entry times, both R and both exit reasons), and
   **findings** — anything that simply went wrong (an exit that failed, a position with no
   stop, a cap that no longer matches its own formula, a tuner row on a day the tuner is
   off, or **entries being placed at a worse price than they were decided at**, past the
@@ -1039,6 +1040,17 @@ tabs of one **Analytics** button (top right) — pick a tab, the report loads on
   outside are dropped rather than guessed at, and counted, so you can see how much of the
   window is trustworthy; while any remain, the tune advisor will show an extension finding
   as **needs data** instead of offering it as a cut.
+  The attribution covers **stock trades only** (since 2026-09-23). Both books' option
+  trades stay in the scan for the cuts by asset. The attribution used to take them too:
+  it paired a paper stock entry with a live option on the same name, and filed paper
+  option entries under stock refusals such as the live score floor, because the live
+  options sleeve's own refusals are not on its list. It now counts the option trades it
+  leaves out (`optionsExcluded`) and neither pairs nor classifies them. The pairs whose
+  two entries fall within a minute of each other are read on their own as **same tick**
+  (`sameTick`). Each is one decision filled at one price, so the difference between its
+  two R figures comes from what happened after the fill. Paper checks its stop once a
+  minute and books a stop at the stop price. The live stop rests at the broker and fills
+  on the first trade through it, so live gets stopped by dips paper never sees.
 
 ### Benchmark
 
@@ -3029,6 +3041,14 @@ just the knobs. A flow gate names its setting where one exists. The **level veto
 runs without the level plan, the entries the veto refused are its own control. An order
 the broker refused, a guardrail refused at placement, or nobody answered has no setting
 to change, so it comes back as code.
+
+**A refused entry is priced the way the live book would fill it.** A flow gate's cost is
+the paper R of the entries it refused, and paper fills more kindly than live (see the
+attribution's same-tick reading above). So once the attribution has at least 10
+same-tick pairs, the advisor adds their mean live-minus-paper difference to each class's
+paper R before ranking the class. A class the live book would not have made money on is
+dropped, and the evidence shows both figures. With fewer than 10 pairs it uses paper's R
+as it stands and says the difference is not measured yet.
 
 **Anything that widens exposure mid-trial is held.** The plan's pre-committed review runs
 over 10 active sessions with no mid-course knob turning, so a recommendation that would
