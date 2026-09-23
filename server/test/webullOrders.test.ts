@@ -20,6 +20,7 @@ import {
   webullOrderDetail,
   parseBrokerOptionFills,
   parseBrokerEquityFills,
+  isOptionOrder,
 } from '../src/providers/webull/orders';
 import type { WebullOpenOrder } from '../src/providers/webull/orders';
 import { decideExitCorrection } from '../src/services/exitPriceBackfill';
@@ -828,6 +829,55 @@ describe('listWebullOpenOrders', () => {
     });
   });
 
+  // An options order names the UNDERLYING as its symbol, so a working close on
+  // an MRNA call is, by symbol and side, a resting sell on MRNA shares. The
+  // stock sleeve's exit logic can only tell them apart if the parse keeps the
+  // instrument type (2026-09-23).
+  it("keeps each order's instrument type, off the order or its envelope", () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const envelopes = [
+      {
+        client_order_id: 'CID-OPT',
+        orders: [
+          {
+            client_order_id: 'CID-OPT',
+            symbol: 'MRNA',
+            side: 'SELL',
+            status: 'SUBMITTED',
+            order_type: 'LIMIT',
+            combo_type: 'NORMAL',
+            instrument_type: 'OPTION',
+            legs: [{ symbol: 'MRNA', option_type: 'CALL', strike_price: '195', option_expire_date: '2026-09-25' }],
+          },
+        ],
+      },
+      {
+        client_order_id: 'CID-SL',
+        combo_order_id: 'WB-COMBO',
+        combo_type: 'STOP_LOSS',
+        instrument_type: 'EQUITY',
+        orders: [{ client_order_id: 'CID-SL', symbol: 'MRNA', side: 'SELL', status: 'SUBMITTED' }],
+      },
+      { client_order_id: 'CID-BARE', orders: [{ client_order_id: 'CID-BARE', symbol: 'MRNA', side: 'SELL' }] },
+    ];
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify(envelopes),
+    } as Response);
+
+    return listWebullOpenOrders('ACC1').then((r) => {
+      const byId = Object.fromEntries(r.orders.map((o) => [o.clientOrderId, o]));
+      expect(byId['CID-OPT'].instrumentType).toBe('OPTION');
+      expect(byId['CID-SL'].instrumentType).toBe('EQUITY'); // from the envelope
+      expect(byId['CID-BARE'].instrumentType).toBeUndefined();
+      expect(isOptionOrder(byId['CID-OPT'])).toBe(true);
+      expect(isOptionOrder(byId['CID-SL'])).toBe(false);
+      // Unreadable is NOT an option: it stays a possible stock leg, fail-closed.
+      expect(isOptionOrder(byId['CID-BARE'])).toBe(false);
+    });
+  });
+
   it('still prefers the SUB-ORDER combo_type when the response does nest it there', () => {
     // The other half — a response carrying it on the leg must keep working, so
     // the envelope is a fallback rather than an override.
@@ -1329,6 +1379,16 @@ describe('committedProtectiveQuantity', () => {
   it('treats each leg with no combo id as its own group', () => {
     const orders = [leg({ quantity: 5 }), leg({ quantity: 7 })];
     expect(committedProtectiveQuantity(orders, 'FCX', 'sell')).toBe(12);
+  });
+
+  it('does not count a sell on an OPTION contract as shares committed', () => {
+    // The options sleeve's working close on an FCX call rests as a SELL on
+    // "FCX". It commits contracts, not shares (2026-09-23).
+    const orders = [
+      leg({ comboOrderId: 'G1', quantity: 38 }),
+      leg({ comboType: 'NORMAL', orderType: 'LIMIT', quantity: 3, instrumentType: 'OPTION' }),
+    ];
+    expect(committedProtectiveQuantity(orders, 'FCX', 'sell')).toBe(38);
   });
 
   it('ignores the filled MASTER entry, other symbols, and the opposite side', () => {

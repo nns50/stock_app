@@ -13,7 +13,11 @@ import {
   wouldOpenShort,
 } from '../trading/guardrails';
 import { marketOpenContext, minutesIntoSession } from '../trading/marketHours';
-import { webullAccountState, type WebullAccountStateResult } from '../../providers/webull/accountState';
+import {
+  webullAccountState,
+  type OrderInstrument,
+  type WebullAccountStateResult,
+} from '../../providers/webull/accountState';
 import {
   newClientOrderId,
   webullPlaceOrder,
@@ -27,6 +31,7 @@ import {
   protectiveBracketIntent,
   isExitLeg,
   exitLegKind,
+  isOptionOrder,
   buildBracketResizePatches,
   WebullOpenOrder,
 } from '../../providers/webull/orders';
@@ -375,6 +380,37 @@ function entryStampPatch(
 const AUTOTRADE_TAGS = ['live', 'autotrade'];
 export const isAutotradePosition = (p: Position): boolean => p.tags.includes('autotrade');
 
+/**
+ * The account, with `currentPositionQty` counting SHARES of `symbol` and
+ * nothing else (2026-09-23).
+ *
+ * Asked without an instrument, webullAccountState sums every position on the
+ * symbol, stock and option contracts alike (accountState.ts, matchesInstrument:
+ * "legacy: per-underlying aggregate"). The manual order paths have passed their
+ * instrument since that was found, and the options sleeve feeds the guardrails
+ * its own ledger quantity; this sleeve asked for the aggregate at all six of its
+ * reads. Its options sleeve trades the same names, so the number was wrong
+ * whenever the two overlapped (CRWD 10:13-10:31 and MRNA 09:37 on 2026-09-23),
+ * and wrong in the direction that matters:
+ *
+ *  - the protection sweep reads "the broker holds 0" as closed, not naked. With
+ *    a stop just filled and three calls still held it read 3: it would page the
+ *    position as naked and send a re-arm, or a close through the stop, for 3
+ *    shares nobody held. Those go out as SELL, not SHORT, so the broker should
+ *    refuse them rather than open a short — but that leaves the broker's refusal
+ *    as the only thing in the way;
+ *  - every sell this sleeve places is checked by the naked_short guardrail
+ *    (current + delta < 0 blocks), and the contracts padded `current`. That rule
+ *    exists so that no sell depends on the broker refusing it.
+ *
+ * One helper, so a seventh read cannot be written the old way by accident;
+ * configReachability-style, a test scans this file for a two-argument call.
+ */
+const STOCK_SHARES: OrderInstrument = { assetKind: 'stock' };
+function stockAccountState(accountId: string, symbol: string): Promise<WebullAccountStateResult> {
+  return webullAccountState(accountId, symbol, STOCK_SHARES);
+}
+
 export interface LivePortfolioSnapshot {
   today: string;
   openPositions: Position[];
@@ -543,9 +579,16 @@ export function combinedLiveOpenRisk(): { risk: number; count: number } {
  * not just new ones going forward.
  */
 export function adoptOrphanedLivePositions(): { adopted: number } {
+  // SHARES only (2026-09-23). Every pending order this can match is a stock
+  // entry, and the generic sync imports the options sleeve's contracts here too
+  // — untagged, under the UNDERLYING's symbol — so a symbol-only match could
+  // hand a stock order an option row. See materializeEntryFill for the day it
+  // did.
   const orphans = listPositions({ status: 'open' }).filter(
     (p) =>
-      !isAutotradePosition(p) && (p.tags.includes('webull') || (p.tags.includes('live') && p.sourceIntentId !== null)),
+      p.assetType === 'stock' &&
+      !isAutotradePosition(p) &&
+      (p.tags.includes('webull') || (p.tags.includes('live') && p.sourceIntentId !== null)),
   );
   if (orphans.length === 0) return { adopted: 0 };
   const pendingEntries = listPendingLiveOrders().filter((o) => o.role === 'entry' && o.positionId === null);
@@ -567,6 +610,12 @@ export function adoptOrphanedLivePositions(): { adopted: number } {
             (o) => o.symbol === p.symbol && (o.accountId == null || p.accountId == null || o.accountId === p.accountId),
           );
     if (!match) continue;
+    // One order, one holding (2026-09-23). The list is read once, before the
+    // loop, and a match used to stay in it — so two untagged rows on one symbol
+    // (a hand-bought lot imported beside the loop's own fill) were BOTH adopted
+    // by the same order, and the second link overwrote the first. The order that
+    // just matched is spoken for.
+    pendingEntries.splice(pendingEntries.indexOf(match), 1);
     updatePosition(p.id, {
       tags: Array.from(new Set([...p.tags, ...AUTOTRADE_TAGS])),
       stopPrice: p.stopPrice ?? match.stopPrice,
@@ -1087,7 +1136,7 @@ export async function attemptLiveEntry(
   };
 
   const liveCfg = buildLiveTradingConfig(autotradeCfg);
-  const acct = await webullAccountState(accountId, symbol);
+  const acct = await stockAccountState(accountId, symbol);
   if (!acct.ok || !acct.state) {
     return { symbol, ok: false, reason: acct.error ?? 'Could not load account state' };
   }
@@ -1594,7 +1643,20 @@ export async function runLiveExecution(
   // above is not autotrade-only, so a name the OPERATOR is holding by hand
   // silently suppresses every live signal on it for as long as they hold it.
   const heldByAutotrade = new Set(openNow.filter(isAutotradePosition).map((p) => p.symbol));
-  const heldManually = new Set(openNow.filter((p) => !isAutotradePosition(p)).map((p) => p.symbol));
+  // The options sleeve's contracts are in `openNow` too: the generic broker sync
+  // imports every holding, untagged, under the underlying's symbol. Until
+  // 2026-09-23 they read as the operator holding the name by hand — all four of
+  // that day's 'manual' rows (AMZN, DELL, HOOD, TSLA) were the sleeve's own
+  // contracts. The refusal itself is unchanged: this only names who holds it.
+  const optionsSleeveSymbols = new Set(listOpenLiveOptionsPositions().map((p) => p.symbol.toUpperCase()));
+  const isSleeveContract = (p: Position): boolean =>
+    p.assetType === 'option' && optionsSleeveSymbols.has(p.symbol.toUpperCase());
+  const heldManually = new Set(
+    openNow.filter((p) => !isAutotradePosition(p) && !isSleeveContract(p)).map((p) => p.symbol),
+  );
+  const heldByOptionsSleeve = new Set(
+    openNow.filter((p) => !isAutotradePosition(p) && isSleeveContract(p)).map((p) => p.symbol),
+  );
   const sectorOf = buildSectorOf();
 
   // Finish-line discipline + symbol cooldown (2026-08-22) — LIVE-only, both
@@ -1624,11 +1686,18 @@ export async function runLiveExecution(
   for (const { signal: candidateSignal } of candidates) {
     const symbol = candidateSignal.symbol.toUpperCase();
     if (skipSymbols.has(symbol)) {
-      // The three cases are NOT the same finding and must not pool: an
+      // The four cases are NOT the same finding and must not pool: an
       // autotrade hold is the book working as designed, a manual hold is the
-      // operator unknowingly muting a name, and a working order is a transient
-      // that should clear within a tick or two.
-      const holder = heldByAutotrade.has(symbol) ? 'autotrade' : heldManually.has(symbol) ? 'manual' : 'pending_order';
+      // operator unknowingly muting a name, an options-sleeve hold is the two
+      // sleeves meeting on one name, and a working order is a transient that
+      // should clear within a tick or two.
+      const holder = heldByAutotrade.has(symbol)
+        ? 'autotrade'
+        : heldManually.has(symbol)
+          ? 'manual'
+          : heldByOptionsSleeve.has(symbol)
+            ? 'options_sleeve'
+            : 'pending_order';
       journalDeclinedEntry(candidateSignal, 'live_symbol_held_skipped', cfg.liveMinSignalScore, { holder });
       outcomes.push({ symbol, ok: false, reason: `Already has an open live position (${holder})` });
       continue;
@@ -2603,8 +2672,20 @@ function materializeEntryFill(
   // time there was none — an orphan for this symbol appearing before the fill
   // reconciles can only be this fill. Account agreement is still required
   // where both sides know it, mirroring adoptOrphanedLivePositions().
+  //
+  // SHARES ONLY (2026-09-23). "Can only be this fill" held for the stock book
+  // alone. The options sleeve trades the same names, and the generic sync
+  // imports its contracts into this table as untagged ['webull'] rows under the
+  // UNDERLYING's symbol. At 09:37 both sleeves bought MRNA — 129 shares and 3
+  // calls — and this lookup, newest first, took the CALL (row 692): tagged
+  // autotrade with the shares' stop and target, closed by the sync at an
+  // estimated 1.56 when the call was sold, it booked −$384 the stock book never
+  // lost, while the real shares (row 690, a +$546 take-profit) stayed untagged
+  // and uncounted. The phantom tripped the −7.5% daily halt at 10:23, on a real
+  // day of about −4.3%. A stock order fills in shares; only a stock row can be
+  // that fill.
   const orphanCandidates = listPositions({ status: 'open', symbol: intent.symbol }).filter(
-    (p) => p.sourceIntentId === null,
+    (p) => p.assetType === 'stock' && p.sourceIntentId === null,
   );
   const adopted =
     orphanCandidates.find((p) => isAutotradePosition(p)) ??
@@ -2934,8 +3015,18 @@ const isRestingStatus = canStillFill;
  *  parsed to match — an order whose side we couldn't read is never assumed to be
  *  cancellable (fail closed, never cancel a wrong-side order). */
 function restingExitOrders(orders: WebullOpenOrder[], symbol: string, exitSide: 'buy' | 'sell'): WebullOpenOrder[] {
+  // Not an option on the same name (2026-09-23, isOptionOrder): the options
+  // sleeve's working close on an MRNA call is a resting SELL LIMIT on "MRNA",
+  // so by symbol and side it was this position's take-profit — cancelled by
+  // every time exit's bracket clear, and read by the protection sweep as a
+  // take-profit still resting.
   return orders.filter(
-    (o) => o.symbol?.toUpperCase() === symbol && o.side === exitSide && isRestingStatus(o.status) && !!o.clientOrderId,
+    (o) =>
+      o.symbol?.toUpperCase() === symbol &&
+      o.side === exitSide &&
+      isRestingStatus(o.status) &&
+      !!o.clientOrderId &&
+      !isOptionOrder(o),
   );
 }
 
@@ -2986,7 +3077,10 @@ function classifyExitLeg(o: WebullOpenOrder): 'stop' | 'target' | 'unknown' {
  * parse it costs nothing.
  */
 function unreadableOpenOrders(orders: WebullOpenOrder[], symbol: string, exitSide: 'buy' | 'sell'): string | undefined {
-  const live = orders.filter((o) => isRestingStatus(o.status));
+  // An order positively labelled OPTION cannot be a stock bracket's leg, so its
+  // unreadable fields cannot be hiding one (restingExitOrders' rule, applied to
+  // the question of what might be missing from it).
+  const live = orders.filter((o) => isRestingStatus(o.status) && !isOptionOrder(o));
   // A resting order whose SYMBOL wouldn't parse could be on any symbol,
   // including this one — so "nothing resting on SYM" is not a claim we can make.
   const noSymbol = live.filter((o) => !o.symbol);
@@ -3382,7 +3476,7 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
     // Read LAZILY, on this branch only. Every position that still has its stop
     // has already returned above, so this costs one account read per position
     // actually about to page, not one per position per tick.
-    const held = await webullAccountState(accountId, symbol);
+    const held = await stockAccountState(accountId, symbol);
     // A holdings read that FAILED does not come back as a failure: the balance
     // half answered, so the result is ok with a quantity of 0 and
     // positionsUnavailable set (accountState.ts). Taken at face value that is
@@ -3832,7 +3926,9 @@ export interface LiveEquityTimeExitOutcome {
  *  read fresh from the broker) never computes a negative resultingQty, so
  *  this needs no override the way options' single-leg close does (options'
  *  account-state read doesn't reflect contract holdings the way equity's
- *  reflects share holdings). */
+ *  reflects share holdings). "Actual" means SHARES: until 2026-09-23 the read
+ *  also counted every option contract on the name, which let a sell of shares
+ *  no longer held pass the check (stockAccountState). */
 /** Journal + return a time-exit that never reached the broker. These bail-outs
  *  used to return a `reason` string that died in the return value: nothing
  *  journaled them, so nothing could alert on them (liveFailureAlert reads the
@@ -3906,7 +4002,7 @@ async function placeLiveEquityTimeExitClose(
   };
 
   const liveCfg = buildLiveTradingConfig(getAutotradeConfig());
-  const acct = await webullAccountState(accountId, symbol);
+  const acct = await stockAccountState(accountId, symbol);
   if (!acct.ok || !acct.state) {
     return timeExitFailure(pos, riskProfile, acct.error ?? 'Could not load account state');
   }
@@ -4580,7 +4676,7 @@ export async function checkLiveEquityScaleOuts(): Promise<LiveScaleOutOutcome[]>
       referencePrice: last,
     };
     const liveCfg = buildLiveTradingConfig(cfg);
-    const acct = await webullAccountState(accountId, symbol);
+    const acct = await stockAccountState(accountId, symbol);
     if (!acct.ok || !acct.state) {
       outcomes.push({ symbol, positionId: pos.id, requested: false, reason: acct.error ?? 'no account state' });
       continue;
@@ -5064,7 +5160,7 @@ async function placeLiveScaleInAddOn(
   };
 
   const liveCfg = buildLiveTradingConfig(cfg);
-  const acct = await webullAccountState(accountId, symbol);
+  const acct = await stockAccountState(accountId, symbol);
   if (!acct.ok || !acct.state) {
     return { symbol, positionId: pos.id, requested: false, reason: acct.error ?? 'Could not load account state' };
   }
@@ -5636,7 +5732,7 @@ export async function checkLivePerLotSecondLots(): Promise<LivePerLotOutcome[]> 
       };
 
       const liveCfg = buildLiveTradingConfig(cfg);
-      const acct = await webullAccountState(accountId, symbol);
+      const acct = await stockAccountState(accountId, symbol);
       if (!acct.ok || !acct.state) {
         outcomes.push({
           symbol,

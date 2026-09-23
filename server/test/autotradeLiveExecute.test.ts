@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
 
 vi.mock('../src/providers', () => ({ getProvider: vi.fn() }));
 vi.mock('../src/providers/webull/accountState', () => ({ webullAccountState: vi.fn() }));
@@ -93,7 +95,9 @@ import {
   checkLiveEquityStopAdjusts,
   checkLiveEquityTimeExits,
   entryIntentIdForPosition,
+  cancelLiveBracketExitLegs,
 } from '../src/services/autotrading/liveExecute';
+import { createLiveOptionsPosition } from '../src/db/autotradeLiveOptionsPositions';
 import { resetUnplaceableSymbols } from '../src/services/autotrading/unplaceableSymbols';
 import { runWebullPositionsSync } from '../src/providers/webull/positions';
 import { priceMap } from '../src/services/quotes';
@@ -5736,5 +5740,269 @@ describe('runLiveExecution — same-day re-entry size cut', () => {
     const full = await fullSize();
     concludedTrade('AAPL', 'live');
     expect(await enter(['AAPL'])).toEqual([full]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A STOCK ORDER IS SHARES, NOT AN OPTION ON THE SAME NAME (2026-09-23).
+//
+// At 09:37 both sleeves bought MRNA: 129 shares and 3 calls. The generic broker
+// sync imported both holdings as untagged ['webull'] rows under the symbol MRNA,
+// and the stock order's fill was linked to the CALL — the newer row, the first a
+// newest-first lookup reaches. The call entered the stock book with the shares'
+// stop and target and was closed by the sync at an estimate: −$384 that never
+// happened. The shares' real +$546 take-profit stayed untagged and uncounted,
+// and the phantom tripped the −7.5% daily halt at 10:23 on a real day of about
+// −4.3%.
+//
+// The same confusion ran through every read this sleeve makes by symbol: the
+// broker's holding (shares plus contracts) and the open-orders list (an options
+// close is a resting SELL LIMIT on the same symbol). Each case asserts at the
+// CONSUMER — the row that got linked, the order that got cancelled, the verdict
+// the sweep reached — and each fails on the code before the fix.
+// ---------------------------------------------------------------------------
+describe('a stock order is shares, not an option on the same name (MRNA, 2026-09-23)', () => {
+  /** A holding as the generic broker sync imports it: untagged, no date. */
+  function brokerRow(assetType: 'stock' | 'option', quantity: number, entryPrice: number) {
+    return createPosition({
+      assetType,
+      symbol: 'MRNA',
+      side: 'long',
+      quantity,
+      entryPrice,
+      entryDate: null,
+      tags: ['webull'],
+      accountId: 'ACC1',
+      ...(assetType === 'option' ? { optionType: 'call' as const, strike: 195, expiration: '2026-09-25' } : {}),
+    });
+  }
+
+  /** The stock sleeve's MRNA order, placed and still working at the broker. */
+  async function mrnaStockOrder() {
+    setAutotradeConfig({ liveAccountId: 'ACC1' });
+    mockGetProvider.mockReturnValue(quoteReturning({ MRNA: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-MRNA' });
+    const sig = signal({ symbol: 'MRNA' });
+    const risk = evaluateRiskCheck(sig, baseRiskCtx());
+    await attemptLiveEntry(sig, risk, 'MODERATE', liveConfig());
+    // The ORDER's quantity (probation scales the sizer's), which is what fills.
+    const intent = listIntents()[0];
+    return { intentId: intent.id, quantity: intent.quantity };
+  }
+
+  const filled = (quantity: number) =>
+    ({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      filledQty: quantity,
+      filledPrice: 100,
+      legs: [{ comboType: 'MASTER', status: 'FILLED' }],
+    }) as WebullOrderStatus;
+
+  it('links the fill to the SHARES when the options sleeve holds a call on the same name', async () => {
+    const { intentId, quantity } = await mrnaStockOrder();
+    // Production's order: the shares imported first, the call after, so the
+    // call is the NEWER row.
+    const shares = brokerRow('stock', quantity, 100);
+    const call = brokerRow('option', 3, 2.84);
+    expect(call.id).toBeGreaterThan(shares.id);
+
+    mockOrderStatus.mockResolvedValue(filled(quantity));
+    await reconcileLiveOrders();
+
+    expect(getLiveOrder(intentId)?.positionId).toBe(shares.id);
+    // The stock book holds one position, and it is the shares.
+    const book = listAutotradeLivePositions({ status: 'open' });
+    expect(book.map((p) => p.id)).toEqual([shares.id]);
+    expect(book[0].stopPrice).not.toBeNull();
+    // The call is left exactly as the sync imported it: not the stock book's,
+    // and carrying no stock stop or target.
+    const callAfter = listPositions({ status: 'open' }).find((p) => p.id === call.id)!;
+    expect(callAfter.tags).toEqual(['webull']);
+    expect(callAfter.stopPrice).toBeNull();
+    expect(callAfter.targetPrice).toBeNull();
+    const linked = listAutotradeEvents({ actions: ['live_position_linked_to_adopted'], limit: 5 });
+    expect(JSON.parse(linked[0].detail ?? '{}')).toMatchObject({ positionId: shares.id });
+  });
+
+  it('creates its own row rather than take the call when the shares are not imported yet', async () => {
+    const { intentId, quantity } = await mrnaStockOrder();
+    const call = brokerRow('option', 3, 2.84);
+
+    mockOrderStatus.mockResolvedValue(filled(quantity));
+    await reconcileLiveOrders();
+
+    const book = listAutotradeLivePositions({ status: 'open' });
+    expect(book).toHaveLength(1);
+    expect(book[0]).toMatchObject({ assetType: 'stock', quantity, sourceIntentId: intentId });
+    expect(listPositions({ status: 'open' }).find((p) => p.id === call.id)?.tags).toEqual(['webull']);
+  });
+
+  it('the adoption pass adopts the shares and leaves the call alone', async () => {
+    const { intentId, quantity } = await mrnaStockOrder();
+    const shares = brokerRow('stock', quantity, 100);
+    const call = brokerRow('option', 3, 2.84);
+
+    expect(adoptOrphanedLivePositions()).toEqual({ adopted: 1 });
+    expect(getLiveOrder(intentId)?.positionId).toBe(shares.id);
+    expect(listPositions({ status: 'open' }).find((p) => p.id === call.id)?.tags).toEqual(['webull']);
+  });
+
+  it('never adopts an option row for a stock order, even when it is the only row on the name', async () => {
+    await mrnaStockOrder();
+    brokerRow('option', 3, 2.84);
+    expect(adoptOrphanedLivePositions()).toEqual({ adopted: 0 });
+    expect(listAutotradeLivePositions({ status: 'open' })).toHaveLength(0);
+  });
+
+  it('one order adopts one holding, not every untagged row on the name', async () => {
+    const { quantity } = await mrnaStockOrder();
+    brokerRow('stock', quantity, 100);
+    brokerRow('stock', 10, 99); // a lot bought by hand while the order was working
+    expect(adoptOrphanedLivePositions()).toEqual({ adopted: 1 });
+    expect(listAutotradeLivePositions({ status: 'open' })).toHaveLength(1);
+  });
+
+  /** An adopted MRNA position past the protection grace window. */
+  async function agedMrnaPosition() {
+    const { quantity } = await mrnaStockOrder();
+    brokerRow('stock', quantity, 100);
+    adoptOrphanedLivePositions();
+    const pos = listAutotradeLivePositions({ status: 'open' })[0];
+    db.prepare('UPDATE positions SET created_at = ? WHERE id = ?').run(Date.now() - 60 * 60 * 1000, pos.id);
+    return { pos, quantity };
+  }
+  /** The broker's holdings read: `shares` of stock, and 3 calls beside them.
+   *  Answers the way accountState.ts does — the stock instrument sees shares
+   *  only, and a read with no instrument sees the per-underlying sum. */
+  function brokerHolds(shares: number) {
+    mockAccountState.mockImplementation(
+      async (_account, _symbol, instrument) =>
+        ({
+          ...okAccountState,
+          state: {
+            ...okAccountState.state,
+            currentPositionQty: instrument?.assetKind === 'stock' ? shares : shares + 3,
+          },
+        }) as Awaited<ReturnType<typeof webullAccountState>>,
+    );
+  }
+  const optionsClose = {
+    clientOrderId: 'opt-close',
+    symbol: 'MRNA',
+    side: 'sell' as const,
+    status: 'OPEN',
+    comboType: 'NORMAL',
+    orderType: 'LIMIT',
+    limitPrice: 2.15,
+    quantity: 3,
+    instrumentType: 'OPTION',
+  };
+
+  it('the protection sweep reads SHARES: a stop that filled while calls are held is closed, not naked', async () => {
+    await agedMrnaPosition();
+    brokerHolds(0);
+    vi.mocked(listWebullOpenOrders).mockResolvedValueOnce({ ok: true, orders: [] });
+
+    const outcomes = await checkLiveBracketProtection();
+
+    expect(outcomes[0]).toMatchObject({ symbol: 'MRNA', heldAtBroker: 0 });
+    expect(String(outcomes[0].unknown)).toMatch(/the position is closed, not unprotected/);
+    // Nothing sent: a re-arm or a breach close here would be a SELL of shares
+    // nobody holds, stopped only if the broker refuses it.
+    expect(webullPlaceStandaloneBracket).not.toHaveBeenCalled();
+    expect(mockPlaceOrder).toHaveBeenCalledTimes(1); // the entry, and only the entry
+  });
+
+  it("the protection sweep does not read the options sleeve's close as the shares' take-profit", async () => {
+    const { quantity } = await agedMrnaPosition();
+    brokerHolds(quantity);
+    vi.mocked(listWebullOpenOrders).mockResolvedValueOnce({ ok: true, orders: [optionsClose] });
+    vi.mocked(webullPlaceStandaloneBracket).mockResolvedValueOnce({ ok: true, clientComboOrderId: 'GRP-REARM' });
+
+    await checkLiveBracketProtection();
+
+    // The shares are naked and nothing of theirs rests, so they are re-armed —
+    // not held back behind a "take-profit" that is really the call's close.
+    expect(webullPlaceStandaloneBracket).toHaveBeenCalledTimes(1);
+    expect(webullCancelOrder).not.toHaveBeenCalled();
+  });
+
+  it("a time exit's bracket clear cancels the shares' legs and never the options sleeve's close", async () => {
+    const { intentId, quantity } = await mrnaStockOrder();
+    const leg = {
+      comboOrderId: 'GRP-1',
+      symbol: 'MRNA',
+      side: 'sell' as const,
+      status: 'OPEN',
+      quantity,
+      instrumentType: 'EQUITY',
+    };
+    const stop = { ...leg, clientOrderId: 'sl-1', comboType: 'STOP_LOSS', orderType: 'STOP_LOSS', stopPrice: 95 };
+    const target = { ...leg, clientOrderId: 'tp-1', comboType: 'STOP_PROFIT', orderType: 'LIMIT', limitPrice: 110 };
+    vi.mocked(listWebullOpenOrders)
+      .mockResolvedValueOnce({ ok: true, orders: [stop, target, optionsClose] })
+      // The re-scan: the shares' legs are gone; the call's close is still working.
+      .mockResolvedValueOnce({ ok: true, orders: [optionsClose] });
+    vi.mocked(webullCancelOrder).mockResolvedValue({ ok: true });
+
+    const outcome = await cancelLiveBracketExitLegs(getIntent(intentId)!, 'ACC1');
+
+    expect(outcome.ok).toBe(true);
+    expect(
+      vi
+        .mocked(webullCancelOrder)
+        .mock.calls.map((c) => c[1])
+        .sort(),
+    ).toEqual(['sl-1', 'tp-1']);
+  });
+
+  it("names the options sleeve's contract as the holder of a skipped name, not the operator", async () => {
+    setAutotradeConfig({ liveAccountId: 'ACC1', killSwitch: false });
+    createLiveOptionsPosition({
+      symbol: 'MRNA',
+      side: 'call',
+      contractSymbol: 'MRNA260925C00195000',
+      strike: 195,
+      expiration: '2026-09-25',
+      quantity: 3,
+      entryPrice: 2.84,
+      riskAmount: 852,
+      riskProfile: 'MODERATE',
+      rationale: 'fixture',
+      accountId: 'ACC1',
+    });
+    brokerRow('option', 3, 2.84);
+    mockGetProvider.mockReturnValue(quoteReturning({ MRNA: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+
+    const [outcome] = await runLiveExecution([{ signal: signal({ symbol: 'MRNA' }) }]);
+
+    // The refusal is unchanged; only who it names is.
+    expect(outcome).toMatchObject({ ok: false, reason: 'Already has an open live position (options_sleeve)' });
+    const rows = listAutotradeEvents({ actions: ['live_symbol_held_skipped'], limit: 5 });
+    expect(JSON.parse(rows[0].detail ?? '{}')).toMatchObject({ holder: 'options_sleeve' });
+  });
+
+  it('an option the operator holds by hand is still named manual', async () => {
+    setAutotradeConfig({ liveAccountId: 'ACC1', killSwitch: false });
+    brokerRow('option', 3, 2.84); // no options-sleeve position on MRNA
+    mockGetProvider.mockReturnValue(quoteReturning({ MRNA: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+
+    await runLiveExecution([{ signal: signal({ symbol: 'MRNA' }) }]);
+
+    const rows = listAutotradeEvents({ actions: ['live_symbol_held_skipped'], limit: 5 });
+    expect(JSON.parse(rows[0].detail ?? '{}')).toMatchObject({ holder: 'manual' });
+  });
+
+  it('every holdings read in the stock sleeve names the stock instrument', () => {
+    // A two-argument webullAccountState(account, symbol) is the per-underlying
+    // aggregate. stockAccountState is the one way this file asks; this keeps a
+    // seventh read from being written the old way.
+    const src = fs.readFileSync(path.resolve(__dirname, '../src/services/autotrading/liveExecute.ts'), 'utf8');
+    expect(src.match(/webullAccountState\(\s*[^,()]+,\s*[^,()]+\)/g) ?? []).toEqual([]);
   });
 });

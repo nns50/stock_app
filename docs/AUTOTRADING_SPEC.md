@@ -8735,7 +8735,9 @@ would otherwise write a row every tick for the whole hold), with a `holder`
 field of `autotrade` / `manual` / `pending_order`. The three are not the same
 finding and must not pool: an autotrade hold is the book working as designed, a
 manual hold is the operator unknowingly muting a name, and a working order is a
-transient that clears in a tick or two.
+transient that clears in a tick or two. (A fourth, `options_sleeve`, was added on
+2026-09-23: until then the options sleeve's own contracts read as `manual`. See that
+day's (twentieth) section.)
 
 The advisor gives this class **no config field** on purpose. One position per
 symbol is a structural rule, not a setting; the levers that change how often it
@@ -13746,3 +13748,73 @@ full-size bracket, both on top of a bracket that may be resting. It is now sent 
 **Check.** No `live_bracket_rearm_target_cancelled` row names a leg whose `combo_type` was not
 `STOP_PROFIT`. A position with a hand-placed sell limit and no stop pages with "not labelled as
 a bracket's take-profit".
+
+## 2026-09-23 (twentieth) — a stock order is shares, not an option on the same name
+
+**What happened.** At 09:37 both sleeves bought MRNA: the stock sleeve 129 shares (entry
+186.22, stop 181.16, target 190.45), the options sleeve 3 calls (195 strike, 2026-09-25, at
+2.84). The generic broker sync imports every holding into `positions` as an untagged
+`['webull']` row under the symbol, so the two holdings became row 690 (the shares) and row 692
+(the call). When the stock order's fill reconciled at 09:38:39, `materializeEntryFill` looked
+for an untagged row on MRNA to link rather than create a duplicate, newest first, and took 692.
+The call was tagged `autotrade` with the shares' stop and target. When the options sleeve sold
+the call, the sync closed row 692 at an estimated 1.56, and the stock book booked −$384 it
+never lost (the options book booked the same call correctly, −$207). The shares' take-profit
+filled at 190.45 (about +$546) against row 690, which nothing had tagged, so the stock book
+never counted it. At 10:23 the daily halt read the booked day at −$2,046.47 against a line of
+−$1,941.67 and tripped; the real figure was about −$1,117 (−4.3%). No entry was placed for the
+rest of the session.
+
+**The rule.** A stock order fills in shares, so only a `stock` row can be its fill:
+`materializeEntryFill` and `adoptOrphanedLivePositions` both now require `assetType ===
+'stock'`. The comment that justified the symbol-only match ("an orphan for this symbol
+appearing before the fill reconciles can only be this fill") was true while one sleeve traded
+the names. It stopped being true once the options sleeve traded them too. The adoption pass also consumes an
+order once it matches, so one order adopts one holding. It used to adopt every untagged row
+on the symbol, each link overwriting the last.
+
+**The same confusion, one layer down.** Two other reads keyed on the symbol alone.
+
+1. **The broker holding.** `webullAccountState(account, symbol)` without an instrument returns
+   the per-underlying sum: shares plus every option contract on the name. The manual order
+   paths pass their instrument, and the options sleeve feeds its guardrails its own ledger
+   quantity. The stock sleeve asked for the sum at all six of its reads (entry, protection
+   sweep, time exit, scale-out, scale-in, per-lot second lots), and the protect-a-long route
+   asked the same way. The protection sweep reads "holds 0" as closed, so a stop that filled
+   while the options sleeve still held calls on the name read as naked shares: the sweep paged
+   and sent a re-arm, or a close through the stop, for shares no longer held. Those orders go out as
+   SELL, not SHORT, so the broker should refuse them. But the app's own `naked_short` check,
+   which exists so that no sell depends on that, was reading the padded count. All six reads
+   now go through `stockAccountState` (the stock instrument), the route asks for the stock,
+   and a source scan fails if a two-argument read comes back into `liveExecute.ts`.
+2. **The open-orders list.** An options order carries the underlying as its symbol. So the
+   options sleeve's working close on a call is, by symbol and side, a resting SELL LIMIT on
+   the shares, and `classifyExitLeg` reads a LIMIT as a take-profit. A time exit's bracket clear
+   cancelled every resting sell on the symbol, the options sleeve's close included. The
+   protection sweep read that close as a take-profit resting without its stop, and held back
+   from re-arming (until the (nineteenth) change this morning it cancelled it). The
+   protect-a-long route counted its contracts as shares already committed. The open-orders
+   parse now keeps `instrument_type` (from the order, else its envelope). `restingExitOrders`,
+   `unreadableOpenOrders` and `committedProtectiveQuantity` skip an order positively labelled
+   `OPTION`. An order whose type cannot be read is still treated as a possible stock leg, so
+   a response without the field behaves exactly as before.
+
+**Measurement.** The held-symbol skip (`live_symbol_held_skipped`) named the options sleeve's
+contracts `manual`. All four of 09-23's `manual` rows (AMZN, DELL, HOOD and TSLA) were the
+sleeve's own contracts. They are now `options_sleeve`. The refusal is unchanged. The stock sleeve
+still does not enter a name the options sleeve holds. The options sleeve still enters a name
+the stock sleeve holds (CRWD at 10:13, beside the 09:51 shares). Both can enter one name in
+the same minute (MRNA). Whether the two sleeves may stack on one name is a sizing decision,
+not a defect, and it is left as it is.
+
+**Not changed.** The options sleeve's own reads: its exits hand the guardrails its ledger
+quantity, and its entries are buys, which neither `naked_short` nor the per-symbol quantity
+cap (disabled for both sleeves) reads.
+
+**Today's ledger** is corrected by hand after the close: row 692 is untagged, row 690 is booked
+as the loop's trade at its 190.45 fill, and the day is re-recorded.
+
+**Check.** No `live_position_adopted` or `live_position_linked_to_adopted` row names a position
+whose `assetType` is not `stock`. `GET /api/autotrade/live/open-orders` shows `instrumentType`
+on each order (`EQUITY` on the bracket legs). On the next day both sleeves hold one name, no
+options close appears among the orders a stock time exit cancels.
