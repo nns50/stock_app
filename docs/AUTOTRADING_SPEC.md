@@ -14330,3 +14330,37 @@ behaviour.
   nature still counts;
 - the advisor counts and recommends on defects only, and leads with the tuning headline
   when none is left.
+## 2026-09-23 (thirtieth) — an entry the lists never show is booked from the history
+
+DELL's stop filled at 10:47. Its exit was booked at a quote, 19 shares at $551.878
+`manual`. The correction pass looks up the entry's orders by the entry's client order id.
+It found them in neither the open list nor the history, and was still asking hours later
+(`cause: not_listed_yet`). The bracket's leg had been edited by hand in Webull.
+
+Waiting could never settle it. At seven days it would have aged out on the estimate. And
+the pass only ever read the history's fills when the entry's combo was listed and no leg
+had filled, the hand-sale case. The fills that closed DELL are separate envelopes in the
+history, under the legs' own ids, which is exactly what that match reads.
+
+**Fixed:** an estimate whose entry neither list shows goes to the same history match.
+- When the fills add up, it is booked with `source: unlisted_entry` and the fill's kind as
+  `fillKind` (`outside_bracket` for a stop or target, `broker_history` for a plain sale).
+  Which bracket a stop belonged to cannot be told when the entry is not listed, so
+  "`outside_bracket`: a bracket that did not hold" would be a guess.
+- When nothing adds up, it waits (`not_listed_yet`) inside the seven-day window and ages
+  out after it, as before.
+- The app's own orders are never matched, and each fill is still booked to one exit.
+
+The scan reads the new source under its own label, `live_exit_corrected|unlisted_entry`.
+
+**Pre-committed check,** on the next pass after the deploy: DELL's exit 709 reads
+`live_exit_corrected` with `source: unlisted_entry`, if its fill is still inside the
+seven-day history (the entry was placed 2026-09-23, so until 2026-09-30).
+
+**Tests (each mutation-checked):**
+- the DELL shape: an unlisted entry is booked from a stop fill in the history, is final,
+  writes no skip, and reads under its own label in the scan;
+- a plain hand sale on an unlisted entry is booked with its kind and reason;
+- an app order in the history is never matched, and the estimate waits and is asked
+  again.
+
