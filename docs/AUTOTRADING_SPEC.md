@@ -13405,3 +13405,40 @@ What remains in `no_live_row` after this is mostly August and early September. B
 2026-09-12, several refusals wrote no row at all (the (second) through (eighth) sections).
 As those sessions leave the 40-session window, the class shrinks by itself. Anything still
 there from after 09-12 is a real gap.
+
+## 2026-09-23 (thirteenth) — an options hand close that never matches says so, once
+
+**Result of #647's deploy (first pass 02:06 ET).** The (eleventh) pre-committed check held
+exactly:
+
+- HOOD #650 was corrected to $117.56 `target`, P&L +$418.84 → +$411.70.
+- MRNA #680 was corrected to $179.67 `stop`, P&L +$49.34 → +$1.84: a trailing-stop exit the
+  sync had booked as a `manual` win.
+- 09-18 now reads +$379.68 and 09-22 −$93.09 (09-21 −$54.53, from LITE's correction).
+- The scan's `live_exit_correction_skipped` finding reads zero. All eight estimates the
+  (seventh) section named are resolved: four bracket legs, three hand sales, and one stop
+  placed outside the bracket.
+
+**The options twin had the same silence.** `correctHandClosesFromHistory` re-reads, every 15
+minutes, any single-leg hand close the history has not matched. Unmatched meant `continue`,
+with no statement and no end: one the history can never match (you sold part of it, or
+traded the contract again) was re-read for seven days and never said anything.
+
+**Change.**
+
+- After the close's own day, an unmatched hand close is stated once as
+  **`live_options_exit_correction_skipped`**, with the contract, the quantity booked and
+  every sale of that contract since the position opened. The app's own sales are flagged.
+- It is not read again. The statement is checked against the journal, so a restart re-reads
+  it once and states nothing twice.
+- The matcher and the statement read the same sales through one filter (`contractSells`), so
+  what the row says was read is what the matcher saw.
+- The row is a leak-scan execution finding.
+
+**Tested.** A two-contract hand close of which the history holds one contract's sale, moved to
+yesterday:
+
+- It is stated once, with that sale listed, and its estimate is kept.
+- The scan counts it.
+- The next pass reads nothing, and a restart re-reads once without a second row.
+- On the close's own day an unmatched read states nothing.
