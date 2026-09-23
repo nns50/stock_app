@@ -13340,3 +13340,68 @@ estimates:
 - **MRNA #680** must be corrected to $179.67 `stop` (P&L +$49.34 → +$1.84, about −$47.49).
 - 09-18 and 09-22 must be re-recorded by those amounts.
 - The scan's `live_exit_correction_skipped` finding must then read zero.
+
+## 2026-09-23 (twelfth) — the 53 unexplained entries, read one at a time
+
+The attribution's `no_live_row` class held **53 paper entries (+4.42R)** after the (eighth)
+change. Its entries became readable with #646 (`trades` on each class), and read one by one
+they were not 53 unexplained decisions. Two defects in the attribution put decisions the
+journal DOES explain there.
+
+**1. The live trade went to the wrong paper entry.** The paper book re-enters a name all day
+(BIAF ten times on 09-03, CRML and USDE four times each on 09-21). The live book enters once.
+Pairing walked the paper list and gave each entry the nearest live trade still unused, so a
+later re-entry that came first in the list took the live trade. The paper entry made in the
+same tick as the live one was left over and read `no_live_row`. Seven of the 53 are exactly
+that, all at 09:36 on a name the live book traded that morning: USDE 09-21, COIN 09-21, USDE
+09-18, SWKS 09-15, IRD 09-09, IOT 09-04 and BIAF 09-03. The same mistake paired the live trade
+with the wrong decision in the paired difference (`meanDiffR` −0.03 over 42 pairs, 95% CI
+−0.27…+0.21).
+
+**2. Four refusals the live path writes were never attribution classes.** They are written
+with a symbol at the moment the live book declined, or failed to place, a candidate paper
+also saw:
+
+- `level_veto`: live-only by design, with the paper book as its control. TWST 09-17 12:32
+  is one.
+- `live_entry_blocked`: a guardrail refused the order at placement.
+- `live_entry_failed`: the broker or its preview refused it. CRML 09-21 09:36 is one: the
+  live book tried, and Webull answered "Buying power is insufficient".
+- `live_order_outcome_unknown`: an unanswered placement.
+
+The guard added for once-a-day skips on 09-12 reads only that writer, so these four went
+past it.
+
+**Change.**
+
+- **Pairing ranks every same-symbol, same-session pair by its gap.** The live trade goes to
+  the paper entry nearest it, whatever order the lists are in. The count of pairs cannot
+  change, only which paper entries they are.
+- **The four actions are attribution classes.** They are per-event, so they match within the
+  minute of the paper entry. The level veto's class carries the paper R of the entries it
+  refused, which is the evidence for or against the veto.
+- **A guard accounts for every action `liveExecute.ts` writes.** Each is either an
+  attribution class or named as not an entry refusal, with the reason. A new action fails the
+  test until someone decides which it is. The list also fails if it names an action the file
+  no longer writes.
+
+**Tested.** COIN's shape, two paper entries and one live, pairs the 09:36 twin in both list
+orders: `meanDiffR` reads 0.98, not 1.08. The 10:02 re-entry is filed under the re-entry
+cooldown. At the database, a `live_entry_failed` row and a `level_veto` row classify their
+paper entries, and nothing reads `no_live_row`. Restoring the old pairing fails the pairing
+case, and removing `level_veto` from the classes fails the guard.
+
+**Pre-committed check.** On the first scan after the deploy:
+
+- The untaken total stays **134**, and paired trades stay **42**.
+- `no_live_row` falls from 53. The 7 twins leave it for the paired count. The 7 re-entries
+  they displace are classified by the journal where it has a row for them. The four new
+  classes take what they explain.
+- **USDE, COIN, SWKS, IRD, IOT and BIAF at 09:36 must not be in `no_live_row`.** If any is,
+  the pairing is still wrong.
+- `meanDiffR` moves, because seven pairs now compare the same decision.
+
+What remains in `no_live_row` after this is mostly August and early September. Before
+2026-09-12, several refusals wrote no row at all (the (second) through (eighth) sections).
+As those sessions leave the 40-session window, the class shrinks by itself. Anything still
+there from after 09-12 is a real gap.

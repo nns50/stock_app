@@ -2188,7 +2188,13 @@ monotone shape, rule out the measurement before believing the market.
   as what it says: a tick where the journal has nothing for the name at all. Each class
   lists its entries (`trades`: symbol, date, ET time and paper R, newest first) since
   2026-09-23, so an unexplained count can be checked against the journal one trade at a
-  time instead of being argued about as a number.
+  time instead of being argued about as a number. Read that way, the 53 held seven paper
+  entries the live book took in the same tick. They lost their live twin to a later paper
+  re-entry, because pairing ran in list order. It now ranks every same-day pair by its gap.
+  Four refusals the live path writes are classes too: the **level veto** (live-only, so its
+  class is the paper control for the veto), a guardrail block at placement, a broker
+  refusal (`live_entry_failed`, such as "Buying power is insufficient") and an unanswered
+  placement.
 
   Two classes are matched by **time rather than symbol** (2026-09-12), because they are
   decided for the whole tick before any candidate is looked at and so carry a count and no

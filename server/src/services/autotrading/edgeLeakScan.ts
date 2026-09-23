@@ -787,21 +787,45 @@ export function buildAttribution(
     else liveByKey.set(key, [t]);
   }
 
+  // CLOSEST PAIRS FIRST, across the whole symbol-day (2026-09-23). Same
+  // symbol, same session, nearest in time — see this function's header for why
+  // there is no seconds-wide window. The pairing used to walk the paper list
+  // and hand each entry the nearest live trade still unused. The paper book
+  // re-enters a name all day (BIAF ten times on 09-03, USDE four on 09-21)
+  // while the live book enters once, so whichever re-entry came first in the
+  // list took the live trade, and the paper entry made in the SAME tick as it
+  // was left over and read `no_live_row`: a decision the live book took,
+  // reported as one it never saw. It also paired the live trade with the wrong
+  // decision in `meanDiffR`. Every candidate pair is ranked by its gap instead,
+  // so the live trade goes to the paper entry nearest it, whatever the order.
   const diffs: number[] = [];
   const pairGapsMs: number[] = [];
   const untakenTrades: { trade: LeakTrade; reason: string }[] = [];
-  const usedLiveIds = new Set<string>();
+  const candidatePairs: { p: LeakTrade; l: LeakTrade; gap: number }[] = [];
   for (const p of paper) {
-    // Same symbol, same session, nearest in time — see this function's header
-    // for why there is no longer a seconds-wide window here.
-    const candidates = (liveByKey.get(`${p.symbol}|${p.etDate}`) ?? []).filter((l) => !usedLiveIds.has(l.id));
-    const match = candidates.sort((a, b) => Math.abs(a.entryAt - p.entryAt) - Math.abs(b.entryAt - p.entryAt))[0];
-    if (match) {
-      usedLiveIds.add(match.id);
-      diffs.push(match.r - p.r);
-      pairGapsMs.push(Math.abs(match.entryAt - p.entryAt));
-      continue;
+    for (const l of liveByKey.get(`${p.symbol}|${p.etDate}`) ?? []) {
+      candidatePairs.push({ p, l, gap: Math.abs(l.entryAt - p.entryAt) });
     }
+  }
+  candidatePairs.sort(
+    (a, b) =>
+      a.gap - b.gap ||
+      a.p.entryAt - b.p.entryAt ||
+      a.l.entryAt - b.l.entryAt ||
+      a.p.id.localeCompare(b.p.id) ||
+      a.l.id.localeCompare(b.l.id),
+  );
+  const pairedPaperIds = new Set<string>();
+  const usedLiveIds = new Set<string>();
+  for (const { p, l, gap } of candidatePairs) {
+    if (pairedPaperIds.has(p.id) || usedLiveIds.has(l.id)) continue;
+    pairedPaperIds.add(p.id);
+    usedLiveIds.add(l.id);
+    diffs.push(l.r - p.r);
+    pairGapsMs.push(gap);
+  }
+  for (const p of paper) {
+    if (pairedPaperIds.has(p.id)) continue;
     untakenTrades.push({ trade: p, reason: classifyUntaken(p, skips, batchRefusals) });
   }
 

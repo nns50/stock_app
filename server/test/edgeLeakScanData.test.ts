@@ -1089,6 +1089,75 @@ describe('the execution findings — any occurrence is one', () => {
     expect(scan.coverage.journalSkipsTruncated).toBe(false);
   });
 
+  // 2026-09-23. Two defects put decisions the journal DOES explain into
+  // `no_live_row`, and both are asserted here on the report the route returns.
+  describe('what the live journal already says, read by the attribution', () => {
+    const paperAt = (symbol: string, at: number, exitPrice: number) => {
+      const p = openPaperPosition({
+        symbol,
+        side: 'buy',
+        quantity: 10,
+        entryPrice: 100,
+        stopPrice: 95,
+        targetPrice: 110,
+        riskAmount: 50,
+        riskProfile: 'MODERATE',
+        rationale: 'fixture',
+      });
+      db.prepare('UPDATE autotrade_paper_positions SET entry_at = ? WHERE id = ?').run(at, p.id);
+      closePaperPosition(p.id, { exitPrice, exitReason: exitPrice > 100 ? 'target' : 'stop' });
+    };
+    const journal = (symbol: string, action: string, at: number) =>
+      db
+        .prepare(
+          "INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) VALUES (?,'execution',?,'{}',NULL,?)",
+        )
+        .run(symbol, action, at);
+    const untaken = () =>
+      new Map(
+        runEdgeLeakScanFromDb({ now: Date.parse('2026-09-11T21:00:00Z') }).attribution.untaken.map((u) => [
+          u.reason,
+          u,
+        ]),
+      );
+
+    it('files a broker refusal and a level veto under their own names', () => {
+      // CRML, 09-21 09:36: the live book tried and Webull answered "Buying
+      // power is insufficient". TWST, 09-17 12:32: the level veto, live-only.
+      const crml = etDateTimeToMs('2026-09-10', '09:36') as number;
+      const twst = etDateTimeToMs('2026-09-10', '12:32') as number;
+      paperAt('CRML', crml + 53_000, 110);
+      journal('CRML', 'live_entry_failed', crml + 59_000);
+      paperAt('TWST', twst + 42_000, 95);
+      journal('TWST', 'level_veto', twst + 42_000);
+
+      const byReason = untaken();
+      expect(byReason.get('live_entry_failed')?.n).toBe(1);
+      expect(byReason.get('level_veto')?.n).toBe(1);
+      expect(byReason.has('no_live_row')).toBe(false);
+    });
+
+    it('pairs the live entry with the paper entry made in the same tick, not a later re-entry', () => {
+      // COIN, 09-21: live 09:36, paper 09:36:53 and again 10:02:07.
+      seedClosedAutotradeSessions({
+        sessions: { '2026-09-10': [{ entryTime: '09:36', exitTime: '09:41', r: -0.1, symbol: 'COIN' }] },
+      });
+      paperAt('COIN', (etDateTimeToMs('2026-09-10', '09:36') as number) + 53_000, 95);
+      const reentry = (etDateTimeToMs('2026-09-10', '10:02') as number) + 7_000;
+      paperAt('COIN', reentry, 95);
+      journal('COIN', 'symbol_reentry_cooldown_skipped', reentry);
+
+      const scan = runEdgeLeakScanFromDb({ now: Date.parse('2026-09-11T21:00:00Z') });
+      expect(scan.attribution.pairedTrades).toBe(1);
+      expect(scan.attribution.medianPairGapMinutes).toBeCloseTo(0.88, 2);
+      const byReason = new Map(scan.attribution.untaken.map((u) => [u.reason, u]));
+      expect(byReason.get('symbol_reentry_cooldown_skipped')?.trades).toEqual([
+        expect.objectContaining({ symbol: 'COIN', entryTimeEt: '10:02' }),
+      ]);
+      expect(byReason.has('no_live_row')).toBe(false);
+    });
+  });
+
   it('carries the recency all the way into the finding a route returns', () => {
     // The consumer, not the producer: the tune advisor ranks on these two
     // fields, so what matters is that they survive the trip from the journal
