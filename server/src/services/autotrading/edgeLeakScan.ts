@@ -282,6 +282,46 @@ export interface AttributionReport {
   meanEntryBufferConsumedPct: number | null;
   /** Paper entries with no live twin, by why the live book did not take it. */
   untaken: UntakenClass[];
+  /** Every pair, newest first (2026-09-23). `meanDiffR` said the live book
+   *  trailed paper by 0.17R a trade on the same decisions and could not say
+   *  where: a mean over pairs nobody could see. */
+  pairs: AttributionPair[];
+  /** The pairs entered inside one tick (PAIR_TOLERANCE_MS): the same decision
+   *  at the same price, so what separates the two R figures is the exit alone.
+   *  This is the reading the tune advisor takes off paper's R before it prices
+   *  a refused entry. See tuneAdvisor.ts's flowRecommendations. */
+  sameTick: SameTickReading;
+  /** Option trades left out, per book. The attribution is EQUITY-ONLY by
+   *  construction; see buildAttribution. */
+  optionsExcluded: { live: number; paper: number };
+}
+
+/** One paper entry and the live entry it was paired with. */
+export interface AttributionPair {
+  symbol: string;
+  etDate: string;
+  /** ET wall clock, HH:MM; null when unknown. */
+  paperEntryTimeEt: string | null;
+  liveEntryTimeEt: string | null;
+  /** Live entry minus paper entry, in minutes: negative when live was first.
+   *  The live time is the PLACEMENT minute, truncated. */
+  liveLagMinutes: number;
+  paperR: number;
+  liveR: number;
+  /** liveR − paperR. */
+  diffR: number;
+  paperExitReason: string | null;
+  liveExitReason: string | null;
+  /** Both entries inside PAIR_TOLERANCE_MS of each other. */
+  sameTick: boolean;
+}
+
+export interface SameTickReading {
+  n: number;
+  /** Mean (live R − paper R) over the same-tick pairs. Null when there are none. */
+  meanDiffR: number | null;
+  ciLow: number | null;
+  ciHigh: number | null;
 }
 
 /** How far apart two entries on the same symbol and date may be and still be
@@ -769,8 +809,8 @@ export function buildDayLevel(live: LeakTrade[], sessionDates: string[], storedT
  * this name today", and a tight window is right for the first.
  */
 export function buildAttribution(
-  live: LeakTrade[],
-  paper: LeakTrade[],
+  liveTrades: LeakTrade[],
+  paperTrades: LeakTrade[],
   skips: JournalSkip[],
   /** The batch-level live refusals in the window — the ones that name no
    *  symbol. See classifyUntaken. */
@@ -779,6 +819,24 @@ export function buildAttribution(
   entryLimitBufferPct: number,
   rng: () => number,
 ): AttributionReport {
+  // EQUITY ONLY, BY CONSTRUCTION (2026-09-23). Both books carry their option
+  // trades as LeakTrades, for the dimensions that cut by asset kind, and this
+  // function used to take them too. Nothing matched on kind, so it paired
+  // across it: on the deployed book 2 of 42 pairs set an option in one book
+  // against a stock trade in the other on the same name and day (SMCI 09-04,
+  // COIN 09-18), and 4 more paired options with options. The stock pairs are
+  // the other 36. Worse, the 32 paper option entries left unpaired were filed
+  // by classifyUntaken against the STOCK path's refusals, because the skip
+  // list holds nothing else. So 7 of the 10 entries under the live score floor
+  // were options (-1.03R of them), and so were 8 of the 11 under the ATR gate.
+  // The live options sleeve refuses through its own gates (the one-at-a-time
+  // rule, the entry cutoff, the premium ceiling), none of which is on the list,
+  // so there is no honest class to put an option in here. They are counted,
+  // not classified.
+  const live = liveTrades.filter((t) => t.assetKind === 'equity');
+  const paper = paperTrades.filter((t) => t.assetKind === 'equity');
+  const optionsExcluded = { live: liveTrades.length - live.length, paper: paperTrades.length - paper.length };
+
   const liveByKey = new Map<string, LeakTrade[]>();
   for (const t of live) {
     const key = `${t.symbol}|${t.etDate}`;
@@ -817,12 +875,15 @@ export function buildAttribution(
   );
   const pairedPaperIds = new Set<string>();
   const usedLiveIds = new Set<string>();
-  for (const { p, l, gap } of candidatePairs) {
+  const pairs: { p: LeakTrade; l: LeakTrade; gap: number }[] = [];
+  for (const pair of candidatePairs) {
+    const { p, l, gap } = pair;
     if (pairedPaperIds.has(p.id) || usedLiveIds.has(l.id)) continue;
     pairedPaperIds.add(p.id);
     usedLiveIds.add(l.id);
     diffs.push(l.r - p.r);
     pairGapsMs.push(gap);
+    pairs.push(pair);
   }
   for (const p of paper) {
     if (pairedPaperIds.has(p.id)) continue;
@@ -838,6 +899,24 @@ export function buildAttribution(
 
   const sig = computeSignificanceStats(
     diffs.map((d) => ({ pnl: d })),
+    { rng },
+  );
+  // THE SAME TICK. Both books read one `decision.signals` per tick, paper
+  // first, so a pair inside PAIR_TOLERANCE_MS is one decision filled at one
+  // price: on the deployed book the fourteen such pairs differ at entry by
+  // 0.00R on average. Whatever separates their R is what happened after the
+  // fill: paper's stop is checked on a once-a-minute quote and books at the
+  // stop price, the live stop rests at the broker and fills on the first
+  // print through it. IRD 09-09 is the pattern at its plainest. Paper entered
+  // at 09:36:31 at 6.31 and live placed at 09:36:34. The live stop at 6.15
+  // had filled at 6.13 by 09:39:45. None of paper's once-a-minute quotes read
+  // at or under 6.15. Its 09:39:42 quote read 6.39, and it went on to +0.40R.
+  //
+  // Drawn AFTER `sig`, so the paired interval keeps the random draws it had
+  // before this reading existed.
+  const sameTickDiffs = pairs.filter((x) => x.gap <= PAIR_TOLERANCE_MS).map((x) => x.l.r - x.p.r);
+  const sameTickSig = computeSignificanceStats(
+    sameTickDiffs.map((d) => ({ pnl: d })),
     { rng },
   );
   return {
@@ -870,6 +949,28 @@ export function buildAttribution(
           })),
       }))
       .sort((a, b) => b.paperTotalR - a.paperTotalR),
+    pairs: [...pairs]
+      .sort((a, b) => b.p.entryAt - a.p.entryAt || a.p.id.localeCompare(b.p.id))
+      .map(({ p, l, gap }) => ({
+        symbol: p.symbol,
+        etDate: p.etDate,
+        paperEntryTimeEt: p.entryMinuteEt === null ? null : hhmm(p.entryMinuteEt),
+        liveEntryTimeEt: l.entryMinuteEt === null ? null : hhmm(l.entryMinuteEt),
+        liveLagMinutes: round2((l.entryAt - p.entryAt) / 60_000),
+        paperR: round4(p.r),
+        liveR: round4(l.r),
+        diffR: round4(l.r - p.r),
+        paperExitReason: p.exitReason,
+        liveExitReason: l.exitReason,
+        sameTick: gap <= PAIR_TOLERANCE_MS,
+      })),
+    sameTick: {
+      n: sameTickDiffs.length,
+      meanDiffR: sameTickSig.expectancy === null ? null : round4(sameTickSig.expectancy),
+      ciLow: sameTickSig.ciLow,
+      ciHigh: sameTickSig.ciHigh,
+    },
+    optionsExcluded,
   };
 }
 
@@ -1457,8 +1558,8 @@ export function reentryCooldownFinding(
         detail:
           `Setting symbolReentryCooldownMinutes to ${best.minMinutesSinceExit} admits a second entry per symbol-day, ` +
           'which ADDS exposure — the operator’s call, never applied by the app. Confirm on a second evening, and take ' +
-          'the attribution’s paired live-minus-paper difference off the replayed mean first: the replay fills where ' +
-          'the paper book fills.',
+          'the attribution’s same-tick difference (live minus paper on the same entry) off the replayed mean first: ' +
+          'the replay fills where the paper book fills.',
       },
     },
   ];

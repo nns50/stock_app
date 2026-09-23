@@ -3,7 +3,9 @@ import { defaultAutotradeConfig } from '../src/db/autotradeConfig';
 import {
   buildTuneAdvice,
   fieldForUntakenReason,
+  liveDifferenceOnSameEntryR,
   REVIEW_SESSIONS,
+  SAME_TICK_MIN_PAIRS,
   TuneAdvisorInput,
 } from '../src/services/autotrading/tuneAdvisor';
 
@@ -69,6 +71,11 @@ function scan(over: Record<string, unknown> = {}) {
       pValue: null,
       meanEntrySlippagePct: 0.2,
       untaken: [],
+      pairs: [],
+      // No same-tick reading by default, so paper's R is used as it stands and
+      // the flow tests below are not also testing the live pricing.
+      sameTick: { n: 0, meanDiffR: null, ciLow: null, ciHigh: null },
+      optionsExcluded: { live: 0, paper: 0 },
     },
     coverage: {
       liveTrades: 100,
@@ -652,6 +659,68 @@ describe('recommendations that are code, not settings', () => {
     expect(JSON.stringify(veto)).toMatch(/the level veto/);
     const failed = a.recommendations.find((r) => r.id === 'flow:live_entry_failed');
     expect(JSON.stringify(failed)).toMatch(/the broker refusing the order/);
+  });
+
+  // 2026-09-23. A refused entry was priced at what PAPER made of it. On
+  // fourteen same-tick pairs (one decision, one price) the live book made
+  // 0.19R a trade less, because paper checks its stop once a minute and books
+  // it at the stop price while live's rests at the broker. An entry admitted to
+  // the live book is filled the live way.
+  describe('a refused entry is priced the way the live book fills it', () => {
+    const withSameTick = (
+      untaken: { reason: string; n: number; paperMeanR: number; paperTotalR: number }[],
+      sameTick: { n: number; meanDiffR: number | null } | undefined,
+    ) => {
+      const base = scan().attribution;
+      const attribution = {
+        ...base,
+        untaken: untaken.map((u) => ({ ...u, trades: [] })),
+        ...(sameTick ? { sameTick: { ...sameTick, ciLow: null, ciHigh: null } } : {}),
+      };
+      if (!sameTick) delete (attribution as { sameTick?: unknown }).sameTick;
+      return advise({ scan: scan({ attribution }) });
+    };
+    const floor = (paperMeanR: number) => ({
+      reason: 'live_score_floor_skipped',
+      n: 10,
+      paperMeanR,
+      paperTotalR: paperMeanR * 10,
+    });
+    const rec = (a: ReturnType<typeof advise>) =>
+      a.recommendations.find((r) => r.id === 'flow:live_score_floor_skipped');
+
+    it('drops a class the live book would not have made money on', () => {
+      // +0.15R in paper, -0.05R once the measured -0.20R is applied.
+      expect(rec(withSameTick([floor(0.15)], { n: SAME_TICK_MIN_PAIRS, meanDiffR: -0.2 }))).toBeUndefined();
+    });
+
+    it('ranks a class that survives the difference at the live figure, and says both', () => {
+      const r = rec(withSameTick([floor(0.5)], { n: SAME_TICK_MIN_PAIRS, meanDiffR: -0.2 }));
+      // 10 entries over 20 active sessions at 2.5% risk and 0.30R: 0.5 x 2.5 x 0.3.
+      expect(r?.expectedDayPctDelta).toBeCloseTo(0.375, 4);
+      expect(r?.evidence).toMatch(/mean 0\.5R/);
+      expect(r?.evidence).toMatch(
+        /0\.3R a trade once the live book's measured difference on the same entry \(-0\.2R over 10 same-tick pairs\)/,
+      );
+    });
+
+    it('uses paper as it stands below the minimum pairs, and says it has', () => {
+      const r = rec(withSameTick([floor(0.15)], { n: SAME_TICK_MIN_PAIRS - 1, meanDiffR: -0.2 }));
+      expect(r?.expectedDayPctDelta).toBeCloseTo(0.5 * 2.5 * 0.15, 2);
+      expect(r?.evidence).toMatch(/not measured yet \(9 same-tick pairs, 10 needed\)/);
+    });
+
+    it('reads a scan saved before the reading existed as unmeasured, not as a crash', () => {
+      const r = rec(withSameTick([floor(0.15)], undefined));
+      expect(r?.expectedDayPctDelta).toBeCloseTo(0.5 * 2.5 * 0.15, 2);
+      expect(r?.evidence).toMatch(/not measured yet \(0 same-tick pairs/);
+    });
+
+    it("is the attribution's own number, not a second derivation of it", () => {
+      const a = { ...scan().attribution, sameTick: { n: 14, meanDiffR: -0.1852, ciLow: -0.45, ciHigh: 0.02 } };
+      expect(liveDifferenceOnSameEntryR(a as never)).toBe(-0.1852);
+      expect(liveDifferenceOnSameEntryR({ ...a, sameTick: { ...a.sameTick, n: 9 } } as never)).toBeNull();
+    });
   });
 
   it('recommends RESEARCH before changing the exit that dominates red days', () => {

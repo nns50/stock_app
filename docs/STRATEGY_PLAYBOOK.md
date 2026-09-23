@@ -2196,6 +2196,21 @@ monotone shape, rule out the measurement before believing the market.
   refusal (`live_entry_failed`, such as "Buying power is insufficient") and an unanswered
   placement.
 
+  Since 2026-09-23 the attribution is **stock-only**. It had been pairing option trades
+  with stock trades on the same name (2 of 42 pairs) and filing untaken paper options under
+  stock refusals (7 of the 10 entries under the live floor, 8 of the 11 under the ATR
+  gate), because the live options sleeve refuses through gates this list does not hold.
+  Option trades are now counted (`optionsExcluded`), not paired or classified. The options
+  sleeve is judged by its own record (`docs/OPTIONS_TUNING_PLAN.md`). Every pair is listed
+  (`pairs`), and the ones whose entries fall within a minute are marked. `sameTick` is the
+  mean live-minus-paper difference over those: the one reading where the decision, the
+  moment and the entry price are all the same, so it measures what the live book makes of
+  the paper book's trade. **The rule:** once it rests on 10 or more pairs, the tune
+  advisor prices every refused class at paper's R plus that difference, never at paper's R
+  alone, and a class that falls to zero or below is not a gate costing money. The first
+  reading was 14 pairs at about −0.19R a trade, almost all of it the exit. See
+  `docs/AUTOTRADING_SPEC.md`, 2026-09-23 (fourteenth).
+
   Two classes are matched by **time rather than symbol** (2026-09-12), because they are
   decided for the whole tick before any candidate is looked at and so carry a count and no
   symbol: the end-of-day entry cutoff (`entry_window_closed`) and the live book standing
