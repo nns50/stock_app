@@ -234,6 +234,20 @@ export interface UntakenClass {
   n: number;
   paperMeanR: number | null;
   paperTotalR: number;
+  /** Every paper entry in the class, newest first (2026-09-23). A count could
+   *  say that 53 entries went unexplained but not WHICH, so "explain the 53"
+   *  had nothing to check against the journal. Bounded by the paper book's own
+   *  trade count over the window. */
+  trades: UntakenTrade[];
+}
+
+/** One paper entry the live book did not take, as the attribution lists it. */
+export interface UntakenTrade {
+  symbol: string;
+  etDate: string;
+  /** ET wall clock of the paper entry, HH:MM; null when unknown. */
+  entryTimeEt: string | null;
+  r: number;
 }
 
 export interface AttributionReport {
@@ -433,6 +447,9 @@ interface Dimension {
 
 const round4 = (n: number): number => Math.round(n * 10000) / 10000;
 const round2 = (n: number): number => Math.round(n * 100) / 100;
+/** Minutes past ET midnight as HH:MM. */
+const hhmm = (minuteEt: number): string =>
+  `${String(Math.floor(minuteEt / 60)).padStart(2, '0')}:${String(minuteEt % 60).padStart(2, '0')}`;
 
 /** Half-hour label from ET minutes: 570 → "09:30". */
 function halfHourLabel(minute: number): string {
@@ -819,6 +836,14 @@ export function buildAttribution(
         n: rows.length,
         paperMeanR: round4(rows.reduce((s, t) => s + t.r, 0) / rows.length),
         paperTotalR: round4(rows.reduce((s, t) => s + t.r, 0)),
+        trades: [...rows]
+          .sort((a, b) => b.entryAt - a.entryAt)
+          .map((t) => ({
+            symbol: t.symbol,
+            etDate: t.etDate,
+            entryTimeEt: t.entryMinuteEt === null ? null : hhmm(t.entryMinuteEt),
+            r: round4(t.r),
+          })),
       }))
       .sort((a, b) => b.paperTotalR - a.paperTotalR),
   };

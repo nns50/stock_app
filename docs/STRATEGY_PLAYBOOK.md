@@ -2184,7 +2184,10 @@ monotone shape, rule out the measurement before believing the market.
   such refusal made at or before the entry, instead of under `no_live_row`. The re-entry
   cooldown and the risk check journal on every tick, so their silence at 11:00 means they no
   longer applied, and an earlier row never stands in for them. Read `no_live_row` after that
-  as what it says: a tick where the journal has nothing for the name at all.
+  as what it says: a tick where the journal has nothing for the name at all. Each class
+  lists its entries (`trades`: symbol, date, ET time and paper R, newest first) since
+  2026-09-23, so an unexplained count can be checked against the journal one trade at a
+  time instead of being argued about as a number.
 
   Two classes are matched by **time rather than symbol** (2026-09-12), because they are
   decided for the whole tick before any candidate is looked at and so carry a count and no
