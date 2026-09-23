@@ -208,6 +208,13 @@ export const EXECUTION_ACTIONS: {
     // overlap showed each filled leg twice; the fix corrected both on its
     // first pass. Their skip rows are history, not open findings.
     supersededBy: { action: 'live_exit_corrected', key: 'exitId' },
+    // `not_listed_yet` is a wait, not an outcome: the lists had not caught up
+    // with a fill, and a later pass asks again. What that pass decides is the
+    // finding (a correction, another cause, or `aged_out` after seven days).
+    // Counted, it stayed open for ten sessions after a pass that confirmed the
+    // estimate to the cent, since that writes no correction row, and it doubled
+    // any exit that ended in another cause.
+    countsIf: (detail) => detailValue(detail, 'cause') !== 'not_listed_yet',
     labelFor: {
       no_matching_sale:
         "A stock exit closed outside its bracket matched no set of fills in the broker's history, and stays an estimate",
