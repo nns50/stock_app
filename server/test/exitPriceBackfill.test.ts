@@ -1,10 +1,19 @@
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { initDb, db } from '../src/db';
-import { addExit, createPosition, correctExitPrice, getPosition } from '../src/db/positions';
+import {
+  addExit,
+  createPosition,
+  correctExitPrice,
+  getPosition,
+  listSyncEstimatedExits,
+  SYNC_ESTIMATE_NOTE_PREFIX,
+} from '../src/db/positions';
 import type { WebullOrderLeg } from '../src/providers/webull/orders';
-import { RecordedExit, correctionNote, decideExitCorrection } from '../src/services/exitPriceBackfill';
+import { RecordedExit, correctionNote, decideExitCorrection, legExitReason } from '../src/services/exitPriceBackfill';
 
-// A recorded exit the position sync booked at an estimated quote.
+// A recorded exit the position sync booked at an estimated quote. Its reason
+// already agrees with the stop leg below, so these cases isolate the PRICE;
+// the reason-only correction has its own cases.
 const exit = (over: Partial<RecordedExit> = {}): RecordedExit => ({
   exitId: 1,
   positionId: 1,
@@ -12,6 +21,7 @@ const exit = (over: Partial<RecordedExit> = {}): RecordedExit => ({
   quantity: 10,
   exitPrice: 95,
   exitDate: '2026-03-20',
+  exitReason: 'stop',
   ...over,
 });
 
@@ -39,7 +49,36 @@ const exitLeg = (over: Partial<WebullOrderLeg> = {}): WebullOrderLeg => ({
 describe('decideExitCorrection', () => {
   it('corrects an estimated price to the broker fill, and reports the P&L difference', () => {
     const d = decideExitCorrection(exit(), [entryLeg(), exitLeg({ filledPrice: 94.5 })]);
-    expect(d).toEqual({ action: 'correct', realPrice: 94.5, priceDelta: -0.5, pnlDelta: -5 });
+    expect(d).toEqual({ action: 'correct', realPrice: 94.5, priceDelta: -0.5, pnlDelta: -5, reason: 'stop' });
+  });
+
+  // COIN 656, 2026-09-21: the breakeven stop filled at 204.37, the sync priced
+  // the position at a 205.0451 quote two minutes later, between the levels, so
+  // it was booked 'manual'. Both the price and the reason are wrong.
+  it('corrects the COIN case: price AND reason, to the stop leg that filled', () => {
+    const d = decideExitCorrection(exit({ quantity: 161, exitPrice: 205.0451, exitReason: 'manual' }), [
+      entryLeg({ filledQty: 161, filledPrice: 204.39 }),
+      exitLeg({ filledQty: 161, filledPrice: 204.37 }),
+      exitLeg({ clientOrderId: 'CID-TGT', comboType: 'STOP_PROFIT', status: 'CANCELLED', filledPrice: undefined }),
+    ]);
+    expect(d).toMatchObject({ action: 'correct', realPrice: 204.37, reason: 'stop' });
+    expect(d.action === 'correct' && Math.round(d.pnlDelta * 100) / 100).toBe(-108.69);
+  });
+
+  it('corrects the reason alone when the estimate happened to land on the fill', () => {
+    const d = decideExitCorrection(exit({ exitPrice: 94.5, exitReason: 'manual' }), [
+      entryLeg(),
+      exitLeg({ filledPrice: 94.5 }),
+    ]);
+    expect(d).toMatchObject({ action: 'correct', realPrice: 94.5, priceDelta: 0, pnlDelta: 0, reason: 'stop' });
+  });
+
+  it('books a filled take-profit leg as a target', () => {
+    const d = decideExitCorrection(exit({ exitPrice: 189.68, exitReason: 'target' }), [
+      entryLeg(),
+      exitLeg({ clientOrderId: 'CID-TGT', comboType: 'STOP_PROFIT', filledPrice: 189.06 }),
+    ]);
+    expect(d).toMatchObject({ action: 'correct', realPrice: 189.06, reason: 'target' });
   });
 
   it('never mistakes the ENTRY leg for the exit', () => {
@@ -101,10 +140,24 @@ describe('decideExitCorrection', () => {
 
   it('is idempotent — a corrected exit reports no further change', () => {
     const legs = [entryLeg(), exitLeg({ filledPrice: 94.5 })];
-    const first = decideExitCorrection(exit(), legs);
+    const first = decideExitCorrection(exit({ exitReason: 'manual' }), legs);
     expect(first.action).toBe('correct');
-    const after = exit({ exitPrice: first.action === 'correct' ? first.realPrice : 0 });
+    const after = exit({
+      exitPrice: first.action === 'correct' ? first.realPrice : 0,
+      exitReason: first.action === 'correct' ? first.reason : null,
+    });
     expect(decideExitCorrection(after, legs)).toMatchObject({ action: 'skip' });
+  });
+});
+
+describe('legExitReason', () => {
+  it('names the leg from its combo label, and only a stop order type without one', () => {
+    expect(legExitReason({ comboType: 'STOP_LOSS' })).toBe('stop');
+    expect(legExitReason({ comboType: 'STOP_PROFIT', orderType: 'LIMIT' })).toBe('target');
+    expect(legExitReason({ comboType: undefined, orderType: 'STOP_LOSS' })).toBe('stop');
+    // A plain limit with no label could be any sell: it proves nothing.
+    expect(legExitReason({ comboType: undefined, orderType: 'LIMIT' })).toBeNull();
+    expect(legExitReason({ comboType: 'NORMAL', orderType: 'LIMIT' })).toBeNull();
   });
 });
 
@@ -127,12 +180,31 @@ describe('correctExitPrice', () => {
 
     const updated = correctExitPrice(exitId, 94.5, correctionNote(95));
 
-    expect(updated?.exits[0]).toMatchObject({ exitPrice: 94.5, quantity: 10 });
+    expect(updated?.exits[0]).toMatchObject({ exitPrice: 94.5, quantity: 10, exitReason: null });
     expect(updated?.exits[0].notes).toMatch(/corrected to the broker's actual fill/);
     expect(updated?.exits[0].notes).toMatch(/was 95/);
     // Price cannot change a position's remaining size, so it stays closed.
     expect(updated?.status).toBe('closed');
     expect(updated?.remainingQuantity).toBe(0);
+  });
+
+  it('rewrites the reason when the fill proves one, and leaves it alone otherwise', () => {
+    const pos = createPosition({
+      assetType: 'stock',
+      symbol: 'COIN',
+      side: 'long',
+      quantity: 161,
+      entryPrice: 204.39,
+      entryDate: '2026-09-21',
+    });
+    addExit(pos.id, { quantity: 161, exitPrice: 205.0451, exitDate: '2026-09-21', exitReason: 'manual' });
+    const exitId = getPosition(pos.id)!.exits[0].id;
+
+    expect(correctExitPrice(exitId, 205.0451, 'no reason given')?.exits[0].exitReason).toBe('manual');
+    expect(correctExitPrice(exitId, 204.37, correctionNote(205.0451), 'stop')?.exits[0]).toMatchObject({
+      exitPrice: 204.37,
+      exitReason: 'stop',
+    });
   });
 
   it('returns undefined for an unknown exit id', () => {
@@ -146,14 +218,8 @@ describe('correctExitPrice', () => {
     // and it is what the operator sees after --apply (the count drops), so pin
     // it here: a future note change that kept the prefix would silently make
     // the tool re-examine rows it has already fixed.
-    const candidates = () =>
-      db
-        .prepare(
-          `SELECT e.id FROM position_exits e
-             JOIN positions p ON p.id = e.position_id
-            WHERE e.notes LIKE 'Auto-closed via Webull sync%'`,
-        )
-        .all() as Array<{ id: number }>;
+    // The SAME query both readers use (the loop's pass and the CLI).
+    const candidates = () => listSyncEstimatedExits();
 
     const pos = createPosition({
       assetType: 'stock',
@@ -162,8 +228,14 @@ describe('correctExitPrice', () => {
       quantity: 10,
       entryPrice: 100,
       entryDate: '2026-03-01',
+      sourceIntentId: 1,
     });
-    addExit(pos.id, { quantity: 10, exitPrice: 95, exitDate: '2026-03-20', notes: 'Auto-closed via Webull sync — …' });
+    addExit(pos.id, {
+      quantity: 10,
+      exitPrice: 95,
+      exitDate: '2026-03-20',
+      notes: `${SYNC_ESTIMATE_NOTE_PREFIX} from the latest quote (not a confirmed fill)`,
+    });
     const exitId = getPosition(pos.id)!.exits[0].id;
     expect(candidates()).toHaveLength(1);
 

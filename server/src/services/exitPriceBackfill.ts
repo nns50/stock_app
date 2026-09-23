@@ -1,4 +1,5 @@
 import { WebullOrderLeg, isExitLeg } from '../providers/webull/orders';
+import type { PositionExitReason } from '../db/positions';
 import { QTY_EPS } from './trading/fillDelta';
 
 // ---------------------------------------------------------------------------
@@ -45,6 +46,9 @@ export interface RecordedExit {
   /** The estimated price currently recorded. */
   exitPrice: number;
   exitDate: string;
+  /** The reason currently recorded — often 'manual' for a leg the sync priced
+   *  between the levels (COIN's breakeven stop, 2026-09-21). */
+  exitReason: PositionExitReason | null;
 }
 
 export type ExitCorrection =
@@ -56,8 +60,27 @@ export type ExitCorrection =
       priceDelta: number;
       /** Total P&L difference this correction makes to the position. */
       pnlDelta: number;
+      /** Which leg filled, as an exit reason, or null when the leg does not
+       *  say (the recorded reason is then left alone). */
+      reason: PositionExitReason | null;
     }
   | { action: 'skip'; reason: string };
+
+/**
+ * The exit reason a filled bracket leg PROVES: the stop leg is a stop, the
+ * take-profit leg is a target. Null when the leg carries neither label, and
+ * never a guess from the price. The live reconcile books a leg's fill with the
+ * same function (liveExecute.ts), so a correction and a first-time booking
+ * cannot name the same leg differently.
+ */
+export function legExitReason(leg: Pick<WebullOrderLeg, 'comboType' | 'orderType'>): 'stop' | 'target' | null {
+  if (leg.comboType === 'STOP_LOSS') return 'stop';
+  if (leg.comboType === 'STOP_PROFIT') return 'target';
+  // No combo label: only a stop ORDER TYPE is unambiguous. A plain LIMIT could
+  // be the take-profit or any other limit sell, so it says nothing.
+  if (leg.orderType === 'STOP_LOSS' || leg.orderType === 'STOP_LOSS_LIMIT') return 'stop';
+  return null;
+}
 
 /**
  * Decide whether a recorded exit should be corrected from the broker's legs.
@@ -101,7 +124,11 @@ export function decideExitCorrection(exit: RecordedExit, legs: WebullOrderLeg[])
   }
 
   const priceDelta = realPrice - exit.exitPrice;
-  if (Math.abs(priceDelta) < PRICE_EPS) {
+  const reason = legExitReason(leg);
+  // The price can already be right while the reason is not: an estimate that
+  // happened to land on the fill still says 'manual' for what was a stop.
+  const reasonWrong = reason !== null && reason !== exit.exitReason;
+  if (Math.abs(priceDelta) < PRICE_EPS && !reasonWrong) {
     return { action: 'skip', reason: 'already matches the broker fill' };
   }
 
@@ -110,6 +137,7 @@ export function decideExitCorrection(exit: RecordedExit, legs: WebullOrderLeg[])
     realPrice,
     priceDelta,
     pnlDelta: priceDelta * exit.quantity,
+    reason,
   };
 }
 

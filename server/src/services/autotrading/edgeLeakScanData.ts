@@ -143,6 +143,21 @@ export const EXECUTION_ACTIONS: {
       broker_history: "A hand close in Webull was re-booked at the operator's fill",
     },
   },
+  // The stock twin (2026-09-23), split the same way. `bracket_leg`: the
+  // position sync priced a bracket exit at a quote before the entry's
+  // reconcile could read the leg, a race the app lost, and the step-down, the
+  // halt and the expectancy sizing all read the wrong number until corrected
+  // (COIN, 2026-09-21: a -$3.22 stop booked as a +$105 'manual' win).
+  // `broker_history`: a hand sale re-booked at the operator's fill.
+  {
+    action: 'live_exit_corrected',
+    label: 'A stock exit the position sync priced at a quote was corrected to its fill',
+    splitOn: 'source',
+    labelFor: {
+      bracket_leg: "A stock bracket exit was booked at a quote before the reconcile read the leg's fill",
+      broker_history: "A stock the operator sold by hand in Webull was re-booked at the operator's fill",
+    },
+  },
   // Two RISK CONTROLS that fail open (2026-09-12). Neither is a crash and
   // neither stops the book — that is the point: on a provider or broker
   // outage the cap simply admits more than it should, and until these rows

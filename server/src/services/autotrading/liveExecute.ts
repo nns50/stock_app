@@ -32,6 +32,7 @@ import {
 } from '../../providers/webull/orders';
 import { ackUnknownPlacement, canRetireUnknownPlacement, canStillFill, mapWebullStatus } from '../trading/reconcile';
 import { computeFillDelta } from '../trading/fillDelta';
+import { legExitReason } from '../exitPriceBackfill';
 import {
   advanceMaterialized,
   createIntent,
@@ -2518,7 +2519,13 @@ function reconcileOneLiveOrder(
     }
     const exitLeg = filledExitLegs[0];
     if (exitLeg) {
-      const fallbackPrice = exitLeg.comboType === 'STOP_LOSS' ? stopPrice : targetPrice;
+      // Which bracket leg filled IS the exit reason — the one place in the
+      // live path that knows it firsthand rather than inferring from price.
+      // Named by the same function the estimate correction uses
+      // (exitPriceBackfill.ts), so the two can never disagree about a leg. An
+      // unlabelled leg that is not a stop order stays a target, as before.
+      const legReason = legExitReason(exitLeg) ?? 'target';
+      const fallbackPrice = legReason === 'stop' ? stopPrice : targetPrice;
       try {
         const recorded = materializeExitFill(
           intent,
@@ -2526,9 +2533,7 @@ function reconcileOneLiveOrder(
           exitLeg.filledPrice ?? fallbackPrice,
           riskProfile,
           exitLeg.filledQty,
-          // Which bracket leg filled IS the exit reason — the one place in the
-          // live path that knows it firsthand rather than inferring from price.
-          exitLeg.comboType === 'STOP_LOSS' ? 'stop' : 'target',
+          legReason,
         );
         return recorded ? { changed: true, action: 'exit_filled' } : { changed: acked };
       } catch (err) {

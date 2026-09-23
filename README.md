@@ -426,6 +426,14 @@ row and stopping. Fix what it finds from the Positions page — **journal**,
 
 ### `backfill:exits` — correcting estimated exit prices
 
+**Since 2026-09-23 the loop runs this correction itself** for the last seven days (the
+broker history's window), and writes the exit reason the filled leg proves (`stop` or
+`target`) along with the price (`services/autotrading/stockExitCorrection.ts`, journaled as
+`live_exit_corrected`). It also books a stock you sold by hand in Webull at your own sale
+from the order history, which the CLI never did. The CLI below reads the same candidate
+query, so it is now only needed for a dry-run report, or for rows older than seven days,
+which it can report but not correct.
+
 A **dry-run-by-default** one-off repair. Until the bracket response shape was
 confirmed (`capture:broker` Q3, above), a stop or target firing was invisible to
 the order path: `combo_type` sits on the response *envelope* rather than on the

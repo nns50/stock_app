@@ -12,6 +12,7 @@ import {
   syncClosedWebullPositions,
   runWebullPositionsSync,
   comparePositionsToBroker,
+  BRACKET_RECONCILE_GRACE_MS,
 } from '../src/providers/webull/positions';
 import { priceMap } from '../src/services/quotes';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
@@ -1518,10 +1519,95 @@ describe('syncClosedWebullPositions vs an autotrade close already in flight', ()
     setLiveOrderPositionId(intent.id, p.id);
     mockPositions([]);
 
-    // MISS_CONFIRM_THRESHOLD (2) + BRACKET_RECONCILE_GRACE_SYNCS (2)
-    for (let i = 0; i < 4; i++) await syncClosedWebullPositions('ACC1');
+    // MISS_CONFIRM_THRESHOLD (2) + BRACKET_RECONCILE_GRACE_SYNCS (2) syncs,
+    // spread past the time floor (BRACKET_RECONCILE_GRACE_MS) as they are in
+    // production, a minute or more apart.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const t0 = Date.parse('2026-09-21T13:41:48Z');
+      // Four syncs a minute apart: the count is spent at three minutes, the
+      // time floor is not.
+      for (let i = 0; i < 4; i++) {
+        vi.setSystemTime(t0 + i * 60_000);
+        await syncClosedWebullPositions('ACC1');
+      }
+      expect(getPosition(p.id)!.status).toBe('open');
+      vi.setSystemTime(t0 + BRACKET_RECONCILE_GRACE_MS);
+      await syncClosedWebullPositions('ACC1');
+    } finally {
+      vi.useRealTimers();
+    }
 
     expect(getPosition(p.id)!.status).toBe('closed');
+  });
+
+  // 2026-09-23. The grace was four SYNCS, and two callers bump the same
+  // streak in production: the loop's own sync every tick and the background
+  // scheduler every 60 s. COIN's stop filled at 09:41:48 on 2026-09-21; four
+  // misses had piled up by 09:43:59, and the sync booked a $205.05 quote as a
+  // 'manual' +$105 win, two seconds before the order lists would have shown
+  // the stop's $204.37 fill (a $3.22 loss). The time floor is what holds now.
+  it('holds a bracketed position through four misses that came two a minute (the COIN race)', async () => {
+    const p = createPosition({
+      assetType: 'stock',
+      symbol: 'COIN',
+      side: 'long',
+      quantity: 161,
+      entryPrice: 204.39,
+      entryDate: etToday(),
+      tags: ['live', 'autotrade'],
+      accountId: 'ACC1',
+    });
+    const intent = createIntent(
+      {
+        symbol: 'COIN',
+        assetKind: 'stock',
+        side: 'buy',
+        openClose: 'open',
+        quantity: 161,
+        orderType: 'limit',
+        limitPrice: 205.43,
+        bracket: { takeProfitPrice: 209.74, stopLossPrice: 199.5 },
+      },
+      'cid-coin-race',
+    );
+    recordLiveOrder({
+      intentId: intent.id,
+      symbol: 'COIN',
+      stopPrice: 199.5,
+      targetPrice: 209.74,
+      riskAmount: 790,
+      riskProfile: 'MODERATE',
+      accountId: 'ACC1',
+    });
+    setLiveOrderPositionId(intent.id, p.id);
+    mockPositions([]);
+
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const t0 = Date.parse('2026-09-21T13:41:48Z');
+      // Six misses in two and a half minutes: well past the four the grace
+      // used to count, still inside the time floor.
+      for (let i = 0; i < 6; i++) {
+        vi.setSystemTime(t0 + i * 30_000);
+        await syncClosedWebullPositions('ACC1');
+      }
+      expect(getPosition(p.id)!.status).toBe('open');
+      const skipped = listAutotradeEvents({ actions: ['position_reconcile_skipped'] });
+      expect(skipped).toHaveLength(1); // announced once, on the confirming miss
+      expect(JSON.parse(skipped[0].detail!)).toMatchObject({
+        reason: 'bracket_leg_reconcile_pending',
+        closesAfterMs: BRACKET_RECONCILE_GRACE_MS,
+        missingSince: t0,
+      });
+
+      // Once the floor has passed, the sync still closes it: bounded, never forever.
+      vi.setSystemTime(t0 + BRACKET_RECONCILE_GRACE_MS);
+      await syncClosedWebullPositions('ACC1');
+      expect(getPosition(p.id)!.status).toBe('closed');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // 2026-09-10: the grace window above is bounded, so a bracket leg whose own
@@ -1577,8 +1663,19 @@ describe('syncClosedWebullPositions vs an autotrade close already in flight', ()
           async (positions) => new Map(positions.map((p) => [p.id, { price, stale: false, asOf: 0 }])),
         );
     /** MISS_CONFIRM_THRESHOLD (2) + BRACKET_RECONCILE_GRACE_SYNCS (2). */
+    // Both bounds of the grace: four syncs, and BRACKET_RECONCILE_GRACE_MS of
+    // clock from the first miss (the last sync lands exactly on it).
     const spendGraceWindow = async () => {
-      for (let i = 0; i < 4; i++) await syncClosedWebullPositions('ACC1');
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        const t0 = Date.now();
+        for (let i = 0; i < 4; i++) {
+          vi.setSystemTime(t0 + (i * BRACKET_RECONCILE_GRACE_MS) / 3);
+          await syncClosedWebullPositions('ACC1');
+        }
+      } finally {
+        vi.useRealTimers();
+      }
     };
 
     it('books the SWKS case as a STOP, not a human sale', async () => {

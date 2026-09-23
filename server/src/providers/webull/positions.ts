@@ -4,6 +4,7 @@ import {
   OptionType,
   Position,
   Side,
+  SYNC_ESTIMATE_NOTE_PREFIX,
   addExit,
   createPosition,
   listKnownAccountIds,
@@ -14,7 +15,12 @@ import { orderingDateOf } from '../../db/positions';
 import { priceMap } from '../../services/quotes';
 import { etToday } from '../../util/marketDate';
 import { webullClient, webullConfigured } from './account';
-import { bumpMissStreak, clearMissStreak, MISS_CONFIRM_THRESHOLD } from '../../db/webullMissStreak';
+import {
+  bumpMissStreak,
+  clearMissStreak,
+  missStreakStartedAt,
+  MISS_CONFIRM_THRESHOLD,
+} from '../../db/webullMissStreak';
 import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { claimOncePerDay } from '../../services/autotrading/oncePerDayEvents';
 import { listPendingLiveOrders } from '../../db/autotradeLiveOrders';
@@ -537,8 +543,10 @@ export interface ClosedSyncResult {
   error?: string;
 }
 
+// Built from SYNC_ESTIMATE_NOTE_PREFIX so the correction pass that finds these
+// rows again (db/positions.ts listSyncEstimatedExits) matches by construction.
 const NOTE_AUTO_CLOSED =
-  'Auto-closed via Webull sync — no longer held at the broker. Exit price is an ESTIMATE from the ' +
+  `${SYNC_ESTIMATE_NOTE_PREFIX} from the ` +
   'latest quote (not a confirmed fill); edit it if you have your broker confirmation.';
 
 /** Appended when the exit REASON was inferred from the estimated price rather
@@ -573,16 +581,40 @@ const NOTE_EXPIRED_AUTO_CLOSED =
  */
 /** Extra sync passes a position gets, beyond MISS_CONFIRM_THRESHOLD, when its
  *  entry order is still pending and bracketed — i.e. a resting stop/target leg
- *  looks to have filled and reconcileLiveOrders should book it properly. Two
- *  passes at the sync's cadence is a small delay against a wrong price and a
- *  wrong exit reason on the position, and it stays BOUNDED so a leg the broker
- *  never reports FILLED cannot leave the row open forever. */
+ *  looks to have filled and reconcileLiveOrders should book it properly. It
+ *  stays BOUNDED so a leg the broker never reports FILLED cannot leave the row
+ *  open forever. The time floor below is what actually sizes the wait. */
 const BRACKET_RECONCILE_GRACE_SYNCS = 2;
+
+/**
+ * How long, from the FIRST miss, a bracketed position is left for the entry
+ * order's own reconcile before this sync prices it itself (2026-09-23).
+ *
+ * The grace was a count of syncs, and a count is not a duration. Two callers
+ * bump the same streak: the loop's own sync every tick and the background
+ * scheduler (60s in production). Four misses took 2m11s for COIN on
+ * 2026-09-21, while the order lists show a filled leg about 2m15s after the
+ * fill (USDE's stop 2m13s, GRML's target 2m18s, the same morning). So the sync
+ * won the race it was meant to lose. COIN's breakeven stop filled at 204.37 (a
+ * $3.22 loss); the sync booked the $205.05 quote as a 'manual' +$105 win. The
+ * step-down reads consecutive losses off these rows, so the next entry (HPE, 4
+ * seconds later) went in at full size after two real losses and lost $429.
+ *
+ * Once the sync closes the position, the entry order leaves the pending list
+ * and its reconcile never looks at the leg again. That makes the first booking
+ * the one the live sizing reads. Four minutes covers the observed list lag with
+ * margin. What it costs is the dead position holding its slot a little longer
+ * when no reconcile ever books it. A close the sync does price here is later
+ * corrected to the leg's fill by correctEstimatedStockExits.
+ */
+export const BRACKET_RECONCILE_GRACE_MS = 4 * 60 * 1000;
 
 /** Syncs a position may sit deferred before the defer itself is worth a journal
  *  row. Well past BRACKET_RECONCILE_GRACE_SYNCS: this is not "still waiting",
- *  it is "something is stuck". At the loop's cadence this is roughly twenty
- *  minutes. Reported, never acted on — the defer stays, a human decides. */
+ *  it is "something is stuck". Two syncs bump the streak (see
+ *  BRACKET_RECONCILE_GRACE_MS), so in production this is about five minutes,
+ *  not the twenty it once said. Reported, never acted on — the defer stays, a
+ *  human decides. */
 const STUCK_DEFER_STREAK = 10;
 
 async function closePositionsFromPreview(
@@ -631,8 +663,11 @@ async function closePositionsFromPreview(
       brokerQty: number;
       justConfirmed: boolean;
       streak: number;
+      /** When this run of misses began (missStreakStartedAt). */
+      startedAt: number | null;
     }
   >();
+  const now = Date.now();
   for (const [key, lots] of lotsByKey) {
     // FIFO: oldest first. An undated lot orders by the day it was recorded
     // (orderingDateOf) — FIFO needs SOME sequence, and that proxy never leaks
@@ -660,10 +695,11 @@ async function closePositionsFromPreview(
           // per stuck episode rather than on every subsequent sync.
           justConfirmed: streak === MISS_CONFIRM_THRESHOLD,
           // Carried so the bracket-leg defer below can BOUND itself: the
-          // streak keeps climbing every sync the contract stays absent, so it
-          // is already the "how long have we been waiting" counter and needs
-          // no state of its own.
+          // streak keeps climbing every sync the contract stays absent. It is
+          // a count, not a duration (two callers bump it), so the time the run
+          // began rides along for the defer's time floor.
           streak,
+          startedAt: missStreakStartedAt(preview.accountId, key),
         });
     } else {
       // Fully accounted for in this preview — any earlier miss streak was wrong.
@@ -776,13 +812,15 @@ async function closePositionsFromPreview(
 
   const closedSymbols = new Set<string>();
   let closed = 0;
-  for (const [key, { lots, qty, journalQtyBefore, brokerQty, justConfirmed, streak }] of toClose) {
+  for (const [key, { lots, qty, journalQtyBefore, brokerQty, justConfirmed, streak, startedAt }] of toClose) {
     // A resting bracket leg just filled and the entry order's own reconcile has
-    // not caught up yet — give it a few passes before guessing a price.
-    if (
-      lots.some((l) => bracketPendingPositionIds.has(l.id)) &&
-      streak < MISS_CONFIRM_THRESHOLD + BRACKET_RECONCILE_GRACE_SYNCS
-    ) {
+    // not caught up yet — give it a few passes AND a few minutes before
+    // guessing a price. Both, because the streak is a count and the lists' lag
+    // is a duration (see BRACKET_RECONCILE_GRACE_MS).
+    const bracketGraceSpent =
+      streak >= MISS_CONFIRM_THRESHOLD + BRACKET_RECONCILE_GRACE_SYNCS &&
+      (startedAt === null || now - startedAt >= BRACKET_RECONCILE_GRACE_MS);
+    if (lots.some((l) => bracketPendingPositionIds.has(l.id)) && !bracketGraceSpent) {
       if (justConfirmed) {
         logAutotradeEvent({
           symbol: lots[0].symbol,
@@ -796,6 +834,9 @@ async function closePositionsFromPreview(
             brokerQty,
             streak,
             closesAfterStreak: MISS_CONFIRM_THRESHOLD + BRACKET_RECONCILE_GRACE_SYNCS,
+            // Both bounds must pass; the time one is what usually binds.
+            closesAfterMs: BRACKET_RECONCILE_GRACE_MS,
+            missingSince: startedAt,
             note:
               "A resting bracket leg appears to have filled. Leaving it for the entry order's own reconcile, " +
               'which books the real fill price and whether it was the stop or the target. Closes here at an ' +

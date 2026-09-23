@@ -12970,3 +12970,114 @@ TSLA #11 and AAPL #12 must each carry a `live_options_exit_corrected` row with
 reasons that count are that no matching sale is in the history, or the sales do not add up to
 the position. If the first two correct, 09-21 and 09-22 are re-recorded. A hand close that
 stays at an estimate with a matching sale in the history is a finding.
+
+**Result (2026-09-23, 03:59 ET, the first pass after the deploy).** All three corrected,
+each to one hand sale in the history. Hand orders do appear in the OpenAPI history; their
+`client_order_id` is 24 hex characters, while the app's own are 32.
+
+| Position | Booked at | The operator's fill | P&L before → after |
+| --- | --- | --- | --- |
+| INTC #10 (09-21) | $1.29 | $3.55 at 12:44:28 | +$225 → +$1,355 |
+| TSLA #11 (09-21) | $1.38 | $1.58 | −$44 → −$4 |
+| AAPL #12 (09-22) | $0.94 | $0.62 | −$176 → −$432 |
+
+Both days were re-recorded: **09-21 +$9.64 (+0.03%)**, from −$1,160.36, and **09-22
+−$128.96 (−0.46%)**, from +$127.04.
+
+## 2026-09-23 (seventh) — a stock bracket exit books its leg's fill
+
+The same race as "(fifth)", on the stock side, and it moved live sizing. When a bracket leg
+fills, two things try to book it. The entry order's reconcile reads the leg from the order
+lists, which show a filled leg about **2m15s** late (USDE's stop 2m13s, GRML's target
+2m18s). The position sync sees the shares gone. After `MISS_CONFIRM_THRESHOLD` (2) +
+`BRACKET_RECONCILE_GRACE_SYNCS` (2) misses it prices the close itself, at a live quote, with
+a reason inferred from the levels or `manual` between them. Whichever writes first is the
+record: the sync's close takes the entry order out of the pending list, and its reconcile
+never looks at the leg again.
+
+The grace was a count, and two callers bump the same streak: the loop's own sync every tick
+and the background scheduler every 60 s. So four misses took **2m11s** for COIN on 09-21:
+
+```
+09:41:48  COIN STOP_LOSS leg FILLED 161 @ 204.37  (breakeven stop; entry 204.39) → −$3.22
+09:43:01  INTC closed from its fill, 'stop', −$1.83
+09:43:59  position_reconciled_from_broker COIN 161 @ 205.0451, 'manual' → +$105.47
+09:44:03  HPE entered at full size (251 sh, risk ~$522); stopped out 10:13, −$429.21
+```
+
+The step-down counts consecutive losing trades off these rows. With COIN booked correctly,
+INTC and COIN were two losses in a row at 09:44, and HPE would have gone in at half size
+(about −$214). The same race booked COIN #651 and HOOD #650 on 09-18 (targets, at quotes
+above the target prices) and LITE on 09-21 (a stop, at a quote).
+
+The repair already existed and was never run. `services/exitPriceBackfill.ts` decides a
+correction from the entry's combo, and `npm run backfill:exits` applies it. It was written
+as a one-shot for a parser bug that was supposed to be the last source of these rows, and
+nothing re-ran it.
+
+**Changes.**
+
+- `webull_miss_streak.first_missed_at` records when the current run of misses began. The
+  bracket defer holds until both the count is spent and `BRACKET_RECONCILE_GRACE_MS`
+  (**4 minutes**) has passed since the first miss. The defer row carries `closesAfterMs` and
+  `missingSince`. The cost is a dead position holding its slot a little longer when no
+  reconcile ever books it. The `STUCK_DEFER_STREAK` comment said twenty minutes; with two
+  callers it is about five, and the comment now says so.
+- `correctEstimatedStockExits` (`stockExitCorrection.ts`) runs in the loop after the stock
+  sync. It asks about a new estimate on the next tick and about the rest at most every
+  15 minutes, only while an estimate exists in the account within the history's seven days.
+  It reuses `decideExitCorrection` unchanged in what it will act on: one filled exit leg
+  whose quantity matches the booked one. The decision now also returns the reason the leg
+  proves (`legExitReason`: the stop leg is `stop`, the take-profit is `target`, never a
+  guess from the price). An estimate that landed on the fill but says `manual` for a stop
+  is corrected too.
+- Each correction rewrites the price and the reason (`correctExitPrice` takes an optional
+  reason), journals `live_exit_corrected` (`source: 'bracket_leg'`, before and after price,
+  reason and P&L), and re-records the past day it moved. It is a leak-scan execution
+  finding: a race the app lost.
+- **A hand sale books the operator's fill.** A combo the broker is done with that has no
+  filled exit leg is a hand close: the operator cancelled the bracket and sold. The time floor
+  makes its quote up to four minutes later than the sale, so it is matched instead:
+  `listBrokerEquityFills` (one paged history read, only when such a close exists) and
+  `matchStockHandSale` (pure, the twin of `matchHandCloseFill`). A match is a plain SELL of the
+  symbol since the entry, not an app order, and sales are added oldest first until they reach
+  exactly the booked quantity. The reason stays `manual`, and the row says
+  `source: 'broker_history'`. An unmatched hand close is asked about through the day of the
+  close, because the history lags, and is final after that. A combo that aged out of the
+  history is final too. A failed read is retried.
+- The live reconcile names a filled leg with the same `legExitReason`, so a first booking
+  and a correction cannot disagree. The CLI and the loop share one candidate query
+  (`listSyncEstimatedExits`), and the sync's estimate note is built from the prefix that
+  query matches (`SYNC_ESTIMATE_NOTE_PREFIX`).
+
+**Tested.**
+- **End to end at the consumer.** The real sync books COIN at a $205.0451 quote after its
+  grace, and the live snapshot reads `consecutiveLosses` 0. The pass then corrects it to
+  $204.37 `stop` (−$108.69), and the same snapshot reads **2**.
+- **The race.** Six misses 30 s apart leave the position open. It closes at the time floor.
+  Both this case and the grace case fail with the time floor removed.
+- **The pass.** A new estimate is read at once, the rest every 15 minutes. A finished combo
+  with no filled leg, and a combo that aged out, are not re-read; a failed read is.
+  Another account and rows older than seven days are never read. A past day is
+  re-recorded with its account half kept.
+- **The decision.** The COIN correction, a reason-only correction, a target leg, and
+  `legExitReason`'s labels.
+- **Hand sales.** A cancelled bracket plus the operator's sale books the sale, reason kept
+  `manual`. An unmatched one is re-asked through its day, then final. A working bracket, or
+  one whose leg filled, never reads the stock history. The matcher is tested on a single
+  sale and a weighted pair, on every exclusion (buys, other symbols, sales before entry,
+  bracket legs, app orders), and on an overshoot and a shortfall. The parser is tested on
+  the history's own envelope shapes.
+- Dropping the reason from the correction fails the end-to-end case.
+
+**Pre-committed check.** On the first pass after the deploy, `live_exit_corrected` must
+correct **COIN #656 (09-21) to $204.37 `stop`** (P&L +$105.47 → −$3.22). 09-21 must then
+be re-recorded at +$9.64 − $108.69 = **−$99.05**, plus LITE's own correction, which is
+unknown until its leg is read. COIN #651, HOOD #650 (09-18) and LITE (09-21) must each
+be corrected to their leg's fill or have a stated skip. The hand closes of 09-22 (MRVL,
+SNOW, MRNA, SNDK) must be corrected to the operator's own sales with
+`source: 'broker_history'`, reason still `manual`, or have a stated skip. The only skip that
+counts is sales that do not add up to the booked quantity. From the first session
+after the deploy, a `position_reconcile_skipped` row for a bracketed position followed by a
+`live_position_closed` from the reconcile, not a `position_reconciled_from_broker`, is the
+race going the right way.

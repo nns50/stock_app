@@ -63,6 +63,7 @@ import {
 } from './executionGuards';
 import { listMacroEvents } from '../../db/macroEvents';
 import { runWebullPositionsSync } from '../../providers/webull/positions';
+import { correctEstimatedStockExits } from './stockExitCorrection';
 import { processMoversForPromotion } from './moversPromotion';
 import { checkForRecentSplits } from './splitCheck';
 import { etToday } from '../../util/marketDate';
@@ -374,6 +375,17 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       if (liveCfg.liveAccountId) await runWebullPositionsSync(liveCfg.liveAccountId);
     } catch (e) {
       journalStageFailure('live position-truth sync', e);
+    }
+    // A stock exit the sync above had to price itself (a quote, not a fill) is
+    // rewritten to the fill of the bracket leg that closed it, once the order
+    // lists show it: price and reason, because the step-down and the halt read
+    // both. A new estimate is asked about on the next tick, the rest every 15
+    // minutes, and only while one exists. See correctEstimatedStockExits.
+    try {
+      const liveCfg = getAutotradeConfig();
+      if (liveCfg.liveAccountId) await correctEstimatedStockExits(liveCfg.liveAccountId);
+    } catch (e) {
+      journalStageFailure('live stock exit correction', e);
     }
     // Runs right after the sync above so a position it just imported
     // untracked (tagged 'webull' only) gets a chance to be healed the SAME

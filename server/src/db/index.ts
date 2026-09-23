@@ -1098,11 +1098,18 @@ CREATE TABLE IF NOT EXISTS autotrade_live_options_orders (
 -- the close absorbs that class of single-tick flakiness at the cost of a
 -- short delay before a REAL sell is detected -- an acceptable tradeoff for a
 -- tracking-only journal that never itself places a trade based on this.
+-- first_missed_at (2026-09-23): when the CURRENT run of misses began. The
+-- streak alone cannot say how long a contract has been gone: two callers bump
+-- it (the loop's own sync every tick AND the background scheduler, 60s each in
+-- production), so a count of N misses can be N/2 minutes or N minutes. The
+-- bracket-leg grace in closePositionsFromPreview is a question about TIME (how
+-- long the order lists take to show a leg's fill), so it reads this.
 CREATE TABLE IF NOT EXISTS webull_miss_streak (
-  account_id    TEXT NOT NULL,
-  contract_key  TEXT NOT NULL,
-  streak        INTEGER NOT NULL DEFAULT 0,
-  updated_at    INTEGER NOT NULL,
+  account_id      TEXT NOT NULL,
+  contract_key    TEXT NOT NULL,
+  streak          INTEGER NOT NULL DEFAULT 0,
+  updated_at      INTEGER NOT NULL,
+  first_missed_at INTEGER,
   PRIMARY KEY (account_id, contract_key)
 );
 
@@ -1383,6 +1390,14 @@ function migrate(): void {
   if (!has('ml_regime')) db.exec('ALTER TABLE positions ADD COLUMN ml_regime TEXT');
   if (!has('regime_target_factor')) db.exec('ALTER TABLE positions ADD COLUMN regime_target_factor REAL');
   if (!has('market_atr_pct')) db.exec('ALTER TABLE positions ADD COLUMN market_atr_pct REAL');
+
+  // 2026-09-23: when the current run of misses began — see the column's note in
+  // the schema above. Existing rows stay NULL and read as their last bump,
+  // which can only make a defer last longer, never end sooner.
+  const missCols = db.prepare('PRAGMA table_info(webull_miss_streak)').all() as { name: string }[];
+  if (!missCols.some((c) => c.name === 'first_missed_at')) {
+    db.exec('ALTER TABLE webull_miss_streak ADD COLUMN first_missed_at INTEGER');
+  }
 
   // position_exits gained the same provenance link, for exit-side slippage.
   const exitCols = db.prepare('PRAGMA table_info(position_exits)').all() as { name: string }[];

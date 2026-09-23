@@ -996,6 +996,81 @@ export function parseBrokerOptionFills(envelopes: unknown[]): BrokerOptionFill[]
   return out;
 }
 
+/** One stock order from the broker's order history that filled some quantity,
+ *  reduced to what matching a hand sale needs. */
+export interface BrokerEquityFill {
+  clientOrderId: string;
+  /** The envelope's combo_type: NORMAL for a plain order (a hand sale, or one
+   *  of the app's own closes), MASTER / STOP_LOSS / STOP_PROFIT for a bracket. */
+  comboType: string | null;
+  side: 'BUY' | 'SELL';
+  symbol: string;
+  filledQty: number;
+  /** Per share, as the broker reports it. */
+  filledPrice: number;
+  filledAt: number;
+}
+
+/**
+ * The stock fills in a list of order envelopes (pure, for tests). The shape is
+ * the history's: one envelope per order, `combo_type` on the envelope, and
+ * `filled_time` as epoch milliseconds in a string with `filled_time_at` (ISO)
+ * beside it. Options, unfilled orders and anything unparseable are skipped.
+ */
+export function parseBrokerEquityFills(envelopes: unknown[]): BrokerEquityFill[] {
+  const out: BrokerEquityFill[] = [];
+  for (const envUnknown of envelopes) {
+    const env = envUnknown as OrderEnvelope;
+    for (const o of env.orders ?? []) {
+      if (o.instrument_type !== 'EQUITY') continue;
+      const symbol = typeof o.symbol === 'string' ? o.symbol.toUpperCase() : '';
+      const filledQty = num(o.filled_quantity);
+      const filledPrice = num(o.filled_price);
+      const filledAtMs =
+        num(o.filled_time) ?? (typeof o.filled_time_at === 'string' ? Date.parse(o.filled_time_at) : NaN);
+      const side = o.side === 'SELL' || o.side === 'BUY' ? o.side : null;
+      const clientOrderId = typeof o.client_order_id === 'string' ? o.client_order_id : (env.client_order_id ?? '');
+      if (
+        !symbol ||
+        side === null ||
+        !clientOrderId ||
+        filledQty === undefined ||
+        filledQty <= 0 ||
+        filledPrice === undefined ||
+        filledPrice <= 0 ||
+        !Number.isFinite(filledAtMs)
+      ) {
+        continue;
+      }
+      out.push({
+        clientOrderId,
+        comboType: typeof env.combo_type === 'string' ? env.combo_type : null,
+        side,
+        symbol,
+        filledQty,
+        filledPrice,
+        filledAt: filledAtMs,
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Every stock fill in the broker's order history (the last 7 days), from one
+ * paged read. READ-ONLY, never throws. Used to book a stock position the
+ * operator sold by hand at the broker's own fill instead of a quote
+ * (stockExitCorrection.ts, matchStockHandSale).
+ */
+export async function listBrokerEquityFills(
+  accountId: string,
+): Promise<{ ok: boolean; fills: BrokerEquityFill[]; error?: string }> {
+  if (!webullConfigured()) return { ok: false, fills: [], error: 'Webull is not configured.' };
+  const r = await fetchFullOrderList(accountId, '/openapi/trade/order/history');
+  if (!r.ok) return { ok: false, fills: [], error: r.error };
+  return { ok: true, fills: parseBrokerEquityFills(r.envelopes) };
+}
+
 /**
  * Every options fill in the broker's order history (its default window, the
  * last 7 days), from one paged read. READ-ONLY, never throws. Used to book a
