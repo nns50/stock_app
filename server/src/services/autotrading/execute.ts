@@ -36,6 +36,7 @@ import { journalMethodMultipliers, methodOfEquitySignal } from './methodSizing';
 import { getProvider } from '../../providers';
 import { mapPool } from '../../util/async';
 import { evaluateEndOfDayFlatten } from './endOfDayFlatten';
+import { liveExitRules } from '../exitReplay';
 import { evaluateEntryExtension, REFERENCE_MAX_PCT_OF_RANGE, REFERENCE_MAX_VWAP_EXT_PCT } from './entryExtension';
 import { fetchTodaySessionContext } from './vwap';
 
@@ -617,8 +618,13 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
  *
  * When none of those three fire, applyPositionManagement (below) gets a
  * chance to scale out part of the position and/or ratchet its stop —
- * breakeven and trailing, PAPER only (see AutotradeConfig's own doc comment
- * on why LIVE equity positions don't get this).
+ * breakeven and trailing — in the live book's own shape (liveExitRules): each
+ * only while the live book runs it.
+ *
+ * What the stop-LEVEL convention costs against a live stop, which rests at the
+ * broker and fills on the first trade through it, is measured rather than
+ * assumed: the edge-leak scan's same-tick reading pairs entries made in one
+ * tick, and the tune advisor prices refused entries with it (2026-09-23).
  */
 export async function checkPaperExits(): Promise<ExitCheckOutcome[]> {
   const cfg = getAutotradeConfig();
@@ -677,6 +683,12 @@ export async function checkPaperExits(): Promise<ExitCheckOutcome[]> {
   //
   // So paper is live minus exactly three things, each of which is a question
   // someone is trying to answer. Anything else that diverges is a bug.
+  //
+  // One did, for eleven days (found 2026-09-23). The scale-out read its raw
+  // fields here, while live reads them behind liveScaleOutEnabled, so when the
+  // 09-12 plan switched the live scale-out off, paper kept scaling out.
+  // applyPositionManagement now reads liveExitRules, so the next flag that
+  // changes changes both books.
   // ---------------------------------------------------------------------
   const flatten = evaluateEndOfDayFlatten(cfg, Date.now());
   const open = listOpenPaperPositions();
@@ -834,6 +846,16 @@ function applyPositionManagement(pos: PaperPosition, last: number, cfg: ReturnTy
   const long = pos.side === 'buy';
   const initialStopDistance = Math.abs(pos.entryPrice - pos.initialStopPrice);
   if (!(initialStopDistance > 0)) return;
+  // THE LIVE BOOK'S SHAPE, NOT THE RAW FIELDS (2026-09-23). The scale-out and
+  // the trail reach the live book behind their own flags, and this read the
+  // fields beneath the flags. When the 09-12 plan switched the live scale-out
+  // off, paper kept banking 67% at +0.25R, on 85 of its 173 closed trades,
+  // and every live-versus-paper comparison measured an exit the live book no
+  // longer ran. liveExitRules is the one statement of the live shape; the
+  // declined-entry shadow and the exit-replay route read it too.
+  const rules = liveExitRules(cfg);
+  const scaleOutR = rules.scaleOutR ?? 0;
+  const scaleOutFraction = rules.scaleOutFraction ?? 0;
 
   const rMultiple = long
     ? (last - pos.entryPrice) / initialStopDistance
@@ -843,8 +865,8 @@ function applyPositionManagement(pos: PaperPosition, last: number, cfg: ReturnTy
   // action; breakeven/trailing below just adjust where the remainder's stop
   // sits). partialExitTaken guards against re-firing every cycle once done.
   let partialFired = false;
-  if (cfg.partialExitRMultiple > 0 && !pos.partialExitTaken && rMultiple >= cfg.partialExitRMultiple) {
-    const closeQty = Math.floor(pos.quantity * (cfg.partialExitPct / 100));
+  if (scaleOutR > 0 && !pos.partialExitTaken && rMultiple >= scaleOutR) {
+    const closeQty = Math.floor(pos.quantity * scaleOutFraction);
     // Skip (retried next cycle) rather than force an edge case: 0 rounds to
     // nothing to close; the full quantity belongs to a real exit, not a
     // scale-out that's supposed to leave a remainder running.
@@ -879,11 +901,11 @@ function applyPositionManagement(pos: PaperPosition, last: number, cfg: ReturnTy
   // candidate} ever gets written — this is what guarantees neither one can
   // ever loosen the stop, without needing separate "already applied" flags.
   let candidateStop = pos.stopPrice;
-  if (cfg.breakevenTriggerRMultiple > 0 && rMultiple >= cfg.breakevenTriggerRMultiple) {
+  if (rules.breakevenTriggerR > 0 && rMultiple >= rules.breakevenTriggerR) {
     candidateStop = long ? Math.max(candidateStop, pos.entryPrice) : Math.min(candidateStop, pos.entryPrice);
   }
-  if (cfg.trailStartRMultiple > 0 && cfg.trailStopRMultiple > 0 && rMultiple >= cfg.trailStartRMultiple) {
-    const trailDistance = cfg.trailStopRMultiple * initialStopDistance;
+  if (rules.trailStartR > 0 && rules.trailStopR > 0 && rMultiple >= rules.trailStartR) {
+    const trailDistance = rules.trailStopR * initialStopDistance;
     const trailingCandidate = long ? bestPrice - trailDistance : bestPrice + trailDistance;
     candidateStop = long ? Math.max(candidateStop, trailingCandidate) : Math.min(candidateStop, trailingCandidate);
   }

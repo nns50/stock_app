@@ -4177,11 +4177,14 @@ describe('journal analysis routes tell you what they could not cover (integratio
     // Defaults are the LIVE config, not hardcoded — a bare call has to answer
     // "what would today's geometry have done".
     const cfg = getAutotradeConfig();
-    expect(rep.rules.trailStopR).toBe(cfg.trailStopRMultiple);
-    expect(rep.rules.targetR).toBe(cfg.targetRMultiple);
     // The current policy includes the scale-out (only when its flag is on)
     // and the stagnation timer (2026-09-11) — from the live config as well.
-    expect(rep.rules.scaleOutR).toBe(cfg.liveScaleOutEnabled ? cfg.partialExitRMultiple : 0);
+    // Since 2026-09-23 the defaults ARE liveExitRules, the function the paper
+    // book and the declined-entry shadow read, so all three replay one shape.
+    const live = liveExitRules(cfg);
+    expect(rep.rules.trailStopR).toBe(live.trailStopR);
+    expect(rep.rules.targetR).toBe(cfg.targetRMultiple);
+    expect(rep.rules.scaleOutR).toBe(live.scaleOutR);
     expect(rep.rules.scaleOutFraction).toBeCloseTo(cfg.partialExitPct / 100, 6);
     expect(rep.rules.stagnationMinutes).toBe(cfg.stagnationExitMinutes);
     expect(rep.rules.stagnationMinR).toBe(cfg.stagnationExitMinR);
@@ -4230,6 +4233,7 @@ describe('journal analysis routes tell you what they could not cover (integratio
     const before = getAutotradeConfig();
     setAutotradeConfig({
       liveScaleOutEnabled: false,
+      liveTrailingEnabled: true,
       stagnationExitMinutes: 0,
       breakevenTriggerRMultiple: 0.25,
       trailStartRMultiple: 0.5,
@@ -4304,12 +4308,42 @@ describe('journal analysis routes tell you what they could not cover (integratio
       candles.mockRestore();
       setAutotradeConfig({
         liveScaleOutEnabled: before.liveScaleOutEnabled,
+        liveTrailingEnabled: before.liveTrailingEnabled,
         stagnationExitMinutes: before.stagnationExitMinutes,
         breakevenTriggerRMultiple: before.breakevenTriggerRMultiple,
         trailStartRMultiple: before.trailStartRMultiple,
         trailStopRMultiple: before.trailStopRMultiple,
       });
       db.exec('DELETE FROM position_exits; DELETE FROM positions;');
+    }
+  });
+
+  // 2026-09-23. The route built its own copy of the live shape and read the
+  // trail fields raw, while stopAdjust.ts moves no live stop unless
+  // liveTrailingEnabled is on. A bare call now replays exactly liveExitRules.
+  it('exit-replay replays no ratchet the live book does not run', async () => {
+    db.exec('DELETE FROM position_exits; DELETE FROM positions;');
+    const before = getAutotradeConfig();
+    type Rules = { rules: { breakevenTriggerR: number; trailStartR: number; trailStopR: number } };
+    try {
+      setAutotradeConfig({
+        breakevenTriggerRMultiple: 0.25,
+        trailStartRMultiple: 0.5,
+        trailStopRMultiple: 0.5,
+        liveTrailingEnabled: false,
+      });
+      const off = (await getJson('/api/journal/exit-replay')) as Rules;
+      expect(off.rules).toMatchObject({ breakevenTriggerR: 0, trailStartR: 0, trailStopR: 0 });
+      setAutotradeConfig({ liveTrailingEnabled: true });
+      const on = (await getJson('/api/journal/exit-replay')) as Rules;
+      expect(on.rules).toMatchObject({ breakevenTriggerR: 0.25, trailStartR: 0.5, trailStopR: 0.5 });
+    } finally {
+      setAutotradeConfig({
+        liveTrailingEnabled: before.liveTrailingEnabled,
+        breakevenTriggerRMultiple: before.breakevenTriggerRMultiple,
+        trailStartRMultiple: before.trailStartRMultiple,
+        trailStopRMultiple: before.trailStopRMultiple,
+      });
     }
   });
 

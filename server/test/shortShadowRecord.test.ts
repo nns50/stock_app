@@ -68,10 +68,28 @@ describe('barsFromSignal', () => {
 
 describe('liveExitRules', () => {
   it('reads the book its own geometry, so the shadow moves when the book does', () => {
-    expect(liveExitRules(cfg({ targetRMultiple: 1.5, breakevenTriggerRMultiple: 0.25 }))).toMatchObject({
+    expect(
+      liveExitRules(cfg({ targetRMultiple: 1.5, breakevenTriggerRMultiple: 0.25, liveTrailingEnabled: true })),
+    ).toMatchObject({
       targetR: 1.5,
       breakevenTriggerR: 0.25,
     });
+  });
+
+  // 2026-09-23. stopAdjust.ts moves no live stop while liveTrailingEnabled is
+  // off; this read breakeven and the trail regardless, so a shadow could credit
+  // a ratchet the live book never makes.
+  it('turns breakeven and the trail off when the live book does not trail', () => {
+    expect(
+      liveExitRules(
+        cfg({
+          breakevenTriggerRMultiple: 0.25,
+          trailStartRMultiple: 0.5,
+          trailStopRMultiple: 0.5,
+          liveTrailingEnabled: false,
+        }),
+      ),
+    ).toMatchObject({ breakevenTriggerR: 0, trailStartR: 0, trailStopR: 0 });
   });
 
   // 2026-09-11: exitReplay learned the scale-out and the stagnation timer in

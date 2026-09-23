@@ -19,6 +19,7 @@ import {
 import {
   aggregateReplay,
   compareExitRules,
+  liveExitRules,
   replayExit,
   type ExitRules,
   type ReplayResult,
@@ -298,16 +299,19 @@ journalRouter.get(
     const pct = (v: unknown, dflt: number): number => Math.min(100, num(v, dflt));
     // The CURRENT policy is more than the four multiples (2026-09-11): the live
     // scale-out (when its flag is on) and the stagnation timer are part of it,
-    // so a bare call replays them too — from the live config, like the rest.
+    // so a bare call replays them too. The defaults are liveExitRules, the one
+    // function the paper book and the declined-entry shadow also read
+    // (2026-09-23), so this route cannot replay a geometry they do not run.
+    const live = liveExitRules(cfg);
     const rules: ExitRules = {
-      breakevenTriggerR: num(req.query.breakevenR, cfg.breakevenTriggerRMultiple),
-      trailStartR: num(req.query.trailStartR, cfg.trailStartRMultiple),
-      trailStopR: num(req.query.trailStopR, cfg.trailStopRMultiple),
-      targetR: num(req.query.targetR, cfg.targetRMultiple),
-      scaleOutR: num(req.query.scaleOutR, cfg.liveScaleOutEnabled ? cfg.partialExitRMultiple : 0),
+      breakevenTriggerR: num(req.query.breakevenR, live.breakevenTriggerR),
+      trailStartR: num(req.query.trailStartR, live.trailStartR),
+      trailStopR: num(req.query.trailStopR, live.trailStopR),
+      targetR: num(req.query.targetR, live.targetR),
+      scaleOutR: num(req.query.scaleOutR, live.scaleOutR ?? 0),
       scaleOutFraction: pct(req.query.scaleOutPct, cfg.partialExitPct) / 100,
-      stagnationMinutes: num(req.query.stagnationMinutes, cfg.stagnationExitMinutes),
-      stagnationMinR: num(req.query.stagnationMinR, cfg.stagnationExitMinR),
+      stagnationMinutes: num(req.query.stagnationMinutes, live.stagnationMinutes ?? 0),
+      stagnationMinR: num(req.query.stagnationMinR, live.stagnationMinR ?? 0),
     };
     // A candidate shape rides on `c`-prefixed overrides of the SAME rules —
     // every field it does not name is the current one, so the comparison
