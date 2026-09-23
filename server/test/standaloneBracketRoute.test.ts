@@ -24,7 +24,12 @@ import { config } from '../src/config';
 import { setAutotradeConfig } from '../src/db/autotradeConfig';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { webullAccountState } from '../src/providers/webull/accountState';
-import { listWebullOpenOrders, webullCancelOrder, webullPlaceStandaloneBracket } from '../src/providers/webull/orders';
+import {
+  buildStandaloneBracketRequest,
+  listWebullOpenOrders,
+  webullCancelOrder,
+  webullPlaceStandaloneBracket,
+} from '../src/providers/webull/orders';
 import { previewWebullPositions } from '../src/providers/webull/positions';
 
 const mockAccount = vi.mocked(webullAccountState);
@@ -169,6 +174,10 @@ describe('POST /api/autotrade/live/standalone-bracket', () => {
     expect(intent).toMatchObject({ symbol: 'SMCI', assetKind: 'stock', side: 'buy', openClose: 'close', quantity: 1 });
     expect(tp).toBe(60);
     expect(sl).toBe(30);
+    // And on the wire: SELL legs. The automatic re-arm passed an intent that
+    // looked as plausible as this one and went out as BUY legs for eleven days,
+    // so the input alone proves nothing (2026-09-23).
+    expect(buildStandaloneBracketRequest(intent, tp, sl)!.new_orders.map((o) => o.side)).toEqual(['SELL', 'SELL']);
   });
 
   it('journals the outcome either way, with the held quantity it judged against', async () => {

@@ -14,6 +14,9 @@ import {
   listWebullOpenOrders,
   newClientOrderId,
   committedProtectiveQuantity,
+  buildStandaloneBracketRequest,
+  protectiveBracketIntent,
+  webullOrderDetail,
 } from '../src/providers/webull/orders';
 import type { WebullOpenOrder } from '../src/providers/webull/orders';
 import type { OrderIntent } from '../src/services/trading/guardrails';
@@ -1304,5 +1307,119 @@ describe('committedProtectiveQuantity', () => {
 
   it('is case- and whitespace-insensitive about the symbol', () => {
     expect(committedProtectiveQuantity([leg({ symbol: 'fcx' })], '  fcx  ', 'sell')).toBe(38);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A protective bracket's side, on the WIRE (2026-09-23).
+//
+// buildStandaloneBracketRequest takes the position's ENTRY side and bracketExit
+// flips it, so the legs rest on the closing side. The automatic re-arm passed
+// the closing side instead and every leg came out inverted: for eleven days a
+// "protective" re-arm of a long was a BUY stop plus a BUY take-profit limit.
+// These pin the only thing that matters — what the broker receives.
+// ---------------------------------------------------------------------------
+describe('protectiveBracketIntent', () => {
+  const wire = (positionSide: 'long' | 'short', target: number | undefined, stop: number | undefined) =>
+    buildStandaloneBracketRequest(protectiveBracketIntent(' aapl ', positionSide, 7), target, stop)!.new_orders.map(
+      (o) => ({ combo: o.combo_type, side: o.side, type: o.order_type, qty: o.quantity, symbol: o.symbol }),
+    );
+
+  it('protects a LONG with SELL legs — take-profit and stop both close it', () => {
+    expect(wire('long', 110, 95)).toEqual([
+      { combo: 'STOP_PROFIT', side: 'SELL', type: 'LIMIT', qty: '7', symbol: 'AAPL' },
+      { combo: 'STOP_LOSS', side: 'SELL', type: 'STOP_LOSS', qty: '7', symbol: 'AAPL' },
+    ]);
+  });
+
+  it('protects a SHORT with BUY legs', () => {
+    expect(wire('short', 90, 105).map((l) => l.side)).toEqual(['BUY', 'BUY']);
+  });
+
+  it('is a CLOSE, never an opening order, and carries no MASTER', () => {
+    const i = protectiveBracketIntent('AAPL', 'long', 7);
+    expect(i).toMatchObject({ openClose: 'close', assetKind: 'stock', side: 'buy' });
+    const req = buildStandaloneBracketRequest(i, 110, 95)!;
+    expect(req.new_orders.some((o) => o.combo_type === 'MASTER')).toBe(false);
+  });
+
+  it('the inverted intent the re-arm used to pass really does produce BUY legs under a long', () => {
+    // Kept as the regression's own witness: side 'sell' reads like "sell to
+    // protect a long", and it is the one input that must never reach here.
+    const inverted: OrderIntent = { ...protectiveBracketIntent('AAPL', 'long', 7), side: 'sell' };
+    expect(buildStandaloneBracketRequest(inverted, 110, 95)!.new_orders.map((o) => o.side)).toEqual(['BUY', 'BUY']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Order Detail by client_order_id (2026-09-23).
+//
+// Webull's reference says both order LISTS "may not return the most recent
+// order data in real time due to processing delays" and names Order Detail by
+// client_order_id as the read to trust. SHOP's 2026-09-22 close never appeared
+// in either list; this is the read that finds it. Contract from Webull's SDK:
+// GET /openapi/trade/order/detail?account_id=…&client_order_id=….
+// ---------------------------------------------------------------------------
+describe('webullOrderDetail', () => {
+  const cfg = () => Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+  const reply = (body: unknown, status = 200) =>
+    ({ ok: status < 400, status, text: async () => JSON.stringify(body) }) as Response;
+  const shopClose = {
+    client_order_id: 'CID-SHOP',
+    combo_order_id: '80HAQQC9TKE99E2ADV2CQPD45B',
+    orders: [
+      {
+        client_order_id: 'CID-SHOP',
+        order_id: '80HAQQC9TKE99E2ADV2CQPD45B',
+        status: 'FILLED',
+        filled_quantity: '91',
+        total_quantity: '91',
+        filled_price: '148.31',
+      },
+    ],
+  };
+
+  it('asks the detail endpoint for ONE order, by account and client order id', async () => {
+    cfg();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(reply(shopClose));
+    await webullOrderDetail('ACC1', 'CID-SHOP');
+    const url = String(fetchSpy.mock.calls[0][0]);
+    expect(url).toContain('/openapi/trade/order/detail');
+    expect(url).toContain('account_id=ACC1');
+    expect(url).toContain('client_order_id=CID-SHOP');
+  });
+
+  it('reads an envelope the way a list entry is read', async () => {
+    cfg();
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(reply(shopClose));
+    expect(await webullOrderDetail('ACC1', 'CID-SHOP')).toMatchObject({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      filledQty: 91,
+      filledPrice: 148.31,
+      brokerOrderId: '80HAQQC9TKE99E2ADV2CQPD45B',
+    });
+  });
+
+  it('accepts the same envelope inside an array', async () => {
+    cfg();
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(reply([shopClose]));
+    expect(await webullOrderDetail('ACC1', 'CID-SHOP')).toMatchObject({ found: true, status: 'FILLED' });
+  });
+
+  it('reads a reply that does not name our order as NOT FOUND — never as a guess — and keeps it for the journal', async () => {
+    cfg();
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(reply({ something: 'else' }));
+    const r = await webullOrderDetail('ACC1', 'CID-SHOP');
+    expect(r).toMatchObject({ ok: true, found: false });
+    expect(r.raw).toEqual({ something: 'else' });
+    expect(r.status).toBeUndefined();
+  });
+
+  it('a failed read is "could not ask", not "not found"', async () => {
+    cfg();
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(reply({ msg: 'boom' }, 500));
+    expect(await webullOrderDetail('ACC1', 'CID-SHOP')).toMatchObject({ ok: false, found: false, error: 'boom' });
   });
 });

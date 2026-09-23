@@ -2294,9 +2294,19 @@ because the loop is the only caller that is always flat by the bell, so it is
   are enforced by the broker directly. Live trading is blocked if *either* kill switch is
   engaged — this page's own, or the **Trade** page's — since both places orders through
   the same real account; either one's "Halt trading" is a genuine, shared emergency stop.
-  An engaged kill switch freezes **all** automated live order placement — exits included,
-  not just entries — which makes it the right tool for "hands off, I'm trading this
-  account manually in Webull": the app won't fire its own closes into your session.
+  An engaged kill switch freezes **all** automated live order activity — placing, moving
+  and cancelling, exits included, not just entries — which makes it the right tool for
+  "hands off, I'm trading this account manually in Webull": the app won't fire its own
+  closes into your session, move a stop you have changed, or re-arm a bracket you have
+  cancelled. (Until 2026-09-23 that was not fully true: the automatic re-arm, the stop
+  ratchet and the scale-out's bracket resize called the broker directly and kept acting
+  through a halt. All three now read the switch.) **To manage a position by hand, engage
+  the kill switch first**, then change or cancel its bracket and trade it in Webull; the
+  app reports what it sees (a position with no stop shows up on Recent activity, marked as
+  held by the kill switch) and touches nothing until you release the switch. A position
+  still without a stop when you release it is re-armed on the next cycle. To close a
+  position by hand without ever leaving it stop-less, you can also move its bracket's
+  take-profit down to the bid: the bracket closes itself, and its stop is cancelled with it.
   Three things keep working through a halt: your **broker-side bracket legs** still rest
   at Webull and fire on their own; the background **sync keeps booking** whatever fills
   or manual closes happen at the broker (a held options exit is journaled to Recent
@@ -2315,6 +2325,17 @@ because the loop is the only caller that is always flat by the bell, so it is
   difference. It deliberately errs toward recording **less** rather than inflating a
   position's size or cost basis, since every risk figure on this page is derived from those
   numbers; treat such an entry as "check this order against the broker".
+  The loop learns what happened to each of its orders from Webull's **open-orders** and
+  **order-history** lists. Webull's own reference warns that both "may not return the most
+  recent order data in real time due to processing delays". On 2026-09-22, a SHOP close that
+  filled within a minute never appeared in either list, so the position stayed open in the
+  app all evening while Webull held no shares, and it held one of the three slots. Since
+  **2026-09-23**, when an order Webull has accepted is missing from both lists, the loop asks
+  Webull for that one order directly (**Order Detail**, by the app's own order id). It does
+  this for up to three orders a cycle, newest first, and records whatever Webull reports. A
+  **`live_order_status_from_detail`** row on Recent activity marks an order settled that
+  way. **`live_order_status_unresolved`** (once a day per order) marks one that neither read
+  could find: check that order against the broker.
 
   A **Live positions** table (Dashboard tab) shows every real position the loop has actually
   placed — the exact same `positions` rows your own manual trades use on the
@@ -2455,26 +2476,41 @@ because the loop is the only caller that is always flat by the bell, so it is
   any shares still held with no stop under them is the real thing and pages. If that account
   read fails the alert still fires, but says the held count is unconfirmed rather than claiming
   it. Since 2026-09-12 it also **re-arms**: a position it has *confirmed* naked (shares held,
-  no resting stop) gets a protective bracket placed automatically from the stop and target
-  already recorded against it, and only an unconfirmed, failed or unanswered re-arm still
-  pages you. Two rules keep the automatic fix from being worse than the gap, and both exist
-  because two orders against one position sell it twice: an **unanswered** placement is never
-  retried (the orders may well be resting), and only the leg that is actually **missing** is
-  placed — if the take-profit is still working and only the stop is gone, the stop is re-armed
-  alone rather than stacking a second take-profit at the same price on the same shares. In
-  that case the re-armed stop is not linked to the old take-profit, so if the stop fills, that
-  target can stay resting at the broker until the position's close cancels it.
-  Since **2026-09-15** there is one case the re-arm cannot fix, and it now **closes** instead:
-  a stop cannot be placed where the market has already been, so a naked position whose price is
-  already through its recorded stop gets a marketable-limit exit rather than a stop it can never
-  hold. On 2026-09-14 that exact case — BWIN at 12:13 ET — was refused by the broker and left
-  naked all afternoon with only an alert. Three things must all be true before anything is
-  sold: the broker confirms the shares are still held, the re-arm was tried and **refused**, and
-  a price fetched right then is through the stop — two independent sources agreeing, so a stale
-  quote alone can't trigger it. It appears in Recent activity as a `live_time_exit_placed` row
-  with `trigger: unprotected_breach`. The **kill switch** stops it (the close runs the same
-  guardrails every order does) while detection keeps running, and a close that fails still pages
-  you, because the position really is unprotected. (Options are
+  no resting stop) gets a protective bracket, a sell take-profit and a sell stop for a long,
+  placed automatically from the stop and target already recorded against it, and only an
+  unconfirmed, failed or unanswered re-arm still pages you. (Until **2026-09-23** that re-arm
+  sent its orders on the wrong side, as a buy stop and a buy take-profit, and the broker
+  refused every one. The refusal's wording, "the stop price … should be higher than the
+  current market price", is its rule for a buy stop. No such order was ever accepted.)
+  Several rules keep the automatic fix from being worse than the gap, and most exist because
+  two orders against one position sell it twice:
+  - an **unanswered** placement is never retried, because the orders may well be resting;
+  - while a **kill switch** is engaged, nothing is placed or cancelled. The position is still
+    reported, marked as held by the kill switch;
+  - a position whose **close is already working** is left to that close;
+  - if the **take-profit is still working and only the stop is gone**, the take-profit is
+    cancelled and both legs are re-armed together on the next cycle
+    (`live_bracket_rearm_target_cancelled`, then `live_bracket_rearmed`). The broker refuses
+    a stop added on its own under a resting take-profit, because it counts the shares held
+    minus the shares resting exits already cover, and the take-profit covers them all;
+  - a resting order the check cannot identify is never cancelled; it pages instead.
+
+  Since **2026-09-15**, a naked position whose price is already **through** its recorded
+  stop is **closed** instead: the broker refuses a stop the market has already passed, so the
+  position gets a marketable-limit exit rather than a stop it can never hold. (The case this was
+  written for, BWIN at 12:13 ET on 2026-09-14, turned out not to be one. BWIN was at 31.95
+  against a 31.16 stop, and its refusal was the wrong-side order above.) Three things must all
+  be true before anything is sold: the broker confirms the shares are still held, the re-arm
+  was tried and **refused**, and a price fetched right then is through the stop. That is two
+  independent sources agreeing, so a stale quote alone can't trigger it. It appears in Recent
+  activity as a `live_time_exit_placed` row with `trigger: unprotected_breach`. The **kill
+  switch** stops it, while detection keeps running. A close that fails still pages you,
+  because the position really is unprotected.
+  The **stop ratchet** (breakeven and trail) follows the same two rules: it holds while a kill
+  switch is engaged (`live_stop_adjust_held`, once a day per position), and it never moves a
+  stop to a looser price than the one actually resting at the broker. If you have raised a
+  stop by hand, the app leaves it there (`live_stop_adjust_skipped`) rather than pulling it
+  back to its own next step. (Options are
   excluded on purpose:
   Webull only allows DAY orders on the option sell side, so an option bracket's exits
   legitimately disappear at each close, and checking them would alarm every day for a known,

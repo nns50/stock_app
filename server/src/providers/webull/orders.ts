@@ -447,6 +447,42 @@ export function buildStandaloneBracketRequest(
 }
 
 /**
+ * The intent that PROTECTS a held position through buildStandaloneBracketRequest
+ * and webullPlaceStandaloneBracket. One derivation, because every caller that
+ * wrote its own had to get a double inversion right, and one did not.
+ *
+ * `side` is the position's ENTRY side (buy for a long) because bracketExit flips
+ * it: the legs rest on the closing side. Hand it the CLOSING side and every leg
+ * comes out inverted. checkLiveBracketProtection's automatic re-arm did exactly
+ * that from 2026-09-12 to 2026-09-23: for a long it sent a BUY stop at the
+ * recorded stop and a BUY take-profit limit at the target. The broker refused
+ * every one — "The stop price of the stop-loss order should be higher than the
+ * current market price", which is its rule for a BUY stop. That wording was read
+ * at the time as "the stop is already through the market"; the minute bars say
+ * otherwise. Price was ABOVE the recorded stop at each refusal (BWIN 31.95 vs
+ * 31.16 on 09-14, LITE ~964 vs 954.53 on 09-21, SNOW ~338.5 vs 334.28 on 09-22),
+ * where a correctly-sided sell stop is an ordinary order.
+ *
+ * The refusals were the lucky half. A naked long trading BELOW its stop makes
+ * that buy stop valid, and the buy take-profit limit, sitting above the market,
+ * fills at once: the "protection" would have bought more of a losing position.
+ *
+ * The tests assert the side that reaches the wire (run the intent through
+ * buildStandaloneBracketRequest), never the side a caller passed in — asserting
+ * the input is how three passing tests pinned the inverted one.
+ */
+export function protectiveBracketIntent(symbol: string, positionSide: 'long' | 'short', quantity: number): OrderIntent {
+  return {
+    symbol: symbol.trim().toUpperCase(),
+    assetKind: 'stock',
+    side: positionSide === 'short' ? 'sell' : 'buy',
+    openClose: 'close',
+    quantity,
+    orderType: 'limit',
+  };
+}
+
+/**
  * Place a standalone bracket over shares already held. THIS SUBMITS LIVE
  * ORDERS — same contract as webullPlaceOrder: the caller owns the gating.
  */
@@ -900,6 +936,40 @@ export async function webullOrderStatus(accountId: string, clientOrderId: string
     if (hit) return hit;
   }
   return { ok: true, found: false };
+}
+
+/**
+ * ONE order's current status from the Order Detail endpoint, by our own
+ * client_order_id. READ-ONLY. Never throws.
+ *
+ * The order LISTS lag, by the broker's own account. Webull's reference says of
+ * both Open Orders and Order History: "This endpoint may not return the most
+ * recent order data in real time due to processing delays. To ensure you get
+ * the latest order status, please query the Order Detail endpoint by
+ * client_order_id." Every status read in this file went through the lists
+ * until 2026-09-23. On 2026-09-22 SHOP's stagnation close (placed 15:27:55,
+ * shares gone by 15:28:31) never appeared in either list the reconcile read,
+ * so the intent sat at `acknowledged` and the position stayed open in the
+ * ledger all evening, holding a slot.
+ *
+ * Contract taken from Webull's current SDK (webull-openapi-python-sdk,
+ * OrderDetailRequest: GET /openapi/trade/order/detail, query `account_id` +
+ * `client_order_id`; "supported only for Webull HK and Webull US"). The
+ * response shape is not documented there, so it is parsed exactly as a list
+ * entry is — an envelope, or a bare array of them — and anything that does not
+ * name our client_order_id reads as not found, never as a guess.
+ */
+export async function webullOrderDetail(accountId: string, clientOrderId: string): Promise<WebullOrderStatus> {
+  if (!webullConfigured()) return { ok: false, found: false, error: 'Webull is not configured.' };
+  const path = '/openapi/trade/order/detail';
+  const r = await webullClient().call('GET', path, {
+    query: { account_id: accountId, client_order_id: clientOrderId },
+    surface: 'trade',
+  });
+  if (!r.ok) return { ok: false, found: false, error: fetchError(path, r) };
+  const list = Array.isArray(r.data) ? r.data : r.data && typeof r.data === 'object' ? [r.data] : [];
+  // `raw` rides along on a miss so the first unparsed answer shows its shape.
+  return resolveFromList(list, clientOrderId) ?? { ok: true, found: false, raw: r.data };
 }
 
 /**
