@@ -105,6 +105,18 @@ describe('POST /api/autotrade/live/standalone-bracket', () => {
     expect(mockPlace).toHaveBeenCalledTimes(1);
   });
 
+  it('counts SHARES held, not shares plus the option contracts on the name (2026-09-23)', async () => {
+    // 50 shares and 2 calls: asked without an instrument the broker read sums
+    // them to 52, which let a 52-share protective sell through — a 2-share short.
+    mockAccount.mockImplementation(async (_account, _symbol, instrument) =>
+      held(instrument?.assetKind === 'stock' ? 50 : 52),
+    );
+    const r = await post({ ...ok, quantity: 52 });
+    expect(r.status).toBe(400);
+    expect(((await r.json()) as { error: string }).error).toMatch(/against 50 held/);
+    expect(mockPlace).not.toHaveBeenCalled();
+  });
+
   // The guard the FIRST real call to this route walked straight into. It
   // shipped checking `quantity > held` and nothing else; the broker refused a
   // 1-share bracket on FCX against 38 held, because a full-size bracket was

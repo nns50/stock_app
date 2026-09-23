@@ -1266,6 +1266,31 @@ export interface WebullOpenOrder {
   limitPrice?: number;
   stopPrice?: number;
   quantity?: number;
+  /** EQUITY / OPTION, upper-cased, off the order or its envelope; undefined
+   *  when neither carries it. An options order names the UNDERLYING as its
+   *  `symbol`, so without this a working close on an MRNA call is, to anything
+   *  that filters by symbol and side, one more resting sell on MRNA — see
+   *  isOptionOrder. */
+  instrumentType?: string;
+}
+
+/**
+ * Whether an open order is for an OPTION contract (2026-09-23).
+ *
+ * The stock sleeve finds a position's exit legs by symbol and side. The options
+ * sleeve trades the same names, and its orders carry the underlying as their
+ * symbol: a working SELL LIMIT on an MRNA call is, by symbol and side, exactly
+ * a take-profit leg on MRNA shares. So the time exit's bracket cancel would
+ * cancel the options sleeve's close, the protection sweep would read it as the
+ * stock's take-profit, and the protect-a-long route would count its contracts
+ * as shares already committed.
+ *
+ * Only an order positively labelled OPTION is excluded. An order whose type
+ * cannot be read keeps being treated as a possible stock leg, so a response
+ * without the field behaves exactly as before: fail-closed stays fail-closed.
+ */
+export function isOptionOrder(o: Pick<WebullOpenOrder, 'instrumentType'>): boolean {
+  return o.instrumentType === 'OPTION';
 }
 
 /**
@@ -1468,6 +1493,13 @@ function mapOpenOrder(o: Record<string, unknown>, env?: Record<string, unknown>)
     limitPrice: num(o.limit_price ?? o.limitPrice ?? o.price),
     stopPrice: num(o.stop_price ?? o.stopPrice ?? o.aux_price),
     quantity: num(o.quantity ?? o.qty ?? o.total_quantity),
+    // Order first, envelope second, like combo_type. The history's sub-orders
+    // carry it (parseBrokerEquityFills and parseBrokerOptionFills both filter
+    // on it), and the open list comes back through the same envelope fetch.
+    instrumentType: (
+      pickStr(o, ['instrument_type', 'instrumentType']) ??
+      pickStr((env ?? {}) as Record<string, unknown>, ['instrument_type', 'instrumentType'])
+    )?.toUpperCase(),
   };
 }
 
@@ -1654,6 +1686,8 @@ export function committedProtectiveQuantity(
   for (const [i, o] of orders.entries()) {
     if ((o.symbol ?? '').trim().toUpperCase() !== want) continue;
     if (o.side !== exitSide) continue;
+    // A sell on an option contract commits contracts, not shares.
+    if (isOptionOrder(o)) continue;
     if (TERMINAL.has((o.status ?? '').toUpperCase())) continue;
     if (typeof o.quantity !== 'number' || !Number.isFinite(o.quantity) || o.quantity < 0) {
       unknown = true;

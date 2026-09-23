@@ -2431,7 +2431,11 @@ autotradeRouter.post(
     const accountId = cfg.liveAccountId;
     if (!accountId) throw new HttpError(400, 'No live account is configured.');
 
-    const account = await webullAccountState(accountId, symbol);
+    // SHARES held, not shares plus every option contract on the name: this arms
+    // a stock bracket, and the aggregate let an options holding pass the "no
+    // larger than the position" check below (2026-09-23; see stockAccountState
+    // in liveExecute.ts).
+    const account = await webullAccountState(accountId, symbol, { assetKind: 'stock' });
     if (!account.ok) throw new HttpError(502, `Could not read the account: ${account.error ?? 'unknown'}`);
     const held = account.state?.currentPositionQty ?? 0;
     if (!(held > 0)) throw new HttpError(400, `The account holds no ${symbol} to protect (broker says ${held}).`);

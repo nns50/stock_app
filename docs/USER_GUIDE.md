@@ -2450,7 +2450,12 @@ because the loop is the only caller that is always flat by the bell, so it is
   trades on the Positions/Journal pages and the Trade page's Orders panel. Kept accurate
   every cycle by a broker-truth check (diffs against what Webull actually shows open) as
   a backstop for anything a specific order's own status doesn't catch on its own — no
-  separate setup needed, unlike the general Webull position sync under Settings. Each open
+  separate setup needed, unlike the general Webull position sync under Settings. A stock
+  order's fill is matched only to **shares**: the sync also imports the options sleeve's
+  contracts under the same symbol, and since **2026-09-23** a stock order can never be
+  linked to one. (That day the MRNA stock order's fill was linked to the MRNA call the
+  options sleeve bought in the same minute. The stock book booked a $384 loss on the call
+  that never happened and left the shares' real ~$546 win uncounted.) Each open
   row has a **close** button that places a **real** closing order for that position right
   now (the same one the **Positions** page offers, since these are the same rows): it opens
   a confirmation modal where you type `SELL <qty> <symbol>` (or `BUY …` for a short) to arm,
@@ -2608,7 +2613,16 @@ because the loop is the only caller that is always flat by the bell, so it is
     saying the order may be yours. (Until 2026-09-23 any limit on the exit side counted, so
     releasing the kill switch before your own exit filled let the app cancel it and re-arm its
     bracket over it.);
-  - a resting order the check cannot identify is never cancelled; it pages instead.
+  - a resting order the check cannot identify is never cancelled; it pages instead;
+  - **an option on the same name is not the position.** The options sleeve trades many of
+    the same names, and its orders and holdings carry the underlying's symbol. Since
+    **2026-09-23** every check here counts shares only: the broker's holding read asks for
+    the stock, and a resting order the broker marks as an option is not one of the
+    position's legs. So a stop that fills while the options sleeve still holds calls on the
+    name reads as closed, not naked, and the options sleeve's working close on a call is never
+    read as the shares' take-profit or cancelled by a stagnation or end-of-day close. (Before
+    that, the holding count added the contracts to the shares, and a call's close order on
+    the name counted as a resting sell on the shares.)
 
   Since **2026-09-15**, a naked position whose price is already **through** its recorded
   stop is **closed** instead: the broker refuses a stop the market has already passed, so the
