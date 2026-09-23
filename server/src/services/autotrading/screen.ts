@@ -25,7 +25,7 @@ import { claimOncePerDay } from './oncePerDayEvents';
 import { getSymbolEvents } from '../events';
 import { getNews } from '../news';
 import { computeHeadlineSentiment } from '../sentiment';
-import { MarketBreadth, breadthOf } from './marketDirection';
+import { MARKET_DIRECTION_INDEX_SYMBOL, MarketBreadth, breadthOf } from './marketDirection';
 
 // ---------------------------------------------------------------------------
 // The Research & Screen stage (docs/AUTOTRADING_SPEC.md — EXECUTION LOOP,
@@ -102,6 +102,13 @@ export interface ScreenResult {
    *  rather than read from yesterday's daily bar. Read by the loop for the
    *  market-direction reading (marketDirection.ts). */
   breadth: MarketBreadth;
+  /** The market-direction index's own move vs its prior close, from the quote
+   *  this screen already read for it (2026-09-23), or null when the index was
+   *  not scored this tick. The loop's reading fetches the index separately,
+   *  after the screen; this is its fallback when that fetch fails, so one
+   *  failed quote cannot turn a broad red day into an `unknown` reading that
+   *  refuses nothing. */
+  indexChangePct: number | null;
   /** `moversError` is the message from a FAILED movers fetch, null when the
    *  fetch succeeded or was never attempted. Movers discovery used to swallow
    *  every error with a bare catch, so a provider outage and "the provider
@@ -922,6 +929,7 @@ export async function runAutotradeScreen(opts: RunScreenOptions = {}): Promise<S
     rejected,
     relVolMedian: median,
     breadth: breadthOf(scoredSnapshots.filter((s) => universe.has(s.symbol)).map((s) => s.quoteChangePct)),
+    indexChangePct: scoredSnapshots.find((s) => s.symbol === MARKET_DIRECTION_INDEX_SYMBOL)?.quoteChangePct ?? null,
     discovery: { universeCount, moversCount, scannedCount: symbols.length, moversError },
   };
 }
