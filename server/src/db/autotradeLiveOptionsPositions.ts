@@ -1,4 +1,5 @@
 import { db } from './index';
+import { rowLimitClause } from './rowLimit';
 
 // ---------------------------------------------------------------------------
 // Storage for Task #70's live (real-money) options positions — the options
@@ -127,7 +128,8 @@ export interface LiveOptionsPosition {
 export interface ListLiveOptionsPositionsFilter {
   status?: 'open' | 'closed';
   symbol?: string;
-  /** Max rows to return (default 200, capped at 1000). */
+  /** Newest-first page size. OMIT FOR EVERY ROW: a history reader must not
+   *  pass one, and a UI page passes its own (db/rowLimit.ts). */
   limit?: number;
 }
 
@@ -439,8 +441,8 @@ export function hasOpenLiveOptionsPosition(symbol: string): boolean {
  *  Auto-Trade page's live options positions view. */
 /**
  * Every closed position whose exit falls in [fromMs, toMs), oldest exit first.
- * No row cap: a day's closes are a bounded set however long the book's history
- * grows, which listLiveOptionsPositions' newest-200 default is not.
+ * Read by date rather than by filtering the whole closed book: a day's closes
+ * are a bounded set however long the history grows.
  */
 export function listClosedLiveOptionsPositionsBetween(fromMs: number, toMs: number): LiveOptionsPosition[] {
   const rows = db
@@ -465,9 +467,9 @@ export function listLiveOptionsPositions(filter: ListLiveOptionsPositionsFilter 
     params.push(filter.symbol.toUpperCase());
   }
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
-  const limit = Math.min(Math.max(filter.limit ?? 200, 1), 1000);
+  const limit = rowLimitClause(filter.limit);
   const rows = db
-    .prepare(`SELECT * FROM autotrade_live_options_positions ${where} ORDER BY id DESC LIMIT ?`)
-    .all(...params, limit) as Row[];
+    .prepare(`SELECT * FROM autotrade_live_options_positions ${where} ORDER BY id DESC ${limit.sql}`)
+    .all(...params, ...limit.params) as Row[];
   return rows.map(map);
 }

@@ -172,12 +172,15 @@ describe('liveDayCloses', () => {
     expect(strategyDayFor(DATE)).toEqual({ pnlUsd: -700, trades: 2 });
   });
 
-  it('reads an options close older than the book’s newest 200 (the list’s default cap)', () => {
+  it('reads an options close older than the book’s newest 200 (a page of the list)', () => {
     closedOption(-600, at('10:10'));
     const later = etDateTimeToMs('2026-09-23', '10:00')!;
     for (let i = 0; i < 205; i++) closedOption(10, later + i * 1000);
-    // The capped list no longer reaches it…
-    expect(listLiveOptionsPositions({ status: 'closed' }).some((p) => p.exitAt === at('10:10'))).toBe(false);
+    // A 200-row page does not reach it (the list's default until the history
+    // readers were given every row, 2026-09-23)…
+    expect(listLiveOptionsPositions({ status: 'closed', limit: 200 }).some((p) => p.exitAt === at('10:10'))).toBe(
+      false,
+    );
     // …and the day's two consumers still do.
     expect(liveDayCloses(DATE).map((c) => c.pnl)).toEqual([-600]);
     expect(strategyDayFor(DATE).pnlUsd).toBe(-600);

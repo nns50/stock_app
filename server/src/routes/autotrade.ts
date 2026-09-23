@@ -1967,11 +1967,17 @@ const paperPositionsQuery = z.object({
   symbol: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(1000).optional(),
 });
+/** The page the four positions routes return when the request names none: the
+ *  newest 200, what the Auto page has always shown. The lists themselves return
+ *  every row when not asked for a page (db/rowLimit.ts), which is what the
+ *  history readers need, so the page is asked for here, by the one caller that
+ *  wants it. */
+const POSITIONS_PAGE_SIZE = 200;
 autotradeRouter.get(
   '/paper-positions',
   asyncHandler(async (req, res) => {
     const q = parseQuery(paperPositionsQuery, req);
-    const positions = await withLivePrices(listPaperPositions(q));
+    const positions = await withLivePrices(listPaperPositions({ ...q, limit: q.limit ?? POSITIONS_PAGE_SIZE }));
     res.json({ positions });
   }),
 );
@@ -2060,7 +2066,9 @@ autotradeRouter.get(
   '/options-paper-positions',
   asyncHandler(async (req, res) => {
     const q = parseQuery(paperPositionsQuery, req);
-    const positions = await withLiveOptionMarks(listOptionsPaperPositions(q));
+    const positions = await withLiveOptionMarks(
+      listOptionsPaperPositions({ ...q, limit: q.limit ?? POSITIONS_PAGE_SIZE }),
+    );
     res.json({ positions });
   }),
 );
@@ -2147,7 +2155,9 @@ autotradeRouter.get(
   '/live-options-positions',
   asyncHandler(async (req, res) => {
     const q = parseQuery(paperPositionsQuery, req);
-    const positions = await withLiveOptionsPositionMarks(listLiveOptionsPositions(q));
+    const positions = await withLiveOptionsPositionMarks(
+      listLiveOptionsPositions({ ...q, limit: q.limit ?? POSITIONS_PAGE_SIZE }),
+    );
     res.json({ positions });
   }),
 );
@@ -2212,7 +2222,9 @@ autotradeRouter.get(
   '/live-positions',
   asyncHandler(async (req, res) => {
     const q = parseQuery(paperPositionsQuery, req);
-    const positions = await withLivePositionPnl(listAutotradeLivePositions(q));
+    const positions = await withLivePositionPnl(
+      listAutotradeLivePositions({ ...q, limit: q.limit ?? POSITIONS_PAGE_SIZE }),
+    );
     res.json({ positions });
   }),
 );

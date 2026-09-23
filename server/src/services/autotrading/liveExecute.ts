@@ -154,6 +154,7 @@ import { getProvider } from '../../providers';
 import { dispatchAutotradeNotification } from './notify';
 import { UnprotectedReportState, unprotectedReportState } from './unprotectedReport';
 import { liveDrawdownHaltedOn } from './dailyHaltMarker';
+import { takeRowLimit } from '../../db/rowLimit';
 
 // ---------------------------------------------------------------------------
 // The LIVE counterpart to execute.ts's paper execution (Phase 8 — see
@@ -650,8 +651,8 @@ export function adoptOrphanedLivePositions(): { adopted: number } {
 export interface ListAutotradeLivePositionsFilter {
   status?: 'open' | 'closed';
   symbol?: string;
-  /** Max rows to return (default 200, capped at 1000) — same convention as
-   *  listPaperPositions/listOptionsPaperPositions. */
+  /** Newest-first page size. OMIT FOR EVERY ROW, the same rule as
+   *  listPaperPositions/listOptionsPaperPositions (db/rowLimit.ts). */
   limit?: number;
 }
 
@@ -664,8 +665,7 @@ export interface ListAutotradeLivePositionsFilter {
  *  read-only, no execution here. */
 export function listAutotradeLivePositions(filter: ListAutotradeLivePositionsFilter = {}): Position[] {
   const all = listPositions({ status: filter.status, symbol: filter.symbol }).filter(isAutotradePosition);
-  const limit = Math.min(Math.max(filter.limit ?? 200, 1), 1000);
-  return all.slice(0, limit);
+  return takeRowLimit(all, filter.limit);
 }
 
 export interface EquitySyncResult {

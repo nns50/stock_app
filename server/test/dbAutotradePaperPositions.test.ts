@@ -107,8 +107,9 @@ describe('autotradePaperPositions', () => {
   });
 
   it('countPaperPositions counts the population the listing pages — same predicate, no clamp', () => {
-    // The listing clamps at 1,000 rows, so a population read off its length
-    // stops growing there; the excursions coverage line needs the count.
+    // A caller that asks the listing for a page reads a population off its
+    // length that stops growing at the page; the excursions coverage line
+    // (which asks for 1,000) needs the count.
     const a = openPaperPosition(input({ symbol: 'PPCNT' }));
     const b = openPaperPosition(input({ symbol: 'PPCNT' }));
     openPaperPosition(input({ symbol: 'PPCNT' }));
