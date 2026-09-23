@@ -13,6 +13,7 @@ import { etDateTimeToMs, etToday } from '../../util/marketDate';
 import { correctionNote, decideExitCorrection } from '../exitPriceBackfill';
 import { realizedPnlOf } from '../pnl';
 import { recordDailyResult } from './dailyResults';
+import { entryIntentIdForPosition } from '../../db/autotradeLiveOrders';
 
 // ---------------------------------------------------------------------------
 // A STOCK EXIT THE SYNC PRICED ITSELF IS CORRECTED TO ITS LEG'S FILL (2026-09-23).
@@ -166,10 +167,14 @@ export async function correctEstimatedStockExits(accountId: string, now: number 
   for (const r of rows) seenExitIds.add(r.exitId);
 
   // Every estimate's ENTRY order: its client_order_id is what reaches the
-  // broker's combo, and so the exit leg that filled.
+  // broker's combo, and so the exit leg that filled. Resolved the way every
+  // other live path resolves it (entryIntentIdForPosition), because an ADOPTED
+  // position has no source_intent_id, and in production almost all are adopted.
+  // Reading only that column is how this pass found nothing on its first deploy.
   const byKey = new Map<string, SyncEstimatedExit[]>();
   for (const row of rows) {
-    const intent = getIntent(row.sourceIntentId);
+    const intentId = entryIntentIdForPosition({ id: row.positionId, sourceIntentId: row.sourceIntentId });
+    const intent = intentId === null ? undefined : getIntent(intentId);
     if (!intent) {
       finalExitIds.add(row.exitId); // the entry order is gone from our own record
       continue;

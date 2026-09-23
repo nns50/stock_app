@@ -13082,6 +13082,19 @@ after the deploy, a `position_reconcile_skipped` row for a bracketed position fo
 `live_position_closed` from the reconcile, not a `position_reconciled_from_broker`, is the
 race going the right way.
 
+**Result of the first deploy (2026-09-23, 00:38 ET): nothing corrected, and the check
+caught why.** The candidate query required `positions.source_intent_id`. Every live stock
+position on the deployed book is **adopted**: the broker sync imports the fill before the
+reconcile materializes it, so `source_intent_id` is NULL and the entry order row points at
+the position instead. All eight estimates (COIN #651, HOOD #650, COIN #656, LITE #661,
+MRVL, SNOW, MRNA, SNDK) were invisible to the pass. The tests passed because their fixtures
+set `source_intent_id`, a shape production does not have. This is the third time the same
+blind spot has shipped: the first two are recorded on `entryIntentIdForPosition` (an adopted
+CTVA position's time exit failing 21 ticks running, and the protection alarm silent for ten
+days). The fix resolves the entry order through that same function, in the pass and in the
+CLI. The query accepts either link, and the fixtures now use the adopted shape by default.
+With the old query restored, seven cases fail.
+
 ## 2026-09-23 (eighth) — a refusal the journal records once a day stands for that day
 
 The leak scan's attribution files every paper entry the live book did not take under the

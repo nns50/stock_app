@@ -1,5 +1,6 @@
 import { listPositions, Position } from '../../db/positions';
 import { getIntents } from '../../db/orders';
+import { entryIntentIdForPosition } from '../../db/autotradeLiveOrders';
 import { getProvider } from '../../providers';
 import { computeSlippage, groupSlippageBySymbol, SlippageRow } from '../slippage';
 import { computeJournalStats, initialRiskOf, realizedPnlOf } from '../pnl';
@@ -61,9 +62,18 @@ function round2(n: number): number {
  *  journal rather than serving a single on-demand request. */
 export function buildLiveSlippageRows(): SlippageRow[] {
   const positions = listPositions();
+  // The ENTRY order behind each position, by EITHER link (2026-09-23). This read
+  // only source_intent_id, which an ADOPTED position never carries, and since
+  // 2026-09-01 nearly every live position is adopted. So the leak scan's entry
+  // slippage was measured on the materialized minority alone.
+  const entryIntentOf = new Map<number, number>();
   const ids = new Set<number>();
   for (const p of positions) {
-    if (p.sourceIntentId != null) ids.add(p.sourceIntentId);
+    const entryIntentId = entryIntentIdForPosition(p);
+    if (entryIntentId !== null) {
+      entryIntentOf.set(p.id, entryIntentId);
+      ids.add(entryIntentId);
+    }
     for (const e of p.exits) if (e.sourceIntentId != null) ids.add(e.sourceIntentId);
   }
   const intents = getIntents(Array.from(ids));
@@ -73,10 +83,11 @@ export function buildLiveSlippageRows(): SlippageRow[] {
     // Entry-side slippage is dated by the entry. A position with none is
     // skipped rather than labelled with a guess — in practice this excludes
     // nothing, since only Webull-IMPORTED lots can be undated and those have
-    // no sourceIntentId to compare a fill against in the first place.
-    if (p.sourceIntentId != null && p.entryDate !== null) {
+    // no entry order to compare a fill against in the first place.
+    const entryIntentId = entryIntentOf.get(p.id);
+    if (entryIntentId !== undefined && p.entryDate !== null) {
       const entryDate = p.entryDate;
-      const intent = intents.get(p.sourceIntentId);
+      const intent = intents.get(entryIntentId);
       if (intent?.limitPrice != null) {
         rows.push(
           computeSlippage({

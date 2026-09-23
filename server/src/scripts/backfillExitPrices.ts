@@ -1,6 +1,7 @@
 import { initDb } from '../db';
 import { correctExitPrice, listSyncEstimatedExits } from '../db/positions';
 import { getIntent } from '../db/orders';
+import { entryIntentIdForPosition } from '../db/autotradeLiveOrders';
 import { getAutotradeConfig } from '../db/autotradeConfig';
 import { webullConfigured } from '../providers/webull/account';
 import { WebullOrderStatus, webullOrderStatusBatch } from '../providers/webull/orders';
@@ -43,7 +44,7 @@ function arg(name: string): string | undefined {
 }
 
 interface CandidateRow extends RecordedExit {
-  sourceIntentId: number;
+  sourceIntentId: number | null;
   positionAccountId: string | null;
 }
 
@@ -109,11 +110,14 @@ async function main(): Promise<void> {
       skips.push(`  ${row.symbol} ${row.exitDate}: no account recorded and none configured`);
       continue;
     }
-    const intent = getIntent(row.sourceIntentId);
+    // An adopted position has no source_intent_id; its entry order is linked
+    // the other way. Resolved exactly as the live paths resolve it.
+    const intentId = entryIntentIdForPosition({ id: row.positionId, sourceIntentId: row.sourceIntentId });
+    const intent = intentId === null ? undefined : getIntent(intentId);
     if (!intent) {
       summary.examined++;
       summary.skipped++;
-      skips.push(`  ${row.symbol} ${row.exitDate}: entry intent ${row.sourceIntentId} is gone`);
+      skips.push(`  ${row.symbol} ${row.exitDate}: entry intent ${intentId ?? '(none linked)'} is gone`);
       continue;
     }
     resolved.push({ row, accountId, clientOrderId: intent.idempotencyKey });

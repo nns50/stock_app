@@ -669,8 +669,11 @@ export interface SyncEstimatedExit {
   exitPrice: number;
   exitDate: string;
   exitReason: PositionExitReason | null;
-  /** The position's entry order: its client_order_id reaches the broker's combo. */
-  sourceIntentId: number;
+  /** `positions.source_intent_id`, set only when a fill materialized through
+   *  the create path. NULL for a position ADOPTED from the broker sync, which
+   *  in production is nearly every live position: resolve the entry order with
+   *  entryIntentIdForPosition (db/autotradeLiveOrders.ts), never with this alone. */
+  sourceIntentId: number | null;
   positionAccountId: string | null;
 }
 
@@ -684,7 +687,15 @@ export interface SyncEstimatedExit {
  * right for the journal whoever placed the order.
  */
 export function listSyncEstimatedExits(filter: { since?: string; accountId?: string } = {}): SyncEstimatedExit[] {
-  const clauses = ['e.notes LIKE ?', 'p.source_intent_id IS NOT NULL'];
+  // A position whose entry order is known either way entryIntentIdForPosition
+  // accepts: its own source_intent_id, or an entry order row linked to it (the
+  // adopted shape). Requiring source_intent_id alone found ZERO rows on the
+  // deployed book (2026-09-23): every live position there was adopted.
+  const clauses = [
+    'e.notes LIKE ?',
+    `(p.source_intent_id IS NOT NULL OR EXISTS (
+       SELECT 1 FROM autotrade_live_orders alo WHERE alo.position_id = p.id AND alo.role = 'entry'))`,
+  ];
   const params: unknown[] = [`${SYNC_ESTIMATE_NOTE_PREFIX}%`];
   if (filter.since !== undefined) {
     clauses.push('e.exit_date >= ?');

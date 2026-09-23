@@ -297,6 +297,40 @@ export function getLiveEntryOrderForPosition(positionId: number): LiveOrderMeta 
   return row ? mapRow(row) : undefined;
 }
 
+/**
+ * The ENTRY intent behind a live position, by EITHER link.
+ *
+ * `positions.source_intent_id` is set only when a fill materializes through
+ * materializeEntryFill's create path. A position ADOPTED from the broker sync
+ * never gets one — adoption deliberately does not patch it, because a null
+ * source_intent_id is itself the "orphan, needs linking" signal that path
+ * matches on. What adoption DOES establish is the reverse link:
+ * setLiveOrderPositionId writes position_id onto the entry order row.
+ *
+ * Reading only source_intent_id therefore makes every adopted position
+ * invisible, and this is the SECOND time that has cost something. The first was
+ * an adopted CTVA position that failed its stagnation close 21 ticks running
+ * (see getLiveEntryOrderForPosition's own doc comment). The second was
+ * checkLiveBracketProtection: from 2026-09-01, when the book flipped to almost
+ * entirely adopted positions, it found ZERO candidates and returned before ever
+ * querying the broker — so the naked-position alarm went quiet for ten days
+ * while reading exactly like "nothing is wrong".
+ *
+ * Prefer source_intent_id when present (it is the precise link), fall back to
+ * the entry order's own intentId, and return null only when neither exists.
+ *
+ * THIRD AND FOURTH TIMES (2026-09-23). The stock exit correction shipped reading
+ * source_intent_id alone and found none of the eight estimates on the deployed
+ * book, all adopted; and the leak scan's entry slippage (buildLiveSlippageRows)
+ * had only ever measured the materialized minority. The function lives here,
+ * beside getLiveEntryOrderForPosition, so a reader in any layer can call it
+ * rather than write the lookup again.
+ */
+export function entryIntentIdForPosition(pos: { id: number; sourceIntentId: number | null }): number | null {
+  if (pos.sourceIntentId !== null) return pos.sourceIntentId;
+  return getLiveEntryOrderForPosition(pos.id)?.intentId ?? null;
+}
+
 /** True when `intentId` was placed by autotrade (vs. the human Trade page). */
 export function isAutotradeIntent(intentId: number): boolean {
   return getLiveOrder(intentId) !== undefined;
