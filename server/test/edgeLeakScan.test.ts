@@ -94,6 +94,43 @@ const scan = (live: LeakTrade[], paper: LeakTrade[] = [], over: Partial<Paramete
     ...over,
   });
 
+// THE EXIT-TIME CUTS ARE REPORTED, NEVER JUDGED (2026-09-23). A stop exit is a
+// loss or a scratch by construction, so "exit reason = stop is losing money"
+// clears the bar on any book that uses stops once enough have fired — and on
+// 2026-09-23 it did (31 live stop exits at -0.27R), and the tune advisor priced
+// it at +1.06% a day at the top of its headline.
+describe('the exit-time cuts describe how trades ended, and are never a leak', () => {
+  // Stop exits that lose in BOTH books: a leak by the bar, if it were judged.
+  const stops = (book: 'live' | 'paper', n: number) =>
+    bucket(n, -0.5, { book, exitReason: 'stop', holdMinutes: 10, round: 1 });
+
+  it('reports the exit-reason and hold-time buckets with their numbers and a descriptive verdict', () => {
+    const result = scan(stops('live', 20), stops('paper', 12));
+    for (const id of ['exitReason', 'holdMinutes']) {
+      const dim = result.dimensions.find((d) => d.id === id)!;
+      expect(dim.descriptive).toMatch(/known only once the trade has ended/);
+      const b = dim.buckets[0];
+      expect(b.n).toBe(20);
+      expect(b.meanR).toBeLessThan(0);
+      expect(b.ciHigh).toBeLessThan(0);
+      expect(b.verdict).toBe('descriptive');
+      expect(b.lever).toBeNull();
+    }
+    expect(result.leaks.some((l) => l.dimension === 'exitReason' || l.dimension === 'holdMinutes')).toBe(false);
+    expect(result.watches.some((l) => l.dimension === 'exitReason' || l.dimension === 'holdMinutes')).toBe(false);
+  });
+
+  it('still judges a cut known at entry: the same trades are a leak by round', () => {
+    const result = scan(stops('live', 20), stops('paper', 12));
+    expect(result.leaks.map((l) => `${l.dimension}:${l.bucket}`)).toContain('round:1');
+    expect(result.dimensions.find((d) => d.id === 'round')!.descriptive).toBeNull();
+  });
+
+  it('marks exactly the two exit-time cuts, so a new cut is judged unless someone decides otherwise', () => {
+    expect(DIMENSIONS.filter((d) => d.descriptive).map((d) => d.id)).toEqual(['exitReason', 'holdMinutes']);
+  });
+});
+
 describe('the bar — one rule for every dimension', () => {
   it('calls a bucket a LEAK only when the paper control agrees', () => {
     const live = {

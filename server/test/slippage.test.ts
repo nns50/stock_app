@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeSlippage, aggregateSlippage, groupSlippageBySymbol } from '../src/services/slippage';
+import { computeSlippage, aggregateSlippage, groupSlippageBySymbol, limitIsReference } from '../src/services/slippage';
 
 const row = (over: Partial<Parameters<typeof computeSlippage>[0]> = {}) =>
   computeSlippage({
@@ -102,5 +102,42 @@ describe('groupSlippageBySymbol', () => {
 
   it('returns an empty array for an empty input', () => {
     expect(groupSlippageBySymbol([])).toEqual([]);
+  });
+});
+
+// Which order a fill may be judged against (2026-09-23). Two readers measured
+// fills against the wrong order: an option fill against a linked STOCK order's
+// limit (MRNA, -98.5%), and bracket-leg exits against the ENTRY's limit, which
+// reported a trade's own run to its target as execution cost.
+describe('limitIsReference', () => {
+  const order = (over: Partial<Parameters<typeof limitIsReference>[2]> = {}) => ({
+    assetKind: 'stock' as const,
+    openClose: 'open' as const,
+    isBracket: true,
+    limitPrice: 187.15,
+    ...over,
+  });
+
+  it('judges an entry against an opening order of the same instrument, bracket or not', () => {
+    expect(limitIsReference('entry', 'stock', order())).toBe(true);
+    expect(limitIsReference('entry', 'stock', order({ isBracket: false }))).toBe(true);
+  });
+
+  it('never judges a fill against a different instrument’s order — the MRNA call against the shares’ limit', () => {
+    expect(limitIsReference('entry', 'option', order())).toBe(false);
+    expect(limitIsReference('exit', 'option', order({ openClose: 'close', isBracket: false }))).toBe(false);
+  });
+
+  it('judges an exit only against a closing order the app priced itself, never a bracket leg', () => {
+    // A time exit / stagnation close / hand close from the app.
+    expect(limitIsReference('exit', 'stock', order({ openClose: 'close', isBracket: false }))).toBe(true);
+    // A leg fill is booked against the bracket's own order, which is the entry.
+    expect(limitIsReference('exit', 'stock', order({ openClose: 'open', isBracket: true }))).toBe(false);
+    // A standalone protective bracket placed to close is still a resting bracket.
+    expect(limitIsReference('exit', 'stock', order({ openClose: 'close', isBracket: true }))).toBe(false);
+  });
+
+  it('has nothing to judge against without a limit', () => {
+    expect(limitIsReference('entry', 'stock', order({ limitPrice: null }))).toBe(false);
   });
 });

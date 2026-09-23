@@ -2,7 +2,6 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler, parseBody, parseQuery } from './_helpers';
 import { listPositions, Position } from '../db/positions';
-import { getIntent } from '../db/orders';
 import { computeJournalStats, realizedPnlOf } from '../services/pnl';
 import { computeDayStats } from '../services/dayGuard';
 import {
@@ -52,7 +51,7 @@ import {
 import { paperExcursionInput } from '../services/autotrading/paperExcursions';
 import { listOptionsPaperPositions } from '../db/autotradeOptionsPaperPositions';
 import { listLiveOptionsPositions } from '../db/autotradeLiveOptionsPositions';
-import { aggregateSlippage, computeSlippage, SlippageRow } from '../services/slippage';
+import { aggregateSlippage } from '../services/slippage';
 import { aggregateStopOverruns, classifyStopExit, computeStopOverrun, StopOverrunRow } from '../services/stopOverrun';
 import { computeBenchmark } from '../services/benchmark';
 import { getAutotradeConfig } from '../db/autotradeConfig';
@@ -69,6 +68,7 @@ const ET_DATE = /^\d{4}-\d{2}-\d{2}$/;
 import { etDateTimeToMs, etTimeOfDay, etToday } from '../util/marketDate';
 import { mapPool } from '../util/async';
 import { computeAutoTuneRiskEfficacy } from '../services/autotrading/autoTuneEfficacy';
+import { buildLiveSlippageRows } from '../services/autotrading/autoTune';
 import { getProvider } from '../providers';
 
 export const journalRouter = Router();
@@ -742,55 +742,19 @@ journalRouter.get(
 );
 
 // Execution quality: for live-traded fills (entries + exits linked back to an
-// order with a limit price), how the actual fill compared to the price you
-// committed to. Manually logged/imported positions and stop-market fills have
-// no comparable reference and are simply not counted.
+// order whose limit is a fair reference for them), how the actual fill compared
+// to the price you committed to. Manually logged/imported positions, bracket-leg
+// exits and stop-market fills have no comparable reference and are simply not
+// counted — see slippage.ts's limitIsReference for which fills count and why.
+//
+// The rows come from the ONE builder the leak scan and the per-symbol exclusion
+// also read (2026-09-23). This route used to walk positions itself, reading only
+// source_intent_id, and so measured the materialized minority of the book while
+// the builder beside it had learned the adopted link.
 journalRouter.get(
   '/slippage',
   asyncHandler(async (_req, res) => {
-    const rows: SlippageRow[] = [];
-    for (const p of listPositions()) {
-      // Entry-side slippage is dated by the entry — see the same guard in
-      // services/autotrading/autoTune.ts's buildSlippageRows().
-      if (p.sourceIntentId != null && p.entryDate !== null) {
-        const entryDate = p.entryDate;
-        const intent = getIntent(p.sourceIntentId);
-        if (intent?.limitPrice != null) {
-          rows.push(
-            computeSlippage({
-              positionId: p.id,
-              symbol: p.symbol,
-              kind: 'entry',
-              side: intent.side,
-              date: entryDate,
-              limitPrice: intent.limitPrice,
-              fillPrice: p.entryPrice,
-              quantity: p.quantity,
-              multiplier: p.multiplier,
-            }),
-          );
-        }
-      }
-      for (const e of p.exits) {
-        if (e.sourceIntentId == null) continue;
-        const intent = getIntent(e.sourceIntentId);
-        if (intent?.limitPrice == null) continue;
-        rows.push(
-          computeSlippage({
-            positionId: p.id,
-            symbol: p.symbol,
-            kind: 'exit',
-            side: intent.side,
-            date: e.exitDate,
-            limitPrice: intent.limitPrice,
-            fillPrice: e.exitPrice,
-            quantity: e.quantity,
-            multiplier: p.multiplier,
-          }),
-        );
-      }
-    }
-    res.json(aggregateSlippage(rows));
+    res.json(aggregateSlippage(buildLiveSlippageRows()));
   }),
 );
 

@@ -668,12 +668,11 @@ function goalRecommendations(input: TuneAdvisorInput, gap: GoalGap): TuneRecomme
   return out;
 }
 
-function redDayRecommendations(input: TuneAdvisorInput, gap: GoalGap): TuneRecommendation[] {
+function redDayRecommendations(input: TuneAdvisorInput): TuneRecommendation[] {
   const scan = input.scan;
   if (!scan || scan.dayLevel.redSessions === 0) return [];
   const driver = scan.dayLevel.redSessionDrivers[0];
   if (!driver || driver.trades < 5) return [];
-  const dR = scan.coverage.liveTrades > 0 ? Math.abs(driver.totalR) / scan.coverage.liveTrades : 0;
   return [
     {
       id: `edge:red_day_driver:${driver.reason}`,
@@ -682,8 +681,14 @@ function redDayRecommendations(input: TuneAdvisorInput, gap: GoalGap): TuneRecom
       evidence:
         `${driver.trades} losing trades exited on ${driver.reason} across ${scan.dayLevel.redSessions} red sessions, ` +
         `${driver.totalR}R in total; mean red day ${scan.dayLevel.meanRedSessionR}R, worst ${scan.dayLevel.worstSessionR}R`,
-      expectedDayPctDelta:
-        gap.tradesPerSession === null ? null : dayPctFromEdge(gap.tradesPerSession, gap.riskPerTradePct, dR),
+      // NOT ESTIMABLE (2026-09-23). An exit reason is how a losing trade ENDED,
+      // not a setting that could have removed its loss — a stop exit loses by
+      // construction — so pricing the whole driver as a day-% lift claimed the
+      // book could simply not lose those trades. On 2026-09-23 this line put
+      // +0.93% into the headline beside the scan's exit-reason "leak" at +1.06%:
+      // all of the 1.99 points "everything measurable" was said to add. What a
+      // different exit would have kept is the exit replay's number, below.
+      expectedDayPctDelta: null,
       sampleSize: driver.trades,
       confidence: confidenceFor(driver.trades),
       status: 'actionable',
@@ -763,7 +768,7 @@ export function buildTuneAdvice(input: TuneAdvisorInput): TuneAdvice {
     ...configurationRecommendations(input),
     ...edgeRecommendations(input, gap),
     ...flowRecommendations(input, gap),
-    ...redDayRecommendations(input, gap),
+    ...redDayRecommendations(input),
     ...goalRecommendations(input, gap),
   ].sort(rank);
 

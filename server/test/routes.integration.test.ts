@@ -13,6 +13,7 @@ import { totp } from '../src/services/totp';
 import { resetLoginThrottle } from '../src/services/auth';
 import { setSetting } from '../src/db/settings';
 import { createIntent } from '../src/db/orders';
+import { recordLiveOrder, setLiveOrderPositionId } from '../src/db/autotradeLiveOrders';
 import { addExit, createPosition } from '../src/db/positions';
 import { getAutotradeConfig } from '../src/db/autotradeConfig';
 import { setAutotradeConfig } from '../src/db/autotradeConfig';
@@ -656,6 +657,62 @@ describe('positions + journal routes (integration)', () => {
     expect(report.totalUsd).toBeCloseTo(1, 5); // 0.5 (entry) + 0.5 (exit), both adverse
     expect(report.rows.find((r) => r.kind === 'entry')).toMatchObject({ perUnit: 0.1, totalUsd: 0.5 });
     expect(report.rows.find((r) => r.kind === 'exit')).toMatchObject({ perUnit: 0.1, totalUsd: 0.5 });
+  });
+
+  // The route reads the ONE row builder the leak scan reads (2026-09-23). It
+  // used to walk positions itself on source_intent_id alone, so an ADOPTED
+  // entry — nearly every live entry since 2026-09-01 — was invisible to it, and
+  // it measured bracket-leg exits against the entry's limit.
+  it('slippage reads an adopted entry, and leaves a bracket-leg exit out', async () => {
+    db.exec('DELETE FROM autotrade_live_orders;');
+    const entryIntent = createIntent(
+      {
+        symbol: 'DELL',
+        assetKind: 'stock',
+        side: 'buy',
+        openClose: 'open',
+        quantity: 10,
+        orderType: 'limit',
+        limitPrice: 447.48,
+        bracket: { takeProfitPrice: 467.94, stopLossPrice: 437.1 },
+      },
+      'slippage-adopted-entry',
+    );
+    recordLiveOrder({
+      intentId: entryIntent.id,
+      symbol: 'DELL',
+      stopPrice: 437.1,
+      targetPrice: 467.94,
+      riskAmount: 100,
+      riskProfile: 'MODERATE',
+      accountId: 'ACC1',
+    });
+    const pos = createPosition({
+      assetType: 'stock',
+      symbol: 'DELL',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 447.2,
+      entryDate: '2026-09-02',
+      tags: ['webull', 'live', 'autotrade'],
+    });
+    setLiveOrderPositionId(entryIntent.id, pos.id);
+    // The target leg filled: booked against the bracket's own order. Measured
+    // against the 447.48 entry limit it read as +4.57% of "cost" on 2026-09-02.
+    addExit(pos.id, {
+      quantity: 10,
+      exitPrice: 467.94,
+      exitDate: '2026-09-02',
+      sourceIntentId: entryIntent.id,
+      exitReason: 'target',
+    });
+
+    const report = (await getJson('/api/journal/slippage')) as {
+      trades: number;
+      rows: { kind: string; positionId: number; limitPrice: number; fillPrice: number }[];
+    };
+    expect(report.trades).toBe(1);
+    expect(report.rows[0]).toMatchObject({ kind: 'entry', positionId: pos.id, limitPrice: 447.48, fillPrice: 447.2 });
   });
 
   it('excludes a manually logged position from slippage (no source order)', async () => {

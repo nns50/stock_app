@@ -115,7 +115,10 @@ export const WATCH_MARGIN_R = 0.05;
  *  agreement (or disagreement) means anything. */
 export const CONTROL_MIN_TRADES = 10;
 
-export type LeakVerdict = 'leak' | 'unconfirmed' | 'watch' | 'ok';
+/** `descriptive` is a bucket of a cut that is only known once the trade has
+ *  ENDED (DIMENSIONS' `descriptive`): its numbers are reported and never judged,
+ *  so it is never a leak, an unconfirmed or a watch. */
+export type LeakVerdict = 'leak' | 'unconfirmed' | 'watch' | 'ok' | 'descriptive';
 
 /** What closes a leak: a config field with the value that closes it, or a code
  *  path when no setting expresses it. `direction` matters for PR C's gated
@@ -171,6 +174,9 @@ export interface DimensionReport {
   covered: number;
   uncovered: number;
   buckets: BucketReport[];
+  /** Why this cut is reported and never judged, when it is one of the cuts
+   *  known only at the exit (DIMENSIONS' `descriptive`); null otherwise. */
+  descriptive: string | null;
 }
 
 /** A thing that happened, rather than a distribution that reads badly. Any
@@ -494,7 +500,37 @@ interface Dimension {
    *  the per-symbol cut, where a two-trade name is noise by construction. */
   minBucketTrades?: number;
   lever?: (bucket: string) => LeakLever | null;
+  /** Set on a cut whose bucket is only known once the trade has ENDED, with the
+   *  reason. Its buckets are reported with their numbers and never judged: the
+   *  verdict is `descriptive`, never a leak or a watch, and it carries no lever.
+   *  See EXIT_TIME_CUT. */
+  descriptive?: string;
 }
+
+/**
+ * Why the exit-time cuts are reported and never judged (2026-09-23).
+ *
+ * The bar asks "does this kind of trade lose?", and that is a question about
+ * something the book can CHOOSE — which trades to take. The exit reason and the
+ * hold time are not chosen; they are how the trade turned out. A stop exit is a
+ * loss or a scratch by construction and a target exit is a win by construction,
+ * so "exit reason = stop is losing money" is true of every book that uses stops,
+ * forever, and clears any bar once enough stops have fired. On 2026-09-23 it
+ * did — 31 live stop exits at -0.27R, paper agreeing — and the tune advisor
+ * priced that "leak" at +1.06% a day and put it at the top of its headline, with
+ * the red-day decomposition's own "stop" driver adding +0.93% more: the whole
+ * of the 1.99 points it said everything measurable adds, for a lever that does
+ * not exist.
+ *
+ * Whether a different exit would have done better is a question about the
+ * PATH, and the exit replay (`/journal/exit-replay`, exitTuneValidation) is the
+ * instrument that answers it. These cuts still show which exits carried the
+ * losses; they just cannot say a setting would have avoided them.
+ */
+export const EXIT_TIME_CUT =
+  'known only once the trade has ended, so its buckets describe how trades turned out rather than which to ' +
+  'take — a stop exit loses by construction. Whether a different exit would have done better is the exit ' +
+  'replay’s question, not this bar’s.';
 
 const round4 = (n: number): number => Math.round(n * 10000) / 10000;
 const round2 = (n: number): number => Math.round(n * 100) / 100;
@@ -592,11 +628,12 @@ export const DIMENSIONS: Dimension[] = [
     bucketOf: (t) =>
       t.pctOfRange === null ? null : band(t.pctOfRange, [50, 70, 85], ['<50', '50-70', '70-85', '85+']),
   },
-  { id: 'exitReason', label: 'Exit reason', bucketOf: (t) => t.exitReason },
+  { id: 'exitReason', label: 'Exit reason', bucketOf: (t) => t.exitReason, descriptive: EXIT_TIME_CUT },
   {
     id: 'holdMinutes',
     label: 'Hold time',
     bucketOf: (t) => band(t.holdMinutes, [15, 60, 180], ['<15m', '15-60m', '1-3h', '3h+']),
+    descriptive: EXIT_TIME_CUT,
   },
   { id: 'symbol', label: 'Symbol', bucketOf: (t) => t.symbol, minBucketTrades: 5 },
   { id: 'sector', label: 'Sector', bucketOf: (t) => t.sector },
@@ -740,18 +777,26 @@ function runDimension(dim: Dimension, live: LeakTrade[], paper: LeakTrade[], rng
     const stats = statsFor(bucket, rows, rng);
     const controlRows = paperBuckets.get(bucket);
     const control = controlRows ? statsFor(bucket, controlRows, rng) : null;
-    const { verdict, agrees } = verdictFor(stats, control);
+    const judged = verdictFor(stats, control);
+    const verdict: LeakVerdict = dim.descriptive ? 'descriptive' : judged.verdict;
     buckets.push({
       ...stats,
       verdict,
       control,
-      controlAgrees: agrees,
-      lever: verdict === 'ok' ? null : (dim.lever?.(bucket) ?? null),
+      controlAgrees: judged.agrees,
+      lever: verdict === 'ok' || verdict === 'descriptive' ? null : (dim.lever?.(bucket) ?? null),
       severityR: Math.max(0, round4(-stats.totalR)),
     });
   }
   buckets.sort((a, b) => b.severityR - a.severityR || a.bucket.localeCompare(b.bucket));
-  return { id: dim.id, label: dim.label, covered, uncovered: live.length - covered, buckets };
+  return {
+    id: dim.id,
+    label: dim.label,
+    covered,
+    uncovered: live.length - covered,
+    buckets,
+    descriptive: dim.descriptive ?? null,
+  };
 }
 
 // --- day level -------------------------------------------------------------

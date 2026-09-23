@@ -1,8 +1,13 @@
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { initDb, db } from '../src/db';
-import { createPosition } from '../src/db/positions';
+import { addExit, createPosition } from '../src/db/positions';
 import { createIntent } from '../src/db/orders';
-import { recordLiveOrder, setLiveOrderPositionId } from '../src/db/autotradeLiveOrders';
+import {
+  entryIntentIdForPosition,
+  getLiveEntryOrderForPosition,
+  recordLiveOrder,
+  setLiveOrderPositionId,
+} from '../src/db/autotradeLiveOrders';
 import { buildLiveSlippageRows } from '../src/services/autotrading/autoTune';
 
 // The leak scan's entry slippage (meanEntrySlippagePct, and the
@@ -80,5 +85,96 @@ describe('buildLiveSlippageRows reads the entry order by either link', () => {
   it('has nothing to measure for a position the operator opened (no entry order at all)', () => {
     coin({ tags: ['webull'] });
     expect(buildLiveSlippageRows()).toHaveLength(0);
+  });
+});
+
+// 2026-09-23: the MRNA stock entry order was linked to the MRNA CALL's row
+// (fixed at the write by #658; the hand correction of the ledger left the link),
+// and the leak scan measured the call's $2.84 fill against the shares' $187
+// limit: -98.5%, enough on its own to read 40 sessions of entries as filling
+// 0.85% better than the quote and to hold the slippage alarm off for all of them.
+describe('a fill is only measured against an order it could have come from', () => {
+  function mrnaCall(opts: { sourceIntentId?: number | null } = {}) {
+    return createPosition({
+      assetType: 'option',
+      symbol: 'MRNA',
+      side: 'long',
+      quantity: 3,
+      entryPrice: 2.84,
+      entryDate: '2026-09-23',
+      tags: ['webull'],
+      accountId: 'ACC1',
+      optionType: 'call',
+      strike: 190,
+      expiration: '2026-09-26',
+      sourceIntentId: opts.sourceIntentId ?? null,
+    });
+  }
+
+  it('does not read a stock entry order through a link to an OPTION row, in any reader', () => {
+    const intent = entryOrder('cid-cross', 187.15);
+    const call = mrnaCall();
+    setLiveOrderPositionId(intent.id, call.id);
+
+    // The link-level guard: the stock sleeve's order table cannot answer for an
+    // option position, so every reader (bracket ownership, the Auto-page close,
+    // the exit correction) is covered, not only this one.
+    expect(getLiveEntryOrderForPosition(call.id)).toBeUndefined();
+    expect(entryIntentIdForPosition(call)).toBeNull();
+    expect(buildLiveSlippageRows()).toHaveLength(0);
+  });
+
+  it('still reads the same link for a STOCK row', () => {
+    const intent = entryOrder('cid-stock', 205.43);
+    const pos = coin();
+    setLiveOrderPositionId(intent.id, pos.id);
+    expect(getLiveEntryOrderForPosition(pos.id)?.intentId).toBe(intent.id);
+  });
+
+  it('does not measure an option fill against a stock order carried on its own source_intent_id either', () => {
+    const intent = entryOrder('cid-source', 187.15);
+    mrnaCall({ sourceIntentId: intent.id });
+    expect(buildLiveSlippageRows()).toHaveLength(0);
+  });
+
+  it('leaves a bracket-leg exit out, and keeps an exit the app priced itself', () => {
+    const entry = entryOrder('cid-legs', 205.43);
+    const pos = coin({ sourceIntentId: entry.id });
+    // The stop leg filled: booked against the BRACKET's own order, which is the
+    // entry. Measured against the entry's 205.43 limit, a stop at 199.50 would
+    // read as 5.93 of "slippage" in the trader's favour, and a target at 209.74
+    // as 4.31 of cost — the trade's own move, not its execution.
+    addExit(pos.id, {
+      quantity: 80,
+      exitPrice: 199.5,
+      exitDate: '2026-09-21',
+      sourceIntentId: entry.id,
+      exitReason: 'stop',
+    });
+    // A time exit: its own closing order, a marketable limit the app priced.
+    const close = createIntent(
+      {
+        symbol: 'COIN',
+        assetKind: 'stock',
+        side: 'sell',
+        openClose: 'close',
+        quantity: 81,
+        orderType: 'limit',
+        limitPrice: 201,
+      },
+      'cid-time-exit',
+    );
+    addExit(pos.id, {
+      quantity: 81,
+      exitPrice: 201.1,
+      exitDate: '2026-09-21',
+      sourceIntentId: close.id,
+      exitReason: 'time_exit',
+    });
+
+    const exits = buildLiveSlippageRows().filter((r) => r.kind === 'exit');
+    expect(exits).toHaveLength(1);
+    // Sold 0.10 ABOVE a 201 sell limit: 0.10 in the trader's favour.
+    expect(exits[0]).toMatchObject({ positionId: pos.id, limitPrice: 201, fillPrice: 201.1, perUnit: -0.1 });
   });
 });
