@@ -14279,3 +14279,54 @@ action is in the attribution's once-a-day skip classes.
 - a buying-power refusal does not hold a symbol's shorts;
 - a short refused earlier today is refused before the account is read;
 - the exit correction reads a short's BUY, and a lower cover is a positive `pnlDelta`.
+
+## 2026-09-23 (twenty-ninth) — a finding says whose it is
+
+The tune advice's headline that evening read "5 execution defect(s) outrank everything
+measurable here … Fix what is broken before tuning what is merely small". One of the five
+was `live_exit_corrected|broker_history`: three sales the operator made by hand in Webull,
+re-booked at their fills. The catalog's own comment calls that "not an app defect", and
+the advice still told the reader to root-cause it and fix the path. The same held for
+every class the catalog labelled benign or expected, and for the risk controls doing
+their job.
+
+Each execution class now carries a nature (`ExecutionNature`), `defect` unless stated:
+
+| Class | Nature |
+| --- | --- |
+| `live_exit_corrected\|broker_history`, `live_options_exit_corrected\|broker_history` | operator |
+| `live_position_unprotected\|kill_switch` | operator |
+| `live_options_exit_reprice_deferred\|mid_fill` | control |
+| `daily_halt_alerted` (live and paper) | control |
+| `daily_give_back_halted` | control |
+
+`live_position_unprotected|exit_working` stays a defect: the position has no stop for as
+long as the app's close rests. A halt tripped by a booking error stays a defect under its
+own class (`daily_halt_retracted`). The review rule reads halts from the daily results,
+not from these findings.
+
+Every occurrence is still a finding, with its nature and a lever that says whether there
+is anything to fix. `findingNeedsAction` is the one test for "counts". Both readers call
+it:
+- the persisted count behind the Auto page's "N findings";
+- the tune advisor's execution recommendations and headline.
+
+A finding with no nature (a scan persisted before this change) counts, which is the old
+behaviour.
+
+**Pre-committed check,** after the deploy and a fresh persisted scan
+(`GET /journal/edge-leaks?sessions=40&book=both`):
+- In `GET /journal/tune-advice`, no execution recommendation's id ends in
+  `broker_history`, `kill_switch`, `mid_fill`, `daily_halt_alerted|live`,
+  `daily_halt_alerted|paper` or `daily_give_back_halted`.
+- The headline's defect count equals the number of current `defect` findings in the
+  scan.
+
+**Tests (each mutation-checked):**
+- the nature of each class and variant, including a variant the row does not name
+  falling back to its action's nature;
+- the finding and its lever carry the nature;
+- the dashboard counts defects and configuration findings only, and a finding with no
+  nature still counts;
+- the advisor counts and recommends on defects only, and leads with the tuning headline
+  when none is left.

@@ -790,6 +790,48 @@ describe('the headline can say "this will not get you there"', () => {
     expect(a.headline).toMatch(/Fix what is broken before tuning what is merely small/);
   });
 
+  // 2026-09-23: the headline read "5 execution defect(s)", one of which was
+  // the operator's own hand sales re-booked at their fills. Only a DEFECT is
+  // work: the operator's action and a control doing its job are neither
+  // counted nor told to "root-cause and fix the path".
+  it('counts and advises on defects only, never the operator or a control', () => {
+    const current = (id: string, nature: 'defect' | 'operator' | 'control') => ({
+      id: `execution:${id}`,
+      kind: 'execution' as const,
+      nature,
+      label: id,
+      count: 3,
+      detail: '3 in the last 10 sessions',
+      lastSeenEtDate: '2026-09-23',
+      sessionsSinceLastSeen: 0,
+      lever: null,
+    });
+    const a = advise({
+      scan: scan({
+        findings: [
+          current('live_exit_corrected|bracket_leg', 'defect'),
+          current('live_exit_corrected|broker_history', 'operator'),
+          current('daily_give_back_halted', 'control'),
+        ],
+      }),
+    });
+    expect(a.headline).toMatch(/^1 execution defect\(s\) outrank everything measurable/);
+    const ids = a.recommendations.filter((r) => r.factor === 'execution').map((r) => r.id);
+    expect(ids).toEqual(['execution:execution:live_exit_corrected|bracket_leg']);
+
+    // With no defect left, the headline is the tuning one, not the defect one.
+    const quiet = advise({
+      scan: scan({
+        findings: [
+          current('live_exit_corrected|broker_history', 'operator'),
+          current('daily_give_back_halted', 'control'),
+        ],
+      }),
+    });
+    expect(quiet.headline).not.toMatch(/execution defect/);
+    expect(quiet.recommendations.filter((r) => r.factor === 'execution')).toEqual([]);
+  });
+
   it('says how little of the gap the measurable findings close', () => {
     const a = advise({
       scan: scan({

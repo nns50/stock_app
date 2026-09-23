@@ -1123,6 +1123,63 @@ describe('the execution findings — any occurrence is one', () => {
     expect(byAction.get('live_options_exit_reprice_deferred')).toBe(2);
   });
 
+  // WHO ACTS ON IT (2026-09-23). The advisor's headline that evening counted
+  // "5 execution defect(s)", and one of the five was the operator's own three
+  // hand sales in Webull, re-booked at their fills. A class keeps its finding
+  // either way; its nature says whether it is the app's to fix.
+  it('marks each class and variant with its nature, defect by default', () => {
+    const now = etDateTimeToMs('2026-09-23', '17:00') as number;
+    const at = etDateTimeToMs('2026-09-23', '10:00') as number;
+    writeDailyHaltMarker({ pool: 'paper', date: '2026-09-23', dailyPnl: -900, haltLevel: -750 });
+    db.prepare(
+      `INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) VALUES
+       ('DELL','execution','live_exit_corrected','{"exitId":1,"source":"broker_history"}',NULL,?),
+       ('COIN','execution','live_exit_corrected','{"exitId":2,"source":"bracket_leg"}',NULL,?),
+       ('HOOD','execution','live_options_exit_corrected','{"source":"broker_history"}',NULL,?),
+       ('AAA','execution','live_position_unprotected','{"state":"kill_switch"}',NULL,?),
+       ('BBB','execution','live_position_unprotected','{"state":"naked"}',NULL,?),
+       ('CCC','execution','live_options_exit_reprice_deferred','{"reason":"mid_fill"}',NULL,?),
+       ('DDD','execution','live_options_exit_reprice_deferred','{"reason":"daily_cap"}',NULL,?),
+       (NULL,'execution','daily_give_back_halted','{}',NULL,?),
+       ('EEE','execution','live_options_exit_failed','{}',NULL,?),
+       ('FFF','execution','live_options_exit_reprice_deferred','{}',NULL,?)`,
+    ).run(at, at + 1, at + 2, at + 3, at + 4, at + 5, at + 6, at + 7, at + 8, at + 9);
+
+    const nature = new Map(collectExecutionFindings(now).map((f) => [f.action, f.nature]));
+    expect(Object.fromEntries(nature)).toEqual({
+      'live_exit_corrected|broker_history': 'operator',
+      'live_exit_corrected|bracket_leg': 'defect',
+      'live_options_exit_corrected|broker_history': 'operator',
+      'live_position_unprotected|kill_switch': 'operator',
+      'live_position_unprotected|naked': 'defect',
+      'live_options_exit_reprice_deferred|mid_fill': 'control',
+      'live_options_exit_reprice_deferred|daily_cap': 'defect',
+      // A variant the row does not name falls back to the ACTION's nature.
+      live_options_exit_reprice_deferred: 'defect',
+      'daily_halt_alerted|paper': 'control',
+      daily_give_back_halted: 'control',
+      live_options_exit_failed: 'defect',
+    });
+  });
+
+  it('carries the nature to the scan finding and its lever, where the advice reads it', () => {
+    const now = etDateTimeToMs('2026-09-23', '17:00') as number;
+    const at = etDateTimeToMs('2026-09-23', '10:00') as number;
+    db.prepare(
+      `INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) VALUES
+       ('DELL','execution','live_exit_corrected','{"exitId":1,"source":"broker_history"}',NULL,?),
+       ('COIN','execution','live_exit_corrected','{"exitId":2,"source":"bracket_leg"}',NULL,?)`,
+    ).run(at, at + 1);
+
+    const byId = new Map(runEdgeLeakScanFromDb({ now }).findings.map((f) => [f.id, f]));
+    const own = byId.get('execution:live_exit_corrected|broker_history');
+    expect(own?.nature).toBe('operator');
+    expect(own?.lever?.detail).toMatch(/^Your own action, recorded as it happened\. Nothing to fix/);
+    const race = byId.get('execution:live_exit_corrected|bracket_leg');
+    expect(race?.nature).toBe('defect');
+    expect(race?.lever?.detail).toBe('An execution failure is a defect to fix, not a setting to change.');
+  });
+
   // THREE ENTRIES NAMED NOTHING THE APP WRITES (2026-09-23). The catalog read
   // `live_order_unknown_outcome` (the writers say `…_order_outcome_unknown`),
   // `daily_drawdown_halt` (a guardrail rule's name, never journaled) and

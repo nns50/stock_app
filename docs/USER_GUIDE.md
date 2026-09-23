@@ -1038,7 +1038,13 @@ tabs of one **Analytics** button (top right) — pick a tab, the report loads on
   A day-level halt is a finding too: the live and paper drawdown halts, reported
   separately, and the give-back guard. So is a stock or options order whose outcome the app
   could not resolve. Until 2026-09-23 those three classes were listed under journal names
-  nothing writes, so none of them could ever appear. It reads the database and the journal only: no
+  nothing writes, so none of them could ever appear. **Not every finding is the app's to
+  fix** (2026-09-23). Each execution finding says what it is. A *defect* is something the
+  app got wrong. *Your own action* is a hand close in Webull re-booked at your fill, or a
+  kill switch holding the app while you trade by hand. *A control doing its job* is a
+  drawdown halt, the give-back guard, or an options re-price that waited out a partial
+  fill. All three stay in the table. Only defects count in the Auto page's number and in
+  the tune advice. It reads the database and the journal only: no
   market data, no provider quota. The Auto page shows the count and the worst open leak;
   the full table is here. It exists because every leak found in this book so far was
   found because a person happened to look, and all of them were already sitting in
@@ -3183,7 +3189,11 @@ most of which predates the trial.
 day is well under its goal, the sum of everything measurable is usually a fraction of the
 gap, and the advice says so in those words rather than ranking a small thing first. When
 execution defects are open it leads with them: fix what is broken before tuning what is
-merely small.
+merely small. Only the app's own defects count here (2026-09-23). Your hand closes
+re-booked at your fill, a kill switch you threw, a halt or the give-back guard doing its
+job, and a re-price that waited out a partial fill are not counted. None of them gets a
+"root-cause it and fix the path" recommendation. On 2026-09-23 the headline counted five
+defects, and one of the five was your own three hand sales.
 
 **The exit that closed the red days is not a number to add** (2026-09-23). The
 recommendation "Red days are driven by … exits" is research, and carries no estimate: an

@@ -2130,6 +2130,21 @@ size. An estimate the correction had to leave in the record is a finding of its 
 working order at the broker a day after its shares left. A skip that a later pass overcame
 (the same exit corrected afterwards) stops counting.
 
+**Not every finding is a defect** (2026-09-23). Each execution class carries a nature:
+- a **defect** is the app's to fix;
+- **your own action** is a hand close in Webull re-booked at your fill, or a kill switch
+  holding the sweep while you trade by hand;
+- a **control doing its job** is the live or paper drawdown halt, the give-back guard, or
+  a re-price that waited out a partial fill.
+
+All three stay in the scan's table so the record is complete, and the last two say there
+is nothing to fix. Only defects are counted in the Auto page's findings number and in the
+tune advice. The advice's headline read "5 execution defect(s) outrank everything
+measurable" on 2026-09-23, and one of the five was three hand sales re-booked at their
+fills. A halt reads as a control here. The review rule still counts halts from the daily
+results, and a halt tripped by a booking error has its own defect class
+(`daily_halt_retracted`).
+
 **Stop width per share (2026-09-23)** is the one cut a human found first. A stop fills a
 few cents through its price whatever the stock, so the narrower it is, the more of R one
 fill takes. Full-loss live stops on names under $20 filled 0.13–0.18R through (IRD,
