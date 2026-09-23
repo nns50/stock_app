@@ -14012,3 +14012,34 @@ that second lot is the operator's call.
 **Check.** On the next live halt, no `live_order_placed` or `live_options_order_placed` row
 appears later that ET day, and every `live_risk_blocked` row after the marker names
 `daily_drawdown_halt`.
+
+## 2026-09-23 (twenty-fifth) — the history readers see the whole book
+
+`listPaperPositions`, `listOptionsPaperPositions` and `listLiveOptionsPositions` capped a call
+with no `limit` at the newest 200 rows, and `listAutotradeLivePositions` did the same in memory.
+Every history reader called them without one: the edge-leak scan's paper control and its live
+options rows, the daily-target sweep (`collectBook`), the results row's paper column
+(`paperDayFor`) and the backfill, the tune advisor, the symbol cooldowns, method sizing, the
+risk snapshot's options closes, and the dashboard. None of them could tell a book of 200
+closed trades from a longer one. The paper book had 179 on 2026-09-23 and adds several a
+session, so within a few sessions each of those readers would have started dropping its
+oldest trades without a word. The retraction (the twenty-first section) had already met the
+same cap and was given a date-scoped read of its own.
+
+**The rule.** An omitted `limit` now means every row. One helper, `db/rowLimit.ts`, applies
+it for all four lists (a SQL clause for the three tables, a slice for the live stock filter).
+A page is the caller's choice: the four positions routes ask for
+`POSITIONS_PAGE_SIZE = 200` when the request names none, which is the page the Auto page has
+always shown, and still accept `?limit=` up to 1,000. The callers that already passed a
+limit keep it: the three executors' "today" reads (500, newest first) and the excursions
+route (1,000, with its coverage count).
+
+**Tests.** `historyReaders.test.ts` seeds 205 closed rows in each book and checks the lists,
+the consumers (the sweep's paper and live options trades, and the results row's paper P&L on
+the book's oldest day) and the four routes' default page. Seven of its eleven cases fail on
+the old code; the four route cases pass on both, since they pin the page the UI already had.
+
+**Check.** Once the paper book passes 200 closed trades, `GET /api/journal/edge-leaks` reads
+`coverage.paperTrades + paperOutsideWindow + paperDropped` equal to the closed rows of
+`/api/autotrade/paper-positions` plus `/api/autotrade/options-paper-positions`, each read with
+`?status=closed&limit=1000`.

@@ -1,4 +1,5 @@
 import { db } from './index';
+import { rowLimitClause } from './rowLimit';
 
 // ---------------------------------------------------------------------------
 // Storage for the Phase 12 options paper execution loop's simulated trades
@@ -156,7 +157,8 @@ export interface OptionsPaperPosition {
 export interface ListOptionsPaperPositionsFilter {
   status?: 'open' | 'closed';
   symbol?: string;
-  /** Max rows to return (default 200, capped at 1000). */
+  /** Newest-first page size. OMIT FOR EVERY ROW: a history reader must not
+   *  pass one, and a UI page passes its own (db/rowLimit.ts). */
   limit?: number;
 }
 
@@ -467,9 +469,9 @@ export function listOptionsPaperPositions(filter: ListOptionsPaperPositionsFilte
     params.push(filter.symbol.toUpperCase());
   }
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
-  const limit = Math.min(Math.max(filter.limit ?? 200, 1), 1000);
+  const limit = rowLimitClause(filter.limit);
   const rows = db
-    .prepare(`SELECT * FROM autotrade_options_paper_positions ${where} ORDER BY id DESC LIMIT ?`)
-    .all(...params, limit) as Row[];
+    .prepare(`SELECT * FROM autotrade_options_paper_positions ${where} ORDER BY id DESC ${limit.sql}`)
+    .all(...params, ...limit.params) as Row[];
   return rows.map(map);
 }

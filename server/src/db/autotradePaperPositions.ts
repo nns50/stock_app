@@ -1,4 +1,5 @@
 import { db } from './index';
+import { rowLimitClause } from './rowLimit';
 
 // ---------------------------------------------------------------------------
 // Storage for the Phase 6 paper execution loop's simulated trades
@@ -113,7 +114,8 @@ export interface PaperPosition {
 export interface ListPaperPositionsFilter {
   status?: 'open' | 'closed';
   symbol?: string;
-  /** Max rows to return (default 200, capped at 1000). */
+  /** Newest-first page size. OMIT FOR EVERY ROW: a history reader must not
+   *  pass one, and a UI page passes its own (db/rowLimit.ts). */
   limit?: number;
 }
 
@@ -452,10 +454,10 @@ function paperWhere(filter: Pick<ListPaperPositionsFilter, 'status' | 'symbol'>)
   return { where: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '', params };
 }
 
-/** How many rows match — the listing below clamps at 1,000, so a population
- *  read off `listPaperPositions(...).length` stops growing there. A coverage
- *  line ("measured 250 of N") needs N itself, not the page. Same predicate as
- *  the listing, by construction. */
+/** How many rows match. A caller that asks the listing below for a page (the
+ *  excursions route asks for 1,000) reads a population off its length that
+ *  stops growing there, and a coverage line ("measured 250 of N") needs N
+ *  itself, not the page. Same predicate as the listing, by construction. */
 export function countPaperPositions(filter: Pick<ListPaperPositionsFilter, 'status' | 'symbol'> = {}): number {
   const { where, params } = paperWhere(filter);
   const row = db.prepare(`SELECT COUNT(*) AS n FROM autotrade_paper_positions ${where}`).get(...params) as {
@@ -466,9 +468,9 @@ export function countPaperPositions(filter: Pick<ListPaperPositionsFilter, 'stat
 
 export function listPaperPositions(filter: ListPaperPositionsFilter = {}): PaperPosition[] {
   const { where, params } = paperWhere(filter);
-  const limit = Math.min(Math.max(filter.limit ?? 200, 1), 1000);
+  const limit = rowLimitClause(filter.limit);
   const rows = db
-    .prepare(`SELECT * FROM autotrade_paper_positions ${where} ORDER BY id DESC LIMIT ?`)
-    .all(...params, limit) as Row[];
+    .prepare(`SELECT * FROM autotrade_paper_positions ${where} ORDER BY id DESC ${limit.sql}`)
+    .all(...params, ...limit.params) as Row[];
   return rows.map(map);
 }

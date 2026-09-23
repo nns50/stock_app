@@ -528,9 +528,9 @@ journalRouter.get(
     let inputs: ExcursionInput[];
     let population: number;
     let undated: number;
-    // Rows the population holds that the listing never returned: the paper
-    // listing clamps at 1,000 (newest first), and a row beyond it is beyond
-    // this request's cap in every sense that matters. Counted as overCap so
+    // Rows the population holds that the listing never returned: this route
+    // asks the paper listing for its newest 1,000, and a row beyond them is
+    // beyond this request's cap in every sense that matters. Counted as overCap so
     // the coverage identity (rows + undated + overCap + unavailable =
     // population) holds past the clamp, not only under it. Untested for the
     // same reason as the `?limit=` clamp: a 1,001-row fixture is a test that
