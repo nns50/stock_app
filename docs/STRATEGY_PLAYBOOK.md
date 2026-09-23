@@ -2039,7 +2039,10 @@ same decision, and why the live book skipped what paper took), and **findings** 
 execution occurrences and configuration mismatches, where any occurrence is one. The
 execution findings include the day-level halts (the live and paper drawdown halts, each
 its own finding, and the give-back guard) and any order whose outcome could not be
-resolved. All three were catalogued under journal names nothing writes until
+resolved. A live halt withdrawn as a booking error (the corrected ledger shows the day's
+running total never at or under the line) drops out, and the retraction is reported
+instead, for as long as the corrected ledger bears it out. That is also what keeps it out of
+the sizing review's "two halts in five sessions → revert". All three were catalogued under journal names nothing writes until
 2026-09-23, so none of them could appear before then. A position with **no resting stop**
 (`live_position_unprotected`) is split by the state the sweep found it in: held by a kill
 switch (you trading it by hand, which is expected), a close of the app's already working,

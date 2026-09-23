@@ -43,6 +43,7 @@ import {
   SCAN_RNG_SEED,
   ScanFinding,
 } from './edgeLeakScan';
+import { liveDrawdownHaltRetracted } from './dailyHaltMarker';
 
 // ---------------------------------------------------------------------------
 // The DB half of the edge-leak scan: turn both books' closed positions into
@@ -88,6 +89,10 @@ export const EXECUTION_ACTIONS: {
    *  open finding, and reporting it for ten more sessions would send the reader
    *  after something already fixed. */
   supersededBy?: { action: string; key: string };
+  /** A row counts only while this holds. For a finding whose standing lives
+   *  outside the journal, read through the one function every other consumer
+   *  of that fact reads, so the scan cannot disagree with the day's record. */
+  countsIf?: (detail: string | null) => boolean;
 }[] = [
   { action: 'live_options_exit_failed', label: 'An options exit could not be placed' },
   { action: 'live_options_stale_exit_unjudgeable', label: 'An options exit could not be priced' },
@@ -235,6 +240,23 @@ export const EXECUTION_ACTIONS: {
     labelFor: {
       live: 'The LIVE daily drawdown halt tripped (stock + options)',
       paper: 'The PAPER daily drawdown halt tripped (the control arm)',
+    },
+    // A halt withdrawn as a booking error is not a halt the size produced
+    // (dailyHaltRetraction.ts), for as long as the corrected ledger bears the
+    // retraction out. Live only: the paper book's halt is never retracted.
+    countsIf: (detail) => {
+      const date = detailKey(detail, 'date');
+      return !(detailKey(detail, 'pool') === 'live' && date !== null && liveDrawdownHaltRetracted(date));
+    },
+  },
+  // …and the booking error itself is the finding: a phantom loss in the ledger
+  // stopped the day's entries. A retraction a later correction undid is not.
+  {
+    action: 'daily_halt_retracted',
+    label: 'A live daily halt was retracted: it tripped on a booking error, not a loss',
+    countsIf: (detail) => {
+      const date = detailKey(detail, 'date');
+      return date !== null && liveDrawdownHaltRetracted(date);
     },
   },
   { action: 'daily_give_back_halted', label: 'The give-back guard halted the day' },
@@ -648,6 +670,7 @@ export function collectExecutionFindings(now: number): ExecutionOccurrence[] {
       const later = v === null ? undefined : supersededAt.get(`${spec.supersededBy.action}|${v}`);
       if (later !== undefined && later >= e.createdAt) continue;
     }
+    if (spec?.countsIf !== undefined && !spec.countsIf(e.detail)) continue;
     let key = e.action;
     if (spec?.splitOn !== undefined) {
       // An unparseable or absent detail falls back to the unsplit action

@@ -437,6 +437,22 @@ export function hasOpenLiveOptionsPosition(symbol: string): boolean {
 
 /** Live options trade history (open + closed), newest first — for the
  *  Auto-Trade page's live options positions view. */
+/**
+ * Every closed position whose exit falls in [fromMs, toMs), oldest exit first.
+ * No row cap: a day's closes are a bounded set however long the book's history
+ * grows, which listLiveOptionsPositions' newest-200 default is not.
+ */
+export function listClosedLiveOptionsPositionsBetween(fromMs: number, toMs: number): LiveOptionsPosition[] {
+  const rows = db
+    .prepare(
+      `SELECT * FROM autotrade_live_options_positions
+       WHERE status = 'closed' AND exit_at >= ? AND exit_at < ?
+       ORDER BY exit_at ASC, id ASC`,
+    )
+    .all(fromMs, toMs) as Row[];
+  return rows.map(map);
+}
+
 export function listLiveOptionsPositions(filter: ListLiveOptionsPositionsFilter = {}): LiveOptionsPosition[] {
   const clauses: string[] = [];
   const params: unknown[] = [];

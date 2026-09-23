@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { asyncHandler, parseQuery } from './_helpers';
+import { asyncHandler, parseBody, parseQuery } from './_helpers';
 import { listPositions, Position } from '../db/positions';
 import { getIntent } from '../db/orders';
 import { computeJournalStats, realizedPnlOf } from '../services/pnl';
@@ -62,6 +62,7 @@ import { saveEdgeLeakScan } from '../db/edgeLeakScans';
 import { buildTuneAdviceFromDb } from '../services/autotrading/tuneAdvisorData';
 import { listDailyResults } from '../db/dailyResults';
 import { backfillDailyResults, buildDailyResultsReport, recordDailyResult } from '../services/autotrading/dailyResults';
+import { retractDailyHalt } from '../services/autotrading/dailyHaltRetraction';
 
 /** YYYY-MM-DD. A date query that is not one should 400, not scan the world. */
 const ET_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -857,6 +858,35 @@ journalRouter.post(
   asyncHandler(async (req, res) => {
     const { date } = parseQuery(z.object({ date: z.string().regex(ET_DATE) }), req);
     res.json(recordDailyResult(date));
+  }),
+);
+
+/**
+ * Withdraw a live daily halt that tripped on a BOOKING ERROR (2026-09-23): a
+ * loss the corrected ledger shows the loop never took. Agrees only after that
+ * session has closed, and only when the corrected day's running total never
+ * reached the line at any point in the session. So it cannot erase a halt the
+ * loop's own trades earned; it answers 409 with the day's reading. Writes a
+ * `daily_halt_retracted` row and re-records the day, so the results row and
+ * the sizing review drop the halt at once. Idempotent.
+ */
+journalRouter.post(
+  '/daily-halt/retract',
+  asyncHandler(async (req, res) => {
+    const body = parseBody(
+      z.object({ date: z.string().regex(ET_DATE), reason: z.string().trim().min(10).max(500) }),
+      req,
+    );
+    const outcome = retractDailyHalt({ date: body.date, reason: body.reason });
+    // The refusal carries the day's reading, so a 409 says what the corrected
+    // ledger shows rather than only that it said no.
+    if (!outcome.ok) {
+      res
+        .status(outcome.status)
+        .json({ error: outcome.error, ...(outcome.reading ? { reading: outcome.reading } : {}) });
+      return;
+    }
+    res.json(outcome);
   }),
 );
 
