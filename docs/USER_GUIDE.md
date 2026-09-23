@@ -3222,7 +3222,24 @@ level, that alert is journaled and the day's row reads it. A paper halt never se
 Until 2026-09-23 no day could show an H. The recorder copied the flag from the row it
 was overwriting, and nothing ever set it, so the sizing review's "revert if the halt
 trips twice in any 5 sessions" rule could never fire. A re-record now reads the journal.
-The flag is sticky: once set, a re-record never clears it.
+The flag is sticky: once set, a re-record never clears it, except through a retraction
+(below).
+
+**A halt that tripped on a booking error can be withdrawn.** If a correction to the
+ledger shows the day never really reached the halt, for example a phantom loss removed as on
+2026-09-23, `POST /api/journal/daily-halt/retract` with `{ "date", "reason" }` withdraws
+it. The day's H and the sizing review then stop counting it, and the nightly scan
+reports the retraction in its place. The app re-reads the corrected ledger first. It walks
+the loop's closes that day in the order they were booked, and refuses (409, with that
+reading) if the day's running total was ever at or under the halt line, at any time in the
+session, not just when the halt fired. A close with no booking time inside the session (an
+exit you re-entered after the close) is counted in the worst place for the retraction: a
+loss before everything else, a gain after everything else. It also refuses while that
+session is still open. The retraction keeps being checked: if a later correction (an
+estimated exit repriced to its fill, say) puts the day back at or under the line, the H
+comes back on the next re-record and the scan reports the halt again. The original halt
+row stays in the journal; the retraction is a row of its own (`daily_halt_retracted`)
+naming the reason and the day's lowest point and total.
 
 **A dash is not a zero.** Sessions before the daily-baseline record existed have no
 opening equity anywhere, so no account figure exists for them and the cell says so. The

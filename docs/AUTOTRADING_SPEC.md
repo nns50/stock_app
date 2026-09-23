@@ -13818,3 +13818,64 @@ as the loop's trade at its 190.45 fill, and the day is re-recorded.
 whose `assetType` is not `stock`. `GET /api/autotrade/live/open-orders` shows `instrumentType`
 on each order (`EQUITY` on the bracket legs). On the next day both sleeves hold one name, no
 options close appears among the orders a stock time exit cancels.
+
+## 2026-09-23 (twenty-first) — a halt that tripped on a booking error can be withdrawn
+
+The live halt fired at 10:23 on −$2,046.47 against a line of −$1,941.67. −$384 of that was
+the options sleeve's MRNA call, linked to the stock order's fill and booked into the stock
+book at an estimated price (the (twentieth) section and its fix). With the ledger corrected,
+the loop's closes that day never put its running total at or under the line: about −$1,662
+when the halt fired, and about −$1,821 at its lowest, at 10:51, before the day's two
+estimates are repriced.
+
+The halt itself is recomputed on every risk check, so correcting the ledger changes what the
+next check sees. But the day's record kept it. `recordDailyResult` ORs the stored flag so that
+"a re-record can never clear a halt already written", and the sizing review's "revert if the
+halt trips twice in any five sessions" counts that flag. A phantom halt would therefore cut
+the size on the next real halt, for a loss the loop never took.
+
+**The rule.** A halt stops counting only through an explicit, journaled retraction:
+`POST /api/journal/daily-halt/retract` with `{ date, reason }` (`dailyHaltRetraction.ts`).
+
+- **The day it reads.** `liveDayCloses` lists the loop's closes on the date: autotrade stock
+  positions closed with their last exit on the date, and live options positions whose exit
+  falls on it. `strategyDayFor`, the day's record, sums the same list, so the retraction and
+  the calendar cannot read different days. The options side is read by date. The first
+  version read it through `listLiveOptionsPositions`, whose newest-200 default drops any date
+  older than the book's latest 200 closes.
+- **What it asks.** `dayReachedLine` walks those closes in booking order (a stock position at
+  its closing exit's booking time, an options position at its exit time) and takes the lowest
+  running total. The retraction is refused (409, with that reading) if the lowest point is at
+  or under the marker's line; the checks halt at `pnl <= level`. A close with no booking time
+  inside the session (an exit entered or re-entered by hand after the close) is placed where
+  it hurts the retraction most: a loss before every other close, a gain after them all. It is
+  also refused while that session is still open, since the alert marks once a day and a halt
+  withdrawn mid-session could trip again without being counted.
+- **It keeps being checked.** `liveDrawdownHaltRetracted` honours a retraction on file only
+  while the corrected ledger still bears it out, re-read on every call. The recorder, the halt
+  reader and the nightly scan all ask that one function. So if a later correction (an estimate
+  repriced to its fill, a loss entered late) puts the day at or under the line, the halt
+  counts again on the next re-record, the scan shows it again, and the retraction stops being
+  reported.
+
+The marker stays as history. The retraction is its own row, `daily_halt_retracted {pool,
+date, reason, markerPnl, haltLevel, lowestPnl, totalPnl, stockPnl, optionsPnl, untimedCloses,
+markerAt}`. The route re-records the day, so the results row and the review drop it at once.
+
+**Why not judge the moment the halt fired.** That was the first version, and a review found
+three ways it withdrew a halt the loop's own trades earned. Each has a test that fails on it:
+
+1. A later crossing. The alert marks once a day, so a day that crossed the line again at
+   11:30 on its own losses had no second marker, and the 10:23 reading cleared it.
+2. A loss re-entered after the close. Deleting and re-posting an exit books it at the time of
+   the edit, which read as "after the halt", so the loss dropped out of the check.
+3. An options loss older than the book's newest 200 closes, dropped by the list's default
+   cap.
+
+It also judged once and stored the verdict, so an estimate repriced afterwards could not
+bring a real halt back.
+
+**Check.** After the ledger correction, the retraction for 2026-09-23 succeeds with a lowest
+point above −$1,941.67, the 09-23 results row reads `drawdownHalted: false`, and the sizing
+review's `haltsMaxIn5` does not count it. A retraction attempt against a day whose running
+total reached the line answers 409 with the reading.

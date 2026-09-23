@@ -1,17 +1,17 @@
 import { listPositions, Position } from '../../db/positions';
-import { listLiveOptionsPositions, liveOptionsPnl } from '../../db/autotradeLiveOptionsPositions';
+import { listLiveOptionsPositions } from '../../db/autotradeLiveOptionsPositions';
 import { listPaperPositions, paperRealizedPnl } from '../../db/autotradePaperPositions';
 import { listOptionsPaperPositions } from '../../db/autotradeOptionsPaperPositions';
 import { optionsPaperRealizedPnl } from './optionsExecute';
 import { getDailyBaseline } from '../../db/dailyBaseline';
 import { getAutotradeConfig } from '../../db/autotradeConfig';
 import { DailyResult, GoalBasis, listDailyResults, saveDailyResult } from '../../db/dailyResults';
-import { realizedPnlOf } from '../pnl';
 import { DayMark, listDayMarks } from '../../db/dayMarks';
 import { etToday } from '../../util/marketDate';
 import { isTradingSession } from '../trading/marketCalendar';
 import { isAfterSessionClose, isBeforeSessionOpen } from '../trading/marketHours';
-import { liveDrawdownHaltedOn } from './dailyHaltMarker';
+import { liveDrawdownHaltRetracted, liveDrawdownHaltedOn } from './dailyHaltMarker';
+import { lastExitDate, liveDayCloses } from './liveDayCloses';
 
 // ---------------------------------------------------------------------------
 // The day's result, kept (2026-09-12, operator's ask).
@@ -57,35 +57,18 @@ const round2 = (n: number): number => Math.round(n * 100) / 100;
 
 const isAutotrade = (p: Position): boolean => p.tags.includes('autotrade');
 
-/** The ET date a position's realized P&L belongs to: its LAST exit's date. A
- *  trade opened Monday and closed Wednesday books on Wednesday, which is when
- *  the money actually moved. */
-function lastExitDate(p: Position): string | null {
-  if (p.exits.length === 0) return null;
-  return p.exits.reduce((a, b) => (b.createdAt > a.createdAt ? b : a)).exitDate;
-}
-
 export interface StrategyDay {
   pnlUsd: number;
   trades: number;
 }
 
 /** What the LOOP realized on `etDate` — live stock plus live options. Exact,
- *  and independent of every equity reading. */
+ *  and independent of every equity reading. The closes come from
+ *  liveDayCloses, which the halt retraction walks too, so the two can never
+ *  read different days. */
 export function strategyDayFor(etDate: string): StrategyDay {
-  let pnlUsd = 0;
-  let trades = 0;
-  for (const p of listPositions({ status: 'closed' })) {
-    if (!isAutotrade(p) || lastExitDate(p) !== etDate) continue;
-    pnlUsd += realizedPnlOf(p);
-    trades += 1;
-  }
-  for (const p of listLiveOptionsPositions({ status: 'closed' })) {
-    if (p.exitAt === null || p.exitPrice === null || etToday(p.exitAt) !== etDate) continue;
-    pnlUsd += liveOptionsPnl(p, p.exitPrice);
-    trades += 1;
-  }
-  return { pnlUsd: round2(pnlUsd), trades };
+  const closes = liveDayCloses(etDate);
+  return { pnlUsd: round2(closes.reduce((s, c) => s + c.pnl, 0)), trades: closes.length };
 }
 
 /** The paper book's realized P&L on `etDate` — the control arm's own day, kept
@@ -241,8 +224,13 @@ export function recordDailyResult(etDate: string, now: number = Date.now()): Dai
       // line read `existing?.drawdownHalted ?? false` and nothing had ever set
       // `existing` true, so every row said "no halt" and the sizing review's
       // two-halts-in-five revert could not fire. The stored flag is kept as
-      // well, so a re-record can never clear a halt already written.
-      drawdownHalted: liveDrawdownHaltedOn(etDate) || (existing?.drawdownHalted ?? false),
+      // well, so a re-record can never clear a halt already written — with one
+      // exception, and it has to be explicit: a halt RETRACTED as a booking
+      // error (dailyHaltRetraction.ts, 2026-09-23). A retraction counts only
+      // while the corrected ledger still shows the day never at or under the
+      // line; if a later correction puts it back, the halt counts again here.
+      drawdownHalted:
+        liveDrawdownHaltedOn(etDate) || ((existing?.drawdownHalted ?? false) && !liveDrawdownHaltRetracted(etDate)),
       recordedAt: now,
     },
     strategyDayFor(etDate),
