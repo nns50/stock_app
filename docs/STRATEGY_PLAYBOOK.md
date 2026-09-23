@@ -1709,7 +1709,9 @@ position the broker shows **no resting stop** for is re-armed only when the brok
 *confirms* the shares are still held and its order book reads cleanly. It is never re-armed
 on a check that merely failed to *see* the original, because a replacement next to a live
 stop sells the position twice. It is never re-armed over a close already working, and never
-while a kill switch is engaged. **The kill switch is the tool for trading a position by
+while a kill switch is engaged. Nor does it cancel a limit order it cannot prove is its own
+bracket's take-profit to make room: a sell limit you rest by hand is yours, and it pages
+instead. **The kill switch is the tool for trading a position by
 hand:** engage it first, then change the bracket in Webull. While it is on, the app places,
 moves and cancels nothing on your positions (see the [User Guide](USER_GUIDE.md)).
 

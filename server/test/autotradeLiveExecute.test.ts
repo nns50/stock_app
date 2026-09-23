@@ -3269,6 +3269,56 @@ describe('adoptOrphanedLivePositions', () => {
     expect(String(JSON.parse(unprotectedEvents()[0].detail ?? '{}').reason)).toMatch(/could not be classified/);
   });
 
+  // -------------------------------------------------------------------------
+  // A LIMIT IS NOT A TAKE-PROFIT UNTIL THE BROKER SAYS SO (2026-09-23, from the
+  // #637 review). classifyExitLeg falls back to the order type, so any LIMIT
+  // on the exit side reads as 'target'. The operator's own hand exit is exactly
+  // that: engage the switch, cancel the bracket, rest a sell limit in Webull,
+  // release the switch before it fills. The next sweep cancelled it within a
+  // minute and re-armed the app's bracket over it, and paged nobody.
+  // -------------------------------------------------------------------------
+  const handExit = (comboType: string | undefined) =>
+    restingLeg({ clientOrderId: 'HAND-1', comboType, orderType: 'LIMIT', limitPrice: 104 });
+
+  it.each([
+    ['NORMAL', 'NORMAL'],
+    ['no label at all', undefined],
+  ])("never cancels a LIMIT the broker does not label as a bracket's take-profit (%s)", async (_label, comboType) => {
+    await agedProtectionCandidate('AAPL', 10);
+    vi.mocked(listWebullOpenOrders).mockResolvedValue({ ok: true, orders: [handExit(comboType)] });
+
+    const outcomes = await checkLiveBracketProtection();
+    await checkLiveBracketProtection();
+
+    expect(webullCancelOrder).not.toHaveBeenCalled();
+    expect(webullPlaceStandaloneBracket).not.toHaveBeenCalled();
+    expect(outcomes[0].targetCancelled).toBeUndefined();
+    expect(listAutotradeEvents({ stage: 'execution', actions: ['live_bracket_rearm_target_cancelled'] })).toHaveLength(
+      0,
+    );
+    // Paged, and the page says why nothing was done.
+    const detail = JSON.parse(unprotectedEvents()[0].detail ?? '{}');
+    expect(String(detail.reason)).toMatch(/not labelled as a bracket's take-profit/);
+    expect(String(detail.reason)).toMatch(/may be orders placed by hand/);
+    expect(detail.rearmAttempted).toBe(false);
+  });
+
+  it("cancels nothing when the app's own take-profit rests beside a LIMIT that is not labelled", async () => {
+    // Cancelling only the app's leg buys nothing: the hand order still commits
+    // the shares, so the broker would refuse the pair anyway, and the position
+    // would lose the one exit the app had on it.
+    await agedProtectionCandidate('AAPL', 10);
+    vi.mocked(listWebullOpenOrders).mockResolvedValue({ ok: true, orders: [lonelyTarget(), handExit('NORMAL')] });
+
+    await checkLiveBracketProtection();
+
+    expect(webullCancelOrder).not.toHaveBeenCalled();
+    expect(webullPlaceStandaloneBracket).not.toHaveBeenCalled();
+    expect(String(JSON.parse(unprotectedEvents()[0].detail ?? '{}').reason)).toMatch(
+      /1 resting limit order\(s\) on the sell side of AAPL are not labelled/,
+    );
+  });
+
   it("never cancels or stacks over a close the app already has working — the 'take-profit' may BE that close", async () => {
     // A timed exit's marketable limit reads as a LIMIT sell, which classifies
     // as a take-profit. Cancelling it would undo the app's own close; stacking
