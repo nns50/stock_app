@@ -71,22 +71,49 @@ describe('maybeAlertDailyDrawdownHalt', () => {
     expect(await maybeAlertDailyDrawdownHalt(ET_DAY_1)).toBe(true);
   });
 
-  it('alerts for live and live-options independently, each with its own label', async () => {
-    mockDashboard.mockReturnValue(dash({ liveDailyPnl: -4_000, liveOptionsDailyPnl: -3_200 }));
+  // ONE LIVE HALT, ON THE FIGURE THE LIVE RISK CHECKS USE (2026-09-23).
+  //
+  // Both live risk checks compare stock PLUS options against the level
+  // (liveExecute.ts adds the options seed; liveOptionsExecute.ts adds the stock
+  // snapshot). This file used to judge the two sleeves separately, so a real
+  // halt split across them pushed nothing, and options alone past the level on
+  // a green stock day pushed a halt no check applied. The two cases below
+  // replace the one that asserted exactly that split.
+  it('alerts the LIVE pool on stock + options combined, and says which sleeve lost', async () => {
+    // -1,800 + -1,300 = -3,100: past the -3,000 level, though neither sleeve is.
+    mockDashboard.mockReturnValue(dash({ liveDailyPnl: -1_800, liveOptionsDailyPnl: -1_300 }));
     expect(await maybeAlertDailyDrawdownHalt(ET_DAY_1)).toBe(true);
-    expect(mockDispatch).toHaveBeenCalledTimes(2);
-    const titles = mockDispatch.mock.calls.map((c) => c[0][0].title);
-    expect(titles).toEqual(
-      expect.arrayContaining([expect.stringMatching(/LIVE\)/), expect.stringMatching(/LIVE options\)/)]),
-    );
-    expect(alertMarkers()).toHaveLength(2);
+    expect(mockDispatch).toHaveBeenCalledTimes(1);
+    const [event] = mockDispatch.mock.calls[0][0];
+    expect(event.title).toMatch(/LIVE\)/);
+    expect(event.message).toMatch(/LIVE daily P&L \(\$-3,100\.00\) \(stock \$-1,800\.00, options \$-1,300\.00\)/);
+    expect(event.message).toMatch(/new live entries are blocked/);
+    const markers = alertMarkers();
+    expect(markers).toHaveLength(1);
+    expect(JSON.parse(markers[0].detail!)).toEqual({
+      pool: 'live',
+      date: '2026-08-03',
+      dailyPnl: -3_100,
+      haltLevel: -3_000,
+      stockPnl: -1_800,
+      optionsPnl: -1_300,
+    });
   });
 
-  it('alerts once per pool per day, not once total — three halted pools dispatch three times', async () => {
+  it('does NOT alert when options alone cross the level but the live book as a whole has not', async () => {
+    // -3,200 + 500 = -2,700: above the level. No live risk check halts here,
+    // so neither may the alert.
+    mockDashboard.mockReturnValue(dash({ liveDailyPnl: 500, liveOptionsDailyPnl: -3_200 }));
+    expect(await maybeAlertDailyDrawdownHalt(ET_DAY_1)).toBe(false);
+    expect(mockDispatch).not.toHaveBeenCalled();
+    expect(alertMarkers()).toHaveLength(0);
+  });
+
+  it('alerts once per pool per day, not once total — both halted pools dispatch, once each', async () => {
     mockDashboard.mockReturnValue(dash({ dailyPnl: -3_100, liveDailyPnl: -3_100, liveOptionsDailyPnl: -3_100 }));
     expect(await maybeAlertDailyDrawdownHalt(ET_DAY_1)).toBe(true);
-    expect(mockDispatch).toHaveBeenCalledTimes(3);
-    expect(alertMarkers()).toHaveLength(3);
+    expect(mockDispatch).toHaveBeenCalledTimes(2);
+    expect(alertMarkers()).toHaveLength(2);
   });
 
   it('does not re-alert the same pool again the same (ET) day', async () => {

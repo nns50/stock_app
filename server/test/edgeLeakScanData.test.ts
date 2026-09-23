@@ -27,6 +27,7 @@ import { DeclinedEntryShadow, liveExitRules } from '../src/services/autotrading/
 import type { ReentryShadowReport } from '../src/services/autotrading/reentryShadowRecordData';
 import { seedClosedAutotradeSessions, weekdaysEndingAt } from './helpers/autotradeSessions';
 import { etDateTimeToMs } from '../src/util/marketDate';
+import { writeDailyHaltMarker } from '../src/services/autotrading/dailyHaltMarker';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { computeRiskSizing } from '../src/services/riskSizing';
@@ -892,6 +893,34 @@ describe('the execution findings — any occurrence is one', () => {
 
     const byAction = new Map(collectExecutionFindings(now).map((f) => [f.action, f.count]));
     expect(byAction.get('live_options_exit_reprice_deferred')).toBe(2);
+  });
+
+  // THREE ENTRIES NAMED NOTHING THE APP WRITES (2026-09-23). The catalog read
+  // `live_order_unknown_outcome` (the writers say `…_order_outcome_unknown`),
+  // `daily_drawdown_halt` (a guardrail rule's name, never journaled) and
+  // `give_back_halt` (the writer says `daily_give_back_halted`). So an unknown
+  // order outcome or a halt could never be a finding. The halt is written here
+  // by the alert's own writer. The other two names are checked against their
+  // writers statically, in journalActionsReachability.test.ts.
+  it('counts halts and unknown outcomes under the names the app actually writes', () => {
+    writeDailyHaltMarker({ pool: 'live', date: '2026-09-09', dailyPnl: -800, haltLevel: -750 });
+    writeDailyHaltMarker({ pool: 'paper', date: '2026-09-09', dailyPnl: -900, haltLevel: -750 });
+    const at = Date.now() - 60_000;
+    db.prepare(
+      `INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) VALUES
+       ('AAA','execution','live_order_outcome_unknown','{}',NULL,?),
+       ('BBB','execution','live_options_order_outcome_unknown','{}',NULL,?),
+       (NULL,'execution','daily_give_back_halted','{}',NULL,?)`,
+    ).run(at, at + 1, at + 2);
+
+    const byAction = new Map(collectExecutionFindings(Date.now()).map((f) => [f.action, f]));
+    // Split by book: the paper halt is the control arm's bad day, not the live book's.
+    expect(byAction.get('daily_halt_alerted|live')?.detail).toMatch(/^The LIVE daily drawdown halt tripped/);
+    expect(byAction.get('daily_halt_alerted|paper')?.detail).toMatch(/^The PAPER daily drawdown halt tripped/);
+    expect(byAction.has('daily_halt_alerted')).toBe(false);
+    expect(byAction.get('live_order_outcome_unknown')?.count).toBe(1);
+    expect(byAction.get('live_options_order_outcome_unknown')?.count).toBe(1);
+    expect(byAction.get('daily_give_back_halted')?.count).toBe(1);
   });
 
   it('dates each execution class, in SESSIONS rather than days', () => {

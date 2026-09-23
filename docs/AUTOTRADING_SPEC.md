@@ -1304,6 +1304,13 @@ starts.
      bad-enough paper day to trip its own configured cap is worth knowing without having
      the page open, the same way the live case is.
 
+     > **Corrected 2026-09-23: two pools, not three.** Both live risk checks halt on live
+     > stock plus live options combined, so the alert now has one `live` pool on that sum
+     > next to `paper`. Separate stock and options pools could each miss a halt split
+     > across the sleeves, and the options pool could report a halt no check applied. The
+     > marker is also the halt's only dated record, which the daily results row reads. See
+     > "2026-09-23 (third)" below.
+
      **Follow-up, added 2026-07-09 — sub-penny bracket price rejected every live
      order.** Confirmed in production: every live entry attempt failed with Webull's
      `Price increment should be 0.01 when price is equal to or greater than 0.9999`
@@ -12712,3 +12719,78 @@ last of about 148.35). If the row is `live_order_status_unresolved` instead, its
 entry, and the parser is fixed from that shape before anything else. If
 neither row appears, the reconcile never reached the order, which is a finding
 too.
+
+**Result (2026-09-22, 22:36 ET, first reconcile after the deploy).** As expected.
+`live_order_status_from_detail` for SHOP, intent 35974: `status: 'FILLED'`, 91 filled
+at 148.34, `listRead: 'not_found'`. Position 686 closed at 148.34 with exit date
+2026-09-22 and +$123.76. The fill was above the 147.61 limit. The 09-22 daily result
+includes it: −$382.96 over 11 closes (8 stock, +$5.04 net, and 3 options, −$388.00),
+recomputed by hand from the positions and matching the stored row to the cent.
+
+## 2026-09-23 (third) — the halt the review counts was never recorded
+
+Found while re-reading the 09-22 daily result. Three defects share one root: a
+consumer waiting on a record no producer writes. None has cost anything yet. The
+journal holds no live halt, no give-back halt and no unknown order outcome in 45 days.
+Each would have hidden the next one.
+
+**1. The daily results row could never say the live book halted.** The recorder wrote
+`drawdownHalted: existing?.drawdownHalted ?? false`, and nothing anywhere had ever set
+`existing` true. The backfill wrote a hard `false`. The sizing review reads that column
+for Decision 7's second revert condition, "the drawdown halt tripped twice in any 5
+sessions" (`sizing_revert` in `gatedSwitches.ts`), so that half of the rule was dead.
+Its test passed throughout, because it handed the review hand-built rows with
+`drawdownHalted: true`, a shape the recorder could not emit. This is the `goalBasis`
+lesson of 2026-09-16 again, one column over.
+
+**2. The halt alert watched a halt nobody runs.** It judged live stock and live options
+as separate pools, each against the level. Both live risk checks halt on the **sum**:
+`liveExecute.ts` adds the options seed to its snapshot, and `liveOptionsExecute.ts` adds
+the stock snapshot to its own. So a day losing $1,500 on stock and $700 on options
+against a $2,000 level halted every live entry and pushed nothing. Options alone at
+−$2,100 on a +$500 stock day pushed "new live options entries are blocked", which was not
+true.
+
+**3. The edge-leak scan's execution catalog listed three names nothing writes.**
+`daily_drawdown_halt` is the guardrail rule's name and was never journaled as an action.
+The give-back writer says `daily_give_back_halted`, not `give_back_halt`. The
+unknown-outcome writers say `live_order_outcome_unknown` and
+`live_options_order_outcome_unknown`, not `live_order_unknown_outcome`. The reachability
+guard (`journalActionsReachability.test.ts`) exists to catch exactly this and did not.
+Its emit scan counts every `action: '…'` line as a write, and the catalog writes its
+entries that way, so the catalog vouched for itself. The guard's own comment warned about
+a dead filter "vouching for itself" and guarded two other forms of it.
+
+**Changes.**
+
+- `dailyHaltMarker.ts` (new, a leaf) owns the marker's one writer and one reader. The
+  action name stays `daily_halt_alerted`, so the once-a-day throttle still sees markers
+  written before the change. The detail now carries `dailyPnl`, `haltLevel` and, for
+  live, `stockPnl` and `optionsPnl`.
+- The alert has two pools. `paper` is unchanged. `live` is `liveDailyPnl +
+  liveOptionsDailyPnl`, the figure the live checks compare, and its message names each
+  sleeve's share.
+- The recorder sets `drawdownHalted` from a `live` marker for that date, OR the stored
+  flag, so a re-record never clears a halt. The backfill reads the marker too. A paper
+  marker never counts, and nor do the legacy `liveOptions` markers.
+- The catalog reads `daily_halt_alerted` split by pool (live and paper are separate
+  findings), `daily_give_back_halted`, and both `…_order_outcome_unknown` actions.
+- The guard skips `action:` keys inside a `const X = [...]` catalog. Against the old
+  catalog it now fails with exactly the three names above.
+
+**Tested at the consumer.** An end-to-end case records ten sessions with the real
+recorder, two of them carrying a live marker written by the alert's own writer, and
+asserts that the gated-switch snapshot reads `haltsMaxIn5: 2` and that `sizing_revert`
+fires with "2 drawdown halts in 5 sessions" as its evidence. It fails against the old
+recorder line. The same ten sessions with paper markers fire nothing. The alert cases
+now cover the split halt (stock −1,800 and options −1,300 against −3,000, one live
+alert) and the options-only non-halt (no alert). The leak-scan case counts a halt
+written by the real writer, under both pools.
+
+**Pre-committed check.** The next day the live book's realized P&L reaches the halt level,
+three things must happen. One `daily_halt_alerted` row with `pool: 'live'` and both
+sleeve figures. That session's daily results row showing `drawdownHalted: true` (an H on
+the calendar). The next edge-leak scan listing `daily_halt_alerted|live` among its
+findings. If the alert fires and the row still reads false, the recorder is not reading
+the marker for that date. That is the finding, and nothing else is read until it is
+fixed.

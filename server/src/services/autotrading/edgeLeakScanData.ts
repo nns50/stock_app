@@ -108,7 +108,14 @@ export const EXECUTION_ACTIONS: {
   { action: 'live_bracket_rearmed', label: 'A missing protective bracket had to be re-armed' },
   { action: 'live_stop_adjust_blocked', label: 'A stop ratchet could not find its resting leg' },
   { action: 'live_scale_out_blocked', label: 'A scale-out was refused by the broker' },
-  { action: 'live_order_unknown_outcome', label: 'An order ended with an unknown outcome' },
+  // The writers name these `…_order_outcome_unknown` (liveFailureAlert.ts's
+  // AMBIGUITY_ACTIONS). Until 2026-09-23 this entry read
+  // `live_order_unknown_outcome`, a name nothing writes, so an unknown outcome
+  // could never become a finding. The reachability guard missed it because
+  // this catalog's own `action:` keys counted as emits. See
+  // journalActionsReachability.test.ts.
+  { action: 'live_order_outcome_unknown', label: 'A stock order ended with an unknown outcome' },
+  { action: 'live_options_order_outcome_unknown', label: 'An options order ended with an unknown outcome' },
   // Two RISK CONTROLS that fail open (2026-09-12). Neither is a crash and
   // neither stops the book — that is the point: on a provider or broker
   // outage the cap simply admits more than it should, and until these rows
@@ -121,8 +128,22 @@ export const EXECUTION_ACTIONS: {
     action: 'correlation_data_unavailable',
     label: 'The correlated-exposure cap under-counted (candles could not be fetched)',
   },
-  { action: 'daily_drawdown_halt', label: 'The daily drawdown halt tripped' },
-  { action: 'give_back_halt', label: 'The give-back guard halted the day' },
+  // The halt's only dated record is its alert marker (dailyHaltMarker.ts).
+  // `daily_drawdown_halt` is the guardrail RULE's name and was never
+  // journaled as an action, and `give_back_halt` was never written either
+  // (the writer is dailyTarget.ts's `daily_give_back_halted`). So neither halt
+  // could ever appear here until 2026-09-23. Split by pool, because the paper
+  // book halting is the control arm's bad day, not the live book's.
+  {
+    action: 'daily_halt_alerted',
+    label: 'A daily drawdown halt tripped',
+    splitOn: 'pool',
+    labelFor: {
+      live: 'The LIVE daily drawdown halt tripped (stock + options)',
+      paper: 'The PAPER daily drawdown halt tripped (the control arm)',
+    },
+  },
+  { action: 'daily_give_back_halted', label: 'The give-back guard halted the day' },
 ];
 
 /** The two rows that record the tuner's SWITCH rather than a tuner RUN. They

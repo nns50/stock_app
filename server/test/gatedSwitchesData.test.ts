@@ -24,7 +24,11 @@ import {
   runGatedSwitchesAfterClose,
   sizingChangedOn,
 } from '../src/services/autotrading/gatedSwitchesData';
-import { SHADOW_MIN_EVALUATIONS } from '../src/services/autotrading/gatedSwitches';
+import { GATED_SWITCH_RULES, SHADOW_MIN_EVALUATIONS } from '../src/services/autotrading/gatedSwitches';
+import { saveDailyBaseline } from '../src/db/dailyBaseline';
+import { recordDailyResult } from '../src/services/autotrading/dailyResults';
+import { writeDailyHaltMarker } from '../src/services/autotrading/dailyHaltMarker';
+import { seedClosedAutotradeSessions } from './helpers/autotradeSessions';
 import { buildGatedSwitchStatus } from '../src/services/autotrading/dashboard';
 import { buildShortShadowRecord } from '../src/services/autotrading/shortShadowRecord';
 import { SHORT_SHADOW_SINCE_MS, ShortShadowReport } from '../src/services/autotrading/shortShadowRecordData';
@@ -269,6 +273,74 @@ describe('the review window', () => {
       result('2026-09-09', { drawdownHalted: true }),
     ];
     expect(buildSizingReview(rows, null).haltsMaxIn5).toBe(2);
+  });
+
+  // THE CASE ABOVE PASSED THROUGHOUT, AND THE RULE IT GUARDS WAS DEAD
+  // (2026-09-23). It hands the review rows built with `drawdownHalted: true`,
+  // and no producer could emit one: the recorder wrote
+  // `existing?.drawdownHalted ?? false` and nothing ever set `existing` true.
+  // This is the goalBasis lesson again (see the comment on `judged` in
+  // gatedSwitchesData.ts). So this case builds the rows with the RECORDER, from
+  // halts journaled by the same writer the alert uses, and asserts on the rule's
+  // verdict rather than on the count alone.
+  describe('from the halt the alert journals to the revert rule, end to end', () => {
+    const SESSIONS = [
+      '2026-09-08',
+      '2026-09-09',
+      '2026-09-10',
+      '2026-09-11',
+      '2026-09-14',
+      '2026-09-15',
+      '2026-09-16',
+      '2026-09-17',
+      '2026-09-18',
+      '2026-09-21',
+    ];
+
+    beforeEach(() => {
+      db.exec('DELETE FROM positions; DELETE FROM position_exits; DELETE FROM autotrade_daily_baseline;');
+    });
+
+    /** Records every session the way the loop does after its close: that
+     *  day's baseline, one closing trade, then the recorder. A small winner
+     *  each day, so the mean day stays positive and the halts are the only
+     *  reason the rule can give. */
+    function recordTrial(halted: { date: string; pool: 'live' | 'paper' }[]): void {
+      setAutotradeConfig({ ...defaultAutotradeConfig(), riskPerTradePct: 2.5, accountEquityUsd: 10_000 });
+      for (const d of SESSIONS) {
+        seedClosedAutotradeSessions({ sessions: { [d]: [{ entryTime: '09:35', exitTime: '10:00', r: 0.2 }] } });
+        for (const h of halted.filter((x) => x.date === d)) {
+          writeDailyHaltMarker({ pool: h.pool, date: d, dailyPnl: -800, haltLevel: -750 });
+        }
+        saveDailyBaseline(d, 10_000);
+        recordDailyResult(d, 1);
+      }
+    }
+
+    const sizingRevert = GATED_SWITCH_RULES.find((r) => r.id === 'sizing_revert')!;
+    const AFTER_TRIAL = Date.parse('2026-09-21T21:30:00Z');
+
+    it('two live halts in five sessions fire the revert, with the halts as its evidence', () => {
+      recordTrial([
+        { date: '2026-09-15', pool: 'live' },
+        { date: '2026-09-17', pool: 'live' },
+      ]);
+      const snap = buildGatedSwitchSnapshot(AFTER_TRIAL);
+      expect(snap.review.activeSessionsSinceChange).toBe(10);
+      expect(snap.review.meanDayPct).toBeGreaterThan(0);
+      expect(snap.review.haltsMaxIn5).toBe(2);
+      expect(sizingRevert.evaluate(snap)?.evidence).toBe('2 drawdown halts in 5 sessions');
+    });
+
+    it('paper halts are the control arm\u2019s, and never revert the live sizing', () => {
+      recordTrial([
+        { date: '2026-09-15', pool: 'paper' },
+        { date: '2026-09-17', pool: 'paper' },
+      ]);
+      const snap = buildGatedSwitchSnapshot(AFTER_TRIAL);
+      expect(snap.review.haltsMaxIn5).toBe(0);
+      expect(sizingRevert.evaluate(snap)).toBeNull();
+    });
   });
 
   it('reads the sizing change off the journal the config route writes', () => {

@@ -11,6 +11,7 @@ import { DayMark, listDayMarks } from '../../db/dayMarks';
 import { etToday } from '../../util/marketDate';
 import { isTradingSession } from '../trading/marketCalendar';
 import { isAfterSessionClose, isBeforeSessionOpen } from '../trading/marketHours';
+import { liveDrawdownHaltedOn } from './dailyHaltMarker';
 
 // ---------------------------------------------------------------------------
 // The day's result, kept (2026-09-12, operator's ask).
@@ -235,9 +236,13 @@ export function recordDailyResult(etDate: string, now: number = Date.now()): Dai
       // day reads that day's own overnight rather than tonight's.
       preOpenMoveUsd: preOpenMoveUsdFor(listDayMarks(etDate)),
       giveBackHalted: current ? current.giveBackHaltedAt !== null : (existing?.giveBackHalted ?? false),
-      // The drawdown halt has no baseline stamp of its own; the journal is its
-      // record, and the caller passes it through the same route that reads it.
-      drawdownHalted: existing?.drawdownHalted ?? false,
+      // The drawdown halt has no baseline stamp of its own; the journal marker
+      // is its only dated record (dailyHaltMarker.ts). Until 2026-09-23 this
+      // line read `existing?.drawdownHalted ?? false` and nothing had ever set
+      // `existing` true, so every row said "no halt" and the sizing review's
+      // two-halts-in-five revert could not fire. The stored flag is kept as
+      // well, so a re-record can never clear a halt already written.
+      drawdownHalted: liveDrawdownHaltedOn(etDate) || (existing?.drawdownHalted ?? false),
       recordedAt: now,
     },
     strategyDayFor(etDate),
@@ -295,7 +300,13 @@ export function backfillDailyResults(from: string, now: number = Date.now()): { 
           closeEquityUsd: null,
           goalReached: false,
           giveBackHalted: false,
-          drawdownHalted: false,
+          // Unlike the stamps above, the halt's record is the journal, and the
+          // journal reaches back to the day the alert was first written. So a
+          // marker for this date is reported. No marker means either no halt or
+          // a halt older than the alert. The review never reads a backfilled
+          // row (riskPerTradePct is null below), so that ambiguity cannot reach
+          // the revert decision.
+          drawdownHalted: liveDrawdownHaltedOn(etDate),
           // Unknowable for a historical session, and null is the point: the
           // review's window test treats null as "not this trial", so a
           // backfill can never pad the count.
