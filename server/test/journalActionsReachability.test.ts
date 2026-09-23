@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { SKIP_ACTIONS } from '../src/services/autotrading/edgeLeakScanData';
+import { BATCH_REFUSAL_ACTIONS, SKIP_ACTIONS } from '../src/services/autotrading/edgeLeakScanData';
 import { join } from 'node:path';
 
 // ---------------------------------------------------------------------------
@@ -237,6 +237,77 @@ describe('journal action reachability', () => {
       .filter((a) => !(SKIP_ACTIONS as readonly string[]).includes(a) && !(a in NOT_ATTRIBUTED))
       .sort();
     expect(unclassified).toEqual([]);
+  });
+
+  // THE FOURTH DIRECTION (2026-09-23).
+  //
+  // The guard above reads only the throttled writer. The live entry path also
+  // refuses candidates through plain logAutotradeEvent calls, and four of those
+  // (the level veto, a guardrail block, a broker refusal, an unanswered
+  // placement) were never attribution classes: CRML's buying-power refusal on
+  // 09-21 and TWST's level veto on 09-17 both read as `no_live_row`. So every
+  // action liveExecute.ts writes is accounted for here: an attribution class,
+  // or named as not an entry refusal and why. A new action fails this until
+  // someone decides which it is.
+  it('accounts for every action the live execution path writes', () => {
+    const src = code(join(SRC, 'services/autotrading/liveExecute.ts'));
+    const written = new Set([...src.matchAll(/action:\s*'([a-z_]+)'/g)].map((m) => m[1]));
+    expect(written.size).toBeGreaterThan(30);
+
+    const NOT_AN_ENTRY_REFUSAL: Record<string, string> = {
+      bracket_groups_observed: 'protection diagnostics on a position already held',
+      entry_extension_shadow: 'a measurement taken beside the decision, not the decision',
+      entry_filled: 'a fill: the entry happened, so the attribution pairs it',
+      equity_moved_far_from_open: 'an account equity reading',
+      equity_sync_rejected: 'an account equity reading',
+      equity_synced: 'an account equity reading',
+      exit_filled: 'an exit',
+      level_exits_applied: 'the signal re-placed around levels and still traded',
+      live_bracket_rearm_target_cancelled: 'protection on a position already held',
+      live_bracket_rearmed: 'protection on a position already held',
+      live_broker_status_unrecognized: 'a reconcile diagnostic on an order already placed',
+      live_buying_power_unavailable: 'a risk control that failed open: an execution finding, not a refusal',
+      live_entry_ceiling_resized: 'the entry resized and still placed',
+      live_entry_risk_resized: 'the entry resized and still placed',
+      live_exit_ambiguous: 'an exit',
+      live_exit_materialization_failed: 'an exit',
+      live_fill_not_fully_materialized: 'fill bookkeeping on an entry already placed',
+      live_order_never_placed:
+        'written when an unanswered placement is retired, minutes after the entry; the placement-time row is live_order_outcome_unknown',
+      live_order_placed: 'the entry placed, so the attribution pairs it',
+      live_position_adopted: 'position bookkeeping',
+      live_position_closed: 'an exit',
+      live_position_linked_to_adopted: 'position bookkeeping',
+      live_position_opened: 'the entry filled, so the attribution pairs it',
+      live_position_unprotected: 'protection on a position already held',
+      live_scale_in_blocked: 'an add to a position already held, not a new entry',
+      live_scale_in_failed: 'an add to a position already held, not a new entry',
+      live_scale_in_orphaned: 'an add to a position already held, not a new entry',
+      live_scaled_in: 'an add to a position already held, not a new entry',
+      live_scaled_in_filled: 'an add to a position already held, not a new entry',
+      live_scale_out_blocked: 'an exit',
+      live_scale_out_failed: 'an exit',
+      live_scale_out_placed: 'an exit',
+      live_stop_adjust_blocked: 'stop management on a position already held',
+      live_stop_adjust_failed: 'stop management on a position already held',
+      live_stop_adjust_held: 'stop management on a position already held',
+      live_stop_adjust_skipped: 'stop management on a position already held',
+      live_stop_ratcheted: 'stop management on a position already held',
+      live_time_exit_blocked: 'an exit',
+      live_time_exit_cancel_failed: 'an exit',
+      live_time_exit_failed: 'an exit',
+      live_time_exit_placed: 'an exit',
+      per_lot_entry_planned: 'the entry planned and placed, so the attribution pairs it',
+      per_lot_second_lot_blocked: 'the second lot of an entry already taken',
+      per_lot_second_lot_failed: 'the second lot of an entry already taken',
+      per_lot_second_lot_placed: 'the second lot of an entry already taken',
+      stagnation_exit_held_slot_free: 'an exit',
+    };
+    const classified = new Set<string>([...SKIP_ACTIONS, ...BATCH_REFUSAL_ACTIONS]);
+    const unaccounted = [...written].filter((a) => !classified.has(a) && !(a in NOT_AN_ENTRY_REFUSAL)).sort();
+    expect(unaccounted).toEqual([]);
+    // And the list names nothing the file no longer writes, so it cannot rot.
+    expect(Object.keys(NOT_AN_ENTRY_REFUSAL).filter((a) => !written.has(a))).toEqual([]);
   });
 
   it('knows the specific action that started this — order_placed is not an emitter', () => {

@@ -275,6 +275,22 @@ export const SKIP_ACTIONS = [
   // bid). Live-only for the same reason the ATR one is: paper keeps taking
   // these, which is what makes this attribution a control rather than a tally.
   'absorbed_price_skipped',
+  // FOUR WRITTEN PER EVENT THAT THE ATTRIBUTION NEVER READ (2026-09-23). Each
+  // is logged with a symbol at the moment the live book declined, or failed to
+  // place, a candidate paper also saw, so every paper entry they explain read
+  // `no_live_row`. Not once-a-day, so they match within the minute only.
+  // - The level veto is live-only by design (the paper book runs the plain ATR
+  //   plan as its control), so its untaken paper R is the evidence for or
+  //   against the veto. TWST 09-17 12:32.
+  'level_veto',
+  // - A guardrail refused the order at placement.
+  'live_entry_blocked',
+  // - The broker or its preview refused it. CRML 09-21 09:36: the live book
+  //   tried, and Webull answered "Buying power is insufficient".
+  'live_entry_failed',
+  // - The placement went unanswered; if it never landed, the later
+  //   `live_order_never_placed` row is minutes too late to match.
+  'live_order_outcome_unknown',
 ];
 // NOT here: `live_entry_cutoff_skipped`. It sat in this list from the day the
 // list was written and nothing has ever emitted it — the equity entry cutoff
@@ -290,7 +306,7 @@ export const SKIP_ACTIONS = [
 // collector drops symbol-less rows two lines below and the classifier matches
 // on symbol, so putting them in this list would change nothing. They are read
 // on their own, by time, in collectBatchRefusals.
-const BATCH_REFUSAL_ACTIONS = ['entry_window_closed', 'live_entries_halted'];
+export const BATCH_REFUSAL_ACTIONS = ['entry_window_closed', 'live_entries_halted'];
 
 const isAutotradePosition = (p: Position): boolean => p.tags.includes('autotrade');
 

@@ -395,6 +395,36 @@ describe('attribution — where the live book loses the paper book’s edge', ()
     expect(a.medianPairGapMinutes).toBe(30);
   });
 
+  // 2026-09-23: COIN on 09-21. Paper entered at 09:36:53 (the same tick the
+  // live book placed COIN) and again at 10:02:07; live entered once, 09:36.
+  // Walking the paper list newest first, the 10:02 re-entry took the live
+  // trade and the 09:36 twin read `no_live_row`.
+  it('gives the live trade to the paper entry nearest it, whatever order the paper book lists them in', () => {
+    const live = [trade({ symbol: 'COIN', entryAt: at('09:36'), r: -0.02 })];
+    const twin = trade({ symbol: 'COIN', book: 'paper', entryAt: at('09:36') + 53_000, r: -1 });
+    const reentry = trade({ symbol: 'COIN', book: 'paper', entryAt: at('10:02') + 7_000, r: -1.1 });
+    const cooldown = {
+      symbol: 'COIN',
+      at: at('10:02') + 7_000,
+      action: 'symbol_reentry_cooldown_skipped',
+      failedRule: null,
+    };
+    for (const paper of [
+      [reentry, twin],
+      [twin, reentry],
+    ]) {
+      const a = buildAttribution(live, paper, [cooldown], [], [], MARKETABLE_LIMIT_BUFFER_PCT, RNG());
+      expect(a.pairedTrades).toBe(1);
+      // Paired with its twin: -0.02 - (-1), not -0.02 - (-1.1).
+      expect(a.meanDiffR).toBeCloseTo(0.98, 4);
+      expect(a.medianPairGapMinutes).toBeCloseTo(0.88, 2);
+      // The re-entry is the one left over, filed under the live journal's word for it.
+      expect(a.untaken).toEqual([
+        expect.objectContaining({ reason: 'symbol_reentry_cooldown_skipped', n: 1, paperTotalR: -1.1 }),
+      ]);
+    }
+  });
+
   it('still refuses to pair across DIFFERENT sessions', () => {
     // Symbol + ET date, not symbol alone: yesterday's trade in the same name is
     // a different decision by any reading.
