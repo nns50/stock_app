@@ -14364,3 +14364,47 @@ seven-day history (the entry was placed 2026-09-23, so until 2026-09-30).
 - an app order in the history is never matched, and the estimate waits and is asked
   again.
 
+## 2026-09-23 (thirty-first) — the market-direction gate's index leg survives a failed quote
+
+A read-only review of the gate before its first live session found no logic error:
+- the lean mapping is right for stocks and options (a put leans short);
+- breadth counts every scored universe name by its own quote;
+- the loop hands the same reading to both live books.
+
+It found one data failure worth fixing before it acts on real money. The index leg is a
+separate `getQuote('SPY')` after the screen, which is the tick's heaviest burst of
+provider calls, and `getMarketChangePct` turns every error into null. A null makes the
+reading `unknown`, and `unknown` refuses nothing. So one rate-limited quote on a broad red
+day let that tick's longs and calls through, while the screen had read SPY's quote
+moments earlier.
+
+**Fixed:** the screen reports the index's own quoted move (`ScreenResult.indexChangePct`,
+null when the index was not scored). The loop uses it only when the fresh fetch fails.
+The `market_direction_read` row carries `indexSource: quote | screen`. With both sources
+missing, the reading is `unknown` as before.
+
+**Not changed, and why:**
+- **No latch.** The gate reads afresh every tick and a mixed tick refuses nothing. This is
+  deliberate: a market that stops being red lets longs through again, which is what the
+  operator asked for. A tick that wobbles across 0.2% / 65% is, by the rule, not
+  one-sided. Hysteresis (stay red until breadth falls under the bar minus 5 points) would
+  make the gate stickier. It is a change of rule, so it waits for the operator's word
+  and for the gate's first refusals.
+- **Scale-ins and per-lot second lots are not gated.** Both run before the reading exists
+  in the tick. Both are off in production (`liveScaleInEnabled`,
+  `livePerLotBracketsEnabled`), so this is written down rather than built. Turning either
+  on should come with the gate on its path.
+- **Both legs read against the prior close**, so a gap-down day that rallies reads red all
+  morning. That is the rule as specified: a red day is measured from yesterday's close.
+
+**Pre-committed check:** every `market_direction_read` row from 2026-09-24 carries
+`indexSource`. A row reading `screen` is a fresh-fetch failure the old code would have
+read as `unknown`.
+
+**Tests (each mutation-checked):**
+- the loop hands both live books a RED reading when the fresh fetch fails and the
+  screen saw the index red, and the row says `screen`;
+- a fresh fetch that works stays the source;
+- with neither source the reading is `unknown`;
+- the screen reports the index's quoted move, and null when the index was not scored.
+

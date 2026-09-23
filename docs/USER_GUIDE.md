@@ -1475,8 +1475,14 @@ equally-weighted cards in the order they happened to be built:
   - a stock long or a call on a broad red day;
   - a stock short or a put on a broad green day.
 
-  A mixed or unknown market refuses nothing. Paper keeps taking every signal as the
-  control. A refusal is journaled as `live_market_direction_skipped` (stock, with the
+  A mixed or unknown market refuses nothing. The gate reads afresh every tick, so a
+  market that stops being one-sided lets entries through again on the next tick. SPY's
+  move is fetched on its own after the screen. If that fetch fails, the reading uses the
+  quote the screen already read for SPY that tick (since 2026-09-23), so one failed
+  quote no longer turns a red day into `unknown`. The journal row says which source was
+  used (`indexSource: quote` or `screen`). The gate covers new entries only: a scale-in or
+  a per-lot second lot adds shares without it, though both are off by default. Paper
+  keeps taking every signal as the control. A refusal is journaled as `live_market_direction_skipped` (stock, with the
   entry, stop and score a replay needs) or `live_options_market_direction_skipped`
   (options). The reading itself is journaled as `market_direction_read` each time it
   changes, whether the gate is on or off, and it shows on the Monitoring card's Last

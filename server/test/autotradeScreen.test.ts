@@ -980,6 +980,20 @@ describe('runAutotradeScreen — universe breadth', () => {
     }
   });
 
+  // The loop's fallback for the index leg when its own SPY fetch fails
+  // (2026-09-23): the move of the quote the screen already read.
+  it("reports the index's own quoted move, and null when the index was not scored", async () => {
+    const spy = quoteWithMove({ SPY: -0.35 }, 0.5);
+    try {
+      const withIndex = await runAutotradeScreen({ symbols: ['SPY', 'SCRBR1'] });
+      expect(withIndex.indexChangePct).toBe(-0.35);
+      const without = await runAutotradeScreen({ symbols: ['SCRBR1'] });
+      expect(without.indexChangePct).toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('leaves out a name the screen never scored (an exclusion)', async () => {
     const spy = quoteWithMove({}, -1);
     try {

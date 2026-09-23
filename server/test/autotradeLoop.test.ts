@@ -448,6 +448,7 @@ describe('runAutotradeLoopTick', () => {
       rejected: [],
       relVolMedian: null,
       breadth: EMPTY_BREADTH,
+      indexChangePct: null,
       discovery: { universeCount: 0, moversCount: 0, scannedCount: 0, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [], skipped: [] });
@@ -469,6 +470,7 @@ describe('runAutotradeLoopTick', () => {
       rejected: [],
       relVolMedian: null,
       breadth: EMPTY_BREADTH,
+      indexChangePct: null,
       discovery: { universeCount: 0, moversCount: 0, scannedCount: 0, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [], skipped: [] });
@@ -524,6 +526,7 @@ describe('runAutotradeLoopTick', () => {
       rejected: [],
       relVolMedian: null,
       breadth: EMPTY_BREADTH,
+      indexChangePct: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
@@ -567,6 +570,7 @@ describe('runAutotradeLoopTick', () => {
       rejected: [],
       relVolMedian: null,
       breadth: EMPTY_BREADTH,
+      indexChangePct: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
@@ -606,6 +610,7 @@ describe('runAutotradeLoopTick', () => {
       rejected: [],
       relVolMedian: null,
       breadth: EMPTY_BREADTH,
+      indexChangePct: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
@@ -645,6 +650,7 @@ describe('runAutotradeLoopTick', () => {
       rejected: [],
       relVolMedian: null,
       breadth: EMPTY_BREADTH,
+      indexChangePct: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [], skipped: [] });
@@ -674,6 +680,7 @@ describe('runAutotradeLoopTick', () => {
       rejected: [],
       relVolMedian: null,
       breadth: EMPTY_BREADTH,
+      indexChangePct: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [], skipped: [] });
@@ -703,6 +710,7 @@ describe('runAutotradeLoopTick', () => {
       rejected: [],
       relVolMedian: null,
       breadth: EMPTY_BREADTH,
+      indexChangePct: null,
       discovery: { universeCount: 1, moversCount: 35, scannedCount: 36, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [], skipped: [] });
@@ -727,6 +735,7 @@ describe('runAutotradeLoopTick', () => {
       rejected: [],
       relVolMedian: null,
       breadth: EMPTY_BREADTH,
+      indexChangePct: null,
       discovery: { universeCount: 1, moversCount: 35, scannedCount: 36, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [], skipped: [] });
@@ -752,6 +761,7 @@ describe('runAutotradeLoopTick', () => {
       rejected: [],
       relVolMedian: null,
       breadth: EMPTY_BREADTH,
+      indexChangePct: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: 'webull session expired' },
     });
     mockDecide.mockReturnValue({ signals: [], skipped: [] });
@@ -783,6 +793,7 @@ describe('runAutotradeLoopTick', () => {
       rejected: [],
       relVolMedian: null,
       breadth: EMPTY_BREADTH,
+      indexChangePct: null,
       discovery: { universeCount: 0, moversCount: 0, scannedCount: 0, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [], skipped: [] });
@@ -812,6 +823,7 @@ describe('runAutotradeLoopTick', () => {
       rejected: [],
       relVolMedian: null,
       breadth: EMPTY_BREADTH,
+      indexChangePct: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
@@ -835,6 +847,7 @@ describe('runAutotradeLoopTick', () => {
       rejected: [],
       relVolMedian: null,
       breadth: EMPTY_BREADTH,
+      indexChangePct: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
@@ -866,6 +879,7 @@ describe('runAutotradeLoopTick', () => {
       rejected: [],
       relVolMedian: null,
       breadth: EMPTY_BREADTH,
+      indexChangePct: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
@@ -903,6 +917,7 @@ describe('runAutotradeLoopTick', () => {
       rejected: [],
       relVolMedian: null,
       breadth: EMPTY_BREADTH,
+      indexChangePct: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
@@ -960,6 +975,7 @@ describe('runAutotradeLoopTick', () => {
       rejected: [],
       relVolMedian: null,
       breadth: EMPTY_BREADTH,
+      indexChangePct: null,
       discovery: { universeCount: 0, moversCount: 0, scannedCount: 0, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [], skipped: [] });
@@ -980,6 +996,7 @@ describe('runAutotradeLoopTick', () => {
       rejected: [],
       relVolMedian: null,
       breadth: EMPTY_BREADTH,
+      indexChangePct: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
@@ -1076,6 +1093,7 @@ describe('runAutotradeLoopTick', () => {
       rejected: [],
       relVolMedian: null,
       breadth: EMPTY_BREADTH,
+      indexChangePct: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     };
     mockScreen.mockResolvedValue(screenResult);
@@ -1113,6 +1131,7 @@ describe('runAutotradeLoopTick', () => {
       rejected: [],
       relVolMedian: null,
       breadth: EMPTY_BREADTH,
+      indexChangePct: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
@@ -1180,6 +1199,7 @@ describe('runAutotradeLoopTick', () => {
       rejected: [],
       relVolMedian: null,
       breadth: EMPTY_BREADTH,
+      indexChangePct: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [], skipped: [] });
@@ -1252,6 +1272,7 @@ describe('runAutotradeLoopTick', () => {
       rejected: [],
       relVolMedian: null,
       breadth: EMPTY_BREADTH,
+      indexChangePct: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [], skipped: [] });
@@ -1298,6 +1319,7 @@ describe('runAutotradeLoopTick', () => {
       rejected: [],
       relVolMedian: null,
       breadth: EMPTY_BREADTH,
+      indexChangePct: null,
       discovery: { universeCount: 0, moversCount: 0, scannedCount: 0, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [], skipped: [] });
@@ -1338,6 +1360,7 @@ describe('runAutotradeLoopTick', () => {
       rejected: [],
       relVolMedian: null,
       breadth: EMPTY_BREADTH,
+      indexChangePct: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
@@ -1371,6 +1394,7 @@ describe('runAutotradeLoopTick', () => {
       rejected: [],
       relVolMedian: null,
       breadth: EMPTY_BREADTH,
+      indexChangePct: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
@@ -1394,6 +1418,7 @@ describe('runAutotradeLoopTick', () => {
       rejected: [],
       relVolMedian: null,
       breadth: EMPTY_BREADTH,
+      indexChangePct: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
@@ -1460,6 +1485,7 @@ describe('runAutotradeLoopTick', () => {
       rejected: [],
       relVolMedian: null,
       breadth: EMPTY_BREADTH,
+      indexChangePct: null,
       discovery: { universeCount: 1, moversCount: 1, scannedCount: 2, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [signal('AAPL'), signal('GME')], skipped: [] });
@@ -1519,6 +1545,7 @@ describe('runAutotradeLoopTick', () => {
       rejected: [],
       relVolMedian: null,
       breadth: EMPTY_BREADTH,
+      indexChangePct: null,
       discovery: { universeCount: 2, moversCount: 0, scannedCount: 2, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [signal('RIOT'), signal('META')], skipped: [] });
@@ -1557,6 +1584,7 @@ describe('runAutotradeLoopTick', () => {
       rejected: [],
       relVolMedian: null,
       breadth: EMPTY_BREADTH,
+      indexChangePct: null,
       discovery: { universeCount: 2, moversCount: 0, scannedCount: 2, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [signal('RIOT'), signal('META')], skipped: [] });
@@ -1579,6 +1607,7 @@ describe('runAutotradeLoopTick', () => {
       rejected: [],
       relVolMedian: null,
       breadth: EMPTY_BREADTH,
+      indexChangePct: null,
       discovery: { universeCount: 2, moversCount: 0, scannedCount: 2, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [signal('CALM')], skipped: [] });
@@ -1607,6 +1636,7 @@ describe('runAutotradeLoopTick', () => {
       rejected: [],
       relVolMedian: null,
       breadth: EMPTY_BREADTH,
+      indexChangePct: null,
       discovery: { universeCount: 2, moversCount: 0, scannedCount: 2, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [signal('CALM'), signal('WILD')], skipped: [] });
@@ -1629,6 +1659,7 @@ describe('runAutotradeLoopTick', () => {
       rejected: [],
       relVolMedian: null,
       breadth: EMPTY_BREADTH,
+      indexChangePct: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [], skipped: [] });
@@ -1653,6 +1684,7 @@ describe('runAutotradeLoopTick', () => {
       rejected: [],
       relVolMedian: null,
       breadth: EMPTY_BREADTH,
+      indexChangePct: null,
       discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [], skipped: [] });
@@ -1680,6 +1712,7 @@ describe('runAutotradeLoopTick', () => {
       rejected: [],
       relVolMedian: null,
       breadth: EMPTY_BREADTH,
+      indexChangePct: null,
       discovery: { universeCount: 0, moversCount: 0, scannedCount: 0, moversError: null },
     });
     mockDecide.mockReturnValue({ signals: [], skipped: [] });
@@ -1755,6 +1788,7 @@ describe('runAutotradeLoopTick', () => {
         rejected: [],
         relVolMedian: null,
         breadth: EMPTY_BREADTH,
+        indexChangePct: null,
         discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
       };
     });
@@ -1784,6 +1818,7 @@ describe('runAutotradeLoopTick', () => {
         rejected: [],
         relVolMedian: null,
         breadth: EMPTY_BREADTH,
+        indexChangePct: null,
         discovery: { universeCount: 0, moversCount: 0, scannedCount: 0, moversError: null },
       };
     });
@@ -1806,6 +1841,7 @@ describe('runAutotradeLoopTick', () => {
         rejected: [],
         relVolMedian: null,
         breadth: EMPTY_BREADTH,
+        indexChangePct: null,
         discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
       });
       mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
@@ -1989,6 +2025,7 @@ describe('runAutotradeLoopTick', () => {
           rejected: [],
           relVolMedian: null,
           breadth: EMPTY_BREADTH,
+          indexChangePct: null,
           discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
         };
       });
@@ -2020,6 +2057,7 @@ describe('runAutotradeLoopTick', () => {
         rejected: [],
         relVolMedian: null,
         breadth: EMPTY_BREADTH,
+        indexChangePct: null,
         discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
       });
       mockDecide.mockReturnValue({ signals: [signal('AAPL')], skipped: [] });
@@ -2097,6 +2135,7 @@ describe('runAutotradeLoopTick', () => {
         relVolMedian: null,
         // 2026-09-23's tape: 73% of the universe below its prior close.
         breadth: { red: 365, green: 135, flat: 0, sample: 500 },
+        indexChangePct: null,
         discovery: { universeCount: 500, moversCount: 0, scannedCount: 500, moversError: null },
       });
       mockMarketChange.mockResolvedValue(-0.35);
@@ -2132,6 +2171,53 @@ describe('runAutotradeLoopTick', () => {
       await runAutotradeLoopTick();
       expect(directionRows()).toHaveLength(2);
       expect(directionRows()[1][0]).toMatchObject({ detail: { direction: 'mixed' } });
+    });
+
+    // The gate's pre-open review (2026-09-23): the index is fetched fresh after
+    // the screen, and a failed fetch read `unknown`, which refuses nothing —
+    // one rate-limited quote let a broad red day's longs through that tick.
+    // The screen's own quote of the same symbol stands in.
+    it("reads the index from the screen's own quote when its fetch fails, and says so", async () => {
+      armLive();
+      setAutotradeConfig({ liveOptionsEnabled: true, marketDirectionGateEnabled: true });
+      armScreenAndDecide();
+      const screenWith = (indexChangePct: number | null) => ({
+        generatedAt: Date.now(),
+        candidates: [candidate('AAPL', 2)],
+        excluded: [],
+        skipped: [],
+        errors: [],
+        rejected: [],
+        relVolMedian: null,
+        breadth: { red: 365, green: 135, flat: 0, sample: 500 },
+        indexChangePct,
+        discovery: { universeCount: 500, moversCount: 0, scannedCount: 500, moversError: null },
+      });
+      mockScreen.mockResolvedValue(screenWith(-0.35));
+      mockMarketChange.mockResolvedValue(null); // the fresh SPY fetch failed
+      mockLiveExecute.mockResolvedValue([]);
+      mockLiveOptionsExecute.mockResolvedValue([]);
+      const directionRows = () => mockLogEvent.mock.calls.filter((c) => c[0].action === 'market_direction_read');
+
+      await runAutotradeLoopTick();
+
+      // THE CONSUMERS: both live books are handed a RED reading, not unknown.
+      const red = expect.objectContaining({ direction: 'red', indexChangePct: -0.35 });
+      expect(mockLiveExecute.mock.calls[0][5]).toEqual(red);
+      expect(mockLiveOptionsExecute.mock.calls[0][4]).toEqual(red);
+      expect(directionRows()[0][0]).toMatchObject({ detail: { direction: 'red', indexSource: 'screen' } });
+
+      // A fresh fetch that works is still the source, and the row says so.
+      mockMarketChange.mockResolvedValue(0.3);
+      mockScreen.mockResolvedValue(screenWith(-0.35));
+      await runAutotradeLoopTick();
+      expect(directionRows()[1][0]).toMatchObject({ detail: { direction: 'mixed', indexSource: 'quote' } });
+
+      // Neither source: unknown, as before, and it refuses nothing.
+      mockMarketChange.mockResolvedValue(null);
+      mockScreen.mockResolvedValue(screenWith(null));
+      await runAutotradeLoopTick();
+      expect(mockLiveExecute.mock.calls[2][5]).toEqual(expect.objectContaining({ direction: 'unknown' }));
     });
 
     it('halts live OPTIONS entries on a banked day, the same as equity', async () => {
@@ -2190,6 +2276,7 @@ describe('runAutotradeLoopTick', () => {
           rejected: [],
           relVolMedian: null,
           breadth: EMPTY_BREADTH,
+          indexChangePct: null,
           discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
         };
       });
@@ -2240,6 +2327,7 @@ describe('startAutotradeLoop / stopAutotradeLoop', () => {
         rejected: [],
         relVolMedian: null,
         breadth: EMPTY_BREADTH,
+        indexChangePct: null,
         discovery: { universeCount: 1, moversCount: 0, scannedCount: 1, moversError: null },
       };
     });

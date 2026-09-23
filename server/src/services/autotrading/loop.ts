@@ -916,9 +916,19 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     // BOTH books against the tape, which is how the gate is measured before and
     // after it acts. Only the live executors act on it, and only with
     // marketDirectionGateEnabled; they read that flag from their own config.
+    //
+    // The index's move is fetched fresh, after the screen. When that fetch
+    // fails (getMarketChangePct turns every error into null) the screen's own
+    // quote of the same symbol, read moments earlier in this tick, stands in
+    // (2026-09-23, from the gate's pre-open review): the fetch comes straight
+    // after the tick's heaviest burst of provider calls, and a null there made
+    // the reading `unknown`, which refuses nothing — so one rate-limited quote
+    // could let a broad red day's longs through for that tick.
+    const freshIndexChangePct = await getMarketChangePct(MARKET_DIRECTION_INDEX_SYMBOL);
+    const indexFromScreen = freshIndexChangePct === null && screenResult.indexChangePct !== null;
     const marketDirection = readMarketDirection({
       indexSymbol: MARKET_DIRECTION_INDEX_SYMBOL,
-      indexChangePct: await getMarketChangePct(MARKET_DIRECTION_INDEX_SYMBOL),
+      indexChangePct: freshIndexChangePct ?? screenResult.indexChangePct,
       breadth: screenResult.breadth,
       indexPct: config.marketDirectionIndexPct,
       breadthPct: config.marketDirectionBreadthPct,
@@ -928,7 +938,13 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       logAutotradeEvent({
         stage: 'screen',
         action: MARKET_DIRECTION_ACTION,
-        detail: { ...marketDirection, gateEnabled: config.marketDirectionGateEnabled },
+        detail: {
+          ...marketDirection,
+          gateEnabled: config.marketDirectionGateEnabled,
+          // Where the index leg came from: its own fetch, or the screen's
+          // quote when that fetch failed.
+          indexSource: indexFromScreen ? 'screen' : 'quote',
+        },
         riskProfile: config.riskProfile,
       });
     }
