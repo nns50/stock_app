@@ -70,8 +70,8 @@ import {
   checkLivePerLotSecondLots,
   cancelLiveBracketExitLegs,
   checkLiveBracketProtection,
-  ORDER_DETAIL_LOOKUPS_PER_TICK,
 } from '../src/services/autotrading/liveExecute';
+import { ORDER_DETAIL_LOOKUPS_PER_TICK } from '../src/services/autotrading/orderDetailFallback';
 
 const mockGetProvider = vi.mocked(getProvider);
 const mockAccountState = vi.mocked(webullAccountState);

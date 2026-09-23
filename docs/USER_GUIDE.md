@@ -2340,6 +2340,26 @@ because the loop is the only caller that is always flat by the bell, so it is
   **`live_order_status_from_detail`** row on Recent activity marks an order settled that
   way. **`live_order_status_unresolved`** (once a day per order) marks one that neither read
   could find: check that order against the broker.
+  **Live options orders get the same direct read**, with their own two rows,
+  **`live_options_order_status_from_detail`** and **`live_options_order_status_unresolved`**.
+  Before this, a filled options close the lists missed was still closed within two cycles,
+  because the options position check closes a contract Webull no longer holds. It closed it
+  at an **estimate** from the delayed option chain, though, and labelled the exit `manual`.
+  So the real fill price and the reason the exit fired were both lost. The order check runs
+  first in each cycle, so the real fill now lands first. The estimate path remains for
+  contracts that leave the account without an app order, such as a close you make by hand
+  in Webull. Those closes are still booked at a quote, not at your fill.
+  A timed stock close or an options close first seen on a later day than it was placed
+  (after an outage, say) is booked on the day its order was placed. Both are day orders, which
+  can only fill on the day they were placed.
+  **A confirmed fill always replaces an estimate.** If the position check books an estimate
+  first and the app's own close order is later confirmed filled, the app rewrites the exit to
+  the real fill price and the reason on the order. It journals **`live_options_exit_corrected`**
+  with the before and after, and re-records that day's result on the Results calendar. It
+  acts only when exactly one filled close order covers the whole position and the recorded
+  exit disagrees with it. This repaired 2026-09-22's GOOGL call: the take-profit sold at an
+  average $2.57, but the row said $1.55 (the entry price) and $0.00. Corrected, it is +$510,
+  and that session's strategy result moves from −$382.96 to about +$127.
 
   A **Live positions** table (Dashboard tab) shows every real position the loop has actually
   placed — the exact same `positions` rows your own manual trades use on the

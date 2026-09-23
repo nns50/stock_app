@@ -76,6 +76,9 @@ export interface CloseLiveOptionsPositionInput {
   /** The short leg's filled exit premium — debit spreads only. */
   shortExitPrice?: number;
   exitReason: LiveOptionsExitReason;
+  /** When the exit happened, if not now: a close the reconcile books a day
+   *  late carries its order's date (see materializeOptionsExitFill). */
+  exitAt?: number;
 }
 
 export interface LiveOptionsPosition {
@@ -284,7 +287,31 @@ export function closeLiveOptionsPosition(id: number, input: CloseLiveOptionsPosi
        SET status = 'closed', exit_price = ?, short_exit_price = ?, exit_at = ?, exit_reason = ?, updated_at = ?
        WHERE id = ? AND status = 'open'`,
     )
-    .run(input.exitPrice, input.shortExitPrice ?? null, now, input.exitReason, now, id);
+    .run(input.exitPrice, input.shortExitPrice ?? null, input.exitAt ?? now, input.exitReason, now, id);
+  if (info.changes === 0) return null;
+  const row = db.prepare('SELECT * FROM autotrade_live_options_positions WHERE id = ?').get(id) as Row;
+  return map(row);
+}
+
+/**
+ * Replace a CLOSED position's recorded exit with a confirmed fill: the order's
+ * net price (the short leg cleared, as the reconcile books a combo) and the
+ * reason on the order row. Returns the corrected row, or null if the position
+ * is not closed. The exit TIME is left alone. Only the price and reason were
+ * estimated. See correctEstimatedOptionsCloses.
+ */
+export function correctLiveOptionsExit(
+  id: number,
+  exitPrice: number,
+  exitReason: LiveOptionsExitReason,
+): LiveOptionsPosition | null {
+  const info = db
+    .prepare(
+      `UPDATE autotrade_live_options_positions
+       SET exit_price = ?, short_exit_price = NULL, exit_reason = ?, updated_at = ?
+       WHERE id = ? AND status = 'closed'`,
+    )
+    .run(exitPrice, exitReason, Date.now(), id);
   if (info.changes === 0) return null;
   const row = db.prepare('SELECT * FROM autotrade_live_options_positions WHERE id = ?').get(id) as Row;
   return map(row);

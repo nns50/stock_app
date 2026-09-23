@@ -1,6 +1,7 @@
 import { config } from '../../config';
 import { etToday } from '../../util/marketDate';
-import { strategyDayFor } from './dailyResults';
+import { recordDailyResult, strategyDayFor } from './dailyResults';
+import { listDailyResults } from '../../db/dailyResults';
 import { dayStartEquityUsd } from './dayLossBudget';
 import { getProvider } from '../../providers';
 import { db } from '../../db';
@@ -57,6 +58,7 @@ import {
   setLiveOptionsOrderPositionId,
   listPendingLiveOptionsOrders,
   countLiveOptionsOrdersSince,
+  listFilledExitsOfClosedPositions,
   LiveOptionsOrderKind,
   LiveOptionsOrderMeta,
 } from '../../db/autotradeLiveOptionsOrders';
@@ -68,6 +70,7 @@ import {
   createLiveOptionsPosition,
   blendLiveOptionsPositionEntry,
   closeLiveOptionsPosition,
+  correctLiveOptionsExit,
   LiveOptionsPosition,
   LiveOptionsExitReason,
   getLiveOptionsPosition,
@@ -82,6 +85,7 @@ import { evaluateOptionsRiskCheck, OptionsRiskCheckResult, optionsPositionNotion
 import { journalMethodMultipliers, methodOfOptionsSignal } from './methodSizing';
 import { activeSymbolCooldowns, journalEntrySkipOncePerDay } from './symbolCooldown';
 import { claimOncePerDay } from './oncePerDayEvents';
+import { resolveUnlistedFromOrderDetail } from './orderDetailFallback';
 import { computeFinishLineFactor, finishLineScoreGate } from './finishLine';
 import {
   contractsWithinRiskBudget,
@@ -2593,6 +2597,23 @@ export async function reconcileLiveOptionsOrders(): Promise<LiveOptionsReconcile
     accountId,
     pending.map((p) => intentsById.get(p.intentId)?.idempotencyKey).filter((k): k is string => !!k),
   );
+  // THE SAME BLIND SPOT THE STOCK RECONCILE HAD (#87, 2026-09-23). An
+  // acknowledged order neither list shows used to fall to the `!found` branch
+  // below and be left alone. That cost less here than it did for stocks,
+  // because the broker sync (next in the tick) closes a vanished contract after
+  // two misses. It closes it at an ESTIMATE from the delayed chain, though, and
+  // labels it `manual`. So a filled close lost its real price and the exit
+  // reason the options ladder is judged by. This asks Order Detail first, and
+  // the reconcile runs before the sync, so the real fill lands first.
+  await resolveUnlistedFromOrderDetail(
+    'options',
+    accountId,
+    pending.flatMap((meta) => {
+      const intent = intentsById.get(meta.intentId);
+      return intent ? [{ intent, symbol: meta.symbol, role: meta.role, riskProfile: meta.riskProfile }] : [];
+    }),
+    statuses,
+  );
   const outcomes: LiveOptionsReconcileOutcome[] = [];
   for (const meta of pending) {
     const intent = intentsById.get(meta.intentId);
@@ -2731,6 +2752,9 @@ export async function reconcileLiveOptionsOrders(): Promise<LiveOptionsReconcile
 
     outcomes.push({ intentId: intent.id, symbol: meta.symbol, changed: acked });
   }
+  // Last, and every tick: a confirmed fill never loses to an estimate. See
+  // correctEstimatedOptionsCloses.
+  correctEstimatedOptionsCloses();
   return outcomes;
 }
 
@@ -2888,6 +2912,91 @@ function materializeOptionsEntryFill(
  *  header comment) -- stored as exitPrice with shortExitPrice left at its
  *  default (null), same "whole spread as one number" convention
  *  materializeOptionsEntryFill() uses for entryPrice/shortEntryPrice. */
+/** How far back the correction looks for a closed position. A week covers a
+ *  weekend and a late-arriving order status with room to spare, and keeps the
+ *  per-tick query to a handful of rows. */
+const ESTIMATE_CORRECTION_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * A CONFIRMED FILL NEVER LOSES TO AN ESTIMATE (2026-09-23).
+ *
+ * The broker sync closes a contract Webull no longer holds on its second miss,
+ * at an ESTIMATE from the delayed chain, labelled `manual`. When the app's own
+ * exit order is what emptied the account, the reconcile later sees that order
+ * FILLED, and `closeLiveOptionsPosition` returns null because the row is
+ * already closed. The real fill was then marked materialized and discarded,
+ * and the estimate stood. GOOGL #13 on 2026-09-22 did exactly this. The
+ * take-profit sold 5 at an average $2.57 (intent 35962, $12.85 materialized).
+ * The sync had booked $1.55, the entry price, so the trade read $0.00 instead
+ * of +$510, and the day read red. The Order Detail lookup makes this race
+ * rarer. This makes it harmless, and it repairs the rows it already cost.
+ *
+ * Conservative on purpose. It acts only when exactly one filled exit order
+ * links to the position and that order's materialized quantity is the whole
+ * closed quantity, so a single order speaks for the whole exit. It then acts
+ * only when the recorded exit disagrees, in price by half a cent or more, a
+ * leftover short-leg estimate, or the reason. A position the reconcile closed
+ * itself already agrees and is never rewritten. A hand close in Webull has no
+ * app order, and its estimate stays.
+ *
+ * A corrected close on a past date re-records that day's daily result, if one
+ * exists, so the calendar and the review read the confirmed number. Today's
+ * row is re-recorded by the loop after the close anyway.
+ */
+export function correctEstimatedOptionsCloses(now: number = Date.now()): number {
+  let corrected = 0;
+  for (const row of listFilledExitsOfClosedPositions(now - ESTIMATE_CORRECTION_LOOKBACK_MS)) {
+    if (row.filledExitsForPosition !== 1) continue;
+    const pos = getLiveOptionsPosition(row.positionId);
+    if (!pos || pos.status !== 'closed' || pos.exitPrice === null || pos.exitAt === null) continue;
+    if (row.materializedQty !== pos.quantity) continue;
+    const fill = Math.round((row.materializedNotional / row.materializedQty) * 10_000) / 10_000;
+    const reason = row.exitReason ?? 'time_exit';
+    const agrees = Math.abs(pos.exitPrice - fill) < 0.005 && pos.shortExitPrice === null && pos.exitReason === reason;
+    if (agrees) continue;
+    const pnlBefore = liveOptionsPnl(pos, pos.exitPrice);
+    const fixed = correctLiveOptionsExit(pos.id, fill, reason);
+    if (!fixed) continue;
+    corrected += 1;
+    logAutotradeEvent({
+      symbol: pos.symbol,
+      stage: 'execution',
+      action: 'live_options_exit_corrected',
+      detail: {
+        positionId: pos.id,
+        intentId: row.intentId,
+        fromPrice: pos.exitPrice,
+        fromShortPrice: pos.shortExitPrice,
+        toPrice: fill,
+        fromReason: pos.exitReason,
+        toReason: reason,
+        pnlBefore: Math.round(pnlBefore * 100) / 100,
+        pnlAfter: Math.round(liveOptionsPnl(fixed, fill) * 100) / 100,
+      },
+      riskProfile: pos.riskProfile,
+    });
+    const day = etToday(pos.exitAt);
+    if (day !== etToday(now) && listDailyResults(day, day).length > 0) recordDailyResult(day, now);
+  }
+  return corrected;
+}
+
+/**
+ * When a filled close happened, as far as the reconcile can say: now, unless
+ * it is booking the fill on a later ET date than the order was placed.
+ *
+ * Every live options order is a DAY order (`buildWebullOptionOrder`), and a
+ * DAY order can fill only on the date it was placed. So a fill first seen
+ * after midnight, from Order Detail or after an outage, happened on the
+ * placement date, and booking it "now" would move its P&L into the next
+ * session's day, where the halt, the goal and the daily results all read it.
+ * The placement moment is used then: the right date, and a lower bound on the
+ * time. Same reasoning as the stock time exit's `exitDate` (2026-09-23, #637).
+ */
+export function optionsExitAt(intent: OrderIntentRecord, now: number = Date.now()): number {
+  return etToday(intent.createdAt) === etToday(now) ? now : intent.createdAt;
+}
+
 function materializeOptionsExitFill(
   intent: OrderIntentRecord,
   meta: LiveOptionsOrderMeta,
@@ -2929,6 +3038,7 @@ function materializeOptionsExitFill(
     // stored reason -- time_exit is the only trigger that existed back then,
     // so it's the correct fallback, not a guess.
     exitReason: meta.exitReason ?? 'time_exit',
+    exitAt: optionsExitAt(intent),
   });
   if (!closed) return undefined;
   logAutotradeEvent({

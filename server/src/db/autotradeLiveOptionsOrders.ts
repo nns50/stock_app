@@ -278,6 +278,45 @@ export function listPendingLiveOptionsOrders(): LiveOptionsOrderMeta[] {
   return rows.map(mapRow);
 }
 
+/** A FILLED exit order and the closed position it belongs to, for
+ *  correctEstimatedOptionsCloses. */
+export interface FilledExitOfClosedPosition {
+  intentId: number;
+  positionId: number;
+  /** The reason stored on the ORDER row, the rule that placed it. */
+  exitReason: LiveOptionsExitReason | null;
+  materializedQty: number;
+  materializedNotional: number;
+  /** How many filled exit orders link to this position. More than one means
+   *  the orders cannot each speak for the whole exit. */
+  filledExitsForPosition: number;
+}
+
+/**
+ * Every filled exit order whose position is closed, for positions closed at
+ * or after `since`. A position the reconcile closed normally carries its
+ * order's fill. This lists the candidates, and the caller checks whether the
+ * recorded exit agrees. See correctEstimatedOptionsCloses.
+ */
+export function listFilledExitsOfClosedPositions(since: number): FilledExitOfClosedPosition[] {
+  const rows = db
+    .prepare(
+      `SELECT alo.intent_id AS intentId, alo.position_id AS positionId, alo.exit_reason AS exitReason,
+              oi.materialized_qty AS materializedQty, oi.materialized_notional AS materializedNotional,
+              (SELECT COUNT(*) FROM autotrade_live_options_orders alo2
+                 JOIN order_intents oi2 ON oi2.id = alo2.intent_id
+                WHERE alo2.role = 'exit' AND alo2.position_id = alo.position_id
+                  AND oi2.state = 'filled') AS filledExitsForPosition
+         FROM autotrade_live_options_orders alo
+         JOIN order_intents oi ON oi.id = alo.intent_id
+         JOIN autotrade_live_options_positions p ON p.id = alo.position_id
+        WHERE alo.role = 'exit' AND oi.state = 'filled' AND oi.materialized_qty > 0
+          AND p.status = 'closed' AND p.exit_at >= ?`,
+    )
+    .all(since) as FilledExitOfClosedPosition[];
+  return rows;
+}
+
 /** Aggregate risk $ and count of autotrade options ENTRY orders that are
  *  PLACED but not yet materialized into a live options position (position_id
  *  IS NULL, intent not cancelled/rejected/expired). The counterpart to

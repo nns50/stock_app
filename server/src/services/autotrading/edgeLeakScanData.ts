@@ -116,6 +116,25 @@ export const EXECUTION_ACTIONS: {
   // journalActionsReachability.test.ts.
   { action: 'live_order_outcome_unknown', label: 'A stock order ended with an unknown outcome' },
   { action: 'live_options_order_outcome_unknown', label: 'An options order ended with an unknown outcome' },
+  // An order the broker accepted that neither list nor a direct Order Detail
+  // read can find (orderDetailFallback.ts): SHOP's 2026-09-22 state, which
+  // held a filled close open in the ledger.
+  {
+    action: 'live_order_status_unresolved',
+    label: 'A stock order the broker accepted could not be found by any read',
+  },
+  {
+    action: 'live_options_order_status_unresolved',
+    label: 'An options order the broker accepted could not be found by any read',
+  },
+  // The positions read saw a close before the order read did, and the sync
+  // booked an estimate that a confirmed fill later replaced
+  // (correctEstimatedOptionsCloses). The record is right after it; the finding
+  // is that the race happened at all.
+  {
+    action: 'live_options_exit_corrected',
+    label: 'A confirmed options fill replaced a broker-sync estimate',
+  },
   // Two RISK CONTROLS that fail open (2026-09-12). Neither is a crash and
   // neither stops the book — that is the point: on a provider or broker
   // outage the cap simply admits more than it should, and until these rows

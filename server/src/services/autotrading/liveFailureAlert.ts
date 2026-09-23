@@ -133,6 +133,13 @@ export const AMBIGUITY_ACTIONS = [
   // nothing else in the app would ever reveal this. Journaled once per position
   // per ET day, so it re-raises daily while the position is still naked.
   'live_position_unprotected',
+  // An order the broker ACCEPTED that neither order list shows and that a
+  // direct Order Detail read cannot find either (orderDetailFallback.ts). This
+  // is the state that held SHOP's filled close open in the ledger on
+  // 2026-09-22, holding a slot with its gain unbooked. Journaled once per order
+  // per ET day, so it re-raises daily while it stays unresolved.
+  'live_order_status_unresolved',
+  'live_options_order_status_unresolved',
 ];
 /** Our own "we alerted about ambiguity" marker — same restart-safe throttle. */
 const AMBIGUITY_ALERT_ACTION = 'live_ambiguity_alerted';
@@ -250,6 +257,10 @@ const AMBIGUITY_SUMMARY: Record<string, string> = {
   live_options_expired_needs_review:
     'an options position expired in the money or undeterminable — it needs your broker statement',
   live_position_unprotected: 'a live position has NO resting stop at the broker despite being opened with one',
+  live_order_status_unresolved:
+    'an order the broker accepted is in neither order list and a direct read cannot find it — check it at the broker',
+  live_options_order_status_unresolved:
+    'an options order the broker accepted is in neither order list and a direct read cannot find it — check it at the broker',
 };
 
 /**
