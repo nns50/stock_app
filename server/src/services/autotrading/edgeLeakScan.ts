@@ -86,6 +86,10 @@ export interface LeakTrade {
   /** From the `entry_extension_shadow` journal row, when one was matched. */
   vwapExtPct: number | null;
   pctOfRange: number | null;
+  /** Dollars per share between the entry and the INITIAL stop (2026-09-23):
+   *  the width one fill's slippage is measured against. Null for an option,
+   *  whose stop is on premium, and for a row with no stop. */
+  stopWidthUsd: number | null;
 }
 
 // --- the bar ---------------------------------------------------------------
@@ -605,6 +609,31 @@ export const DIMENSIONS: Dimension[] = [
     label: 'Position size (units)',
     bucketOf: (t) =>
       t.assetKind === 'options' ? null : band(t.quantity, [5, 20, 100], ['<5', '5-19', '20-99', '100+']),
+  },
+  // STOP WIDTH, in dollars per share (2026-09-23). A stop fills a few cents
+  // through its price whatever the stock, so the narrower it is, the more of R
+  // one fill takes. Full-loss live stops on names under $20 filled 0.13-0.18R
+  // through (IRD, USDE twice, TNON), and the nine live trades with a stop under
+  // 30 cents read -0.32R where paper's 37 read +0.03R. Nine trades is an
+  // anecdote; this cut is how the scan says when it stops being one.
+  {
+    id: 'stopWidth',
+    label: 'Stop width per share',
+    bucketOf: (t) =>
+      t.stopWidthUsd === null ? null : band(t.stopWidthUsd, [0.3, 0.6, 2], ['<$0.30', '$0.30-0.60', '$0.60-2', '$2+']),
+    lever: (bucket) =>
+      bucket === '<$0.30'
+        ? {
+            kind: 'code',
+            field: null,
+            value: null,
+            direction: 'safe',
+            detail:
+              'A live-only floor on the stop width in cents has to be BUILT before it can be set: refuse, or ' +
+              'widen and size down, a live entry whose stop is too narrow for one fill’s slippage. minPrice is ' +
+              'not the lever, because the screener it filters feeds the paper control too.',
+          }
+        : null,
   },
 ];
 

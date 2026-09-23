@@ -2030,8 +2030,8 @@ book" read differently.
 
 **The catalog (v1).** Round within symbol-day · entry half-hour and the after-13:00
 aggregate · score band · VWAP extension · % of session range · exit reason · hold time ·
-symbol (n ≥ 5) · sector · weekday · ML regime · asset · position size. Plus three
-non-behavioural groups: the **day level** (goal reached on N of M active sessions, the
+symbol (n ≥ 5) · sector · weekday · ML regime · asset · position size · stop width per
+share. Plus three non-behavioural groups: the **day level** (goal reached on N of M active sessions, the
 1R comparison, the red-day decomposition), the **attribution** (paper-versus-live on the
 same decision, and why the live book skipped what paper took), and **findings** —
 execution occurrences and configuration mismatches, where any occurrence is one. The
@@ -2052,6 +2052,17 @@ size. An estimate the correction had to leave in the record is a finding of its 
 (`live_exit_correction_skipped`, split by cause), and so is a bracket still showing a
 working order at the broker a day after its shares left. A skip that a later pass overcame
 (the same exit corrected afterwards) stops counting.
+
+**Stop width per share (2026-09-23)** is the one cut a human found first. A stop fills a
+few cents through its price whatever the stock, so the narrower it is, the more of R one
+fill takes. Full-loss live stops on names under $20 filled 0.13–0.18R through (IRD,
+USDE twice, TNON), while names over $100 slipped almost nothing. The nine live trades
+with a stop under 30 cents read −0.32R where paper's 37 read +0.03R. Nine trades is below
+even the watch bar, so the cut is there to say when it stops being an anecdote. When the
+narrow band loses live and not on paper, the bar calls it a watch, and its lever is
+**code**: a live-only floor on the stop width in cents, which refuses, or widens and
+sizes down, an entry whose stop is too narrow for one fill. `minPrice` is not the lever,
+because the screener it filters feeds the paper control too.
 
 One configuration finding is a standing re-fit rather than a mismatch (2026-09-19). The
 live score floor was raised from 72 to 81 when pace scoring went on, as the pace-scored

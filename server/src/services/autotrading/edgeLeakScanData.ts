@@ -1,5 +1,5 @@
 import { listPositions, Position } from '../../db/positions';
-import { realizedPnlOf } from '../pnl';
+import { initialRiskOf, realizedPnlOf } from '../pnl';
 import { listLiveOptionsPositions, liveOptionsPnl, LiveOptionsPosition } from '../../db/autotradeLiveOptionsPositions';
 import { listPaperPositions, paperRealizedPnl, PaperPosition } from '../../db/autotradePaperPositions';
 import { listOptionsPaperPositions, OptionsPaperPosition } from '../../db/autotradeOptionsPaperPositions';
@@ -405,6 +405,23 @@ function extensionKey(book: 'live' | 'paper', symbol: string, etDate: string, mi
 /** Attributes for one collector id, before the round number is assigned. */
 type PartialLeakTrade = Omit<LeakTrade, 'round' | 'r' | 'entryAt' | 'exitAt'>;
 
+/** Dollars per share between a live position's entry and the stop its R is
+ *  measured from. Derived from initialRiskOf, the R denominator itself, so the
+ *  width a cut reads and the risk its R divides by cannot disagree. */
+function liveStopWidthUsd(p: Position): number | null {
+  const risk = initialRiskOf(p);
+  const units = p.quantity * p.multiplier;
+  return risk === null || !(units > 0) ? null : risk / units;
+}
+
+/** The paper twin: the entry against the stop the position OPENED with. Not
+ *  riskAmount / quantity, which is the sizing budget, and a quantity a
+ *  scale-out has since reduced. */
+function paperStopWidthUsd(p: PaperPosition): number | null {
+  const width = Math.abs(p.entryPrice - (p.initialStopPrice ?? p.stopPrice));
+  return width > 0 ? width : null;
+}
+
 function attributesForLiveBook(
   closed: Position[],
   liveOptionsClosed: LiveOptionsPosition[],
@@ -436,6 +453,7 @@ function attributesForLiveBook(
       weekday: weekdayOf(etDate),
       vwapExtPct: ext?.vwapExtPct ?? null,
       pctOfRange: ext?.pctOfRange ?? null,
+      stopWidthUsd: liveStopWidthUsd(p),
     });
   }
   for (const p of liveOptionsClosed) {
@@ -461,6 +479,9 @@ function attributesForLiveBook(
       // than an "unknown" bucket the dimension would then average.
       vwapExtPct: null,
       pctOfRange: null,
+      // An option's stop is on premium; a width in dollars per share means
+      // nothing for it.
+      stopWidthUsd: null,
     });
   }
   return out;
@@ -500,6 +521,7 @@ function attributesForPaperBook(
       // stays null for the history behind it.
       vwapExtPct: ext?.vwapExtPct ?? null,
       pctOfRange: ext?.pctOfRange ?? null,
+      stopWidthUsd: paperStopWidthUsd(p),
     });
   }
   for (const p of optionsPaper) {
@@ -522,6 +544,7 @@ function attributesForPaperBook(
       weekday: weekdayOf(etDate),
       vwapExtPct: null,
       pctOfRange: null,
+      stopWidthUsd: null,
     });
   }
   return out;
