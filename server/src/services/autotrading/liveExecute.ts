@@ -146,6 +146,7 @@ import {
 import { listAutotradeEvents, logAutotradeEvent } from '../../db/autotradeEvents';
 import { getProvider } from '../../providers';
 import { dispatchAutotradeNotification } from './notify';
+import { UnprotectedReportState, unprotectedReportState } from './unprotectedReport';
 
 // ---------------------------------------------------------------------------
 // The LIVE counterpart to execute.ts's paper execution (Phase 8 — see
@@ -3382,7 +3383,13 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
     // has already returned above, so this costs one account read per position
     // actually about to page, not one per position per tick.
     const held = await webullAccountState(accountId, symbol);
-    const heldQty = held.ok ? (held.state?.currentPositionQty ?? null) : null;
+    // A holdings read that FAILED does not come back as a failure: the balance
+    // half answered, so the result is ok with a quantity of 0 and
+    // positionsUnavailable set (accountState.ts). Taken at face value that is
+    // "closed, page nobody", the one answer this alarm must never give about a
+    // read it did not get. It is unknown, which acts on nothing and pages as
+    // unconfirmed below. (2026-09-23, from the #637 review.)
+    const heldQty = held.ok && !held.positionsUnavailable ? (held.state?.currentPositionQty ?? null) : null;
     if (heldQty === 0) {
       // Not naked — closed, and awaiting the reconcile. Say so and page nobody.
       outcomes.push({
@@ -3653,16 +3660,31 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
     // it could not classify, a take-profit it could not cancel) or it failed,
     // and the position is not through its stop (or the close failed too). NOW
     // page a human.
-    // Once per position per ET day: this condition persists until a human acts,
-    // so journaling every tick would bury it, and journaling once ever would let
-    // it go quiet while the position is still naked.
-    if (!alreadyReportedUnprotectedToday(pos.id)) {
+    // Once per position per STATE per ET day: this condition persists until a
+    // human acts, so journaling every tick would bury it, and journaling once
+    // ever would let it go quiet while the position is still naked.
+    //
+    // Per state, not per position (2026-09-23, from the #637 review). The
+    // row is the page (liveFailureAlert's AMBIGUITY_ACTIONS), and a kill
+    // switch now writes one that says "this is expected". Deduplicated by
+    // position alone, that row used the day's only page: release the switch,
+    // have the re-arm refused, and the position sat naked with nothing sent
+    // until the next ET day. A new state is new information, so it writes.
+    const reportState = unprotectedReportState({
+      heldByKillSwitch: outcome.heldByKillSwitch ?? false,
+      exitWorking: outcome.exitWorking ?? false,
+      heldAtBroker: heldQty,
+    });
+    if (!alreadyReportedUnprotectedToday(pos.id, reportState)) {
       logAutotradeEvent({
         symbol,
         stage: 'execution',
         action: 'live_position_unprotected',
         detail: {
           positionId: pos.id,
+          // Which of the four states wrote this row: the dedup key above, and
+          // the leak scan's split of this action (edgeLeakScanData.ts).
+          state: reportState,
           quantity: pos.remainingQuantity,
           recordedStop: pos.stopPrice,
           restingExitLegs: restingLegs.length,
@@ -3737,12 +3759,13 @@ function alreadyObservedGroupsToday(positionId: number): boolean {
   });
 }
 
-function alreadyReportedUnprotectedToday(positionId: number): boolean {
+function alreadyReportedUnprotectedToday(positionId: number, state: UnprotectedReportState): boolean {
   const today = etDateStr();
   return listAutotradeEvents({ stage: 'execution', actions: ['live_position_unprotected'], limit: 200 }).some((e) => {
     if (etDateStr(e.createdAt) !== today) return false;
     try {
-      return (JSON.parse(e.detail ?? '{}') as { positionId?: unknown }).positionId === positionId;
+      const detail = JSON.parse(e.detail ?? '{}') as Record<string, unknown>;
+      return detail.positionId === positionId && unprotectedReportState(detail) === state;
     } catch {
       return false;
     }

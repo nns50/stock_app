@@ -25,6 +25,7 @@ import { MARKETABLE_LIMIT_BUFFER_PCT } from './marketableLimit';
 import { entryDriftPct } from './entryRisk';
 import { getLastReentryShadowRecord } from '../../db/reentryShadowRecords';
 import { reentryShadowEvidenceOf } from './reentryShadowRecordData';
+import type { UnprotectedReportState } from './unprotectedReport';
 import {
   BatchRefusal,
   CollectedLeakBook,
@@ -109,7 +110,23 @@ export const EXECUTION_ACTIONS: {
   { action: 'live_options_expired_worthless', label: 'An options position expired worthless' },
   { action: 'live_time_exit_failed', label: 'A timed stock exit failed' },
   { action: 'live_time_exit_blocked', label: 'A timed stock exit was blocked by a guardrail' },
-  { action: 'live_position_unprotected', label: 'A live position had no resting stop' },
+  {
+    action: 'live_position_unprotected',
+    label: 'A live position had no resting stop',
+    // Split by the state the sweep wrote it in (2026-09-23), the same key it
+    // deduplicates its pages on. A kill-switch row is the operator trading
+    // the position by hand, which the sweep reports and the reader should not
+    // take for a stop that failed. A row written before that date names no
+    // state and counts under the plain label.
+    splitOn: 'state',
+    labelFor: {
+      kill_switch:
+        'A live position had no resting stop while a kill switch held the app (expected when trading by hand)',
+      exit_working: "A live position had no resting stop while the app's own close was working",
+      unconfirmed: 'A live position showed no resting stop and the holdings read failed, so it was not confirmed held',
+      naked: 'A live position was confirmed held with no resting stop, and the automatic repair did not save it',
+    } satisfies Record<UnprotectedReportState, string>,
+  },
   { action: 'live_bracket_rearmed', label: 'A missing protective bracket had to be re-armed' },
   { action: 'live_stop_adjust_blocked', label: 'A stop ratchet could not find its resting leg' },
   { action: 'live_scale_out_blocked', label: 'A scale-out was refused by the broker' },

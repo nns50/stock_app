@@ -2564,7 +2564,9 @@ because the loop is the only caller that is always flat by the bell, so it is
   stop that was never accepted. Zero held means the position closed and the alert is skipped;
   any shares still held with no stop under them is the real thing and pages. If that account
   read fails the alert still fires, but says the held count is unconfirmed rather than claiming
-  it. Since 2026-09-12 it also **re-arms**: a position it has *confirmed* naked (shares held,
+  it. That includes a read where the balance answers and the holdings do not: until
+  **2026-09-23** that case read as zero held, so a naked position was reported as closed and
+  nobody was paged for as long as the holdings call kept failing. Since 2026-09-12 it also **re-arms**: a position it has *confirmed* naked (shares held,
   no resting stop) gets a protective bracket, a sell take-profit and a sell stop for a long,
   placed automatically from the stop and target already recorded against it, and only an
   unconfirmed, failed or unanswered re-arm still pages you. (Until **2026-09-23** that re-arm
@@ -2575,7 +2577,12 @@ because the loop is the only caller that is always flat by the bell, so it is
   two orders against one position sell it twice:
   - an **unanswered** placement is never retried, because the orders may well be resting;
   - while a **kill switch** is engaged, nothing is placed or cancelled. The position is still
-    reported, marked as held by the kill switch;
+    reported, marked as held by the kill switch. The alert goes out once per position per day
+    **for each state it finds**: held by a kill switch, a close of the app's already working,
+    holdings unconfirmed, or confirmed naked. So if the position is still naked when you
+    release the switch and the re-arm fails, that pages you even though the halt's report
+    went out earlier. (Until **2026-09-23** it went out once per position per day, whatever it
+    said, and the halt's "this is expected" report used up the day's alert.);
   - a position whose **close is already working** is left to that close;
   - if the **take-profit is still working and only the stop is gone**, the take-profit is
     cancelled and both legs are re-armed together on the next cycle

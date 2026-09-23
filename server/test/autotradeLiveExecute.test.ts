@@ -59,7 +59,7 @@ import {
 import { setTradingConfig } from '../src/db/trading';
 import { etDateTimeToMs, etToday } from '../src/util/marketDate';
 import { saveDailyBaseline } from '../src/db/dailyBaseline';
-import { listAutotradeEvents } from '../src/db/autotradeEvents';
+import { listAutotradeEvents, logAutotradeEvent } from '../src/db/autotradeEvents';
 import { listPositions, createPosition, addExit } from '../src/db/positions';
 import * as positionsDb from '../src/db/positions';
 import {
@@ -3060,6 +3060,100 @@ describe('adoptOrphanedLivePositions', () => {
 
     expect(webullPlaceStandaloneBracket).toHaveBeenCalledTimes(1);
     expect(listAutotradeEvents({ stage: 'execution', actions: ['live_bracket_rearmed'] })).toHaveLength(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // ONE PAGE PER STATE, NOT PER POSITION (2026-09-23, from the #637 review).
+  //
+  // The unprotected row IS the page (liveFailureAlert's AMBIGUITY_ACTIONS), and
+  // it was deduplicated per position per ET day whatever it said. A kill switch
+  // now writes one reading "this is expected", so the halt used up the day's
+  // page: release the switch, have the re-arm refused, and nothing was written
+  // or sent while the position sat naked until the next ET day.
+  // -------------------------------------------------------------------------
+  const unprotectedStates = () =>
+    unprotectedEvents()
+      .map((e) => JSON.parse(e.detail ?? '{}') as { state?: string })
+      .map((d) => d.state)
+      .sort();
+
+  it('a kill-switch report does not use up the page for the naked state after release', async () => {
+    await agedProtectionCandidate('AAPL', 10); // stop 95, target 110
+    vi.mocked(listWebullOpenOrders).mockResolvedValue({ ok: true, orders: [] });
+    // Not through the stop, so a refused re-arm pages rather than closes.
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    setAutotradeConfig({ killSwitch: true });
+    await checkLiveBracketProtection();
+    expect(unprotectedStates()).toEqual(['kill_switch']);
+
+    setAutotradeConfig({ killSwitch: false });
+    vi.mocked(webullPlaceStandaloneBracket).mockResolvedValue({ ok: false, error: 'Broker refused the bracket' });
+    await checkLiveBracketProtection();
+
+    expect(webullPlaceStandaloneBracket).toHaveBeenCalledTimes(1);
+    expect(unprotectedStates()).toEqual(['kill_switch', 'naked']);
+    const naked = unprotectedEvents()
+      .map((e) => JSON.parse(e.detail ?? '{}') as Record<string, unknown>)
+      .find((d) => d.state === 'naked');
+    expect(naked).toMatchObject({ heldByKillSwitch: false, rearmOutcome: 'Broker refused the bracket' });
+    expect(String(naked?.reason)).toMatch(/automatic re-arm failed \(Broker refused the bracket\)/);
+
+    // The same state again the same day is still one row: the dedup holds per state.
+    await checkLiveBracketProtection();
+    expect(unprotectedStates()).toEqual(['kill_switch', 'naked']);
+  });
+
+  it('reads a row written before the state field existed by the fields it does carry', async () => {
+    // Rows journaled between #637's deploy and this one name no state. Read by
+    // position alone they would still suppress every later state; read by
+    // their heldByKillSwitch flag they suppress only their own.
+    const pos = await agedProtectionCandidate('AAPL', 10);
+    logAutotradeEvent({
+      symbol: 'AAPL',
+      stage: 'execution',
+      action: 'live_position_unprotected',
+      detail: { positionId: pos.id, heldAtBroker: 10, heldByKillSwitch: true, exitWorking: false },
+    });
+    vi.mocked(listWebullOpenOrders).mockResolvedValue({ ok: true, orders: [] });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    setAutotradeConfig({ killSwitch: true });
+    await checkLiveBracketProtection();
+    expect(unprotectedEvents()).toHaveLength(1); // the legacy row already covers the halt
+
+    setAutotradeConfig({ killSwitch: false });
+    vi.mocked(webullPlaceStandaloneBracket).mockResolvedValue({ ok: false, error: 'Broker refused the bracket' });
+    await checkLiveBracketProtection();
+    expect(unprotectedEvents()).toHaveLength(2);
+    expect(unprotectedStates()).toContain('naked');
+  });
+
+  it('a FAILED holdings read is unconfirmed, not closed: it pages and acts on nothing', async () => {
+    // accountState returns ok with a quantity of 0 when the balance answered and
+    // the positions call did not, flagging positionsUnavailable. Read at face
+    // value that was "the position is closed, not unprotected", so a naked
+    // position went unreported for as long as the positions call kept failing.
+    await agedProtectionCandidate('AAPL', 0);
+    mockAccountState.mockResolvedValue({
+      ...okAccountState,
+      positionsUnavailable: true,
+      state: { ...okAccountState.state, currentPositionQty: 0 },
+    } as Awaited<ReturnType<typeof webullAccountState>>);
+    vi.mocked(listWebullOpenOrders).mockResolvedValue({ ok: true, orders: [] });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 94 }) as ReturnType<typeof getProvider>);
+    armedForClose();
+
+    const outcomes = await checkLiveBracketProtection();
+
+    expect(outcomes[0]).toMatchObject({ protectedAtBroker: false, heldAtBroker: null });
+    expect(outcomes[0].unknown).toBeUndefined();
+    // Unknown holdings never place, cancel or close, even with the price through the stop.
+    expect(webullPlaceStandaloneBracket).not.toHaveBeenCalled();
+    expect(webullCancelOrder).not.toHaveBeenCalled();
+    expect(closeOrders()).toHaveLength(0);
+    expect(unprotectedStates()).toEqual(['unconfirmed']);
+    const detail = JSON.parse(unprotectedEvents()[0].detail ?? '{}') as Record<string, unknown>;
+    expect(detail.heldAtBroker).toBeNull();
+    expect(String(detail.reason)).toMatch(/account read FAILED, so it is NOT confirmed/);
   });
 
   it('still pages when the close itself is rejected — the position really is naked', async () => {
