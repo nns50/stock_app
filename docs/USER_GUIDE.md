@@ -3266,19 +3266,25 @@ unprotected in several places. Each of these is now fixed, and most also protect
 - **An entry already through its stop is refused.** The quote at placement is checked
   against the stop, not only the limit.
 - **The loop's own closes never buy or sell more than the broker holds.** A time exit or
-  a close through the stop is capped at the shares actually held, and refused when there
-  are none (the shares are gone and the reconcile will book the fill). That rule used to
-  come from the naked-short guardrail, which switching shorts on turns off. A close you
-  place yourself from the Positions page is unchanged: it still orders the position's
-  remaining shares, and is still checked by the manual guardrails.
+  a close through the stop is refused when the broker holds fewer shares than it would
+  order: none, only part of them, or the name the other way round. The next check asks
+  again, and the position keeps its bracket meanwhile. That rule used to come from the
+  naked-short guardrail, which switching shorts on turns off. The close does not sell
+  just the shares that are left. Those shares could be your own lot in the same name,
+  held after the loop's shares were gone. A close you place yourself from the Positions
+  page is unchanged: it still orders the position's remaining shares, and is still
+  checked by the manual guardrails.
 - **A short refused by the broker** (hard to borrow, no locate, the short-sale rule) is
-  not sent again that day.
+  not sent again that day. A refusal for buying power does not count: the app already
+  learns a smaller size from it.
 - **A short's fills book with the right sign.** Adoption only matches a holding on the
   order's own side, and the exit correction reads a short's buy-to-cover.
 
-Every refusal writes `live_entry_guard_refused` once per symbol and guard per day, with the
-guard's name (`through_stop`, `opposite_holding`, `holding_unknown`,
-`short_refused_today`), and the attribution files paper entries it kept out under it.
+Every refusal writes `live_entry_guard_refused` once per symbol per day, naming the first
+guard that fired (`through_stop`, `opposite_holding`, `holding_unknown`,
+`short_refused_today`). The row has the same shape as every other declined live entry, so
+the declined-entry replay can score it as the long or short it was, and the attribution
+files the paper entries it kept out under it.
 Two things remain before shorts should be switched on. Nobody has yet seen how Webull
 reports a stock short in its positions, which a one-share test short and
 `npm run capture:broker` would settle. And the shadow replay behind the rule reads high:

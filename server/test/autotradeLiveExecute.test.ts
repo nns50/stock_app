@@ -61,6 +61,7 @@ import {
 import { setTradingConfig } from '../src/db/trading';
 import { etDateTimeToMs, etToday } from '../src/util/marketDate';
 import { shortRefusedReason } from '../src/services/autotrading/refusedShorts';
+import { parseDeclinedEntry } from '../src/services/autotrading/declinedEntry';
 import { saveDailyBaseline } from '../src/db/dailyBaseline';
 import { listAutotradeEvents, logAutotradeEvent } from '../src/db/autotradeEvents';
 import { listPositions, createPosition, addExit } from '../src/db/positions';
@@ -704,12 +705,21 @@ describe('attemptLiveEntry', () => {
     expect(first.reason).toMatch(/through_stop/);
     expect(second.ok).toBe(false);
     expect(mockPlaceOrder).not.toHaveBeenCalled();
+    // The declined-entry shape every refusal writes (journalDeclinedEntry), so
+    // the replay can score it: the lean, not the order side, and the floor.
     expect(guardRows()).toEqual([
-      expect.objectContaining({ guard: 'through_stop', side: 'buy', last: 94.9, stop: 95 }),
+      expect.objectContaining({
+        guard: 'through_stop',
+        side: 'long',
+        last: 94.9,
+        stop: 95,
+        liveMinSignalScore: liveConfig().liveMinSignalScore,
+        liveEligible: expect.any(Boolean),
+      }),
     ]);
   });
 
-  it('refuses a short whose quote is already at or above its stop', async () => {
+  it('refuses a short whose quote is already at or above its stop, and its row replays as a SHORT', async () => {
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 105 }) as ReturnType<typeof getProvider>);
     mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
 
@@ -717,6 +727,10 @@ describe('attemptLiveEntry', () => {
 
     expect(r.reason).toMatch(/through_stop/);
     expect(mockPlaceOrder).not.toHaveBeenCalled();
+    // THE CONSUMER: the declined-entry replay reads anything but 'short' as a
+    // long, and the first version of this row wrote the order side, 'sell'.
+    const [row] = listAutotradeEvents({ stage: 'execution', actions: ['live_entry_guard_refused'] });
+    expect(parseDeclinedEntry(row)?.side).toBe('short');
   });
 
   it('never sends a short against shares the broker holds LONG — it would sell them as a plain SELL', async () => {
@@ -801,6 +815,8 @@ describe('attemptLiveEntry', () => {
     expect(refused.reason).toMatch(/Broker rejected/);
     expect(again.reason).toMatch(/short_refused_today/);
     expect(mockPlaceOrder).toHaveBeenCalledTimes(1);
+    // Refused before the quote and the account are read, since it needs neither.
+    expect(mockAccountState).toHaveBeenCalledTimes(1); // the refused attempt's read only
     expect(guardRows()[0]).toMatchObject({
       guard: 'short_refused_today',
       brokerReason: 'This stock is not available to short',
@@ -809,6 +825,19 @@ describe('attemptLiveEntry', () => {
     mockPlaceOrder.mockResolvedValueOnce({ ok: true, orderId: 'WB-LONG-AFTER' });
     const long = await attemptLiveEntry(signal(), okResult, 'MODERATE', liveConfig());
     expect(long.ok).toBe(true);
+  });
+
+  it("does not hold a symbol's shorts for the day on a BUYING-POWER refusal — the learned ceiling handles that", async () => {
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValueOnce({
+      ok: false,
+      error: 'Buying power is insufficient. Please cancel open buy orders (if any) and try again.',
+    });
+
+    await attemptLiveEntry(signal({ side: 'sell', stop: 105, target: 90 }), okResult, 'MODERATE', shorts());
+
+    expect(shortRefusedReason('AAPL', etToday())).toBeUndefined();
   });
 
   it('does not remember an UNANSWERED short — it may have gone through', async () => {

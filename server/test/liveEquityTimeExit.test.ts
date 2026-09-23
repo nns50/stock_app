@@ -296,20 +296,35 @@ describe('checkLiveEquityTimeExits', () => {
   const comboAgedOut = () =>
     mockOrderStatus.mockResolvedValue({ ok: true, found: false } as Awaited<ReturnType<typeof webullOrderStatus>>);
 
-  it('closes only the shares the broker still holds when a stop has part-filled', async () => {
-    const { quantity } = await openAgedLivePosition(30);
-    mockOpenOrders.mockResolvedValue(noOpenOrders);
-    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 102 }) as ReturnType<typeof getProvider>);
-    const held = Math.floor(quantity / 2);
-    mockAccountState.mockResolvedValue(accountStateWith(held) as Awaited<ReturnType<typeof webullAccountState>>);
-    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-CAPPED' });
-    comboAgedOut();
+  // REFUSED, NOT CAPPED (the PR's own review, 2026-09-23). A first version sold
+  // the smaller holding. That fill books as a scale-out, strands the rest of
+  // the position, and can take a lot the operator holds in the same name after
+  // the loop's own shares are gone. So a close larger than the holding is
+  // refused, as naked_short refused it for a long — now with shorts on too —
+  // and the position keeps its bracket until the next tick asks again.
+  it('refuses a close larger than the broker holds, and leaves the bracket in place — shorts on or off', async () => {
+    for (const liveAllowNakedShort of [false, true]) {
+      db.exec('DELETE FROM autotrade_events');
+      mockPlaceOrder.mockReset();
+      mockCancelOrder.mockReset();
+      const { quantity } = await openAgedLivePosition(30);
+      mockOpenOrders.mockResolvedValue(noOpenOrders);
+      mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 102 }) as ReturnType<typeof getProvider>);
+      const held = Math.floor(quantity / 2);
+      mockAccountState.mockResolvedValue(accountStateWith(held) as Awaited<ReturnType<typeof webullAccountState>>);
+      setAutotradeConfig({ liveAllowNakedShort });
 
-    await checkLiveEquityTimeExits();
+      const outcomes = await checkLiveEquityTimeExits();
 
-    expect(mockPlaceOrder.mock.calls[0][1]).toMatchObject({ side: 'sell', openClose: 'close', quantity: held });
-    const placed = listAutotradeEvents({ stage: 'execution', actions: ['live_time_exit_placed'] });
-    expect(JSON.parse(placed[0].detail ?? '{}')).toMatchObject({ quantity: held, cappedFrom: quantity });
+      expect(mockPlaceOrder).not.toHaveBeenCalled();
+      expect(mockCancelOrder).not.toHaveBeenCalled();
+      expect(outcomes[0]).toMatchObject({ requested: false });
+      expect(closeRefused()[0].reasons).toMatch(
+        new RegExp(`the broker holds ${held} AAPL, fewer than the ${quantity} this close would sell`),
+      );
+      db.exec('DELETE FROM positions; DELETE FROM autotrade_live_orders; DELETE FROM order_intents');
+    }
+    setAutotradeConfig({ liveAllowNakedShort: false });
   });
 
   it('places nothing when the broker holds none of the name — the shares are gone, not waiting to be sold', async () => {

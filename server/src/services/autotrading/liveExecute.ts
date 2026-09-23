@@ -933,27 +933,24 @@ export interface LiveExecutionOutcome {
 export type LiveEntryGuard = 'through_stop' | 'holding_unknown' | 'opposite_holding' | 'short_refused_today';
 
 /** Refuse an entry at one of attemptLiveEntry's guards, journaling
- *  `live_entry_guard_refused` once per symbol and guard per ET day. The same
- *  signal comes back every tick while it lasts, and one row says as much as
- *  sixty. The detail carries the replay fields (side, entry, stop, score) so
- *  the attribution can price what the guard kept out. */
+ *  `live_entry_guard_refused` once per symbol per ET day (the first guard to
+ *  fire names itself). The same signal comes back every tick while it lasts,
+ *  and one row says as much as sixty.
+ *
+ *  Through journalDeclinedEntry, the one writer every declined live entry
+ *  uses, so the row replays like the rest: side as long/short (the replay reads
+ *  anything but 'short' as a long, and a raw 'sell' here had every refused
+ *  short scored as a long), and the live floor it was judged against. From the
+ *  PR's own review, 2026-09-23. */
 function refuseEntryAtGuard(
-  symbol: string,
+  signal: TradeSignal,
   guard: LiveEntryGuard,
   why: string,
   detail: Record<string, unknown>,
-  riskProfile: string,
+  liveMinSignalScore: number,
 ): LiveExecutionOutcome {
-  if (claimOncePerDay('live_entry_guard_refused', `${symbol}|${guard}`)) {
-    logAutotradeEvent({
-      symbol,
-      stage: 'execution',
-      action: 'live_entry_guard_refused',
-      detail: { guard, reason: why, ...detail },
-      riskProfile,
-    });
-  }
-  return { symbol, ok: false, reason: `Entry refused (${guard}): ${why}` };
+  journalDeclinedEntry(signal, 'live_entry_guard_refused', liveMinSignalScore, { guard, reason: why, ...detail });
+  return { symbol: signal.symbol.toUpperCase(), ok: false, reason: `Entry refused (${guard}): ${why}` };
 }
 
 export async function attemptLiveEntry(
@@ -1017,6 +1014,20 @@ export async function attemptLiveEntry(
     };
   }
 
+  // A SHORT THE BROKER REFUSED EARLIER TODAY (refusedShorts.ts) is refused
+  // here, before the quote and the account reads, since it needs neither.
+  const refusedShort = signal.side === 'sell' ? shortRefusedReason(symbol, etToday()) : undefined;
+  if (refusedShort !== undefined) {
+    return refuseEntryAtGuard(
+      signal,
+      'short_refused_today',
+      `the broker refused a short in ${symbol} earlier today (${refusedShort}), and a borrow or the short-sale ` +
+        'rule does not lift within the session',
+      { brokerReason: refusedShort },
+      autotradeCfg.liveMinSignalScore,
+    );
+  }
+
   let last: number;
   try {
     last = (await getProvider().getQuote(signal.symbol)).last;
@@ -1037,11 +1048,11 @@ export async function attemptLiveEntry(
   const stopAlreadyHit = signal.side === 'buy' ? last <= signal.stop : last >= signal.stop;
   if (stopAlreadyHit) {
     return refuseEntryAtGuard(
-      symbol,
+      signal,
       'through_stop',
       `the quote ${last} is already ${signal.side === 'buy' ? 'at or below' : 'at or above'} the stop ${signal.stop}`,
-      { side: signal.side, last, stop: signal.stop, entry: signal.entry, score: signal.score },
-      riskProfile,
+      { last },
+      autotradeCfg.liveMinSignalScore,
     );
   }
 
@@ -1231,32 +1242,21 @@ export async function attemptLiveEntry(
   const brokerQty = acct.positionsUnavailable ? null : acct.state.currentPositionQty;
   if (signal.side === 'sell' && brokerQty === null) {
     return refuseEntryAtGuard(
-      symbol,
+      signal,
       'holding_unknown',
       'the positions read failed, so it is not known whether this sell would open a short or sell shares held',
-      { side: signal.side, entry: signal.entry, stop: signal.stop, score: signal.score },
-      riskProfile,
+      {},
+      autotradeCfg.liveMinSignalScore,
     );
   }
   if (brokerQty !== null && brokerQty !== 0 && brokerQty > 0 !== (signal.side === 'buy')) {
     return refuseEntryAtGuard(
-      symbol,
+      signal,
       'opposite_holding',
       `the broker already holds ${Math.abs(brokerQty)} ${symbol} ${brokerQty > 0 ? 'long' : 'short'}, the other way ` +
         `round from this ${signal.side === 'buy' ? 'long' : 'short'}`,
-      { side: signal.side, brokerPositionQty: brokerQty, entry: signal.entry, stop: signal.stop, score: signal.score },
-      riskProfile,
-    );
-  }
-  const refusedShort = signal.side === 'sell' ? shortRefusedReason(symbol, etToday()) : undefined;
-  if (refusedShort !== undefined) {
-    return refuseEntryAtGuard(
-      symbol,
-      'short_refused_today',
-      `the broker refused a short in ${symbol} earlier today (${refusedShort}), and a borrow or the short-sale ` +
-        'rule does not lift within the session',
-      { side: signal.side, entry: signal.entry, stop: signal.stop, score: signal.score, brokerReason: refusedShort },
-      riskProfile,
+      { brokerPositionQty: brokerQty },
+      autotradeCfg.liveMinSignalScore,
     );
   }
 
@@ -1427,8 +1427,13 @@ export async function attemptLiveEntry(
     if (unparseable) markUnplaceableSymbol(symbol, broker.error ?? 'broker cannot parse this symbol');
     // A SHORT the broker refused (hard to borrow, no locate, the short-sale
     // rule) holds that symbol's shorts for the day; see refusedShorts.ts. Only
-    // a definite refusal reaches here: an unanswered one returned above.
-    if (isShort) markShortRefused(symbol, etToday(), broker.error ?? 'refused');
+    // a definite refusal reaches here: an unanswered one returned above. A
+    // buying-power refusal is not one of those: the ceiling learned just below
+    // lets the next attempt fit at a smaller size, and a day-long hold on the
+    // symbol would override it.
+    if (isShort && !isInsufficientBuyingPowerError(broker.error)) {
+      markShortRefused(symbol, etToday(), broker.error ?? 'refused');
+    }
     // Learn the ceiling from the broker itself. The reported buying power
     // overstates what it will fund on an opening order — it is netted against
     // CURRENT exposure, which a closed position returns to zero, while the
@@ -4202,51 +4207,56 @@ async function placeLiveEquityTimeExitClose(
   }
   const accountState: AccountState = { ...acct.state, ordersToday: countTodaysOrders(Date.now(), 'stock') };
 
-  // THE BROKER'S HOLDING BOUNDS THE CLOSE (2026-09-23, shorts pre-flight).
+  // THE BROKER MUST HOLD WHAT THE CLOSE ORDERS (2026-09-23, shorts pre-flight).
   //
-  // The close used to order `remainingQuantity` whatever the broker held, and
-  // the only thing stopping an oversell was the guardrails' naked_short rule:
-  // a long's close that would leave the account net SHORT is refused while
+  // The close orders `remainingQuantity`, and the only thing that stopped it
+  // ordering more than the broker held was the guardrails' naked_short rule: a
+  // long's close that would leave the account net SHORT is refused while
   // liveAllowNakedShort is off. Turning shorts on switches that rule off, and
   // with it the long side's only protection in this app — a stagnation close on
   // a long whose stop had just filled would then go out as a SELL of shares no
   // longer held. And no rule here stopped a short's cover buying more than the
-  // short held (a stop leg part-filled before the flatten cancelled it). The
-  // broker has been seen refusing a close that would reverse a position (see
-  // cancelLiveBracketExitLegs), but whether it refuses these, or books the
-  // first as a short sale and the second as a long with no stop under it, has
+  // short held. The broker has been seen refusing a close that would reverse a
+  // position (see cancelLiveBracketExitLegs), but whether it refuses these has
   // never been seen. Its check is not ours to lean on.
   //
-  // One race is left: the holding is read BEFORE the bracket's legs are
-  // cancelled, so a leg that part-fills between the two is not in the cap. The
-  // broker's reversal check is the backstop there, and the next tick re-reads.
-  //
   // So the close reads the holding in the position's direction (the broker's
-  // quantity is signed: long +, short −) and orders no more than that. Nothing
-  // held that way round — the shares are gone and a reconcile will book the
-  // fill, or the read failed, or the broker holds the other way round — is
-  // refused here, which is what naked_short did for a long all along.
+  // quantity is signed: long +, short −) and is refused when it is less than
+  // the close would order: exactly what naked_short did for a long, now on both
+  // sides and whatever liveAllowNakedShort says. The shares are gone and a
+  // reconcile will book the fill, or a bracket leg is part-way through filling,
+  // or the read failed, or the broker holds the other way round. The next tick
+  // asks again, and the position keeps its bracket meanwhile: this returns
+  // before anything is cancelled.
+  //
+  // REFUSED, NOT CAPPED at what is held. A first version sold the smaller
+  // holding, and the PR's own review found three ways that goes wrong: the fill
+  // books as a scale-out (materializeTimeExitFill tells the two apart by
+  // quantity alone) and strands the rest of the position; a holding can include
+  // the operator's own lot in the same name, which a capped sell would take
+  // while the loop's shares were already gone; and a fractional hand lot would
+  // become a fractional order.
   const brokerQty = acct.positionsUnavailable ? null : acct.state.currentPositionQty;
   const heldShares = brokerQty === null ? null : pos.side === 'short' ? -brokerQty : brokerQty;
-  if (heldShares === null || heldShares <= 0) {
+  if (heldShares === null || heldShares < intent.quantity) {
     const reasons = `broker_holding: ${
       brokerQty === null
         ? 'the positions read failed, so the holding is unknown'
         : brokerQty === 0
           ? `the broker holds no ${symbol}`
-          : `the broker holds ${Math.abs(brokerQty)} ${symbol} ${brokerQty > 0 ? 'long' : 'short'}, not this ${pos.side}`
-    } — nothing to ${closeSide} without opening a position`;
+          : heldShares !== null && heldShares > 0
+            ? `the broker holds ${heldShares} ${symbol}, fewer than the ${intent.quantity} this close would ${closeSide}`
+            : `the broker holds ${Math.abs(brokerQty)} ${symbol} ${brokerQty > 0 ? 'long' : 'short'}, not this ${pos.side}`
+    } — not ordering more than is held`;
     logAutotradeEvent({
       symbol,
       stage: 'execution',
       action: 'live_time_exit_blocked',
-      detail: { reasons, positionId: pos.id, brokerPositionQty: brokerQty },
+      detail: { reasons, positionId: pos.id, brokerPositionQty: brokerQty, remainingQuantity: intent.quantity },
       riskProfile,
     });
     return { symbol, positionId: pos.id, requested: false, reason: `Guardrails blocked: ${reasons}` };
   }
-  const cappedFrom = heldShares < intent.quantity ? intent.quantity : null;
-  if (cappedFrom !== null) intent.quantity = heldShares;
 
   const guardrails = evaluateGuardrails(intent, accountState, liveCfg, { marketOpen: marketOpenContext(intent) });
 
@@ -4358,9 +4368,6 @@ async function placeLiveEquityTimeExitClose(
     action: 'live_time_exit_placed',
     detail: {
       quantity: intent.quantity,
-      // Set only when the broker held fewer shares than the position's
-      // remainder, so the close ordered what was actually there.
-      ...(cappedFrom !== null ? { cappedFrom } : {}),
       limitPrice,
       orderId: broker.orderId,
       positionId: pos.id,
