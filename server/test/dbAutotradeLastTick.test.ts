@@ -37,6 +37,7 @@ function summary(overrides: Partial<LoopTickSummary> = {}): LoopTickSummary {
     moversCandidates: 0,
     moversFetchError: null,
     mlRegime: null,
+    marketDirection: null,
     ...overrides,
   };
 }

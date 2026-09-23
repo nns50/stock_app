@@ -214,6 +214,11 @@ const configBody = z.object({
   regimeShockRangeRatio: z.number().min(0).max(10).optional(),
   mlRegimeTargetTightenPct: z.number().min(0).max(100).optional(),
   mlRegimeHighVolMinSignalScore: z.number().min(0).max(100).optional(),
+  // The market-direction gate (2026-09-23). Bounds match the sanitizer's
+  // clamps: rejected here with a 400, rather than clamped silently there.
+  marketDirectionGateEnabled: z.boolean().optional(),
+  marketDirectionIndexPct: z.number().min(0).max(5).optional(),
+  marketDirectionBreadthPct: z.number().min(50).max(100).optional(),
   equityCurveDeriskEnabled: z.boolean().optional(),
   equityCurveLookbackDays: z.number().int().min(1).optional(),
   equityCurveDeriskCutPct: z.number().min(0).max(100).optional(),
@@ -534,6 +539,10 @@ autotradeRouter.put(
     if (body.mlRegimeTargetTightenPct !== undefined) patch.mlRegimeTargetTightenPct = body.mlRegimeTargetTightenPct;
     if (body.mlRegimeHighVolMinSignalScore !== undefined)
       patch.mlRegimeHighVolMinSignalScore = body.mlRegimeHighVolMinSignalScore;
+    if (body.marketDirectionGateEnabled !== undefined)
+      patch.marketDirectionGateEnabled = body.marketDirectionGateEnabled;
+    if (body.marketDirectionIndexPct !== undefined) patch.marketDirectionIndexPct = body.marketDirectionIndexPct;
+    if (body.marketDirectionBreadthPct !== undefined) patch.marketDirectionBreadthPct = body.marketDirectionBreadthPct;
     if (body.equityCurveDeriskEnabled !== undefined) patch.equityCurveDeriskEnabled = body.equityCurveDeriskEnabled;
     if (body.equityCurveLookbackDays !== undefined) patch.equityCurveLookbackDays = body.equityCurveLookbackDays;
     if (body.equityCurveDeriskCutPct !== undefined) patch.equityCurveDeriskCutPct = body.equityCurveDeriskCutPct;

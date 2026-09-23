@@ -8,6 +8,7 @@ import {
   checkMacroEventBlackout,
   checkVolatility,
   getMarketAtrPct,
+  getMarketChangePct,
   getMarketRangePct,
   defaultVolatilityFilterConfig,
 } from '../src/services/autotrading/executionGuards';
@@ -198,5 +199,45 @@ describe('getMarketRangePct — the shock nowcast input (2026-09-08)', () => {
   it('is null when the quote fails', async () => {
     mockGetProvider.mockReturnValue({ getQuote: vi.fn().mockRejectedValue(new Error('boom')) } as never);
     expect(await getMarketRangePct('SPY')).toBeNull();
+  });
+});
+
+describe('getMarketChangePct — the market-direction reading’s index leg (2026-09-23)', () => {
+  const quote = (over: Record<string, unknown>) => ({
+    getQuote: vi.fn().mockResolvedValue({ symbol: 'SPY', last: 500, timestamp: 0, ...over }),
+  });
+  beforeEach(() => {
+    mockGetProvider.mockReset();
+    vi.mocked(getProviderStatus).mockReturnValue({ synthetic: false } as never);
+  });
+
+  it('reads the quote’s own change when it carries one', async () => {
+    mockGetProvider.mockReturnValue(quote({ changePct: -0.35, prevClose: 999 }) as never);
+    expect(await getMarketChangePct('SPY')).toBe(-0.35);
+  });
+
+  it('derives it from last and the previous close otherwise', async () => {
+    mockGetProvider.mockReturnValue(quote({ last: 498.25, prevClose: 500 }) as never);
+    expect(await getMarketChangePct('SPY')).toBeCloseTo(-0.35, 10);
+  });
+
+  it('is null without a previous close to measure from — never a flat market', async () => {
+    mockGetProvider.mockReturnValue(quote({}) as never);
+    expect(await getMarketChangePct('SPY')).toBeNull();
+    mockGetProvider.mockReturnValue(quote({ prevClose: 0 }) as never);
+    expect(await getMarketChangePct('SPY')).toBeNull();
+    mockGetProvider.mockReturnValue(quote({ changePct: Number.NaN }) as never);
+    expect(await getMarketChangePct('SPY')).toBeNull();
+  });
+
+  it('refuses the synthetic provider without asking it, and is null when the quote fails', async () => {
+    vi.mocked(getProviderStatus).mockReturnValue({ synthetic: true } as never);
+    const p = quote({ changePct: -1 });
+    mockGetProvider.mockReturnValue(p as never);
+    expect(await getMarketChangePct('SPY')).toBeNull();
+    expect(p.getQuote).not.toHaveBeenCalled();
+    vi.mocked(getProviderStatus).mockReturnValue({ synthetic: false } as never);
+    mockGetProvider.mockReturnValue({ getQuote: vi.fn().mockRejectedValue(new Error('boom')) } as never);
+    expect(await getMarketChangePct('SPY')).toBeNull();
   });
 });

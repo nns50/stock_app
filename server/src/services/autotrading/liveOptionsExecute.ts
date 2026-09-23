@@ -89,6 +89,7 @@ import { OptionsTradeSignal } from './optionsDecide';
 import { evaluateOptionsRiskCheck, OptionsRiskCheckResult, optionsPositionNotionalUsd } from './optionsRiskCheck';
 import { journalMethodMultipliers, methodOfOptionsSignal } from './methodSizing';
 import { activeSymbolCooldowns, journalEntrySkipOncePerDay } from './symbolCooldown';
+import { MarketDirectionReading, directionRefuses } from './marketDirection';
 import { claimOncePerDay } from './oncePerDayEvents';
 import { resolveUnlistedFromOrderDetail } from './orderDetailFallback';
 import { computeFinishLineFactor, finishLineScoreGate } from './finishLine';
@@ -1073,6 +1074,11 @@ export async function runLiveOptionsExecution(
    *  ONE effective regime recorded on the entry order and carried to the
    *  position at materialization. */
   regime: TickRegime = NO_TICK_REGIME,
+  /** Which way the whole market leans this tick (2026-09-23,
+   *  marketDirection.ts). With marketDirectionGateEnabled on, a call on a broad
+   *  red day and a put on a broad green one are refused. Null for a direct
+   *  caller: no reading, no refusal. */
+  marketDirection: MarketDirectionReading | null = null,
 ): Promise<LiveOptionsExecutionOutcome[]> {
   const cfg = getAutotradeConfig();
   const equity = cfg.accountEquityUsd ?? 0;
@@ -1216,6 +1222,29 @@ export async function runLiveOptionsExecution(
     if (scoreGate.skip) {
       journalEntrySkipOncePerDay(symbol, 'finish_line_skipped', { score: signal.score, reason: scoreGate.detail });
       outcomes.push({ symbol, ok: false, reason: `Armed-day selectivity: ${scoreGate.detail}` });
+      continue;
+    }
+    // The market-direction gate (2026-09-23; marketDirection.ts), the options
+    // twin of the stock path's: a call leans long the underlying and a put
+    // short it, so a call on a broad red day and a put on a broad green one
+    // are refused. Live-only; the paper options book is the control.
+    const lean = signal.side === 'call' ? 'long' : 'short';
+    if (cfg.marketDirectionGateEnabled && marketDirection && directionRefuses(marketDirection, lean)) {
+      const reason = `${marketDirection.detail} — a ${signal.side} leans against it`;
+      journalEntrySkipOncePerDay(symbol, 'live_options_market_direction_skipped', {
+        side: signal.side,
+        score: signal.score,
+        direction: marketDirection.direction,
+        indexSymbol: marketDirection.indexSymbol,
+        indexChangePct: marketDirection.indexChangePct,
+        redPct: marketDirection.redPct,
+        greenPct: marketDirection.greenPct,
+        breadthSample: marketDirection.sample,
+        indexPct: marketDirection.indexPct,
+        breadthPct: marketDirection.breadthPct,
+        reason,
+      });
+      outcomes.push({ symbol, ok: false, reason: `Market direction: ${reason}` });
       continue;
     }
     const { amount: correlated } = await correlatedNotional(

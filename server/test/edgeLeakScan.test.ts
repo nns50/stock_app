@@ -65,6 +65,7 @@ function trade(over: Partial<LeakTrade> = {}): LeakTrade {
     vwapExtPct: 0.2,
     pctOfRange: 60,
     stopWidthUsd: 1,
+    marketTape: null,
     ...over,
   };
 }

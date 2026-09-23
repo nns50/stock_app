@@ -246,6 +246,91 @@ describe('the entry-extension join — each book reads its OWN reading', () => {
   });
 });
 
+describe('the market’s direction at entry — each trade against the reading in force', () => {
+  // 2026-09-23. The loop journals `market_direction_read` only when the reading
+  // CHANGES, so the reading in force at an entry is the latest row at or before
+  // it that day. A later row must never reach back, and yesterday's must never
+  // carry into today.
+  const NOW = Date.parse('2026-09-11T21:00:00Z');
+  const DAY = SESSIONS[0];
+  const reading = (direction: string, at: number) =>
+    db
+      .prepare(
+        'INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) ' +
+          "VALUES (NULL,'screen','market_direction_read',?,NULL,?)",
+      )
+      .run(JSON.stringify({ direction, indexChangePct: -0.35, redPct: 73 }), at);
+  const paperAt = (symbol: string, side: 'buy' | 'sell', at: number) => {
+    const p = openPaperPosition({
+      symbol,
+      side,
+      quantity: 10,
+      entryPrice: 100,
+      stopPrice: side === 'buy' ? 95 : 105,
+      targetPrice: side === 'buy' ? 110 : 90,
+      riskAmount: 50,
+      riskProfile: 'MODERATE',
+      rationale: 'fixture',
+    });
+    db.prepare('UPDATE autotrade_paper_positions SET entry_at = ? WHERE id = ?').run(at, p.id);
+    closePaperPosition(p.id, { exitPrice: side === 'buy' ? 97 : 103, exitReason: 'stop' });
+  };
+  const at = (time: string) => etDateTimeToMs(DAY, time) as number;
+
+  it('places each entry by the latest reading at or before it, on its own day', () => {
+    // Yesterday afternoon read green; it must not carry into this morning.
+    reading('green', at('15:00') - 24 * 60 * 60 * 1000);
+    reading('red', at('09:40'));
+    reading('mixed', at('11:00'));
+    seedClosedAutotradeSessions({
+      sessions: {
+        [DAY]: [
+          { entryTime: '09:35', exitTime: '09:50', r: 0.2, symbol: 'EARLY' }, // before any reading today
+          { entryTime: '10:15', exitTime: '10:45', r: -1, symbol: 'SHOP' }, // red: a long against it
+          { entryTime: '11:30', exitTime: '12:00', r: 0.5, symbol: 'MU' }, // after the flip to mixed
+        ],
+      },
+    });
+    paperAt('SHOP', 'buy', at('10:15')); // the control for the same bucket
+    paperAt('XNDU', 'sell', at('10:20')); // a short on a red day leans WITH it
+
+    const dim = runEdgeLeakScanFromDb({ now: NOW }).dimensions.find((d) => d.id === 'marketTape');
+    expect(dim?.buckets.map((b) => ({ bucket: b.bucket, n: b.n, control: b.control?.n ?? 0 }))).toEqual([
+      { bucket: 'against', n: 1, control: 1 },
+      { bucket: 'mixed', n: 1, control: 0 },
+    ]);
+    // The 09:35 entry had no reading: unplaced, not guessed.
+    expect(dim?.uncovered).toBe(1);
+  });
+
+  it('names the gate as the lever when trades against the tape lose', () => {
+    reading('red', at('09:31'));
+    seedClosedAutotradeSessions({
+      sessions: {
+        [DAY]: Array.from({ length: 16 }, (_, i) => ({
+          entryTime: `${10 + Math.floor(i / 4)}:${String((i % 4) * 10 + 5).padStart(2, '0')}`,
+          exitTime: '15:00',
+          r: i % 2 === 0 ? -0.9 : -1.1,
+          symbol: `RED${i}`,
+        })),
+      },
+    });
+    for (let i = 0; i < 12; i++) paperAt(`RED${i}`, 'buy', at('10:05') + i * 60_000);
+
+    const bucket = runEdgeLeakScanFromDb({ now: NOW })
+      .dimensions.find((d) => d.id === 'marketTape')
+      ?.buckets.find((b) => b.bucket === 'against');
+    expect(bucket?.n).toBe(16);
+    expect(bucket?.verdict).toBe('leak');
+    expect(bucket?.lever).toMatchObject({
+      kind: 'config',
+      field: 'marketDirectionGateEnabled',
+      value: true,
+      direction: 'safe',
+    });
+  });
+});
+
 describe('the options sleeve, which nothing else in the scan can see', () => {
   it('reports a sleeve that cannot size a contract, with the binding number', () => {
     // 2026-09-08..09 on the live book: 29 of 31 candidates refused with
@@ -1196,6 +1281,19 @@ describe('the execution findings — any occurrence is one', () => {
       const byReason = untaken();
       expect(byReason.get('live_entry_failed')?.n).toBe(1);
       expect(byReason.get('level_veto')?.n).toBe(1);
+      expect(byReason.has('no_live_row')).toBe(false);
+    });
+
+    // The market-direction gate (2026-09-23) journals once per symbol per day,
+    // so a paper entry later the same day is explained by the standing row —
+    // and its paper R is what the gate's refusals would have earned.
+    it('files a paper entry the market-direction gate refused under the gate', () => {
+      const skipAt = etDateTimeToMs('2026-09-10', '09:52') as number;
+      journal('GRML', 'live_market_direction_skipped', skipAt);
+      paperAt('GRML', skipAt + 23 * 60_000, 95);
+
+      const byReason = untaken();
+      expect(byReason.get('live_market_direction_skipped')).toMatchObject({ n: 1 });
       expect(byReason.has('no_live_row')).toBe(false);
     });
 

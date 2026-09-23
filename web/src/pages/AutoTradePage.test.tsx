@@ -136,6 +136,9 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     regimeShockRangeRatio: 0,
     mlRegimeTargetTightenPct: 30,
     mlRegimeHighVolMinSignalScore: 0,
+    marketDirectionGateEnabled: false,
+    marketDirectionIndexPct: 0.2,
+    marketDirectionBreadthPct: 65,
     equityCurveDeriskEnabled: false,
     equityCurveLookbackDays: 10,
     equityCurveDeriskCutPct: 50,
@@ -470,6 +473,7 @@ function loopSummaryFixture(overrides: Partial<LoopTickSummary> = {}): LoopTickS
     moversCandidates: 0,
     moversFetchError: null,
     mlRegime: null,
+    marketDirection: null,
     ...overrides,
   };
 }
@@ -678,6 +682,27 @@ describe('AutoTradePage', () => {
 
     await waitFor(() =>
       expect(setConfig).toHaveBeenCalledWith({ regimeShockRangeRatio: 1.5, confirmAggressive: undefined }),
+    );
+  });
+
+  // The market-direction gate (2026-09-23): the switch and the breadth bar
+  // reach the PUT with their own keys.
+  it('turns the market-direction gate on and saves its breadth bar', async () => {
+    const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
+    renderPage();
+    await screen.findByText('VNQ');
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Market-direction gate' }));
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ marketDirectionGateEnabled: true, confirmAggressive: undefined }),
+    );
+
+    const breadthSave = screen.getByRole('button', { name: 'Save market direction breadth' });
+    fireEvent.change(breadthSave.parentElement!.querySelector('input')!, { target: { value: '70' } });
+    await waitFor(() => expect(breadthSave).not.toBeDisabled());
+    fireEvent.click(breadthSave);
+    await waitFor(() =>
+      expect(setConfig).toHaveBeenCalledWith({ marketDirectionBreadthPct: 70, confirmAggressive: undefined }),
     );
   });
 
@@ -5263,5 +5288,49 @@ describe('Last cycle — the ML regime line', () => {
     renderDashboard();
     expect(await screen.findByText(/screened →/)).toBeInTheDocument();
     expect(screen.queryByTestId('last-cycle-ml-regime')).not.toBeInTheDocument();
+  });
+});
+
+describe('Last cycle — the market-direction line (2026-09-23)', () => {
+  const red = {
+    direction: 'red' as const,
+    indexSymbol: 'SPY',
+    indexChangePct: -0.35,
+    redPct: 73,
+    greenPct: 27,
+    sample: 498,
+    indexPct: 0.2,
+    breadthPct: 65,
+    detail: 'Broad red market (SPY -0.35%, 73% of 498 names red, 27% green)',
+  };
+  const withTick = () =>
+    vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+      dashboardFixture({
+        lastTick: { ranAt: Date.now() - 30_000, summary: loopSummaryFixture({ marketDirection: red }) },
+      }),
+    );
+
+  it('says what the gate does with a red reading when it is on', async () => {
+    withTick();
+    vi.spyOn(client, 'autotradeConfig').mockResolvedValue(configFixture({ marketDirectionGateEnabled: true }));
+    renderDashboard();
+    expect(await screen.findByTestId('last-cycle-market-direction')).toHaveTextContent(
+      'Market: Broad red market (SPY -0.35%, 73% of 498 names red, 27% green) · live longs and calls refused',
+    );
+  });
+
+  it('says the reading refuses nothing while the gate is off', async () => {
+    withTick();
+    renderDashboard();
+    expect(await screen.findByTestId('last-cycle-market-direction')).toHaveTextContent('gate off (reading only)');
+  });
+
+  it('shows nothing for a tick persisted before the reading existed', async () => {
+    vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+      dashboardFixture({ lastTick: { ranAt: Date.now() - 30_000, summary: loopSummaryFixture() } }),
+    );
+    renderDashboard();
+    expect(await screen.findByText(/screened →/)).toBeInTheDocument();
+    expect(screen.queryByTestId('last-cycle-market-direction')).not.toBeInTheDocument();
   });
 });

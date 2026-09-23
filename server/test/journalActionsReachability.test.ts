@@ -231,6 +231,13 @@ describe('journal action reachability', () => {
       // spans several lines, so the hand enumeration that found the other three
       // walked straight past it. Options sleeve, same reason as the two above.
       live_options_risk_blocked: 'options sleeve — measured by collectOptionsFlowFindings',
+      // The market-direction gate's options half (2026-09-23). Not a pair the
+      // equity attribution can make, and not a sizing refusal the options flow
+      // finding counts: the paper options book's trades are cut by the same
+      // reading in the scan's market-direction dimension, and every refusal
+      // is a journal row with the reading on it.
+      live_options_market_direction_skipped:
+        'options sleeve — the market-direction dimension cuts both options books by the same reading',
     };
 
     const unclassified = [...entrySkips]

@@ -102,6 +102,7 @@ import { resetUnplaceableSymbols } from '../src/services/autotrading/unplaceable
 import { runWebullPositionsSync } from '../src/providers/webull/positions';
 import { priceMap } from '../src/services/quotes';
 import { writeDailyHaltMarker } from '../src/services/autotrading/dailyHaltMarker';
+import { readMarketDirection, type MarketDirectionReading } from '../src/services/autotrading/marketDirection';
 
 const mockGetProvider = vi.mocked(getProvider);
 const mockAccountState = vi.mocked(webullAccountState);
@@ -2078,6 +2079,88 @@ describe('runLiveExecution — 1R must be reachable on the name', () => {
       const outcomes = await runLiveExecution([{ signal: sig }]);
       expect(outcomes[0]).toMatchObject({ ok: true }); // never guesses a cap
     }
+  });
+});
+
+describe('runLiveExecution — the market-direction gate (2026-09-23)', () => {
+  // A reading built the way the loop builds one: SPY's move and the universe's
+  // breadth, against the default bars (0.2% and 65%).
+  const tape = (indexChangePct: number, red: number, green: number) =>
+    readMarketDirection({
+      indexSymbol: 'SPY',
+      indexChangePct,
+      breadth: { red, green, flat: 500 - red - green, sample: 500 },
+      indexPct: 0.2,
+      breadthPct: 65,
+    });
+  const RED = tape(-0.35, 365, 135); // 2026-09-23: 73% of 500 names red
+  const GREEN = tape(0.9, 125, 375);
+  const MIXED = tape(0.5, 360, 140); // 2026-08-27: SPY up, most names red
+
+  function arm(overrides: Partial<AutotradeConfig> = {}) {
+    setAutotradeConfig({ ...liveConfig(), levelExitsEnabled: false, marketDirectionGateEnabled: true, ...overrides });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-MDG' });
+  }
+  const run = (sig: TradeSignal, reading: MarketDirectionReading | null) =>
+    runLiveExecution([{ signal: sig }], null, undefined, null, undefined, reading);
+  const skipRows = () => listAutotradeEvents({ actions: ['live_market_direction_skipped'] });
+
+  it('refuses a long on a broad red day, with a row a replay can score', async () => {
+    arm();
+    const outcomes = await run(signal(), RED);
+
+    expect(outcomes[0]).toMatchObject({ ok: false });
+    expect(outcomes[0].reason).toMatch(/^Market direction: Broad red market/);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(skipRows()).toHaveLength(1);
+    expect(JSON.parse(skipRows()[0].detail!)).toMatchObject({
+      direction: 'red',
+      indexSymbol: 'SPY',
+      indexChangePct: -0.35,
+      redPct: 73,
+      breadthSample: 500,
+      indexPct: 0.2,
+      breadthPct: 65,
+      // The replay fields every declined entry carries (declinedEntry.ts).
+      side: 'long',
+      entry: 100,
+      stop: 95,
+      score: 70,
+    });
+  });
+
+  it('takes the same long on a mixed day, on a green day, and with no reading', async () => {
+    for (const reading of [MIXED, GREEN, null]) {
+      db.exec('DELETE FROM order_intents; DELETE FROM autotrade_live_orders; DELETE FROM autotrade_events;');
+      mockPlaceOrder.mockClear();
+      arm();
+      const outcomes = await run(signal(), reading);
+      expect(outcomes[0], String(reading?.direction)).toMatchObject({ ok: true });
+      expect(mockPlaceOrder).toHaveBeenCalled();
+      expect(skipRows()).toHaveLength(0);
+    }
+  });
+
+  it('refuses nothing while the gate is off, even on a red day — the reading alone moves no money', async () => {
+    arm({ marketDirectionGateEnabled: false });
+    const outcomes = await run(signal(), RED);
+    expect(outcomes[0]).toMatchObject({ ok: true });
+    expect(skipRows()).toHaveLength(0);
+  });
+
+  it('refuses a short on a broad green day, and leaves a short on a red day to the other gates', async () => {
+    const short = signal({ side: 'sell', stop: 105, target: 90 });
+    arm({ liveAllowNakedShort: true });
+    const green = await run(short, GREEN);
+    expect(green[0].reason).toMatch(/^Market direction: Broad green market/);
+    expect(JSON.parse(skipRows()[0].detail!)).toMatchObject({ direction: 'green', side: 'short' });
+
+    db.exec('DELETE FROM order_intents; DELETE FROM autotrade_live_orders; DELETE FROM autotrade_events;');
+    arm({ liveAllowNakedShort: true });
+    await run(short, RED);
+    expect(skipRows()).toHaveLength(0);
   });
 });
 

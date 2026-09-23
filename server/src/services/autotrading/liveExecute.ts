@@ -70,6 +70,7 @@ import { computeGradeExpectancyMultipliers } from './expectancySizing';
 import { computeMethodMultipliers, methodOfEquitySignal } from './methodSizing';
 import { activeSymbolCooldowns } from './symbolCooldown';
 import { declinedSide, journalDeclinedEntry } from './declinedEntry';
+import { MarketDirectionReading, directionRefuses } from './marketDirection';
 import { isUnparseableSymbolError, markUnplaceableSymbol, unplaceableReason } from './unplaceableSymbols';
 import { computeFinishLineFactor } from './finishLine';
 import { regimeAdjustedTargets } from './regimeTargets';
@@ -1461,6 +1462,12 @@ export async function runLiveExecution(
    *  ONE effective regime recorded on the entry order and carried to the
    *  position at materialization. */
   regime: TickRegime = NO_TICK_REGIME,
+  /** Which way the whole market leans this tick (2026-09-23,
+   *  marketDirection.ts), read once by the loop. With
+   *  marketDirectionGateEnabled on, a long on a broad red day and a short on a
+   *  broad green one are refused. Null for a direct caller: no reading, no
+   *  refusal. */
+  marketDirection: MarketDirectionReading | null = null,
 ): Promise<LiveExecutionOutcome[]> {
   const cfg = getAutotradeConfig();
   const equity = cfg.accountEquityUsd ?? 0;
@@ -1890,6 +1897,37 @@ export async function runLiveExecution(
             ? 'Below the High-Vol conviction bar'
             : 'Below the live conviction floor';
       outcomes.push({ symbol, ok: false, reason: `${label}: ${scoreGate.detail}` });
+      continue;
+    }
+    // THE MARKET-DIRECTION GATE (2026-09-23; marketDirection.ts). A long on a
+    // broad red day or a short on a broad green one — the whole market leaning
+    // against the trade, read from SPY and from how much of the universe is on
+    // the other side of its prior close. On 2026-09-23 all four live longs were
+    // bought into a red market and all four lost.
+    //
+    // Placed AFTER every gate that asks whether the book wants the trade at all
+    // (the score floor above all), so each refusal here is an entry the live
+    // book would otherwise have taken: the rows count what the gate costs or
+    // saves, not the whole red day's flow. Live-only, like its neighbours: the
+    // paper book keeps taking these as the control.
+    if (
+      cfg.marketDirectionGateEnabled &&
+      marketDirection &&
+      directionRefuses(marketDirection, declinedSide(candidateSignal.side))
+    ) {
+      const reason = `${marketDirection.detail} — a ${declinedSide(candidateSignal.side)} leans against it`;
+      journalDeclinedEntry(candidateSignal, 'live_market_direction_skipped', cfg.liveMinSignalScore, {
+        direction: marketDirection.direction,
+        indexSymbol: marketDirection.indexSymbol,
+        indexChangePct: marketDirection.indexChangePct,
+        redPct: marketDirection.redPct,
+        greenPct: marketDirection.greenPct,
+        breadthSample: marketDirection.sample,
+        indexPct: marketDirection.indexPct,
+        breadthPct: marketDirection.breadthPct,
+        reason,
+      });
+      outcomes.push({ symbol, ok: false, reason: `Market direction: ${reason}` });
       continue;
     }
     // Level-aware exits (levelPlan.ts): re-place this signal's ATR stop and R

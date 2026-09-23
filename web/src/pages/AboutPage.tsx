@@ -348,6 +348,24 @@ export default function AboutPage() {
           the run. The model card (docs/MARKET_REGIME_MODEL.md) has the data, the validation, the enabling rules and
           what it does not do.
         </p>
+        <p className="mt-2">
+          The <strong className="text-slate-200">market-direction reading</strong> (2026-09-23) is separate from the
+          model and reads the market as it trades, every loop tick. It has two legs: SPY’s move against its prior close,
+          and <strong className="text-slate-200">breadth</strong> — the share of the scored universe below (red) or
+          above (green) its <em>own</em> prior close, pass or fail, with premarket movers left out because they are
+          green by selection. The market is <strong className="text-slate-200">red</strong> when SPY is down at least
+          the index bar (default <span className="tabular-nums">0.2%</span>) <em>and</em> at least the breadth bar
+          (default <span className="tabular-nums">65%</span>) of names are red;{' '}
+          <strong className="text-slate-200">green</strong> is the mirror; anything else is{' '}
+          <strong className="text-slate-200">mixed</strong>, and fewer than <span className="tabular-nums">100</span>{' '}
+          names measured, or no SPY move, is <strong className="text-slate-200">unknown</strong>. Both legs must agree,
+          so a quiet day that is red across the board counts, while a day where SPY rises on a few large names as most
+          stocks fall does not. With the auto-trade config’s{' '}
+          <strong className="text-slate-200">market-direction gate</strong> on (off by default), the live books refuse
+          an entry that leans against a one-sided market — a stock long or a call on a red reading, a short or a put on
+          a green one — while paper keeps taking every signal as the control. It sizes nothing and never refuses on a
+          mixed or unknown reading.
+        </p>
       </Section>
 
       <Section id="sectorRotation" title="How the sector-rotation board works">

@@ -948,6 +948,91 @@ describe('movers discovery gate (moversDiscoveryEnabled, 2026-07-27)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// BREADTH (2026-09-23): how widely red or green the universe is, read by the
+// loop for the market-direction gate. Every scored universe name counts by its
+// own move vs its prior close, whether or not it passes the screen — a filter
+// that itself reads the move cannot be the sample the market is measured on —
+// and a movers-only name never counts, because premarket gainers are green by
+// selection.
+// ---------------------------------------------------------------------------
+describe('runAutotradeScreen — universe breadth', () => {
+  const quoteWithMove = (moves: Record<string, number>, otherwise: number) => {
+    const provider = getProvider();
+    const real = provider.getQuote.bind(provider);
+    return vi.spyOn(provider, 'getQuote').mockImplementation(async (symbol: string) => ({
+      ...(await real(symbol)),
+      changePct: moves[symbol] ?? otherwise,
+    }));
+  };
+
+  it('counts every scored name by its own move — red, green and flat — pass or fail', async () => {
+    const spy = quoteWithMove({ SCRBR1: -1.2, SCRBR2: -0.4, SCRBR3: 0.8, SCRBR4: 0 }, 0);
+    try {
+      // Filters strict enough that nothing passes: breadth must not depend on it.
+      const result = await runAutotradeScreen({
+        symbols: ['SCRBR1', 'SCRBR2', 'SCRBR3', 'SCRBR4'],
+        config: { filters: { minScore: 101 } },
+      });
+      expect(result.candidates).toHaveLength(0);
+      expect(result.breadth).toEqual({ red: 2, green: 1, flat: 1, sample: 4 });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('leaves out a name the screen never scored (an exclusion)', async () => {
+    const spy = quoteWithMove({}, -1);
+    try {
+      const result = await runAutotradeScreen({ symbols: [LISTED, 'SCRBR1'] });
+      expect(result.breadth).toEqual({ red: 1, green: 0, flat: 0, sample: 1 });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('leaves out a name whose quote failed, rather than read yesterday’s daily bar as today', async () => {
+    const provider = getProvider();
+    const real = provider.getQuote.bind(provider);
+    const spy = vi.spyOn(provider, 'getQuote').mockImplementation(async (symbol: string) => {
+      if (symbol === 'SCRBRQ') throw new Error('quote outage');
+      return { ...(await real(symbol)), changePct: -1 };
+    });
+    try {
+      const result = await runAutotradeScreen({ symbols: ['SCRBR1', 'SCRBRQ'] });
+      // SCRBRQ is still scored — from its candles — and still not breadth.
+      expect(result.errors).toEqual([]);
+      expect(result.breadth).toEqual({ red: 1, green: 0, flat: 0, sample: 1 });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('leaves out a movers-only name, which is green by selection', async () => {
+    mockWebullConfigured.mockReset().mockReturnValue(true);
+    mockWebullMovers.mockReset().mockResolvedValue({ ok: true, movers: [{ symbol: 'SCRMOVER' }] } as never);
+    const insert = db.prepare(
+      "INSERT OR IGNORE INTO universe (symbol, name, sector, added_at) VALUES (?, 'Breadth Co', 'Technology', ?)",
+    );
+    insert.run('SCRBRU1', Date.now());
+    insert.run('SCRBRU2', Date.now());
+    const spy = quoteWithMove({ SCRMOVER: 5 }, -1);
+    try {
+      const result = await runAutotradeScreen({ config: { filters: { minRelVol: 0 } } });
+      // The mover WAS scored (it is a candidate source), and still is not breadth.
+      expect(result.discovery.moversCount).toBe(1);
+      expect(result.breadth.green).toBe(0);
+      expect(result.breadth.red).toBe(result.breadth.sample);
+      expect(result.breadth.sample).toBeGreaterThanOrEqual(2);
+    } finally {
+      spy.mockRestore();
+      db.exec("DELETE FROM universe WHERE symbol IN ('SCRBRU1', 'SCRBRU2')");
+      mockWebullConfigured.mockReset().mockReturnValue(false);
+      mockWebullMovers.mockReset().mockResolvedValue({ ok: true, movers: [] } as never);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Relative-volume PACE gate (2026-08-25). Raw relVolume is today's cumulative
 // volume over the average FULL-day volume, so it climbs mechanically through
 // the session and a fixed floor is wrong at every hour but one. On the live

@@ -2,6 +2,7 @@ import { beforeEach } from 'vitest';
 import { resetOncePerDayEvents } from '../src/services/autotrading/oncePerDayEvents';
 import { resetUnplaceableSymbols } from '../src/services/autotrading/unplaceableSymbols';
 import { resetBuyingPowerRefusals } from '../src/services/autotrading/buyingPowerRefusals';
+import { resetMarketDirectionState } from '../src/services/autotrading/marketDirection';
 
 // ---------------------------------------------------------------------------
 // IN-MEMORY MODULE STATE IS RESET BEFORE EVERY TEST (2026-09-09, #43/#46).
@@ -36,6 +37,9 @@ import { resetBuyingPowerRefusals } from '../src/services/autotrading/buyingPowe
 // type from providers/webull/orders, which several files mock, and is left out
 // for that reason alone rather than because its state is harmless.
 // `buyingPowerRefusals` (2026-09-14) qualifies on the same test: zero imports.
+// So does `marketDirection` (2026-09-23): the loop journals the market's
+// reading only when it changes, and a test that expects the day's first row
+// must not find the previous test's reading already claimed.
 // It had to go here rather than in one file's beforeEach — the ceiling it
 // learns is keyed by account and ET day, both of which every live-execution
 // file shares, so one file's refusal shrank the next file's orders.
@@ -48,4 +52,5 @@ beforeEach(() => {
   resetOncePerDayEvents();
   resetUnplaceableSymbols();
   resetBuyingPowerRefusals();
+  resetMarketDirectionState();
 });

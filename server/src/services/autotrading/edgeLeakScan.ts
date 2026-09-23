@@ -9,6 +9,7 @@ import {
   SweepTrade,
 } from './dailyTargetSweep';
 import { etToday } from '../../util/marketDate';
+import { TapeAlignment } from './marketDirection';
 
 // ---------------------------------------------------------------------------
 // The edge-leak scan (Decision 11, 2026-09-12).
@@ -90,6 +91,12 @@ export interface LeakTrade {
    *  the width one fill's slippage is measured against. Null for an option,
    *  whose stop is on premium, and for a row with no stop. */
   stopWidthUsd: number | null;
+  /** How the entry sat against the whole market when it was taken (2026-09-23,
+   *  marketDirection.ts): `against` is a long on a broad red day or a short on a
+   *  broad green one. From the `market_direction_read` journal rows in force at
+   *  the entry; null before those rows existed and whenever the reading was
+   *  unknown. */
+  marketTape: TapeAlignment | null;
 }
 
 // --- the bar ---------------------------------------------------------------
@@ -610,6 +617,29 @@ export const DIMENSIONS: Dimension[] = [
     bucketOf: (t) =>
       t.assetKind === 'options' ? null : band(t.quantity, [5, 20, 100], ['<5', '5-19', '20-99', '100+']),
   },
+  // THE MARKET'S DIRECTION AT ENTRY (2026-09-23). On 2026-09-23 all four live
+  // longs were bought into a broad red market and all four lost; nothing cut
+  // the book by the tape, so the pattern was found by a person reading the
+  // day. This is the dimension that finds it next time — and, with the
+  // market-direction gate on, the one whose PAPER `against` bucket keeps
+  // measuring what the gate refuses.
+  {
+    id: 'marketTape',
+    label: 'Market direction at entry',
+    bucketOf: (t) => t.marketTape,
+    lever: (bucket) =>
+      bucket === 'against'
+        ? {
+            kind: 'config',
+            field: 'marketDirectionGateEnabled',
+            value: true,
+            direction: 'safe',
+            detail:
+              'Refuse live entries that lean against a one-sided market (a long on a broad red day, a short on a ' +
+              'broad green one). Paper keeps taking them as the control.',
+          }
+        : null,
+  },
   // STOP WIDTH, in dollars per share (2026-09-23). A stop fills a few cents
   // through its price whatever the stock, so the narrower it is, the more of R
   // one fill takes. Full-loss live stops on names under $20 filled 0.13-0.18R
@@ -1023,6 +1053,7 @@ export const ONCE_PER_DAY_SKIP_ACTIONS: ReadonlySet<string> = new Set([
   'symbol_unplaceable_skipped',
   'absorbed_price_skipped',
   'live_short_skipped',
+  'live_market_direction_skipped',
 ]);
 
 /**

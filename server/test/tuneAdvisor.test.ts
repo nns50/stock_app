@@ -631,6 +631,11 @@ describe('recommendations that are code, not settings', () => {
     // measurement rather than a recording gap — the advice must not read like
     // no_live_row's "unexplained".
     expect(cutoff?.detail).toMatch(/control/);
+    // The market-direction gate (2026-09-23): its breadth bar decides how
+    // one-sided a market must be before it refuses, so that is the dial.
+    const direction = fieldForUntakenReason('live_market_direction_skipped');
+    expect(direction).toMatchObject({ field: 'marketDirectionBreadthPct', direction: 'exposure' });
+    expect(direction?.detail).toMatch(/turn the gate off/);
     // The level veto (2026-09-23): live-only, paper is its control.
     const veto = fieldForUntakenReason('level_veto');
     expect(veto).toMatchObject({ field: 'levelMinRewardR', direction: 'exposure' });

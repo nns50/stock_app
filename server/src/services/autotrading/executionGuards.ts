@@ -159,3 +159,27 @@ export async function getMarketRangePct(proxySymbol: string): Promise<number | n
     return null;
   }
 }
+
+/**
+ * The market proxy's move vs its PREVIOUS CLOSE, in percent — the index leg of
+ * the market-direction reading (marketDirection.ts). The quote's own
+ * `changePct` when it carries one (Webull's change_ratio); otherwise derived
+ * from `last` and `prevClose`.
+ *
+ * Null whenever it cannot be known honestly, the same rule getMarketRangePct
+ * follows: the synthetic Mock provider (its move is random), a quote carrying
+ * neither a change nor a previous close, or a failed fetch. Null reads as "no
+ * direction", never as a flat market.
+ */
+export async function getMarketChangePct(proxySymbol: string): Promise<number | null> {
+  try {
+    if (getProviderStatus().synthetic) return null;
+    const q = await getProvider().getQuote(proxySymbol);
+    if (q.changePct !== undefined && Number.isFinite(q.changePct)) return q.changePct;
+    const { last, prevClose } = q;
+    if (prevClose == null || !(prevClose > 0) || !Number.isFinite(last) || !(last > 0)) return null;
+    return ((last - prevClose) / prevClose) * 100;
+  } catch {
+    return null;
+  }
+}
