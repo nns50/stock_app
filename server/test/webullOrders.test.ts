@@ -14,6 +14,8 @@ import {
   listWebullOpenOrders,
   newClientOrderId,
   committedProtectiveQuantity,
+  buildStandaloneBracketRequest,
+  protectiveBracketIntent,
 } from '../src/providers/webull/orders';
 import type { WebullOpenOrder } from '../src/providers/webull/orders';
 import type { OrderIntent } from '../src/services/trading/guardrails';
@@ -1304,5 +1306,46 @@ describe('committedProtectiveQuantity', () => {
 
   it('is case- and whitespace-insensitive about the symbol', () => {
     expect(committedProtectiveQuantity([leg({ symbol: 'fcx' })], '  fcx  ', 'sell')).toBe(38);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A protective bracket's side, on the WIRE (2026-09-23).
+//
+// buildStandaloneBracketRequest takes the position's ENTRY side and bracketExit
+// flips it, so the legs rest on the closing side. The automatic re-arm passed
+// the closing side instead and every leg came out inverted: for eleven days a
+// "protective" re-arm of a long was a BUY stop plus a BUY take-profit limit.
+// These pin the only thing that matters — what the broker receives.
+// ---------------------------------------------------------------------------
+describe('protectiveBracketIntent', () => {
+  const wire = (positionSide: 'long' | 'short', target: number | undefined, stop: number | undefined) =>
+    buildStandaloneBracketRequest(protectiveBracketIntent(' aapl ', positionSide, 7), target, stop)!.new_orders.map(
+      (o) => ({ combo: o.combo_type, side: o.side, type: o.order_type, qty: o.quantity, symbol: o.symbol }),
+    );
+
+  it('protects a LONG with SELL legs — take-profit and stop both close it', () => {
+    expect(wire('long', 110, 95)).toEqual([
+      { combo: 'STOP_PROFIT', side: 'SELL', type: 'LIMIT', qty: '7', symbol: 'AAPL' },
+      { combo: 'STOP_LOSS', side: 'SELL', type: 'STOP_LOSS', qty: '7', symbol: 'AAPL' },
+    ]);
+  });
+
+  it('protects a SHORT with BUY legs', () => {
+    expect(wire('short', 90, 105).map((l) => l.side)).toEqual(['BUY', 'BUY']);
+  });
+
+  it('is a CLOSE, never an opening order, and carries no MASTER', () => {
+    const i = protectiveBracketIntent('AAPL', 'long', 7);
+    expect(i).toMatchObject({ openClose: 'close', assetKind: 'stock', side: 'buy' });
+    const req = buildStandaloneBracketRequest(i, 110, 95)!;
+    expect(req.new_orders.some((o) => o.combo_type === 'MASTER')).toBe(false);
+  });
+
+  it('the inverted intent the re-arm used to pass really does produce BUY legs under a long', () => {
+    // Kept as the regression's own witness: side 'sell' reads like "sell to
+    // protect a long", and it is the one input that must never reach here.
+    const inverted: OrderIntent = { ...protectiveBracketIntent('AAPL', 'long', 7), side: 'sell' };
+    expect(buildStandaloneBracketRequest(inverted, 110, 95)!.new_orders.map((o) => o.side)).toEqual(['BUY', 'BUY']);
   });
 });

@@ -72,6 +72,7 @@ import { previewWebullPositions } from '../providers/webull/positions';
 import {
   committedProtectiveQuantity,
   listWebullOpenOrders,
+  protectiveBracketIntent,
   webullCancelOrder,
   webullPlaceStandaloneBracket,
 } from '../providers/webull/orders';
@@ -2471,15 +2472,10 @@ autotradeRouter.post(
 
     const placed = await webullPlaceStandaloneBracket(
       accountId,
-      {
-        symbol,
-        assetKind: 'stock',
-        // The ENTRY side; bracketExit emits the legs on the closing side.
-        side: 'buy',
-        openClose: 'close',
-        quantity: body.quantity,
-        orderType: 'limit',
-      },
+      // The one shared derivation of a protective bracket's side (this route
+      // protects a LONG, so the legs rest on the sell side). The automatic
+      // re-arm wrote its own and inverted it; see protectiveBracketIntent.
+      protectiveBracketIntent(symbol, 'long', body.quantity),
       body.takeProfitPrice,
       body.stopLossPrice,
     );

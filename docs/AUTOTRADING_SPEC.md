@@ -11153,6 +11153,16 @@ guess.** Write them together.
 
 ## 2026-09-15 — a stop cannot be placed where the market has already been
 
+> **Corrected 2026-09-23.** BWIN was not through its stop. At 12:13 it traded
+> at 31.95 against the 31.16 stop, and the broker's refusal (*"…should be higher
+> than the current market price"*) was its rule for a **buy** stop: the re-arm
+> was sending its legs on the wrong side. The rule below is still right for the
+> case it describes, and with the side fixed, a refused re-arm is finally a sell
+> stop the market has passed. The kill-switch paragraph below was also only
+> half true: the close was stopped, the re-arm above it was not. See
+> "2026-09-23 — the protective re-arm sent buy orders, and the kill switch never
+> reached it".
+
 PR A's equity half committed to "a standalone protective bracket at the recorded
 stop (**or a marketable close if price is already through it**)". Only the first
 half was built, and the second half is the one that matters, because the first
@@ -12466,3 +12476,166 @@ others returned; and the overlay's report carries the broker's own error, the
 `quoteAgeMs` inside the two-minute freshness window. A `chain` source on every
 row again, or any row carrying `selectionQuoteError`, is a finding — quote the
 error.
+
+## 2026-09-23 — the protective re-arm sent buy orders, and the kill switch never reached it
+
+**What the operator did.** On 2026-09-21 and 2026-09-22 the operator took over
+open positions by hand: engaged the kill switch, changed or cancelled the
+app-opened brackets at Webull, and sold from Webull directly. The journal around
+those halts, read to reconcile the `live_position_unprotected` alerts that
+followed:
+
+```
+09-21 10:07:50  live_position_unprotected  LITE  21 held, 0 legs, re-arm refused
+09-21 10:07:54  kill_switch_engaged
+09-21 10:16–10:18  live_stop_adjust_blocked LITE ×3 (breakeven, no resting leg)
+09-21 10:27:40  live_stop_ratcheted  LITE  954.53 → 972.65   ← during the halt
+09-21 10:30:39  kill_switch_released
+09-22 10:23:03  live_position_unprotected  SNOW  61 held, 0 legs, re-arm refused
+09-22 10:28:29  kill_switch_engaged
+09-22 10:31:05  live_position_unprotected  SNDK  5 held, target resting,
+                re-arm refused "invalid combo_type, value: STOP_LOSS"  ← during the halt
+09-22 13:34:36  kill_switch_released
+```
+
+The missing stops were the operator's own doing, so those alerts were not lost
+orders. What the timeline also shows is the app acting on the account after
+the switch was engaged. Reading why turned up four defects, the first worse
+than the alert it was attached to.
+
+### 1. Every automatic re-arm of a long was a BUY stop and a BUY take-profit
+
+`buildStandaloneBracketRequest` takes the position's **entry** side (buy for a
+long) and `bracketExit` flips it, so the legs rest on the closing side. The
+scale-out's rollback and the manual `POST /live/standalone-bracket` route both
+passed `buy`. The protection sweep's re-arm, shipped 2026-09-12, passed the
+**closing** side, `sell`, which `bracketExit` flipped again. Every re-arm it
+sent for a long was a BUY stop at the recorded stop plus a BUY take-profit
+limit at the target.
+
+The broker refused every one. Three refusals read *"The stop price of the
+stop-loss order should be higher than the current market price"*, which is the
+broker's rule for a **buy** stop. On 2026-09-15 that wording was read as "the
+stop is already through the market" (see that day's section, now corrected).
+The minute bars say otherwise:
+
+| Refusal | Recorded stop | Price at the minute |
+| --- | --- | --- |
+| BWIN 2026-09-14 12:13 | 31.16 | 31.95 |
+| LITE 2026-09-21 10:07 | 954.53 | ~964 |
+| SNOW 2026-09-22 10:23 | 334.28 | ~338.5 |
+
+Price was above the stop each time, where a correctly-sided sell stop is an
+ordinary order. The fourth attempt, SNDK, failed for the reason in (3).
+
+**The refusals were the lucky half.** A naked long trading **below** its stop
+makes that buy stop valid, and the buy take-profit limit, resting above the
+market, is marketable. The "protection" would have bought the position again
+at the worst moment. It never happened: all four refusals were at prices where
+the buy stop was invalid. SNOW, taken over by hand on 09-22, was 1.3% above its
+stop when the attempt was made.
+
+The correctly-sided order is proven. The scale-out's cancel-replace placed the
+same standalone pair with `buy` as the entry side eleven times from 2026-09-08
+to 2026-09-11, and the broker accepted all eleven.
+
+### 2. The kill switch reached none of the three direct broker calls
+
+The kill switch lives in the guardrails (`buildLiveTradingConfig` ORs both
+switches into a blocking rule), and three order paths call the broker without
+going through them:
+
+- the **re-arm** (`webullPlaceStandaloneBracket`). Its doc comment said it
+  went through the guardrails "which fail `kill_switch`". Only the breach close
+  does. SNDK's re-arm reached the broker at 10:31:05 on 09-22, 2½ minutes into
+  the halt;
+- the **stop ratchet** (`webullReplaceOrder`). "Reducing risk, so no entry
+  gate", and the gate it lacked was the kill switch too. It moved a LITE stop
+  at 10:27:40 on 09-21, twenty minutes into the halt. No LITE stop rested from
+  10:07 to 10:18, so the leg it moved was very likely one the operator had just
+  set;
+- the **scale-out's bracket resize** (`webullReplaceOrders`, and the
+  cancel-replace fallback). The partial sell after it runs the guardrails and
+  was always refused under a halt. So a halted account would have had its
+  bracket cut to the remainder, then nothing sold, leaving the partial without
+  a stop. The scale-out is off in production, so this never happened.
+
+The User Guide promised the opposite: an engaged kill switch "freezes **all**
+automated live order placement — exits included … the right tool for 'hands
+off, I'm trading this account manually in Webull'".
+
+### 3. The stop-only re-arm could never be accepted
+
+When the take-profit still rested and only the stop was gone, the re-arm placed
+a stop **alone**, so as not to stack a second take-profit. The broker counts
+shares held **minus** shares already committed to resting exits
+(`committedProtectiveQuantity`, measured on FCX 2026-09-08), and the
+take-profit commits all of them. No stop of any size fits under it. SNDK's
+refusal is that rule. A lone stop, had it been accepted, would also have left
+an orphan: not linked to the old take-profit, so a stop fill left a GTC sell
+resting over shares no longer held.
+
+### 4. The ratchet decided against the ledger, not the resting stop
+
+`evaluateStopAdjust` compares its next step with the position row's stop, and
+the ledger never sees a stop moved by hand at the broker. A stop the operator
+had raised past the app's next step would have been pulled back down to it.
+
+### Why nothing caught it
+
+Three tests asserted the re-arm's intent, `side: 'sell'`, which reads like
+"sell to protect a long" and was the bug. The kill-switch test asserted that
+the **close** was stopped, which it was, and never asserted that the re-arm
+above it was not called. It is the same lesson as 2026-09-21's batch cap: a
+value checked where a caller builds it proves nothing about what the consumer
+receives. These tests now run the intent through the real request builder and
+assert the side on the wire.
+
+### The change
+
+- **`protectiveBracketIntent(symbol, positionSide, quantity)`** in
+  `providers/webull/orders.ts`, the one derivation of a protective bracket's
+  intent. The re-arm, the scale-out's rollback and the manual route all call
+  it.
+- **The protection sweep reads the kill switch** (either page's) before it
+  places or cancels anything. While a switch is engaged it still detects and
+  pages once a day, with `heldByKillSwitch: true` and a reason that says so,
+  and it places, cancels and closes nothing. On the first sweep after release,
+  a position still naked is re-armed.
+- **It never places over an app close already working**
+  (`exitWorking: true`). A timed exit's marketable limit reads as a
+  take-profit, so the sweep could otherwise cancel the app's own close.
+- **Stop gone, take-profit resting:** the take-profit is cancelled
+  (`live_bracket_rearm_target_cancelled`, not paged), and the next sweep,
+  finding nothing resting, re-arms both legs as one OCO pair. A failed cancel
+  pages with the broker's reason, and a leg the sweep cannot classify is never
+  cancelled. None of these count as the broker refusing a stop, so none of
+  them can trigger the breach close.
+- **The ratchet holds under a kill switch.** It journals
+  `live_stop_adjust_held` once per position per day and makes no broker call,
+  but it still records the water mark, which is bookkeeping rather than an
+  order. It also **never loosens the stop actually resting**: when the leg
+  carries a stop price at or past the move, it journals
+  `live_stop_adjust_skipped` once a day and leaves the stop alone.
+- **The scale-out holds under a kill switch** before its resize.
+
+Every call on the autotrade path that places, modifies or cancels an order now
+passes either the guardrails or this check: entries, scale-ins, per-lot second
+lots, timed exits, the breach close and every options order through the
+guardrails; the options chase through its own switch check; and the re-arm,
+the take-profit cancel, the ratchet and the scale-out through this one. Under a
+halt, the app places, moves and cancels nothing, which is what the User Guide
+promised and is now true.
+
+### Pre-committed check
+
+- The next `live_bracket_rearmed` row on a long is the first re-arm this app
+  has ever placed on its own. It must carry `legsPlaced: 'stop+target'`, and
+  the broker's order history must show two SELL legs. A refusal on a long
+  worded "…should be higher than the current market price" is a finding: that
+  is the buy-stop rule, and it means the side is wrong again.
+- Between any `kill_switch_engaged` and its `kill_switch_released`, the journal
+  must carry no `live_bracket_rearmed`, `live_bracket_rearm_target_cancelled`,
+  `live_stop_ratcheted`, `live_scale_out_placed` or `live_time_exit_placed`
+  row, and any `live_position_unprotected` row in that window must read
+  `heldByKillSwitch: true`.

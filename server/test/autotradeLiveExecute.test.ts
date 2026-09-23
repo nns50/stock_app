@@ -18,6 +18,10 @@ vi.mock('../src/providers/webull/orders', async (importOriginal) => {
     // not configured in tests), overridable by the cases that need the broker
     // to accept a protective re-arm.
     webullPlaceStandaloneBracket: vi.fn(async () => ({ ok: false, error: 'Webull is not configured.' })),
+    // Same again: the protection sweep now CANCELS a lone resting take-profit
+    // so both legs can be re-armed together, and the cases that exercise that
+    // need to say whether the broker accepted the cancel.
+    webullCancelOrder: vi.fn(async () => ({ ok: false, error: 'Webull is not configured.' })),
     webullOrderStatus,
     webullOrderStatusBatch: batchFromSingle(webullOrderStatus),
   };
@@ -41,6 +45,8 @@ import {
   webullOrderStatus,
   listWebullOpenOrders,
   webullPlaceStandaloneBracket,
+  webullCancelOrder,
+  buildStandaloneBracketRequest,
   WebullOrderStatus,
 } from '../src/providers/webull/orders';
 import { initDb, db } from '../src/db';
@@ -246,6 +252,8 @@ beforeEach(() => {
   // Back to the module mock's own default: Webull is not configured in tests,
   // so a re-arm fails with a KNOWN error unless a case says otherwise.
   vi.mocked(webullPlaceStandaloneBracket).mockResolvedValue({ ok: false, error: 'Webull is not configured.' });
+  vi.mocked(webullCancelOrder).mockReset();
+  vi.mocked(webullCancelOrder).mockResolvedValue({ ok: false, error: 'Webull is not configured.' });
   vi.mocked(priceMap).mockReset();
   vi.mocked(priceMap).mockImplementation(
     async (positions) => new Map(positions.map((p) => [p.id, { price: 100, stale: false, asOf: 0 }])),
@@ -2770,7 +2778,22 @@ describe('adoptOrphanedLivePositions', () => {
   // that way on 2026-08-25. The machinery to fix it already existed for the
   // scale-out's own rollback.
   // -------------------------------------------------------------------------
-  it('RE-ARMS a confirmed-naked position instead of only paging', async () => {
+  /** The legs as the BROKER receives them: the intent run through the real
+   *  request builder, which is the consumer of the side a caller passes. This
+   *  test used to assert the intent's own `side: 'sell'`, which read as right
+   *  and was the bug — bracketExit flips it, so every re-arm of a long went
+   *  out as a BUY stop and a BUY take-profit (2026-09-12 to 2026-09-23). */
+  const wireLegs = (call: Parameters<typeof webullPlaceStandaloneBracket>) => {
+    const [, intent, target, stop] = call;
+    return buildStandaloneBracketRequest(intent, target, stop)!.new_orders.map((o) => ({
+      comboType: o.combo_type,
+      side: o.side,
+      price: o.order_type === 'LIMIT' ? o.limit_price : o.stop_price,
+      quantity: o.quantity,
+    }));
+  };
+
+  it('RE-ARMS a confirmed-naked position instead of only paging — with SELL legs under a long', async () => {
     await agedProtectionCandidate('AAPL', 10);
     vi.mocked(listWebullOpenOrders).mockResolvedValueOnce({ ok: true, orders: [] });
     vi.mocked(webullPlaceStandaloneBracket).mockResolvedValueOnce({ ok: true, clientComboOrderId: 'GRP-REARM' });
@@ -2778,15 +2801,35 @@ describe('adoptOrphanedLivePositions', () => {
     await checkLiveBracketProtection();
 
     expect(webullPlaceStandaloneBracket).toHaveBeenCalledTimes(1);
-    const [, intent, target, stop] = vi.mocked(webullPlaceStandaloneBracket).mock.calls[0];
-    expect(intent).toMatchObject({ symbol: 'AAPL', side: 'sell', openClose: 'close', quantity: 10 });
-    expect(stop).toBe(95);
-    expect(target).toBe(110);
+    const call = vi.mocked(webullPlaceStandaloneBracket).mock.calls[0];
+    // What reaches Webull: a sell take-profit above and a sell stop below, the
+    // same shape the broker accepted eleven times from the scale-out's rollback.
+    expect(wireLegs(call)).toEqual([
+      { comboType: 'STOP_PROFIT', side: 'SELL', price: '110', quantity: '10' },
+      { comboType: 'STOP_LOSS', side: 'SELL', price: '95', quantity: '10' },
+    ]);
     // Re-armed, so nobody is paged.
     expect(unprotectedEvents()).toHaveLength(0);
     const rearmed = listAutotradeEvents({ stage: 'execution', actions: ['live_bracket_rearmed'] });
     expect(rearmed).toHaveLength(1);
     expect(JSON.parse(rearmed[0].detail ?? '{}')).toMatchObject({ stopPrice: 95, quantity: 10 });
+  });
+
+  it('protects a SHORT with BUY legs — the one helper serves both sides', async () => {
+    // Shorts are off in production, so this is the side no live order has
+    // exercised; the helper must still be right for it rather than right by
+    // accident for the only side anyone has watched.
+    const pos = await agedProtectionCandidate('AAPL', 10);
+    db.prepare("UPDATE positions SET side = 'short', stop_price = 105, target_price = 90 WHERE id = ?").run(pos.id);
+    vi.mocked(listWebullOpenOrders).mockResolvedValueOnce({ ok: true, orders: [] });
+    vi.mocked(webullPlaceStandaloneBracket).mockResolvedValueOnce({ ok: true, clientComboOrderId: 'GRP-SHORT' });
+
+    await checkLiveBracketProtection();
+
+    expect(wireLegs(vi.mocked(webullPlaceStandaloneBracket).mock.calls[0])).toEqual([
+      { comboType: 'STOP_PROFIT', side: 'BUY', price: '90', quantity: '10' },
+      { comboType: 'STOP_LOSS', side: 'BUY', price: '105', quantity: '10' },
+    ]);
   });
 
   // -------------------------------------------------------------------------
@@ -2818,10 +2861,14 @@ describe('adoptOrphanedLivePositions', () => {
   it('CLOSES a naked position whose stop the market has already passed, instead of paging', async () => {
     await agedProtectionCandidate('AAPL', 10); // stop 95, target 110
     vi.mocked(listWebullOpenOrders).mockResolvedValue({ ok: true, orders: [] });
-    // The broker refuses the stop for the real reason: price is through it.
+    // The broker refuses the SELL stop because price is through it. (This mock
+    // used to carry "…should be higher than the current market price", copied
+    // from BWIN's refusal. That wording is the broker's rule for a BUY stop:
+    // BWIN was never through its stop, the re-arm was sending the wrong side.
+    // The wording here is illustrative; fact (2) is the refusal, not the text.)
     vi.mocked(webullPlaceStandaloneBracket).mockResolvedValueOnce({
       ok: false,
-      error: 'The stop price of the stop-loss order should be higher than the current market price.',
+      error: 'stop through the market',
     });
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 94 }) as ReturnType<typeof getProvider>);
     mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-BREACH' });
@@ -2849,7 +2896,7 @@ describe('adoptOrphanedLivePositions', () => {
       recordedStop: 95,
       lastPrice: 94,
       heldAtBroker: 10,
-      rearmOutcome: 'The stop price of the stop-loss order should be higher than the current market price.',
+      rearmOutcome: 'stop through the market',
     });
     expect(unprotectedEvents()).toHaveLength(0);
   });
@@ -2956,16 +3003,16 @@ describe('adoptOrphanedLivePositions', () => {
     expect(JSON.parse(unprotectedEvents()[0].detail ?? '{}')).toMatchObject({ rearmOutcome: 'unanswered' });
   });
 
-  it('the kill switch stops the close, and detection keeps running', async () => {
-    // The split this sweep's header now states: it RUNS regardless of the kill
+  it('the kill switch stops EVERY order here — re-arm, cancel and close — and detection keeps running', async () => {
+    // The split this sweep's header states: it RUNS regardless of the kill
     // switch, because a halted account still needs to know a position is naked,
-    // but it cannot ACT — the close goes through the shared guardrails, which
-    // fail kill_switch. Pinned because it is the operator's one lever over a
-    // path that otherwise sells without them, and it was found by a test
-    // failing for this reason rather than by design.
+    // but it cannot ACT. This test used to prove only the CLOSE was stopped
+    // (the close runs the guardrails) while the re-arm above it went straight
+    // to the broker — and did, through both of the operator's halts on
+    // 2026-09-21 and 09-22. The assertion that matters is the first one.
     await agedProtectionCandidate('AAPL', 10);
     vi.mocked(listWebullOpenOrders).mockResolvedValue({ ok: true, orders: [] });
-    vi.mocked(webullPlaceStandaloneBracket).mockResolvedValueOnce({ ok: false, error: 'stop through the market' });
+    vi.mocked(webullPlaceStandaloneBracket).mockResolvedValue({ ok: false, error: 'stop through the market' });
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 94 }) as ReturnType<typeof getProvider>);
     mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-NOPE' });
     armedForClose();
@@ -2973,11 +3020,46 @@ describe('adoptOrphanedLivePositions', () => {
 
     const outcomes = await checkLiveBracketProtection();
 
+    expect(webullPlaceStandaloneBracket).not.toHaveBeenCalled();
+    expect(webullCancelOrder).not.toHaveBeenCalled();
     expect(closeOrders()).toHaveLength(0);
-    // Detected and reported, just not acted on.
-    expect(outcomes[0]).toMatchObject({ protectedAtBroker: false, heldAtBroker: 10 });
+    // Detected and reported, just not acted on — and the report says why.
+    expect(outcomes[0]).toMatchObject({ protectedAtBroker: false, heldAtBroker: 10, heldByKillSwitch: true });
     expect(unprotectedEvents()).toHaveLength(1);
-    expect(JSON.parse(unprotectedEvents()[0].detail ?? '{}').breachCloseFailed).toMatch(/kill_switch/);
+    const detail = JSON.parse(unprotectedEvents()[0].detail ?? '{}');
+    expect(detail).toMatchObject({ heldByKillSwitch: true, rearmAttempted: false });
+    expect(detail.breachCloseFailed).toBeUndefined();
+    expect(String(detail.reason)).toMatch(/kill switch is engaged, so nothing was placed, cancelled or closed/);
+  });
+
+  it("the TRADE page's kill switch holds it too — both switches, one derivation", async () => {
+    // buildLiveTradingConfig ORs the two switches for the guardrails; the sweep
+    // reads the same function, so a halt from either page is a halt here.
+    await agedProtectionCandidate('AAPL', 10);
+    vi.mocked(listWebullOpenOrders).mockResolvedValue({ ok: true, orders: [] });
+    setTradingConfig({ killSwitch: true });
+
+    const outcomes = await checkLiveBracketProtection();
+
+    expect(webullPlaceStandaloneBracket).not.toHaveBeenCalled();
+    expect(outcomes[0]).toMatchObject({ heldByKillSwitch: true });
+  });
+
+  it('re-arms on the first sweep after the switch is released', async () => {
+    // Held, not forgotten: releasing the halt with the position still naked is
+    // exactly when the app should put protection back.
+    await agedProtectionCandidate('AAPL', 10);
+    vi.mocked(listWebullOpenOrders).mockResolvedValue({ ok: true, orders: [] });
+    setAutotradeConfig({ killSwitch: true });
+    await checkLiveBracketProtection();
+    expect(webullPlaceStandaloneBracket).not.toHaveBeenCalled();
+
+    setAutotradeConfig({ killSwitch: false });
+    vi.mocked(webullPlaceStandaloneBracket).mockResolvedValueOnce({ ok: true, clientComboOrderId: 'GRP-AFTER' });
+    await checkLiveBracketProtection();
+
+    expect(webullPlaceStandaloneBracket).toHaveBeenCalledTimes(1);
+    expect(listAutotradeEvents({ stage: 'execution', actions: ['live_bracket_rearmed'] })).toHaveLength(1);
   });
 
   it('still pages when the close itself is rejected — the position really is naked', async () => {
@@ -2998,43 +3080,133 @@ describe('adoptOrphanedLivePositions', () => {
     });
   });
 
-  it('re-arms the STOP ALONE when the take-profit is still resting', async () => {
-    // The branch the first version of the re-arm walked straight past. Two
-    // states reach the re-arm: nothing resting at all, and the TARGET resting
-    // with only the stop gone — which is the state classifyExitLeg was added to
-    // detect in the first place ("a position whose STOP was cancelled while its
-    // TARGET still rests"). Passing pos.targetPrice in that second case puts a
-    // SECOND take-profit limit on the book for the same 10 shares at the same
-    // $110. Price reaches 110, both fill, and the account is short 10 shares
-    // nobody opened — and it fires on a WINNER, at the price the trade is aimed
-    // at, so it is the likely outcome rather than the unlucky one.
+  // -------------------------------------------------------------------------
+  // THE STOP IS GONE AND THE TAKE-PROFIT STILL RESTS (rewritten 2026-09-23).
+  //
+  // This used to re-arm the stop ALONE, to avoid stacking a second take-profit
+  // on the working one. The broker can never accept that: it counts shares
+  // held MINUS shares resting exits already commit (committedProtectiveQuantity,
+  // measured on FCX 2026-09-08), and the take-profit commits all of them. SNDK's
+  // attempt on 2026-09-22 was refused. Cancel-then-place is the only order the
+  // broker permits, so the sweep cancels the take-profit, and the next sweep —
+  // finding nothing resting — re-arms both legs as one OCO pair.
+  // -------------------------------------------------------------------------
+  const lonelyTarget = () =>
+    restingLeg({ clientOrderId: 'TGT-1', comboType: 'STOP_PROFIT', orderType: 'LIMIT', limitPrice: 110 });
+
+  it('cancels a lonely take-profit, then re-arms BOTH legs on the next sweep', async () => {
     await agedProtectionCandidate('AAPL', 10);
-    vi.mocked(listWebullOpenOrders).mockResolvedValueOnce({
-      ok: true,
-      orders: [restingLeg({ comboType: 'STOP_PROFIT', orderType: 'LIMIT', limitPrice: 110 })],
+    vi.mocked(listWebullOpenOrders)
+      .mockResolvedValueOnce({ ok: true, orders: [lonelyTarget()] })
+      .mockResolvedValueOnce({ ok: true, orders: [] }); // next sweep: the cancel landed
+    vi.mocked(webullCancelOrder).mockResolvedValueOnce({ ok: true });
+    vi.mocked(webullPlaceStandaloneBracket).mockResolvedValueOnce({ ok: true, clientComboOrderId: 'GRP-BOTH' });
+
+    const first = await checkLiveBracketProtection();
+
+    // Sweep 1: the take-profit is cancelled and NOTHING is placed over it.
+    expect(webullCancelOrder).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(webullCancelOrder).mock.calls[0][1]).toBe('TGT-1');
+    expect(webullPlaceStandaloneBracket).not.toHaveBeenCalled();
+    expect(first[0]).toMatchObject({ targetCancelled: ['TGT-1'] });
+    const cancelledRows = listAutotradeEvents({
+      stage: 'execution',
+      actions: ['live_bracket_rearm_target_cancelled'],
     });
-    vi.mocked(webullPlaceStandaloneBracket).mockResolvedValueOnce({ ok: true, clientComboOrderId: 'GRP-STOP' });
+    expect(cancelledRows).toHaveLength(1);
+    expect(JSON.parse(cancelledRows[0].detail ?? '{}')).toMatchObject({ cancelled: ['TGT-1'], heldAtBroker: 10 });
+    // The repair is under way, so nobody is paged for it.
+    expect(unprotectedEvents()).toHaveLength(0);
 
     await checkLiveBracketProtection();
 
+    // Sweep 2: both legs, as one pair, on the SELL side.
     expect(webullPlaceStandaloneBracket).toHaveBeenCalledTimes(1);
-    const [, intent, target, stop] = vi.mocked(webullPlaceStandaloneBracket).mock.calls[0];
-    expect(intent).toMatchObject({ symbol: 'AAPL', side: 'sell', openClose: 'close', quantity: 10 });
-    expect(stop).toBe(95);
-    // The whole assertion: NO second take-profit leg.
-    expect(target).toBeUndefined();
+    expect(wireLegs(vi.mocked(webullPlaceStandaloneBracket).mock.calls[0])).toEqual([
+      { comboType: 'STOP_PROFIT', side: 'SELL', price: '110', quantity: '10' },
+      { comboType: 'STOP_LOSS', side: 'SELL', price: '95', quantity: '10' },
+    ]);
     const rearmed = listAutotradeEvents({ stage: 'execution', actions: ['live_bracket_rearmed'] });
-    expect(rearmed).toHaveLength(1);
-    expect(JSON.parse(rearmed[0].detail ?? '{}')).toMatchObject({
-      legsPlaced: 'stop',
-      targetAlreadyResting: true,
-    });
+    expect(JSON.parse(rearmed[0].detail ?? '{}')).toMatchObject({ legsPlaced: 'stop+target' });
     expect(unprotectedEvents()).toHaveLength(0);
   });
 
+  it('never places a stop ALONE over a resting take-profit — the order the broker refused on SNDK', async () => {
+    await agedProtectionCandidate('AAPL', 10);
+    vi.mocked(listWebullOpenOrders).mockResolvedValue({ ok: true, orders: [lonelyTarget()] });
+    vi.mocked(webullCancelOrder).mockResolvedValue({ ok: true });
+
+    await checkLiveBracketProtection();
+    await checkLiveBracketProtection(); // the cancel has not landed yet: still no placement
+
+    expect(webullPlaceStandaloneBracket).not.toHaveBeenCalled();
+  });
+
+  it('pages, placing nothing, when the take-profit cannot be cancelled', async () => {
+    await agedProtectionCandidate('AAPL', 10);
+    vi.mocked(listWebullOpenOrders).mockResolvedValueOnce({ ok: true, orders: [lonelyTarget()] });
+    vi.mocked(webullCancelOrder).mockResolvedValueOnce({ ok: false, error: 'order already filled' });
+
+    const outcomes = await checkLiveBracketProtection();
+
+    expect(webullPlaceStandaloneBracket).not.toHaveBeenCalled();
+    expect(outcomes[0].breachClose).toBeUndefined();
+    const detail = JSON.parse(unprotectedEvents()[0].detail ?? '{}');
+    expect(String(detail.reason)).toMatch(/Cancelling the resting take-profit to make room for a stop failed/);
+    expect(String(detail.reason)).toMatch(/order already filled/);
+    // A failed CANCEL is not the broker refusing a stop at the recorded price,
+    // so it must not stand in for fact (2) of the breach close.
+    expect(detail.rearmAttempted).toBe(false);
+  });
+
+  it('cancels nothing it cannot classify', async () => {
+    // A take-profit beside a leg this sweep cannot read. Cancelling it would be
+    // a guess about somebody's order; the page says so instead.
+    await agedProtectionCandidate('AAPL', 10);
+    vi.mocked(listWebullOpenOrders).mockResolvedValueOnce({
+      ok: true,
+      orders: [lonelyTarget(), restingLeg({ clientOrderId: 'ODD', comboType: 'NORMAL', orderType: 'MARKET' })],
+    });
+
+    await checkLiveBracketProtection();
+
+    expect(webullCancelOrder).not.toHaveBeenCalled();
+    expect(webullPlaceStandaloneBracket).not.toHaveBeenCalled();
+    expect(String(JSON.parse(unprotectedEvents()[0].detail ?? '{}').reason)).toMatch(/could not be classified/);
+  });
+
+  it("never cancels or stacks over a close the app already has working — the 'take-profit' may BE that close", async () => {
+    // A timed exit's marketable limit reads as a LIMIT sell, which classifies
+    // as a take-profit. Cancelling it would undo the app's own close; stacking
+    // a bracket on it is refused as a reversal, or sells twice if both fill.
+    const pos = await agedProtectionCandidate('AAPL', 10);
+    const close = createIntent(
+      {
+        symbol: 'AAPL',
+        assetKind: 'stock',
+        side: 'sell',
+        openClose: 'close',
+        quantity: 10,
+        orderType: 'limit',
+        limitPrice: 99,
+      },
+      'working-close-tp',
+    );
+    recordLiveExitOrder({ intentId: close.id, symbol: 'AAPL', riskProfile: 'MODERATE', positionId: pos.id });
+    vi.mocked(listWebullOpenOrders).mockResolvedValueOnce({
+      ok: true,
+      orders: [restingLeg({ clientOrderId: 'working-close-tp', comboType: undefined, orderType: 'LIMIT' })],
+    });
+
+    const outcomes = await checkLiveBracketProtection();
+
+    expect(webullCancelOrder).not.toHaveBeenCalled();
+    expect(webullPlaceStandaloneBracket).not.toHaveBeenCalled();
+    expect(outcomes[0]).toMatchObject({ exitWorking: true });
+    expect(String(JSON.parse(unprotectedEvents()[0].detail ?? '{}').reason)).toMatch(/close the app placed/);
+  });
+
   it('re-arms BOTH legs when nothing at all is resting', async () => {
-    // The other side of the branch above, pinned so the narrowing can't creep
-    // into the genuinely naked case and leave a position with no target.
     await agedProtectionCandidate('AAPL', 10);
     vi.mocked(listWebullOpenOrders).mockResolvedValueOnce({ ok: true, orders: [] });
     vi.mocked(webullPlaceStandaloneBracket).mockResolvedValueOnce({ ok: true, clientComboOrderId: 'GRP-BOTH' });
@@ -3045,10 +3217,7 @@ describe('adoptOrphanedLivePositions', () => {
     expect(stop).toBe(95);
     expect(target).toBe(110);
     const rearmed = listAutotradeEvents({ stage: 'execution', actions: ['live_bracket_rearmed'] });
-    expect(JSON.parse(rearmed[0].detail ?? '{}')).toMatchObject({
-      legsPlaced: 'stop+target',
-      targetAlreadyResting: false,
-    });
+    expect(JSON.parse(rearmed[0].detail ?? '{}')).toMatchObject({ legsPlaced: 'stop+target' });
   });
 
   it('pages when the re-arm FAILS, and says why', async () => {

@@ -447,6 +447,42 @@ export function buildStandaloneBracketRequest(
 }
 
 /**
+ * The intent that PROTECTS a held position through buildStandaloneBracketRequest
+ * and webullPlaceStandaloneBracket. One derivation, because every caller that
+ * wrote its own had to get a double inversion right, and one did not.
+ *
+ * `side` is the position's ENTRY side (buy for a long) because bracketExit flips
+ * it: the legs rest on the closing side. Hand it the CLOSING side and every leg
+ * comes out inverted. checkLiveBracketProtection's automatic re-arm did exactly
+ * that from 2026-09-12 to 2026-09-23: for a long it sent a BUY stop at the
+ * recorded stop and a BUY take-profit limit at the target. The broker refused
+ * every one — "The stop price of the stop-loss order should be higher than the
+ * current market price", which is its rule for a BUY stop. That wording was read
+ * at the time as "the stop is already through the market"; the minute bars say
+ * otherwise. Price was ABOVE the recorded stop at each refusal (BWIN 31.95 vs
+ * 31.16 on 09-14, LITE ~964 vs 954.53 on 09-21, SNOW ~338.5 vs 334.28 on 09-22),
+ * where a correctly-sided sell stop is an ordinary order.
+ *
+ * The refusals were the lucky half. A naked long trading BELOW its stop makes
+ * that buy stop valid, and the buy take-profit limit, sitting above the market,
+ * fills at once: the "protection" would have bought more of a losing position.
+ *
+ * The tests assert the side that reaches the wire (run the intent through
+ * buildStandaloneBracketRequest), never the side a caller passed in — asserting
+ * the input is how three passing tests pinned the inverted one.
+ */
+export function protectiveBracketIntent(symbol: string, positionSide: 'long' | 'short', quantity: number): OrderIntent {
+  return {
+    symbol: symbol.trim().toUpperCase(),
+    assetKind: 'stock',
+    side: positionSide === 'short' ? 'sell' : 'buy',
+    openClose: 'close',
+    quantity,
+    orderType: 'limit',
+  };
+}
+
+/**
  * Place a standalone bracket over shares already held. THIS SUBMITS LIVE
  * ORDERS — same contract as webullPlaceOrder: the caller owns the gating.
  */

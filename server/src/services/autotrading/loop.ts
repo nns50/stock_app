@@ -403,8 +403,11 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     // only an unconfirmed or failed re-arm still pages a human. This comment
     // said "read-only … reports and never acts" for a day after that shipped;
     // it is load-bearing here because the call sits above the entry gates, so a
-    // reader deciding what may run before them needs to know it writes. Caught
-    // so a broker hiccup here can't take down the rest of the tick.
+    // reader deciding what may run before them needs to know it writes. Since
+    // 2026-09-23 it reads the kill switch itself and, while either switch is
+    // engaged, detects and reports without placing or cancelling anything —
+    // before that it kept sending orders through halts. Caught so a broker
+    // hiccup here can't take down the rest of the tick.
     try {
       await checkLiveBracketProtection();
     } catch (e) {
@@ -416,7 +419,9 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     // a tick, so running it second would delay every stop move by a cycle; and
     // the time exits can close the position outright, after which there is no
     // stop left to move. Reducing risk (it only ever tightens), so no entry
-    // gate — it has its own liveTrailingEnabled flag and session check.
+    // gate — it has its own liveTrailingEnabled flag and session check, and it
+    // holds while a kill switch is engaged (it replaces the stop directly, not
+    // through the guardrails, so it reads the switch itself).
     let liveStopAdjustOutcomes: Awaited<ReturnType<typeof checkLiveEquityStopAdjusts>> = [];
     try {
       liveStopAdjustOutcomes = await checkLiveEquityStopAdjusts();
@@ -428,7 +433,8 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     // the exits first would mean a position that qualified for both never banks
     // anything — the timer would take the whole thing at whatever R it happened
     // to be. Reducing risk, so it needs no entry gate; it has its own
-    // liveScaleOutEnabled flag and session check.
+    // liveScaleOutEnabled flag and session check, and it holds while a kill
+    // switch is engaged (its bracket resize calls the broker directly).
     let liveScaleOutOutcomes: Awaited<ReturnType<typeof checkLiveEquityScaleOuts>> = [];
     try {
       liveScaleOutOutcomes = await checkLiveEquityScaleOuts();

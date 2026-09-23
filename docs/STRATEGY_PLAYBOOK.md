@@ -1695,9 +1695,13 @@ force-close that can't confirm the position's resting stop is actually gone **do
 place**, because a close sitting next to a live stop can fill twice and leave a long
 short. An option that expired **in the money** is left open and flagged rather than booked
 at a guessed price, because it was exercised into stock the app doesn't track. And a live
-position the broker shows **no resting stop** for is reported, never silently re-armed —
-a replacement placed on a check that merely failed to *see* the original would leave two
-stops on one position and sell it twice.
+position the broker shows **no resting stop** for is re-armed only when the broker
+*confirms* the shares are still held and its order book reads cleanly. It is never re-armed
+on a check that merely failed to *see* the original, because a replacement next to a live
+stop sells the position twice. It is never re-armed over a close already working, and never
+while a kill switch is engaged. **The kill switch is the tool for trading a position by
+hand:** engage it first, then change the bracket in Webull. While it is on, the app places,
+moves and cancels nothing on your positions (see the [User Guide](USER_GUIDE.md)).
 
 **Caps you set by hand stay yours.** The dollar guardrails — per-order
 notional and the daily-loss limit — are normally derived from account equity,

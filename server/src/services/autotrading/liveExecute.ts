@@ -24,6 +24,7 @@ import {
   webullReplaceOrder,
   webullReplaceOrders,
   webullPlaceStandaloneBracket,
+  protectiveBracketIntent,
   isExitLeg,
   exitLegKind,
   buildBracketResizePatches,
@@ -3158,6 +3159,17 @@ export interface BracketProtectionOutcome {
    *  Asserted by the tests at the CONSUMER — the outcome the loop sees — rather
    *  than only on the helper that places the order. */
   breachClose?: { requested: boolean; lastPrice: number; reason?: string };
+  /** A kill switch was engaged, so nothing was placed, cancelled or closed —
+   *  the position was detected and reported only. */
+  heldByKillSwitch?: true;
+  /** A close the app placed is still working on this position, so nothing was
+   *  stacked on top of it (a protective order over shares a close already
+   *  commits is refused as a reversal, or oversells if both fill). */
+  exitWorking?: true;
+  /** The stop was gone while the take-profit rested: these take-profit legs
+   *  were cancelled so the next sweep can re-arm BOTH legs together, the only
+   *  shape the broker accepts over shares a resting leg already commits. */
+  targetCancelled?: string[];
 }
 
 /**
@@ -3173,9 +3185,17 @@ export interface BracketProtectionOutcome {
  *
  * It still RUNS regardless of the kill switch, for the same reason the
  * reconcilers do — a halted account still needs to know a real position is
- * sitting there unprotected — but the switch stops it acting: both the re-arm
- * and the close go through the shared guardrails, which fail `kill_switch`.
- * Detection is free and always on; placement is not.
+ * sitting there unprotected — but the switch stops it acting. Detection is free
+ * and always on; placement is not.
+ *
+ * That paragraph used to say the re-arm and the close "go through the shared
+ * guardrails, which fail kill_switch". Only the close does. The re-arm called
+ * webullPlaceStandaloneBracket directly, which checks nothing, so it kept
+ * sending orders through every halt: SNDK's reached the broker at 10:31:05 on
+ * 2026-09-22, two and a half minutes after the switch was engaged, while the
+ * operator was closing positions by hand. The switch is now read HERE, before
+ * anything is placed or cancelled (`halted` below), from the same
+ * buildLiveTradingConfig the guardrails read — both switches, one derivation.
  *
  * Attribution caveat, stated rather than papered over: the scan matches by
  * symbol and side, so it cannot tell one position's stop from another order on
@@ -3212,6 +3232,12 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
     return intentId !== null && (getIntent(intentId)?.isBracket ?? false);
   });
   if (candidates.length === 0) return [];
+
+  // Either kill switch (this page's or the Trade page's), read from the SAME
+  // derivation the guardrails use, so this sweep and every guarded order agree
+  // on whether the account is halted. Read once: a switch flipped mid-sweep is
+  // honoured from the next tick, the same granularity the loop's own gates have.
+  const halted = buildLiveTradingConfig(cfg).killSwitch;
 
   const open = await listWebullOpenOrders(accountId);
   if (!open.ok) return []; // couldn't ask — say nothing, retry next tick
@@ -3367,45 +3393,98 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
     // same reason the scale-out does not retry one — a second bracket on top of
     // a possibly-live one is two stops against one position.
     //
-    // RE-ARM ONLY THE LEG THAT IS MISSING (2026-09-12, same day as the re-arm).
+    // THE SIDE (2026-09-23). The intent comes from protectiveBracketIntent, the
+    // one derivation every standalone bracket now shares. This branch built its
+    // own and handed over the CLOSING side, which bracketExit inverts again, so
+    // for eleven days every re-arm of a long was a BUY stop plus a BUY
+    // take-profit limit. See that helper for the record and the hazard.
     //
-    // Two branches reach here, and the first version of this treated them as
-    // one: no legs resting at all, and the TARGET still resting with only the
-    // stop gone (the very case the classifier above was added to catch — see
-    // its comment, "a position whose STOP was cancelled while its TARGET still
-    // rests"). Re-arming a FULL bracket in the second case stacks a second
-    // take-profit limit on top of the one already working, for the same shares,
-    // at the same price. Price reaches the target, BOTH sell, and the account is
-    // short a position nobody opened — the accidental short that
-    // unreadableOpenOrders' own comment describes and that cancelReplace.ts's
-    // five-step ordering exists to avoid, except placed deliberately and at the
-    // price the trade is designed to reach, so it fires on WINNERS.
+    // FOUR STATES STOP IT, each one something the broker or the operator has
+    // already shown us (2026-09-23):
     //
-    // So the target is passed only when nothing is holding that side. What is
-    // left behind either way is the orphan pairing: the re-armed stop carries
-    // its own combo id, so it is not OCO with the old target leg, and a stop
-    // fill leaves that leg resting. That is the state the position is ALREADY
-    // in (it is what made this alarm fire), it is strictly better than having no
-    // stop, and the close path clears resting exit legs before it places
-    // anything (clearRestingBracket above). It is journalled so it is visible
-    // rather than assumed.
+    //  1. A KILL SWITCH. It is the operator's "hands off, I am trading this by
+    //     hand", and this branch placed orders through two halts before it read
+    //     the switch at all.
+    //  2. A CLOSE ALREADY WORKING. The app's own close commits these shares; a
+    //     protective order on top is refused as a reversal, or sells the
+    //     position twice if both fill. The close is the protection of record.
+    //  3. A TAKE-PROFIT STILL RESTING WITH ITS STOP GONE. This used to re-arm the
+    //     stop ALONE (so as not to stack a second take-profit on the working
+    //     one), and the broker can never accept that: it counts shares held MINUS
+    //     shares resting exits already commit (committedProtectiveQuantity,
+    //     measured on FCX 2026-09-08), and the take-profit commits all of them.
+    //     SNDK's attempt on 2026-09-22 was refused. Cancel-then-place is the only
+    //     order the broker permits, so the take-profit is cancelled here and the
+    //     next sweep, finding nothing resting, re-arms BOTH legs as one OCO pair.
+    //     That also retires the orphan the stop-alone design left behind: a stop
+    //     not linked to the old take-profit, so a stop fill left a GTC sell
+    //     resting over shares no longer held.
+    //  4. A LEG IT CANNOT CLASSIFY beside that take-profit. Cancelling an order
+    //     this sweep cannot read is a guess about someone else's order.
+    //
+    // None of the four sets rearmNote. The breach close below treats a non-null
+    // note as the broker REFUSING a stop at the recorded price — the fact that
+    // corroborates the quote — and a hold, a working close or a cancel says
+    // nothing about price.
     let rearmed = false;
     let rearmNote: string | null = null;
-    const targetStillResting = roles.includes('target');
-    const rearmTargetPrice = targetStillResting ? undefined : (pos.targetPrice ?? undefined);
-    if (heldQty !== null && heldQty > 0 && pos.stopPrice !== null && config.trading.placeEnabled) {
+    let actionNote: string | null = null;
+    const canAct = heldQty !== null && heldQty > 0 && pos.stopPrice !== null && config.trading.placeEnabled;
+    if (canAct && halted) {
+      outcome.heldByKillSwitch = true;
+    } else if (canAct && pendingExitPositionIds.has(pos.id)) {
+      outcome.exitWorking = true;
+    } else if (canAct && roles.includes('target')) {
+      if (roles.some((r) => r !== 'target')) {
+        actionNote =
+          'A resting leg beside the take-profit could not be classified, so nothing was cancelled to make room for a stop.';
+      } else {
+        const cancelled: string[] = [];
+        let cancelError: string | null = null;
+        // restingExitOrders only returns legs that carry a client order id.
+        for (const leg of restingLegs) {
+          const c = await webullCancelOrder(accountId, leg.clientOrderId!);
+          if (!c.ok) {
+            cancelError = `${leg.clientOrderId}: ${c.error ?? 'cancel failed'}`;
+            break;
+          }
+          cancelled.push(leg.clientOrderId!);
+        }
+        if (cancelled.length > 0) outcome.targetCancelled = cancelled;
+        if (cancelError === null) {
+          logAutotradeEvent({
+            symbol,
+            stage: 'execution',
+            action: 'live_bracket_rearm_target_cancelled',
+            detail: {
+              positionId: pos.id,
+              heldAtBroker: heldQty,
+              cancelled,
+              recordedStop: pos.stopPrice,
+              targetPrice: pos.targetPrice,
+              reason:
+                "the position's stop was gone while its take-profit still rested, and the broker refuses a stop " +
+                'added over shares the take-profit already commits — the take-profit was cancelled so the next ' +
+                'sweep re-arms both legs together',
+            },
+            riskProfile: getLiveEntryOrderForPosition(pos.id)?.riskProfile ?? cfg.riskProfile,
+          });
+          // Not paged: the repair is under way and the next sweep either re-arms
+          // both legs or pages with the broker's reason.
+          continue;
+        }
+        actionNote =
+          `Cancelling the resting take-profit to make room for a stop failed (${cancelError})` +
+          (cancelled.length > 0 ? ` after ${cancelled.length} leg(s) were already cancelled` : '') +
+          '.';
+      }
+    } else if (canAct) {
+      const quantity = Math.min(pos.remainingQuantity, heldQty);
       const rearm = await webullPlaceStandaloneBracket(
         accountId,
-        {
-          symbol,
-          assetKind: 'stock',
-          side: pos.side === 'short' ? 'buy' : 'sell',
-          openClose: 'close',
-          quantity: Math.min(pos.remainingQuantity, heldQty),
-          orderType: 'limit',
-        },
-        rearmTargetPrice,
-        pos.stopPrice,
+        protectiveBracketIntent(symbol, pos.side, quantity),
+        pos.targetPrice ?? undefined,
+        pos.stopPrice!,
       );
       rearmed = rearm.ok;
       rearmNote = rearm.ok ? null : rearm.ambiguous ? 'unanswered' : (rearm.error ?? 'unknown');
@@ -3416,19 +3495,14 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
           action: 'live_bracket_rearmed',
           detail: {
             positionId: pos.id,
-            quantity: Math.min(pos.remainingQuantity, heldQty),
+            quantity,
             stopPrice: pos.stopPrice,
             targetPrice: pos.targetPrice,
-            // WHICH legs this placement actually put on the book. 'stop' means a
-            // take-profit was already resting and was deliberately not
-            // duplicated; the re-armed stop is then NOT OCO with it.
-            legsPlaced: targetStillResting ? 'stop' : 'stop+target',
-            targetAlreadyResting: targetStillResting,
+            // WHICH legs this placement put on the book. Always both when the
+            // position has a target: this branch runs only with nothing resting.
+            legsPlaced: pos.targetPrice !== null ? 'stop+target' : 'stop',
             clientComboOrderId: rearm.clientComboOrderId ?? null,
-            reason: targetStillResting
-              ? "position's stop was gone while its take-profit still rested — the stop was re-armed alone, " +
-                'so a second take-profit is not stacked on the working one'
-              : 'position was confirmed naked at the broker — protection re-armed automatically',
+            reason: 'position was confirmed naked at the broker — protection re-armed automatically',
           },
           riskProfile: getLiveEntryOrderForPosition(pos.id)?.riskProfile ?? cfg.riskProfile,
         });
@@ -3438,13 +3512,20 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
 
     // THE STOP IS ALREADY THROUGH THE MARKET — CLOSE, DO NOT RE-ARM (2026-09-15).
     //
-    // A stop cannot be placed where the market has already been. The broker says
-    // so outright, and on 2026-09-14 it did: BWIN was confirmed naked at 12:13
-    // ET, the re-arm above was refused with "The stop price of the stop-loss
-    // order should be higher than the current market price", and this function's
-    // whole response was to page a human. The position stayed naked. It closed
-    // near flat, which was luck — the recorded stop was the decision, price was
-    // past it, and nothing was acting on that.
+    // A stop cannot be placed where the market has already been: the broker
+    // refuses a SELL stop above the market (a BUY stop below it, for a short).
+    // There is no protection left to restore, and the recorded stop was the
+    // decision, so the answer is to close.
+    //
+    // CORRECTED 2026-09-23: the example this was written for was not an example
+    // of it. BWIN, 2026-09-14 12:13 ET, was read as this case because the re-arm
+    // was refused with "The stop price of the stop-loss order should be higher
+    // than the current market price". BWIN was at 31.95 against a 31.16 stop —
+    // nowhere near through it. The refusal was the broker's rule for a BUY stop,
+    // because the re-arm above was sending its legs on the wrong side (see
+    // protectiveBracketIntent). The rule below is still right for the case it
+    // describes; with the side fixed, a refused re-arm is finally a sell stop
+    // the market has passed, which is what fact (2) was meant to mean.
     //
     // PR A's plan said "a standalone bracket at the recorded stop, OR a
     // marketable close if price is already through it". Only the first half was
@@ -3537,9 +3618,11 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
       }
     }
 
-    // Still naked: either the re-arm was not attempted (unreadable account, no
-    // recorded stop, placement disabled) or it failed, and the position is not
-    // through its stop (or the close failed too). NOW page a human.
+    // Still naked: the re-arm was not attempted (unreadable account, no recorded
+    // stop, placement disabled, a kill switch, a close already working, a leg
+    // it could not classify, a take-profit it could not cancel) or it failed,
+    // and the position is not through its stop (or the close failed too). NOW
+    // page a human.
     // Once per position per ET day: this condition persists until a human acts,
     // so journaling every tick would bury it, and journaling once ever would let
     // it go quiet while the position is still naked.
@@ -3562,6 +3645,11 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
           // reader of this row now has.
           rearmAttempted: rearmNote !== null || rearmed,
           rearmOutcome: rearmed ? 'ok' : rearmNote,
+          // The states that stop the sweep acting at all, so a halted or
+          // mid-close position does not read like a failed repair.
+          heldByKillSwitch: outcome.heldByKillSwitch ?? false,
+          exitWorking: outcome.exitWorking ?? false,
+          ...(outcome.targetCancelled ? { targetCancelled: outcome.targetCancelled } : {}),
           // Present only when the position was ALSO through its stop, so the
           // sweep tried to close it and could not. Its absence means the stop
           // was still placeable and the re-arm failed for another reason.
@@ -3574,6 +3662,16 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
                 `${exitSide} order on ${symbol} — its stop may never have been accepted, or was cancelled. `
               : `This position's TAKE-PROFIT leg is still resting on ${symbol}, but its STOP is not. ` +
                 'The position is running with no downside protection while looking like it has a bracket. ') +
+            (outcome.heldByKillSwitch
+              ? 'A kill switch is engaged, so nothing was placed, cancelled or closed. If you are managing ' +
+                'this position by hand, this is expected; if it is still unprotected when the switch is ' +
+                'released, the next sweep re-arms it. '
+              : outcome.exitWorking
+                ? 'A close the app placed is still working on it, so nothing was stacked on top; if that ' +
+                  'close does not fill, these shares have no stop under them. '
+                : actionNote !== null
+                  ? `${actionNote} `
+                  : '') +
             (rearmNote === null
               ? ''
               : rearmNote === 'unanswered'
@@ -3582,8 +3680,8 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
             (heldQty === null
               ? 'The account read FAILED, so it is NOT confirmed that these shares are still held — ' +
                 'a stop that has just filled looks the same from here. Check the broker before acting.'
-              : `The broker confirms ${heldQty} share(s) still held, so this is real. ` +
-                'Check the broker and re-arm protection by hand.'),
+              : `The broker confirms ${heldQty} share(s) still held, so this is real.` +
+                (outcome.heldByKillSwitch ? '' : ' Check the broker and re-arm protection by hand.')),
         },
         riskProfile: getLiveEntryOrderForPosition(pos.id)?.riskProfile ?? cfg.riskProfile,
       });
@@ -4027,15 +4125,9 @@ async function cancelReplaceBracket(
   // abandon the scale-out — back to exactly where we started, protected, with
   // a missed partial. Sell-then-bracket has no such rollback: the shares are
   // already gone and the only remaining move is a forced close.
-  const protectIntent = (quantity: number): OrderIntent => ({
-    symbol,
-    assetKind: 'stock',
-    // The ENTRY side — bracketExit emits the legs on the closing side.
-    side: pos.side === 'short' ? 'sell' : 'buy',
-    openClose: 'close',
-    quantity,
-    orderType: 'limit',
-  });
+  // The shared derivation (it was a local copy here, correctly sided; the
+  // protection sweep's copy was not). One function, so the two cannot drift.
+  const protectIntent = (quantity: number): OrderIntent => protectiveBracketIntent(symbol, pos.side, quantity);
   const rearm = await webullPlaceStandaloneBracket(
     accountId,
     protectIntent(keepQty),
@@ -4134,6 +4226,12 @@ export async function checkLiveEquityScaleOuts(): Promise<LiveScaleOutOutcome[]>
   // Never into pre/after-hours liquidity: this is opportunistic profit-taking,
   // not a protective exit, so it has no business paying a wide spread.
   if (!checkSessionWindow(0).ok) return [];
+  // Nor through a kill switch (2026-09-23). The partial SELL below runs the
+  // guardrails and was always refused under a halt, but the bracket RESIZE
+  // (and the cancel-replace fallback) runs before it and calls the broker
+  // directly — so a halted account would have had its bracket cut to the
+  // remainder and then nothing sold, leaving the partial with no stop.
+  if (buildLiveTradingConfig(cfg).killSwitch) return [];
 
   const open = listAutotradeLivePositions({ status: 'open' });
   if (open.length === 0) return [];
@@ -5158,6 +5256,16 @@ export async function checkLiveEquityStopAdjusts(): Promise<LiveStopAdjustOutcom
   // One read for the sweep: the day does not move between positions, and
   // this is the same persisted baseline the entry path measures against.
   const dailyTarget = evaluateDailyTarget(cfg, getDailyBaseline(), strategyDayFor(etToday()).pnlUsd);
+  // A kill switch holds every broker call below (2026-09-23). The ratchet
+  // replaces the stop leg directly rather than through the guardrails, so the
+  // switch never reached it: on 2026-09-21 it moved a LITE stop to 972.65 at
+  // 10:27:40, twenty minutes into a halt the operator had engaged to manage
+  // positions by hand. The journal shows no LITE stop resting from 10:07 to
+  // 10:18, so the leg it moved was very likely one the operator had set.
+  // "It only ever tightens" is true and beside the point; the switch means
+  // hands off. The water mark below is still kept, because it is bookkeeping,
+  // not an order, and the trail hangs off it once the switch is released.
+  const halted = buildLiveTradingConfig(cfg).killSwitch;
 
   const accountId = cfg.liveAccountId;
   const outcomes: LiveStopAdjustOutcome[] = [];
@@ -5184,6 +5292,34 @@ export async function checkLiveEquityStopAdjusts(): Promise<LiveStopAdjustOutcom
 
     const symbol = pos.symbol.toUpperCase();
     const exitSide: 'buy' | 'sell' = pos.side === 'long' ? 'sell' : 'buy';
+
+    if (halted) {
+      // Once per position per ET day: the decision repeats every tick of the
+      // halt, and the switch's own journal row already dates the halt.
+      if (claimOncePerDay('live_stop_adjust_held', String(pos.id))) {
+        logAutotradeEvent({
+          symbol,
+          stage: 'execution',
+          action: 'live_stop_adjust_held',
+          detail: {
+            positionId: pos.id,
+            kind: decision.kind,
+            from: pos.stopPrice,
+            wanted: decision.newStop,
+            reason: 'a kill switch is engaged — the stop was not moved at the broker',
+          },
+          riskProfile: cfg.riskProfile,
+        });
+      }
+      outcomes.push({
+        symbol,
+        positionId: pos.id,
+        adjusted: false,
+        kind: decision.kind ?? undefined,
+        reason: 'kill switch engaged',
+      });
+      continue;
+    }
 
     const listed = await listWebullOpenOrders(accountId);
     if (!listed.ok) {
@@ -5212,6 +5348,37 @@ export async function checkLiveEquityStopAdjusts(): Promise<LiveStopAdjustOutcom
       });
       outcomes.push({ symbol, positionId: pos.id, adjusted: false, reason: found.reason });
       continue;
+    }
+
+    // NEVER LOOSER THAN WHAT IS ACTUALLY RESTING (2026-09-23). The decision is
+    // made against the LEDGER's stop, and the ledger does not see a stop moved
+    // by hand at the broker. An operator who raised the stop past the app's
+    // next step would have had it pulled back down to that step. A leg that
+    // carries no readable stop price is judged on the ledger alone, as before.
+    const restingStop = found.leg.stopPrice;
+    if (typeof restingStop === 'number' && Number.isFinite(restingStop) && restingStop > 0) {
+      const tighter = pos.side === 'short' ? decision.newStop < restingStop : decision.newStop > restingStop;
+      if (!tighter) {
+        const reason = `the stop resting at the broker (${restingStop}) is already at or past ${decision.newStop}`;
+        if (claimOncePerDay('live_stop_adjust_skipped', String(pos.id))) {
+          logAutotradeEvent({
+            symbol,
+            stage: 'execution',
+            action: 'live_stop_adjust_skipped',
+            detail: {
+              positionId: pos.id,
+              kind: decision.kind,
+              recordedStop: pos.stopPrice,
+              restingStop,
+              wanted: decision.newStop,
+              reason,
+            },
+            riskProfile: cfg.riskProfile,
+          });
+        }
+        outcomes.push({ symbol, positionId: pos.id, adjusted: false, kind: decision.kind ?? undefined, reason });
+        continue;
+      }
     }
 
     const replaced = await webullReplaceOrder(accountId, found.leg.clientOrderId!, { stopPrice: decision.newStop });

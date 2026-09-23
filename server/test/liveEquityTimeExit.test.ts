@@ -43,6 +43,7 @@ import {
   webullReplaceOrders,
   webullPlaceStandaloneBracket,
   listWebullOpenOrders,
+  buildStandaloneBracketRequest,
   WebullOrderStatus,
 } from '../src/providers/webull/orders';
 import { initDb, db } from '../src/db';
@@ -776,7 +777,9 @@ describe('checkLiveBracketProtection', () => {
     const flag = unprotectedFlags();
     expect(flag).toHaveLength(1);
     expect(flag[0].detail ?? '').toMatch(/no resting sell order/i);
-    // Reports only — it must never place anything to "fix" this.
+    // Its only fix is the protective re-arm (refused here: Webull is not
+    // configured). Price is above the stop, so no close is placed and nothing
+    // resting is cancelled.
     expect(mockPlaceOrder).not.toHaveBeenCalled();
     expect(mockCancelOrder).not.toHaveBeenCalled();
   });
@@ -1076,6 +1079,23 @@ describe('checkLiveEquityScaleOuts', () => {
     expect(mockReplaceOrders).not.toHaveBeenCalled();
   });
 
+  it('holds while a kill switch is engaged — the bracket is never resized under a halt', async () => {
+    // The partial SELL runs the guardrails and was always refused under a halt,
+    // but the resize (and the cancel-replace fallback) runs BEFORE it and calls
+    // the broker directly: a halted account would have had its bracket cut to
+    // the remainder and then sold nothing, leaving the partial with no stop.
+    await armed(200);
+    setAutotradeConfig({ killSwitch: true, liveScaleOutCancelReplaceEnabled: true });
+    mockOpenOrders.mockResolvedValue({ ok: true, orders: [restingLeg('STOP-1', 'sl'), restingLeg('TGT-1', 'tp')] });
+    mockReplaceOrders.mockResolvedValue({ ok: false, error: 'not modifiable' });
+
+    expect(await checkLiveEquityScaleOuts()).toEqual([]);
+    expect(mockReplaceOrders).not.toHaveBeenCalled();
+    expect(mockCancelOrder).not.toHaveBeenCalled();
+    expect(mockStandaloneBracket).not.toHaveBeenCalled();
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
   // -----------------------------------------------------------------------
   // ACCEPTED IS NOT APPLIED (2026-09-08).
   //
@@ -1237,6 +1257,13 @@ describe('checkLiveEquityScaleOuts', () => {
       expect(protectIntent).toMatchObject({ symbol: 'AAPL', quantity: keep, side: 'buy' });
       expect(tp).toBe(position.targetPrice ?? undefined);
       expect(sl).toBe(position.stopPrice ?? undefined);
+      // …and what that intent becomes on the wire: SELL legs under the long.
+      // The protection sweep's re-arm passed an intent that looked just as
+      // plausible and went out as BUY legs, so the input alone proves nothing.
+      expect(buildStandaloneBracketRequest(protectIntent, tp, sl)!.new_orders.map((o) => o.side)).toEqual([
+        'SELL',
+        'SELL',
+      ]);
       // ...and only THEN does anything sell. This ordering is the whole fix:
       // reversed, a failed re-bracket leaves shares already sold and unhedged.
       expect(mockPlaceOrder.mock.invocationCallOrder[0]).toBeGreaterThan(
@@ -1832,6 +1859,84 @@ describe('checkLiveEquityStopAdjusts', () => {
     closeInFlightFor(position.id);
     expect(await checkLiveEquityStopAdjusts()).toEqual([]);
     expect(mockReplaceOrder).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // THE KILL SWITCH HOLDS THE RATCHET (2026-09-23).
+  //
+  // The ratchet replaces the stop leg directly, not through the guardrails, so
+  // the switch never reached it. On 2026-09-21 it moved a LITE stop at 10:27:40,
+  // twenty minutes into a halt the operator had engaged to manage positions by
+  // hand. The switch means hands off, whichever direction the move would go.
+  // -------------------------------------------------------------------------
+  it('holds while a kill switch is engaged — no broker call, the water mark still kept', async () => {
+    const { position } = await armed(200);
+    setAutotradeConfig({ killSwitch: true });
+    mockOpenOrders.mockClear();
+    mockOpenOrders.mockResolvedValue({ ok: true, orders: [stopLeg()] });
+    mockReplaceOrder.mockResolvedValue({ ok: true });
+
+    const out = await checkLiveEquityStopAdjusts();
+    await checkLiveEquityStopAdjusts();
+
+    expect(mockReplaceOrder).not.toHaveBeenCalled();
+    expect(mockOpenOrders).not.toHaveBeenCalled();
+    expect(out[0]).toMatchObject({ positionId: position.id, adjusted: false, reason: 'kill switch engaged' });
+    const after = listPositions({ status: 'open', symbol: 'AAPL' })[0];
+    expect(after.stopPrice).toBe(position.stopPrice);
+    // Bookkeeping, not an order: the trail needs the peak once the halt ends.
+    expect(after.bestPriceSinceEntry).toBe(200);
+    const held = listAutotradeEvents({ limit: 50 }).filter((e) => e.action === 'live_stop_adjust_held');
+    expect(held).toHaveLength(1); // once per position per day, not once per tick
+  });
+
+  it("the TRADE page's kill switch holds it too", async () => {
+    await armed(200);
+    setTradingConfig({ killSwitch: true });
+    mockOpenOrders.mockResolvedValue({ ok: true, orders: [stopLeg()] });
+
+    await checkLiveEquityStopAdjusts();
+
+    expect(mockReplaceOrder).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // NEVER LOOSER THAN WHAT IS ACTUALLY RESTING (2026-09-23). The decision is
+  // made against the ledger's stop, which does not see a stop moved by hand at
+  // the broker. From entry 100.5 / stop 95 (1R = 5.5), a 1.5R trail from a 200
+  // peak wants 191.75.
+  // -------------------------------------------------------------------------
+  it('never pulls back a stop that already rests TIGHTER at the broker', async () => {
+    const { position } = await armed(200);
+    mockOpenOrders.mockResolvedValue({
+      ok: true,
+      orders: [openOrder({ clientOrderId: 'STOP-1', comboType: 'STOP_LOSS', stopPrice: 199 })],
+    });
+    mockReplaceOrder.mockResolvedValue({ ok: true });
+
+    const out = await checkLiveEquityStopAdjusts();
+
+    expect(mockReplaceOrder).not.toHaveBeenCalled();
+    expect(out[0]).toMatchObject({ positionId: position.id, adjusted: false });
+    expect(String(out[0].reason)).toMatch(/already at or past/);
+    expect(listPositions({ status: 'open', symbol: 'AAPL' })[0].stopPrice).toBe(position.stopPrice);
+    const skipped = listAutotradeEvents({ limit: 50 }).find((e) => e.action === 'live_stop_adjust_skipped');
+    expect(JSON.parse(skipped?.detail ?? '{}')).toMatchObject({ restingStop: 199, recordedStop: position.stopPrice });
+  });
+
+  it('still tightens a resting stop that is looser than the move', async () => {
+    const { position } = await armed(200);
+    mockOpenOrders.mockResolvedValue({
+      ok: true,
+      orders: [openOrder({ clientOrderId: 'STOP-1', comboType: 'STOP_LOSS', stopPrice: 96 })],
+    });
+    mockReplaceOrder.mockResolvedValue({ ok: true });
+
+    const out = await checkLiveEquityStopAdjusts();
+
+    expect(out[0]).toMatchObject({ positionId: position.id, adjusted: true });
+    expect(mockReplaceOrder).toHaveBeenCalledTimes(1);
+    expect(mockReplaceOrder.mock.calls[0][2].stopPrice).toBeGreaterThan(96);
   });
 
   it('keeps the water mark current even on cycles that move nothing', async () => {
