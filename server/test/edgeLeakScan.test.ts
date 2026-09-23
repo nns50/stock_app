@@ -64,6 +64,7 @@ function trade(over: Partial<LeakTrade> = {}): LeakTrade {
     weekday: 2,
     vwapExtPct: 0.2,
     pctOfRange: 60,
+    stopWidthUsd: 1,
     ...over,
   };
 }
@@ -167,6 +168,27 @@ describe('the round dimension — the leak the operator had to point at', () => 
     const result = scan(bucket(30, 0.2, { round: 2 }), bucket(30, 0.2, { round: 2, book: 'paper' }));
     const round = result.dimensions.find((d) => d.id === 'round');
     expect(round?.buckets.every((b) => b.lever === null)).toBe(true);
+  });
+});
+
+describe('the stop-width cut — one fill against the stop it is measured on (2026-09-23)', () => {
+  it('buckets by dollars per share, leaves options out, and names a code lever for the narrow band', () => {
+    // Live loses on narrow stops and paper does not: an execution cost, which
+    // the bar calls a watch and hands a code lever, never a setting.
+    const live = [
+      ...bucket(20, -0.35, { stopWidthUsd: 0.2 }),
+      ...bucket(20, 0.1, { stopWidthUsd: 3, symbol: 'WIDE' }),
+      ...bucket(5, 0.2, { assetKind: 'options', stopWidthUsd: null, symbol: 'OPT' }),
+    ];
+    const paper = bucket(20, 0.05, { stopWidthUsd: 0.2, book: 'paper' });
+    const dim = scan(live, paper).dimensions.find((d) => d.id === 'stopWidth');
+    expect(dim?.buckets.map((b) => b.bucket).sort()).toEqual(['$2+', '<$0.30']);
+    expect(dim?.uncovered).toBe(5);
+    const narrow = dim?.buckets.find((b) => b.bucket === '<$0.30');
+    expect(narrow?.verdict).toBe('watch');
+    expect(narrow?.lever).toMatchObject({ kind: 'code', field: null, direction: 'safe' });
+    // The wide band made money: no lever.
+    expect(dim?.buckets.find((b) => b.bucket === '$2+')?.lever).toBeNull();
   });
 });
 

@@ -13574,3 +13574,28 @@ side were switched on.
    +0.17R.
 3. `GET /api/journal/exit-replay` reports `scaleOutR` 0, `breakevenTriggerR` 0.25,
    `trailStartR` 0.5 and `trailStopR` 0.5.
+
+## 2026-09-23 (sixteenth) — the scan cuts by stop width
+
+**What the pairs showed.** The full-loss live stops in the (fourteenth) pairs filled well
+through their stop price on the cheapest names: IRD 0.18R, USDE 0.13R and 0.17R, TNON
+0.16R. On names over $100 the same slippage was worth almost nothing. The cause is the
+width, not the name: a stop is about 2.5% of the price in every band, so on a $9 stock it
+is 25 cents wide and four cents of slippage is 16% of R.
+
+| stop width per share | live n | live R | paper n | paper R |
+| --- | ---: | ---: | ---: | ---: |
+| under $0.30 | 9 | −0.32 | 37 | +0.03 |
+| $0.30–0.60 | 6 | −0.05 | 10 | +0.08 |
+| $0.60–2 | 26 | −0.03 | 28 | +0.02 |
+| $2 and over | 61 | +0.09 | 64 | +0.12 |
+
+Nine trades is below the watch bar (10), so nothing here is actionable. The scan had no
+cut that could ever say otherwise. `LeakTrade.stopWidthUsd` now carries the width, read
+from the stop each book's R is measured against: `initialRiskOf` for live, the stop
+paper opened with. It is null for options. The `stopWidth` dimension buckets it
+(`<$0.30`, `$0.30-0.60`, `$0.60-2`, `$2+`). A narrow band that loses live and not on
+paper is a watch whose lever is code: a live-only floor on the stop width in cents.
+
+**Check.** The first scan after the deploy lists `stopWidth` among its dimensions, with
+the live `<$0.30` bucket at 9 trades, verdict `ok`.

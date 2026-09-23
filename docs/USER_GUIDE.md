@@ -1004,7 +1004,7 @@ tabs of one **Analytics** button (top right) — pick a tab, the report loads on
   money, run over **both books at once**. It cuts the record a fixed set of ways — round
   within a symbol-day (first entry, second, third+), entry half-hour and "after 13:00",
   score band, VWAP extension, % of the session's range, exit reason, hold time, symbol,
-  sector, weekday, ML regime, asset, position size — and applies the **same bar** to every
+  sector, weekday, ML regime, asset, position size, stop width per share — and applies the **same bar** to every
   one: a bucket is a **leak** when it has at least 15 trades, its whole 95% interval sits
   below zero, and the **paper book agrees in sign**; **unconfirmed** when paper has fewer
   than 10 trades to say so; a **watch** when it is within 0.05R of the bar with at least

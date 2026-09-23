@@ -1204,6 +1204,42 @@ describe('the execution findings — any occurrence is one', () => {
     });
   });
 
+  // 2026-09-23. The width a cut reads has to be the width the trade's R
+  // divides by, or the cut and the R it averages disagree about the trade.
+  it('reads the stop width from the stop each book measures R against', () => {
+    seedClosedAutotradeSessions({
+      sessions: { '2026-09-10': [{ entryTime: '10:00', exitTime: '10:30', r: 0.4, symbol: 'WID' }] },
+    });
+    // Paper opens 100 -> 95 and is ratcheted to breakeven before it stops out.
+    // Read from the CURRENT stop its width would be zero and it would drop out
+    // of the cut; read from the stop it opened with, it is $5.
+    const p = openPaperPosition({
+      symbol: 'PWID',
+      side: 'buy',
+      quantity: 10,
+      entryPrice: 100,
+      stopPrice: 95,
+      targetPrice: 110,
+      riskAmount: 50,
+      riskProfile: 'MODERATE',
+      rationale: 'fixture',
+    });
+    db.prepare('UPDATE autotrade_paper_positions SET entry_at = ?, stop_price = 100 WHERE id = ?').run(
+      etDateTimeToMs('2026-09-10', '10:05') as number,
+      p.id,
+    );
+    closePaperPosition(p.id, { exitPrice: 100, exitReason: 'stop' });
+
+    const dim = runEdgeLeakScanFromDb({ now: Date.parse('2026-09-11T21:00:00Z') }).dimensions.find(
+      (x) => x.id === 'stopWidth',
+    );
+    // The live fixture risks 100 -> 95: $5 a share, the width initialRiskOf divides by.
+    expect(dim?.buckets.map((b) => b.bucket)).toEqual(['$2+']);
+    expect(dim?.uncovered).toBe(0);
+    // …and paper's ratcheted trade is its control, at the width it opened with.
+    expect(dim?.buckets[0].control?.n).toBe(1);
+  });
+
   it('carries the recency all the way into the finding a route returns', () => {
     // The consumer, not the producer: the tune advisor ranks on these two
     // fields, so what matters is that they survive the trip from the journal
