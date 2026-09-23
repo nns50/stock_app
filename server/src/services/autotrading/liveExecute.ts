@@ -3456,8 +3456,10 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
     //     That also retires the orphan the stop-alone design left behind: a stop
     //     not linked to the old take-profit, so a stop fill left a GTC sell
     //     resting over shares no longer held.
-    //  4. A LEG IT CANNOT CLASSIFY beside that take-profit. Cancelling an order
-    //     this sweep cannot read is a guess about someone else's order.
+    //  4. A LEG IT CANNOT CLASSIFY beside that take-profit, or a LIMIT the
+    //     broker does not label as a bracket's take-profit. Cancelling an order
+    //     this sweep cannot prove is the app's is a guess about someone else's,
+    //     and the likeliest someone else is the operator's own exit.
     //
     // None of the four sets rearmNote. The breach close below treats a non-null
     // note as the broker REFUSING a stop at the recorded price — the fact that
@@ -3472,9 +3474,27 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
     } else if (canAct && pendingExitPositionIds.has(pos.id)) {
       outcome.exitWorking = true;
     } else if (canAct && roles.includes('target')) {
+      // ONLY A LEG THE BROKER LABELS AS A BRACKET'S TAKE-PROFIT IS OURS TO
+      // CANCEL (2026-09-23, from the #637 review). classifyExitLeg falls back
+      // to the order type, so a plain LIMIT on the exit side reads as
+      // 'target' whoever placed it. Every leg of every bracket this app places
+      // carries combo_type STOP_PROFIT or STOP_LOSS (bracketExit), and its
+      // plain orders carry NORMAL; the app's own plain closes never get here,
+      // because a working close takes the branch above. So an exit-side LIMIT
+      // without the STOP_PROFIT label is someone else's order, and the one
+      // this is most likely to be is the operator's hand exit: engage the
+      // switch, cancel the bracket, rest a sell limit in Webull, release the
+      // switch before it fills. Cancelling it would undo the operator's exit
+      // and re-arm the app's bracket over it. So: cancel nothing, and page.
+      const unlabelled = restingLegs.filter((l) => (l.comboType ?? '').toUpperCase() !== 'STOP_PROFIT');
       if (roles.some((r) => r !== 'target')) {
         actionNote =
           'A resting leg beside the take-profit could not be classified, so nothing was cancelled to make room for a stop.';
+      } else if (unlabelled.length > 0) {
+        actionNote =
+          `${unlabelled.length} resting limit order(s) on the ${exitSide} side of ${symbol} are not labelled as a ` +
+          `bracket's take-profit (combo type ${unlabelled.map((l) => l.comboType ?? 'none').join(', ')}), so they may ` +
+          'be orders placed by hand. Nothing was cancelled to make room for a stop.';
       } else {
         const cancelled: string[] = [];
         let cancelError: string | null = null;
