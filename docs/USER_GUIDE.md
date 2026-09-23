@@ -2381,6 +2381,11 @@ because the loop is the only caller that is always flat by the bell, so it is
   (you sold part, or traded the same contract again), and so does a spread. Once the day of
   the close is over, an unmatched one is not checked again, and Recent activity says so once
   (**`live_options_exit_correction_skipped`**), listing the sales of that contract it found.
+  Only sales made **up to the moment the close was booked** count, so a later trade of the
+  same contract can never be taken for it. A close already booked at your fill is not
+  re-checked at all, a restart of the app included. (Until 2026-09-23 a restart re-checked
+  it, and a history read that missed your sale could take a later one or report it
+  unmatched.)
   **A stock stop or target that fills is booked at its fill** (since 2026-09-23). When a
   bracket leg fills, the order check reads the fill from Webull's order lists, and those show
   a filled leg about two minutes late. Meanwhile the position check sees the shares gone. It
@@ -2405,7 +2410,12 @@ because the loop is the only caller that is always flat by the bell, so it is
   stop you placed by hand on LITE on 2026-09-21 stayed at the quote. It keeps checking
   through the day of the close, because the history can lag a sale. Fills that do not add
   up to the position (you sold part, or traded the same stock again) leave the quote in
-  place.
+  place. **Each fill is booked to one exit.** A position you sell in pieces is booked piece
+  by piece: each exit reads only the sales made after the position's previous exit was
+  booked and before this one was, and a fill already booked to an exit is never booked to
+  another. A filled bracket leg likewise closes one exit at most. (Until 2026-09-23 every
+  exit was matched on its own against the whole day's sales, so selling 100 shares as 50 at
+  200 and then 50 at 210 would have booked both pieces at 200.)
   **An estimate that was right is marked confirmed, and one left at the quote says why.**
   When the fill matches the quote to the cent, the exit keeps its price and its note says it
   was confirmed against the broker's fill. When the app cannot correct an estimate for good,

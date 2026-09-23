@@ -25,6 +25,7 @@ import {
   webullOrderStatus,
   webullOrderStatusBatch,
   listBrokerOptionFills,
+  FILL_CLOCK_SLACK_MS,
   type BrokerOptionFill,
 } from '../../providers/webull/orders';
 import { optionTickUsd } from '../trading/optionTick';
@@ -109,7 +110,7 @@ import {
 import { evaluateDailyTarget } from './dailyTarget';
 import { getDailyBaseline } from '../../db/dailyBaseline';
 import { correlatedNotional, sectorNotional, buildSectorOf, RiskCheckContext } from './riskCheck';
-import { listAutotradeEvents, logAutotradeEvent } from '../../db/autotradeEvents';
+import { listAutotradeEvents, listAutotradeEventsInWindow, logAutotradeEvent } from '../../db/autotradeEvents';
 import { dispatchAutotradeNotification } from './notify';
 import { fetchContractQuote, validPremium } from './optionsExecute';
 import { getLivePortfolioSnapshot, combinedLiveOpenRisk, ProbationStatus } from './liveExecute';
@@ -3293,7 +3294,10 @@ async function brokerSyncEstimate(
  * way).
  */
 export function matchHandCloseFill(
-  pos: Pick<LiveOptionsPosition, 'kind' | 'symbol' | 'side' | 'strike' | 'expiration' | 'quantity' | 'entryAt'>,
+  pos: Pick<
+    LiveOptionsPosition,
+    'kind' | 'symbol' | 'side' | 'strike' | 'expiration' | 'quantity' | 'entryAt' | 'exitAt'
+  >,
   fills: BrokerOptionFill[],
   isAppOrder: (clientOrderId: string) => boolean,
 ): { price: number; qty: number; filledAt: number; clientOrderIds: string[] } | null {
@@ -3314,14 +3318,23 @@ export function matchHandCloseFill(
   return null;
 }
 
-/** Every SELL of this exact contract since the position opened, oldest first,
- *  the app's own orders included. The matcher drops those; a skip row lists
- *  them. One filter for both, so what the matcher read and what the row says
- *  it read cannot drift apart. */
+/** Every SELL of this exact contract since the position opened and up to its
+ *  recorded close, oldest first, the app's own orders included. The matcher
+ *  drops those; a skip row lists them. One filter for both, so what the matcher
+ *  read and what the row says it read cannot drift apart.
+ *
+ *  The close bounds it (2026-09-23, from the review of the booking path): a
+ *  closed row's `exitAt` is when the sync saw the contract gone, or the fill it
+ *  was already corrected to, so a sale after it belongs to a later trade of the
+ *  same contract. Without the bound, a pass after a restart (the confirmed set
+ *  is process memory) whose history read missed the original sale matched the
+ *  next same-size sale instead and moved the row's price and day. An open
+ *  position (the sync, deciding how to close it) has no close yet. */
 function contractSells(
-  pos: Pick<LiveOptionsPosition, 'symbol' | 'side' | 'strike' | 'expiration' | 'entryAt'>,
+  pos: Pick<LiveOptionsPosition, 'symbol' | 'side' | 'strike' | 'expiration' | 'entryAt' | 'exitAt'>,
   fills: BrokerOptionFill[],
 ): BrokerOptionFill[] {
+  const until = pos.exitAt === null ? Number.POSITIVE_INFINITY : pos.exitAt + FILL_CLOCK_SLACK_MS;
   return fills
     .filter(
       (f) =>
@@ -3330,9 +3343,37 @@ function contractSells(
         f.optionType === pos.side &&
         Math.abs(f.strike - pos.strike) < 1e-6 &&
         f.expiration === pos.expiration &&
-        f.filledAt >= pos.entryAt,
+        f.filledAt >= pos.entryAt &&
+        f.filledAt <= until,
     )
     .sort((a, b) => a.filledAt - b.filledAt);
+}
+
+/** Closed options positions whose exit is already the broker's own fill, from
+ *  the journal: corrected from the history, or closed by the sync at the fill
+ *  it matched. Durable where confirmedHandCloses is not, so a restart neither
+ *  re-reads them nor states a false "stays an estimate" when the fresh history
+ *  read happens to miss the sale. */
+function handClosesPricedFromFill(now: number): Set<number> {
+  const since = now - HAND_CLOSE_LOOKBACK_MS - 24 * 60 * 60 * 1000;
+  const ids = new Set<number>();
+  for (const e of listAutotradeEventsInWindow({
+    actions: ['live_options_exit_corrected', 'live_options_position_closed'],
+    since,
+  }).events) {
+    try {
+      const d = JSON.parse(e.detail ?? 'null') as {
+        positionId?: unknown;
+        source?: unknown;
+        pricedBy?: unknown;
+      } | null;
+      if (typeof d?.positionId !== 'number') continue;
+      if (e.action === 'live_options_exit_corrected' || d.pricedBy === 'broker_fill') ids.add(d.positionId);
+    } catch {
+      // An unparseable row proves nothing.
+    }
+  }
+  return ids;
 }
 
 /** Hand closes whose booked exit already matches the broker's fill, so the
@@ -3421,8 +3462,9 @@ const HAND_CLOSE_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
  */
 export async function correctHandClosesFromHistory(accountId: string, now: number = Date.now()): Promise<number> {
   if (now - lastHandCloseCorrectionAt < HAND_CLOSE_CORRECTION_INTERVAL_MS) return 0;
+  const pricedFromFill = handClosesPricedFromFill(now);
   const candidates = listHandClosedPositionIds(now - HAND_CLOSE_LOOKBACK_MS).filter(
-    (id) => !confirmedHandCloses.has(id) && !unmatchedHandCloses.has(id),
+    (id) => !confirmedHandCloses.has(id) && !unmatchedHandCloses.has(id) && !pricedFromFill.has(id),
   );
   if (candidates.length === 0) return 0;
   lastHandCloseCorrectionAt = now;
@@ -3498,6 +3540,9 @@ function closeLiveOptionsPositionFromBroker(
     stage: 'execution',
     action: 'live_options_position_closed',
     detail: {
+      // Which position, so a later pass can tell a close already priced from
+      // the broker's fill (handClosesPricedFromFill) from an estimate.
+      positionId: pos.id,
       via: 'broker_sync',
       kind: pos.kind,
       exitPrice,
