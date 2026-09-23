@@ -19,6 +19,7 @@ import {
   webullPlaceOrder,
   webullOrderStatus,
   webullOrderStatusBatch,
+  webullOrderDetail,
   webullCancelOrder,
   listWebullOpenOrders,
   webullReplaceOrder,
@@ -2148,6 +2149,22 @@ export async function runLiveExecution(
   return outcomes;
 }
 
+/** How many acknowledged orders missing from both order lists are looked up
+ *  directly (Order Detail) per reconcile tick. The endpoint is paced at 2
+ *  requests / 2 seconds, so three costs ~3 s of a 60 s tick. */
+export const ORDER_DETAIL_LOOKUPS_PER_TICK = 3;
+
+/** The top-level keys of an undocumented response (or its array length) —
+ *  never its values — for the journal. */
+function responseShape(raw: unknown): string {
+  if (Array.isArray(raw)) return `array(${raw.length})`;
+  if (raw && typeof raw === 'object')
+    return `object{${Object.keys(raw as object)
+      .slice(0, 20)
+      .join(',')}}`;
+  return typeof raw;
+}
+
 export interface LiveReconcileOutcome {
   intentId: number;
   symbol: string;
@@ -2190,6 +2207,80 @@ export async function reconcileLiveOrders(): Promise<LiveReconcileOutcome[]> {
     accountId,
     pending.map((p) => intentsById.get(p.intentId)?.idempotencyKey).filter((k): k is string => !!k),
   );
+
+  // THE LISTS LAG; ASK FOR THE ORDER ITSELF (2026-09-23).
+  //
+  // An order the broker ACKNOWLEDGED is one it holds. When neither list
+  // accounts for it (not found, or the list read failed), the broker's own
+  // reference says to query Order Detail by client_order_id instead — see
+  // webullOrderDetail for the quote. Before this, that case was silent: an
+  // acknowledged order missing from both lists was simply "left alone", and
+  // SHOP's close sat there from 15:27:55 on 2026-09-22 into the evening, the
+  // position open in the ledger and holding a slot while the broker held no
+  // shares and the sync deferred to the "exit in flight" forever.
+  //
+  // Bounded, because Order Detail is paced at 2 requests / 2 seconds and the
+  // tick has other work to do; newest first, so an order that aged out of the
+  // lists' 7-day window long ago cannot starve a fresh one of the budget.
+  const detailCandidates = pending
+    .map((meta) => ({ meta, intent: intentsById.get(meta.intentId) }))
+    .filter(
+      (c): c is { meta: LiveOrderMeta; intent: OrderIntentRecord } =>
+        !!c.intent && (c.intent.state === 'acknowledged' || c.intent.state === 'partially_filled'),
+    )
+    .filter(({ intent }) => {
+      const listed = statuses.get(intent.idempotencyKey);
+      return !listed || !listed.ok || !listed.found;
+    })
+    .sort((a, b) => b.intent.createdAt - a.intent.createdAt)
+    .slice(0, ORDER_DETAIL_LOOKUPS_PER_TICK);
+  for (const { meta, intent } of detailCandidates) {
+    const listed = statuses.get(intent.idempotencyKey);
+    const listRead = !listed ? 'not_asked' : listed.ok ? 'not_found' : (listed.error ?? 'list read failed');
+    const detail = await webullOrderDetail(accountId, intent.idempotencyKey);
+    if (detail.ok && detail.found) {
+      statuses.set(intent.idempotencyKey, detail);
+      if (claimOncePerDay('live_order_status_from_detail', String(intent.id))) {
+        logAutotradeEvent({
+          symbol: meta.symbol,
+          stage: 'execution',
+          action: 'live_order_status_from_detail',
+          detail: {
+            intentId: intent.id,
+            clientOrderId: intent.idempotencyKey,
+            role: meta.role,
+            status: detail.status ?? null,
+            filledQty: detail.filledQty ?? null,
+            filledPrice: detail.filledPrice ?? null,
+            listRead,
+          },
+          riskProfile: meta.riskProfile,
+        });
+      }
+    } else if (claimOncePerDay('live_order_status_unresolved', String(intent.id))) {
+      // Once per order per day: the order is acknowledged, the lists do not
+      // show it, and the direct read did not either. Loud, because this is the
+      // state that held SHOP open, and before this row it was invisible.
+      logAutotradeEvent({
+        symbol: meta.symbol,
+        stage: 'execution',
+        action: 'live_order_status_unresolved',
+        detail: {
+          intentId: intent.id,
+          clientOrderId: intent.idempotencyKey,
+          role: meta.role,
+          state: intent.state,
+          listRead,
+          detailRead: detail.ok ? 'not_found' : (detail.error ?? 'detail read failed'),
+          // The keys only, never the values: enough to learn an undocumented
+          // response shape from the first real answer.
+          detailShape: detail.ok ? responseShape(detail.raw) : null,
+        },
+        riskProfile: meta.riskProfile,
+      });
+    }
+  }
+
   const outcomes: LiveReconcileOutcome[] = [];
   for (const meta of pending) {
     const intent = intentsById.get(meta.intentId);
@@ -2824,7 +2915,14 @@ function materializeTimeExitFill(
   const closed = addExit(position.id, {
     quantity: closeQty,
     exitPrice,
-    exitDate: etDateStr(),
+    // Dated by the ORDER, not by when this reconcile got round to it. Every
+    // order this books is a DAY order (buildWebullStockOrder), which can only
+    // fill on the ET date it was placed, so the placement date IS the fill
+    // date. Booking "today" was right only while a fill was always seen the
+    // same day; SHOP's 2026-09-22 close was first read on the 23rd, and
+    // "today" would have moved a realized gain into the next session's day
+    // P&L, where the halts, the goal and the give-back guard all read it.
+    exitDate: etDateStr(intent.createdAt),
     sourceIntentId: intent.id,
     exitReason: isScaleOut ? 'partial' : 'time_exit',
   });

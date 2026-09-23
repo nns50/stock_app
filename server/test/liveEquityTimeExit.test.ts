@@ -24,6 +24,9 @@ vi.mock('../src/providers/webull/orders', async (importOriginal) => {
     webullCancelOrder: vi.fn(),
     webullReplaceOrder: vi.fn(),
     webullReplaceOrders: vi.fn(),
+    // Same default the real call gives with Webull unconfigured; the cases that
+    // exercise the direct read override it.
+    webullOrderDetail: vi.fn(async () => ({ ok: false, found: false, error: 'Webull is not configured.' })),
     // A default, because checkLiveBracketProtection now CALLS this to re-arm a
     // confirmed-naked position: a bare vi.fn() returns undefined, which the
     // real helper never does. Cases that care override it.
@@ -44,6 +47,7 @@ import {
   webullPlaceStandaloneBracket,
   listWebullOpenOrders,
   buildStandaloneBracketRequest,
+  webullOrderDetail,
   WebullOrderStatus,
 } from '../src/providers/webull/orders';
 import { initDb, db } from '../src/db';
@@ -51,7 +55,7 @@ import { getLiveEntryOrderForPosition } from '../src/db/autotradeLiveOrders';
 import { setAutotradeConfig, defaultAutotradeConfig, AutotradeConfig } from '../src/db/autotradeConfig';
 import { setTradingConfig } from '../src/db/trading';
 import { createPosition, listPositions } from '../src/db/positions';
-import { createIntent, getIntent, listIntents, type OrderIntentRecord } from '../src/db/orders';
+import { createIntent, getIntent, listIntents, transitionIntent, type OrderIntentRecord } from '../src/db/orders';
 import { listPendingLiveOrders, getLiveOrder, recordLiveExitOrder } from '../src/db/autotradeLiveOrders';
 import { listAutotradeEvents, logAutotradeEvent } from '../src/db/autotradeEvents';
 import { checkSessionWindow } from '../src/services/autotrading/executionGuards';
@@ -66,6 +70,7 @@ import {
   checkLivePerLotSecondLots,
   cancelLiveBracketExitLegs,
   checkLiveBracketProtection,
+  ORDER_DETAIL_LOOKUPS_PER_TICK,
 } from '../src/services/autotrading/liveExecute';
 
 const mockGetProvider = vi.mocked(getProvider);
@@ -77,6 +82,7 @@ const mockReplaceOrder = vi.mocked(webullReplaceOrder);
 const mockReplaceOrders = vi.mocked(webullReplaceOrders);
 const mockStandaloneBracket = vi.mocked(webullPlaceStandaloneBracket);
 const mockOpenOrders = vi.mocked(listWebullOpenOrders);
+const mockOrderDetail = vi.mocked(webullOrderDetail);
 
 /** A resting broker open order (defaults to a working SELL on AAPL — a long's
  *  bracket exit leg). */
@@ -234,6 +240,8 @@ beforeEach(() => {
   mockReplaceOrders.mockReset();
   mockStandaloneBracket.mockReset();
   mockOpenOrders.mockReset();
+  mockOrderDetail.mockReset();
+  mockOrderDetail.mockResolvedValue({ ok: false, found: false, error: 'Webull is not configured.' });
   // Default: no resting orders at the broker, so a triggered force-close finds
   // nothing to cancel and proceeds. Tests exercising the cancel path override.
   mockOpenOrders.mockResolvedValue(noOpenOrders);
@@ -601,6 +609,170 @@ describe('reconcileLiveOrders — time-exit closing orders', () => {
     expect(closedPosition.id).toBe(position.id);
     expect(closedPosition.exits[0]).toMatchObject({ exitPrice: 101.75 });
     expect(getLiveOrder(exitIntentId)?.positionId).toBe(position.id);
+  });
+
+  // -------------------------------------------------------------------------
+  // SHOP, 2026-09-22: the close filled within a minute and neither order LIST
+  // ever showed it, so the intent sat at `acknowledged`, the position stayed
+  // open in the ledger holding a slot, and the sync deferred to "an exit in
+  // flight" all evening. Webull's reference names Order Detail by
+  // client_order_id as the read to trust when the lists lag.
+  // -------------------------------------------------------------------------
+  async function closeInFlight() {
+    const { position, quantity } = await openAgedLivePosition(30);
+    mockCancelOrder.mockResolvedValue({ ok: true });
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      legs: [
+        { comboType: 'MASTER', status: 'FILLED' },
+        { comboType: 'STOP_LOSS', status: 'CANCELLED' },
+        { comboType: 'STOP_PROFIT', status: 'CANCELLED' },
+      ],
+    } as WebullOrderStatus);
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 102 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(accountStateWith(quantity) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-CLOSE' });
+    await checkLiveEquityTimeExits();
+    const exitIntentId = listPendingLiveOrders().find((o) => o.role === 'exit')!.intentId;
+    expect(getIntent(exitIntentId)?.state).toBe('acknowledged');
+    // Neither list mentions the close — the state SHOP's sat in.
+    mockOrderStatus.mockResolvedValue({ ok: true, found: false } as WebullOrderStatus);
+    return { position, quantity, exitIntentId };
+  }
+  const detailRows = (action: string) => listAutotradeEvents({ limit: 100 }).filter((e) => e.action === action);
+
+  it('books a close the order LISTS never showed, from the order-detail read', async () => {
+    const { position, quantity, exitIntentId } = await closeInFlight();
+    mockOrderDetail.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      filledQty: quantity,
+      filledPrice: 101.4,
+    } as WebullOrderStatus);
+
+    const outcomes = await reconcileLiveOrders();
+
+    expect(mockOrderDetail).toHaveBeenCalledWith('ACC1', getIntent(exitIntentId)!.idempotencyKey);
+    expect(outcomes).toEqual(
+      expect.arrayContaining([expect.objectContaining({ intentId: exitIntentId, action: 'exit_filled' })]),
+    );
+    expect(listPositions({ status: 'open', symbol: 'AAPL' })).toHaveLength(0);
+    const closed = listPositions({ status: 'closed', symbol: 'AAPL' })[0];
+    expect(closed.id).toBe(position.id);
+    expect(closed.exits[0]).toMatchObject({ exitPrice: 101.4 });
+    const rows = detailRows('live_order_status_from_detail');
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0].detail ?? '{}')).toMatchObject({
+      intentId: exitIntentId,
+      role: 'exit',
+      status: 'FILLED',
+      listRead: 'not_found',
+    });
+  });
+
+  it('dates a close booked a day late by the day it FILLED — a DAY order fills on its placement date', async () => {
+    // SHOP was placed 2026-09-22 15:27:55 ET and first read on the 23rd. Dated
+    // "today", its gain would have landed in the next session's day P&L, which
+    // the halts, the goal and the give-back guard all read.
+    const { quantity, exitIntentId } = await closeInFlight();
+    db.prepare('UPDATE order_intents SET created_at = ? WHERE id = ?').run(
+      Date.parse('2026-09-22T19:27:55Z'),
+      exitIntentId,
+    );
+    mockOrderDetail.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      filledQty: quantity,
+      filledPrice: 101.4,
+    } as WebullOrderStatus);
+
+    await reconcileLiveOrders();
+
+    const closed = listPositions({ status: 'closed', symbol: 'AAPL' })[0];
+    expect(closed.exits[0]).toMatchObject({ exitDate: '2026-09-22', exitPrice: 101.4 });
+  });
+
+  it('also asks when the list read FAILED, not only when it came back without the order', async () => {
+    const { exitIntentId, quantity } = await closeInFlight();
+    mockOrderStatus.mockResolvedValue({ ok: false, found: false, error: 'history read failed' } as WebullOrderStatus);
+    mockOrderDetail.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      filledQty: quantity,
+      filledPrice: 101.4,
+    } as WebullOrderStatus);
+
+    await reconcileLiveOrders();
+
+    expect(listPositions({ status: 'open', symbol: 'AAPL' })).toHaveLength(0);
+    expect(JSON.parse(detailRows('live_order_status_from_detail')[0].detail ?? '{}')).toMatchObject({
+      intentId: exitIntentId,
+      listRead: 'history read failed',
+    });
+  });
+
+  it('changes nothing and says so, once a day, when the direct read cannot find it either', async () => {
+    const { exitIntentId } = await closeInFlight();
+    mockOrderDetail.mockResolvedValue({ ok: true, found: false, raw: { data: [], total: 0 } } as WebullOrderStatus);
+
+    await reconcileLiveOrders();
+    await reconcileLiveOrders();
+
+    expect(getIntent(exitIntentId)?.state).toBe('acknowledged');
+    expect(listPositions({ status: 'open', symbol: 'AAPL' })).toHaveLength(1);
+    const rows = detailRows('live_order_status_unresolved');
+    expect(rows).toHaveLength(1);
+    // The response's KEYS, never its values: enough to learn the shape.
+    expect(JSON.parse(rows[0].detail ?? '{}')).toMatchObject({
+      intentId: exitIntentId,
+      listRead: 'not_found',
+      detailRead: 'not_found',
+      detailShape: 'object{data,total}',
+    });
+  });
+
+  it('asks about at most a few a tick, newest first — an old stuck order cannot starve a fresh one', async () => {
+    const { position } = await openAgedLivePosition(30);
+    for (let i = 0; i < 5; i++) {
+      const rec = createIntent(
+        {
+          symbol: 'AAPL',
+          assetKind: 'stock',
+          side: 'sell',
+          openClose: 'close',
+          quantity: 1,
+          orderType: 'limit',
+          limitPrice: 99,
+        },
+        `stuck-${i}`,
+      );
+      for (const st of ['validated', 'confirmed', 'submitted', 'acknowledged'] as const) {
+        transitionIntent(rec.id, st, { detail: 'fixture' });
+      }
+      db.prepare('UPDATE order_intents SET created_at = ? WHERE id = ?').run(1_000_000 + i * 1_000, rec.id);
+      recordLiveExitOrder({ intentId: rec.id, symbol: 'AAPL', riskProfile: 'MODERATE', positionId: position.id });
+    }
+    mockOrderStatus.mockResolvedValue({ ok: true, found: false } as WebullOrderStatus);
+    mockOrderDetail.mockResolvedValue({ ok: true, found: false } as WebullOrderStatus);
+
+    await reconcileLiveOrders();
+
+    expect(ORDER_DETAIL_LOOKUPS_PER_TICK).toBe(3);
+    expect(mockOrderDetail.mock.calls.map((c) => c[1])).toEqual(['stuck-4', 'stuck-3', 'stuck-2']);
+  });
+
+  it('never spends a direct read on an order the lists already answered', async () => {
+    await closeInFlight();
+    mockOrderStatus.mockResolvedValue({ ok: true, found: true, status: 'SUBMITTED' } as WebullOrderStatus);
+
+    await reconcileLiveOrders();
+
+    expect(mockOrderDetail).not.toHaveBeenCalled();
   });
 });
 

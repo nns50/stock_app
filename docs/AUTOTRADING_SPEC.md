@@ -12639,3 +12639,76 @@ promised and is now true.
   `live_stop_ratcheted`, `live_scale_out_placed` or `live_time_exit_placed`
   row, and any `live_position_unprotected` row in that window must read
   `heldByKillSwitch: true`.
+
+## 2026-09-23 (second) — a close the order lists never showed
+
+**What happened.** SHOP (position 686, 91 shares) hit its stagnation exit at
+15:27:55 on 2026-09-22. The close was accepted (intent 35974, broker order
+`80HAQQC9TKE99E2ADV2CQPD45B`), and by 15:28:31 the broker held no SHOP
+(`position_quantity_drift`, broker 0 against journal 91). The intent never
+moved past `acknowledged`. The broker sync, which defers to a close the app has
+in flight, deferred at every sync (`autotrade_exit_in_flight`, marked overdue at
+streak 10). The end-of-day flatten then tried to sell again and was correctly
+refused as a naked short, three times. At 21:40 ET the position was still open
+in the ledger, holding one of three concurrency slots, with its gain unbooked.
+MU's close at 15:54 took the same path and was booked in two minutes.
+
+**Why.** The order reconcile reads status from the two order lists only: open
+orders, then history. An acknowledged order missing from both was "left alone"
+by design, on the reasoning that it might have aged out of the history window,
+and nothing was journaled. Webull's reference says of **both** lists: *"This
+endpoint may not return the most recent order data in real time due to
+processing delays. To ensure you get the latest order status, please query the
+Order Detail endpoint by client_order_id."* The Order Detail endpoint appears
+in this app's rate-limit table and in the design doc's endpoint list
+(`LIVE_TRADING_DESIGN.md` §14: "we'll poll Order Detail / Open Orders
+instead"), and nothing ever called it.
+
+**The change.**
+
+- `webullOrderDetail(accountId, clientOrderId)`:
+  `GET /openapi/trade/order/detail` with `account_id` and `client_order_id`.
+  The contract comes from Webull's current SDK (`webull-openapi-python-sdk`,
+  `OrderDetailRequest`, "supported only for Webull HK and Webull US"). The
+  response shape is undocumented, so it is parsed exactly as a list entry is,
+  and a reply that does not name our `client_order_id` reads as not found,
+  never as a guess.
+- `reconcileLiveOrders` asks it about every `acknowledged` or
+  `partially_filled` order that neither list accounted for, whether the list
+  missed it or the list read failed. It asks about at most
+  `ORDER_DETAIL_LOOKUPS_PER_TICK` = 3 a tick, newest first, because the
+  endpoint is paced at 2 requests / 2 seconds and an order long aged out of the
+  lists must not starve a fresh one. A found answer feeds the same
+  `reconcileOneLiveOrder` a list answer does. Nothing new places, cancels or
+  modifies anything.
+- A late-booked close is **dated by its order**, not by the booking.
+  `materializeTimeExitFill` used today's date, which was right only while every
+  fill was seen on the day it happened. Every order it books is a DAY order,
+  which can fill only on the date it was placed, so that date is the fill
+  date. Otherwise SHOP's 09-22 gain would have landed in 09-23's day P&L, which
+  the halts, the goal and the give-back guard all read.
+- Two journal rows, each once per order per day: `live_order_status_from_detail`
+  (resolved by the direct read, with what the list read said) and
+  `live_order_status_unresolved` (neither read found it). The unresolved row
+  carries the direct reply's **keys**, never its values, so the first real
+  answer documents the undocumented shape.
+
+**Tested** with a stubbed transport: the request's path and query, an envelope,
+an array of envelopes, a reply naming another order (not found), and a failed
+read ("could not ask"). In the reconcile, the SHOP sequence end to end: a time
+exit placed, then both lists silent, then the direct read reports FILLED. The
+position closes at the reported price with one `live_order_status_from_detail`
+row, and a close first read a day late keeps its placement date. Also tested: a failed list read, an unresolved order (no change, one row
+a day, the reply's keys), the per-tick cap newest-first, and that an order the
+lists answered costs no direct read.
+
+**Pre-committed check.** On the first reconcile tick after deploy, intent 35974
+is looked up directly. Expected: `live_order_status_from_detail` for SHOP with
+`status: 'FILLED'` and `listRead: 'not_found'`, and position 686 closed with
+exit date 2026-09-22 at the
+broker's fill price, at or above the 147.61 marketable limit (priced 0.5% under a
+last of about 148.35). If the row is `live_order_status_unresolved` instead, its
+`detailShape` is the finding: the reply is shaped differently from a list
+entry, and the parser is fixed from that shape before anything else. If
+neither row appears, the reconcile never reached the order, which is a finding
+too.

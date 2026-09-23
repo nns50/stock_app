@@ -939,6 +939,40 @@ export async function webullOrderStatus(accountId: string, clientOrderId: string
 }
 
 /**
+ * ONE order's current status from the Order Detail endpoint, by our own
+ * client_order_id. READ-ONLY. Never throws.
+ *
+ * The order LISTS lag, by the broker's own account. Webull's reference says of
+ * both Open Orders and Order History: "This endpoint may not return the most
+ * recent order data in real time due to processing delays. To ensure you get
+ * the latest order status, please query the Order Detail endpoint by
+ * client_order_id." Every status read in this file went through the lists
+ * until 2026-09-23. On 2026-09-22 SHOP's stagnation close (placed 15:27:55,
+ * shares gone by 15:28:31) never appeared in either list the reconcile read,
+ * so the intent sat at `acknowledged` and the position stayed open in the
+ * ledger all evening, holding a slot.
+ *
+ * Contract taken from Webull's current SDK (webull-openapi-python-sdk,
+ * OrderDetailRequest: GET /openapi/trade/order/detail, query `account_id` +
+ * `client_order_id`; "supported only for Webull HK and Webull US"). The
+ * response shape is not documented there, so it is parsed exactly as a list
+ * entry is — an envelope, or a bare array of them — and anything that does not
+ * name our client_order_id reads as not found, never as a guess.
+ */
+export async function webullOrderDetail(accountId: string, clientOrderId: string): Promise<WebullOrderStatus> {
+  if (!webullConfigured()) return { ok: false, found: false, error: 'Webull is not configured.' };
+  const path = '/openapi/trade/order/detail';
+  const r = await webullClient().call('GET', path, {
+    query: { account_id: accountId, client_order_id: clientOrderId },
+    surface: 'trade',
+  });
+  if (!r.ok) return { ok: false, found: false, error: fetchError(path, r) };
+  const list = Array.isArray(r.data) ? r.data : r.data && typeof r.data === 'object' ? [r.data] : [];
+  // `raw` rides along on a miss so the first unparsed answer shows its shape.
+  return resolveFromList(list, clientOrderId) ?? { ok: true, found: false, raw: r.data };
+}
+
+/**
  * The same lookup for MANY orders at the cost of one list fetch each, instead
  * of two requests per order.
  *

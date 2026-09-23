@@ -2325,6 +2325,17 @@ because the loop is the only caller that is always flat by the bell, so it is
   difference. It deliberately errs toward recording **less** rather than inflating a
   position's size or cost basis, since every risk figure on this page is derived from those
   numbers; treat such an entry as "check this order against the broker".
+  The loop learns what happened to each of its orders from Webull's **open-orders** and
+  **order-history** lists. Webull's own reference warns that both "may not return the most
+  recent order data in real time due to processing delays". On 2026-09-22, a SHOP close that
+  filled within a minute never appeared in either list, so the position stayed open in the
+  app all evening while Webull held no shares, and it held one of the three slots. Since
+  **2026-09-23**, when an order Webull has accepted is missing from both lists, the loop asks
+  Webull for that one order directly (**Order Detail**, by the app's own order id). It does
+  this for up to three orders a cycle, newest first, and records whatever Webull reports. A
+  **`live_order_status_from_detail`** row on Recent activity marks an order settled that
+  way. **`live_order_status_unresolved`** (once a day per order) marks one that neither read
+  could find: check that order against the broker.
 
   A **Live positions** table (Dashboard tab) shows every real position the loop has actually
   placed — the exact same `positions` rows your own manual trades use on the
