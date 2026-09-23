@@ -379,6 +379,54 @@ describe('the options sleeve, which nothing else in the scan can see', () => {
     expect(src).toMatch(/Math\.max\(1, Math\.floor\(rawQuantity \* probation\.multiplier\)\)/);
   });
 
+  // 2026-09-23: at $26k, 22 of the 32 refusals fit today's ceiling (20 from the
+  // $5k days, and MU at $8.77 under the step-down), and the lever still told
+  // the operator a $5k-era story. The split is against TODAY's ceiling.
+  describe('which kind of refusal', () => {
+    const at26k = () =>
+      setAutotradeConfig({
+        ...defaultAutotradeConfig(),
+        accountEquityUsd: 26_446.53,
+        riskPerTradePct: 2.5,
+        methodWeightingEnabled: true,
+        expectancyMaxMultiplier: 1.25,
+        optionsDisasterStopPct: 70,
+        liveOptionsProbationTrades: 0,
+      });
+    const refuse = (symbol: string, premium: number, time: string) =>
+      db
+        .prepare(
+          "INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) VALUES (?,'risk_check','live_options_risk_blocked',?,NULL,?)",
+        )
+        .run(symbol, JSON.stringify({ failedRules: ['quantity'], premium }), etDateTimeToMs('2026-09-22', time));
+    const now = etDateTimeToMs('2026-09-22', '17:00') as number;
+
+    it('says a refusal within the ceiling was a size cut, and drops the small-account advice', () => {
+      at26k();
+      refuse('MU', 8.775, '10:13'); // within: 26,446.53 x 3.125% / 70% / 100 = $11.81
+      refuse('AMD', 4.2, '10:40'); // within
+      refuse('LITE', 13.25, '11:05'); // above
+      const [f] = collectOptionsFlowFindings(getAutotradeConfig(), now);
+      expect(f.detail).toMatch(/largest affordable premium is \$11\.81\/share/);
+      expect(f.detail).toMatch(/Of the 3 with a recorded premium, 1 cost more than that and 2 did not/);
+      // Computed from the latest refusal, not a hard-coded $5k-era example.
+      expect(f.lever?.detail).toMatch(/The latest, LITE on 2026-09-22, was \$13\.25: one contract risks \$928/);
+      expect(f.lever?.detail).toMatch(/2 fit that ceiling, so a budget below its most refused them/);
+      expect(f.lever?.detail).not.toMatch(/\$2\.93/);
+      expect(f.lever?.detail).not.toMatch(/account this size/);
+    });
+
+    it('keeps the small-account advice when most refusals were too dear at full size', () => {
+      at26k();
+      refuse('LITE', 13.25, '10:05');
+      refuse('GEV', 13.05, '10:12');
+      refuse('MU', 8.775, '10:13');
+      const [f] = collectOptionsFlowFindings(getAutotradeConfig(), now);
+      expect(f.lever?.detail).toMatch(/2 were priced above the most any trade can carry at this equity/);
+      expect(f.lever?.detail).toMatch(/account this size/);
+    });
+  });
+
   it('stays silent when the sleeve is sizing fine', () => {
     setAutotradeConfig({ ...defaultAutotradeConfig(), accountEquityUsd: 100_000 });
     expect(collectOptionsFlowFindings(getAutotradeConfig(), etDateTimeToMs('2026-09-10', '17:00') as number)).toEqual(

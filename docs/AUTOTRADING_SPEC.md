@@ -13135,3 +13135,86 @@ against the source: every literal action `journalDeclinedEntry` receives in
 If `no_live_row` does not fall, the writer is not the cause and the bucket needs a
 different explanation. The floor question itself stays the operator's: the re-labelled
 bucket is the evidence for it, not a lever the app pulls.
+
+**Result of the deploy (read 2026-09-23, 00:59 ET).** Two of the three checks held. The
+prediction behind the third was wrong, and the way it was wrong is useful.
+
+- The untaken total is unchanged: 134 entries and paper +11.78R, before and after.
+- `no_live_row` fell from 85 to 53 (paper +7.07R → +4.42R).
+- All 32 entries that left it landed in once-a-day classes, but not mostly in the floor:
+
+| class | before | after | paper R of the entries that moved |
+| --- | ---: | ---: | ---: |
+| `risk_atr_unreachable_skipped` | 1 | 11 | +3.25R (+0.33R each) |
+| `live_score_floor_skipped` | 3 | 12 | +0.74R (+0.08R each) |
+| `live_short_skipped` | 6 | 15 | −0.88R (−0.10R each) |
+| `symbol_cooldown_skipped` | 1 | 3 | +0.13R |
+| `live_symbol_held_skipped` | 0 | 2 | −0.60R |
+
+The prediction named the floor because the floor was the question on the table. The ATR
+reachability gate (`maxRiskAtrFraction`) took the most entries and nearly all of the R.
+What that changes:
+
+- **The floor question (81 → 77)** now has 12 paper entries behind it at +0.17R mean. That
+  is under the 20-trade bar, and the question stays the operator's.
+- **The ATR gate is a watch.** It has 11 entries at +0.24R mean, also under the bar.
+  Loosening it adds exposure, so it is the operator's word too.
+- **The short skip is doing its job.** It has 15 entries at −0.09R mean.
+- **53 entries (+4.42R, +0.08R each) are still unexplained.** That is now the honest size
+  of the gap, and the next thing to explain.
+
+## 2026-09-23 (ninth) — the options sleeve's lever told a $5k story at $26k
+
+**The gap.** `configuration:options_unsizable` is the options sleeve's only diagnostic. Its
+lever was written on 2026-09-12, when the account was near $5k, and it hard-coded that day's
+example and advice: *"one contract of a $2.93 option risks $205 at a 70% disaster stop … or
+decide the sleeve does not suit an account this size."* The account is now about $26k. The
+deployed scan (2026-09-23, 01:03 ET) counted 32 refusals and printed the same sentence.
+
+**What the refusals were.** Every `live_options_risk_blocked` row records the premium it
+refused (the net debit for a spread). Here they are against today's ceiling: $11.56/share at
+$25,889 equity (2.5% risk × the 1.25 method weight, 70% disaster stop).
+
+- **10 cost more than the ceiling:** LITE six times ($12.55–$19.25), SNDK three times
+  ($26.65–$28.80) and GEV once ($13.05). No trade at this equity can carry one of those
+  contracts.
+- **22 fit under it.** 20 of them are from 09-09, when the account was about $5k. The other
+  two are INTC on 09-14 ($1.30) and MU on 09-22 ($8.77). The budget that refused each of
+  them was below its most.
+
+So the advice to reconsider the sleeve matched a third of what the finding counted. It said
+nothing about the rest, which were the sizing doing its job.
+
+**Change.** The finding now reads each refusal's premium and splits the refusals against
+today's ceiling. That ceiling is the most the sizer can reach: full risk at the largest
+method weight. Under it, the budget that refused a contract sat below its most. That means a
+step-down or another cut, a method weight under its maximum, or a smaller account at the
+time.
+
+- The detail says how many cost more than the ceiling and how many did not.
+- The lever's example is the latest refusal, computed rather than fixed.
+- The "does not suit an account this size" option appears only when most refusals cost more
+  than the ceiling.
+- The probation sentence is unchanged.
+
+On the deployed rows the lever now reads: *"The latest, MU on 2026-09-22, was $8.77: one
+contract risks $614 at a 70% disaster stop, against the largest affordable premium of
+$11.56/share today. 10 were priced above the most any trade can carry at this equity … 22
+fit that ceiling, so a budget below its most refused them …"*
+
+It changes words, not decisions. The finding's count, kind and `research` direction are
+unchanged, and nothing reads the lever text. A refusal row without a premium is counted but
+not split. Every row in the current window has one.
+
+**Tested.** The test account holds $26,446.53, so the ceiling is $11.81.
+
+- MU ($8.775), AMD ($4.20) and LITE ($13.25) read "1 cost more than that and 2 did not".
+- The example is LITE's $13.25, which risks $928, and the small-account advice is absent.
+- With two of three above the ceiling, the advice returns.
+- Restoring the old text fails both cases.
+
+**Pre-committed check.** The next scan's `configuration:options_unsizable` must read "Of the
+32 with a recorded premium, 10 cost more than that and 22 did not", give or take a refusal
+that enters or leaves the window. Its lever must not contain "$2.93". As the 09-09 rows age
+out of the ten-session window, the split turns toward refusals above the ceiling, and the
+small-account advice returns. That is correct at this equity for LITE, SNDK and GEV.
