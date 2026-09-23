@@ -21,6 +21,7 @@ import {
   parseBrokerEquityFills,
 } from '../src/providers/webull/orders';
 import type { WebullOpenOrder } from '../src/providers/webull/orders';
+import { decideExitCorrection } from '../src/services/exitPriceBackfill';
 import type { OrderIntent } from '../src/services/trading/guardrails';
 
 const orig = { ...config.webull };
@@ -1193,6 +1194,53 @@ describe('order-list pagination', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(2);
     const url2 = String(fetchSpy.mock.calls[1][0]);
     expect(url2).toContain('last_client_order_id=OPEN-99');
+  });
+
+  // 2026-09-23: two consecutive history pages both carried HOOD's bracket, so
+  // its one filled exit leg was read twice and the exit correction refused it
+  // as "2 filled exit legs". Same for MRNA's.
+  it('reads an order repeated across overlapping pages once, taking the later copy', async () => {
+    cfg();
+    const leg = (cid: string, comboType: string, status: string, filledQty: string, filledPrice?: string) => ({
+      client_order_id: cid,
+      combo_order_id: 'WB-HOOD',
+      combo_type: comboType,
+      status,
+      order_type: comboType === 'STOP_LOSS' ? 'STOP_LOSS' : 'LIMIT',
+      filled_quantity: filledQty,
+      ...(filledPrice === undefined ? {} : { filled_price: filledPrice }),
+    });
+    const bracket = (target: 'WORKING' | 'FILLED') => [
+      leg('HOOD-M', 'MASTER', 'FILLED', '179', '115.26'),
+      target === 'FILLED'
+        ? leg('HOOD-TP', 'STOP_PROFIT', 'FILLED', '179', '117.56')
+        : leg('HOOD-TP', 'STOP_PROFIT', 'WORKING', '0'),
+      leg('HOOD-SL', 'STOP_LOSS', 'CANCELLED', '0'),
+    ];
+    const fillers = Array.from({ length: 97 }, (_, i) => env(`OLD-${i}`, 'FILLED'));
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(page([...fillers, ...bracket('WORKING')]))
+      .mockResolvedValueOnce(page([...bracket('FILLED'), env('NEWER', 'FILLED')]));
+
+    const r = await webullOrderStatus('ACC1', 'HOOD-M');
+
+    expect(r.legs).toHaveLength(3);
+    expect(r.legs!.find((l) => l.comboType === 'STOP_PROFIT')).toMatchObject({ status: 'FILLED', filledPrice: 117.56 });
+    // The consumer: one filled exit leg, so the booked quote is corrected to it.
+    const exit = {
+      exitId: 1,
+      positionId: 650,
+      symbol: 'HOOD',
+      quantity: 179,
+      exitPrice: 117.5999,
+      exitDate: '2026-09-18',
+      exitReason: 'target' as const,
+    };
+    expect(decideExitCorrection(exit, r.legs!)).toMatchObject({
+      action: 'correct',
+      realPrice: 117.56,
+      reason: 'target',
+    });
   });
 
   it('stops (with page-1 data) when the server ignores the cursor and replays the same page', async () => {
