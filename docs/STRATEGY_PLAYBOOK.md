@@ -2033,9 +2033,14 @@ app had to **correct** from an estimate to a fill: an options close
 (`live_options_exit_corrected`, split into the app's own late-read close and a hand close
 re-booked at the operator's fill) and, since the same date, a stock bracket exit the
 position sync priced at a quote before the reconcile read the leg (`live_exit_corrected`).
-Those matter to sizing, not only to the record: the step-down, the halt and expectancy
-sizing read these rows, and one such estimate (COIN, 2026-09-21) turned a loss into a win
-and sent the next entry in at full size.
+That one is split three ways: the entry bracket's own leg, a hand sale, and a stop or
+target placed outside the entry's bracket (`outside_bracket`), which counts the brackets
+that did not hold and had to be placed again. Those matter to sizing, not only to the
+record: the step-down, the halt and expectancy sizing read these rows, and one such
+estimate (COIN, 2026-09-21) turned a loss into a win and sent the next entry in at full
+size. An estimate the correction had to leave in the record is a finding of its own
+(`live_exit_correction_skipped`, split by cause), and so is a bracket still showing a
+working order at the broker a day after its shares left.
 
 One configuration finding is a standing re-fit rather than a mismatch (2026-09-19). The
 live score floor was raised from 72 to 81 when pace scoring went on, as the pace-scored

@@ -430,7 +430,9 @@ row and stopping. Fix what it finds from the Positions page — **journal**,
 broker history's window), and writes the exit reason the filled leg proves (`stop` or
 `target`) along with the price (`services/autotrading/stockExitCorrection.ts`, journaled as
 `live_exit_corrected`). It also books a stock you sold by hand in Webull at your own sale
-from the order history, which the CLI never did. The CLI below reads the same candidate
+from the order history, and a stop or target placed outside the app's bracket at its fill,
+which the CLI never did. An estimate it cannot correct is journaled with the cause
+(`live_exit_correction_skipped`). The CLI below reads the same candidate
 query, so it is now only needed for a dry-run report, or for rows older than seven days,
 which it can report but not correct.
 

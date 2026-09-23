@@ -51,6 +51,18 @@ export interface RecordedExit {
   exitReason: PositionExitReason | null;
 }
 
+/** Why an exit was left alone, as a stable code a journal row can carry and a
+ *  report can split on, beside the sentence a person reads. `unreadable` and
+ *  `aged_out` are the broker read's own outcomes, set by the callers. */
+export type ExitCorrectionSkipCode =
+  | 'unreadable'
+  | 'aged_out'
+  | 'no_filled_leg'
+  | 'ambiguous_legs'
+  | 'no_fill_price'
+  | 'quantity_mismatch'
+  | 'already_matches';
+
 export type ExitCorrection =
   | {
       action: 'correct';
@@ -64,7 +76,7 @@ export type ExitCorrection =
        *  say (the recorded reason is then left alone). */
       reason: PositionExitReason | null;
     }
-  | { action: 'skip'; reason: string };
+  | { action: 'skip'; code: ExitCorrectionSkipCode; reason: string };
 
 /**
  * The exit reason a filled bracket leg PROVES: the stop leg is a stop, the
@@ -95,6 +107,7 @@ export function decideExitCorrection(exit: RecordedExit, legs: WebullOrderLeg[])
   if (filled.length === 0) {
     return {
       action: 'skip',
+      code: 'no_filled_leg',
       reason: 'no filled exit leg at the broker — the combo may have aged out of order history',
     };
   }
@@ -102,13 +115,17 @@ export function decideExitCorrection(exit: RecordedExit, legs: WebullOrderLeg[])
     // Same posture the live reconcilers take on this exact shape: two filled
     // exit legs shouldn't happen under OCO semantics and isn't ruled out, and
     // picking one would be a guess about which produced this exit.
-    return { action: 'skip', reason: `${filled.length} filled exit legs — ambiguous, cannot say which produced this` };
+    return {
+      action: 'skip',
+      code: 'ambiguous_legs',
+      reason: `${filled.length} filled exit legs — ambiguous, cannot say which produced this`,
+    };
   }
 
   const leg = filled[0];
   const realPrice = leg.filledPrice;
   if (realPrice === undefined || !Number.isFinite(realPrice) || realPrice <= 0) {
-    return { action: 'skip', reason: 'the exit leg reported no usable fill price' };
+    return { action: 'skip', code: 'no_fill_price', reason: 'the exit leg reported no usable fill price' };
   }
 
   // A quantity disagreement means this exit row and that leg are not describing
@@ -119,6 +136,7 @@ export function decideExitCorrection(exit: RecordedExit, legs: WebullOrderLeg[])
   if (leg.filledQty !== undefined && Math.abs(leg.filledQty - exit.quantity) > QTY_EPS) {
     return {
       action: 'skip',
+      code: 'quantity_mismatch',
       reason: `broker leg filled ${leg.filledQty} but this exit booked ${exit.quantity} — not the same event`,
     };
   }
@@ -129,7 +147,7 @@ export function decideExitCorrection(exit: RecordedExit, legs: WebullOrderLeg[])
   // happened to land on the fill still says 'manual' for what was a stop.
   const reasonWrong = reason !== null && reason !== exit.exitReason;
   if (Math.abs(priceDelta) < PRICE_EPS && !reasonWrong) {
-    return { action: 'skip', reason: 'already matches the broker fill' };
+    return { action: 'skip', code: 'already_matches', reason: 'already matches the broker fill' };
   }
 
   return {
@@ -139,6 +157,16 @@ export function decideExitCorrection(exit: RecordedExit, legs: WebullOrderLeg[])
     pnlDelta: priceDelta * exit.quantity,
     reason,
   };
+}
+
+/** The note left on an estimate the broker's fill CONFIRMED to the cent. The
+ *  price stays; the note is replaced so the row stops reading as an estimate
+ *  and leaves the correction pass's candidates for good, a restart included. */
+export function confirmationNote(price: number, filledBy: string): string {
+  return (
+    `Exit price confirmed against the broker's actual fill (${filledBy}): the Webull position sync's ` +
+    `estimate of ${price} already matched it.`
+  );
 }
 
 /** The note left on a corrected exit, so the row says where its price came from

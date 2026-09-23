@@ -33,12 +33,14 @@ import { BRACKET_RECONCILE_GRACE_MS, syncClosedWebullPositions } from '../src/pr
 import { priceMap } from '../src/services/quotes';
 import {
   correctEstimatedStockExits,
-  matchStockHandSale,
+  matchSaleOutsideBracket,
   resetStockExitCorrectionState,
   STOCK_EXIT_CORRECTION_INTERVAL_MS,
 } from '../src/services/autotrading/stockExitCorrection';
 import { getLivePortfolioSnapshot } from '../src/services/autotrading/liveExecute';
-import { etToday } from '../src/util/marketDate';
+import { collectExecutionFindings } from '../src/services/autotrading/edgeLeakScanData';
+import { etDateTimeToMs, etToday } from '../src/util/marketDate';
+import type { PositionExitReason } from '../src/db/positions';
 
 const mockBatch = vi.mocked(webullOrderStatusBatch);
 const mockEquityFills = vi.mocked(listBrokerEquityFills);
@@ -153,12 +155,17 @@ function bracketedCoin(opts: { key?: string; entryDate?: string; accountId?: str
 }
 
 /** The row the sync writes when it prices a close itself, written directly. */
-function estimatedExit(positionId: number, exitDate: string, exitPrice = 205.0451) {
+function estimatedExit(
+  positionId: number,
+  exitDate: string,
+  exitPrice = 205.0451,
+  exitReason: PositionExitReason = 'manual',
+) {
   addExit(positionId, {
     quantity: 161,
     exitPrice,
     exitDate,
-    exitReason: 'manual',
+    exitReason,
     notes: `${SYNC_ESTIMATE_NOTE_PREFIX} from the latest quote (not a confirmed fill); edit it if you have your broker confirmation.`,
   });
 }
@@ -281,6 +288,9 @@ describe('correctEstimatedStockExits', () => {
     await correctEstimatedStockExits('ACC1', t0 + 120_000);
     expect(mockBatch).toHaveBeenCalledTimes(2);
 
+    // A working leg on the day of the close is the lists lagging, not a skip.
+    expect(listAutotradeEvents({ actions: ['live_exit_correction_skipped'] })).toHaveLength(0);
+
     // Once the lists show the fill, the next scheduled pass corrects it.
     mockBatch.mockResolvedValue(combo(key, [stopLeg(), targetLeg()]));
     expect(await correctEstimatedStockExits('ACC1', t0 + 120_000 + STOCK_EXIT_CORRECTION_INTERVAL_MS)).toBe(1);
@@ -293,6 +303,7 @@ describe('correctEstimatedStockExits', () => {
   const handSale = (over: Partial<BrokerEquityFill> = {}): BrokerEquityFill => ({
     clientOrderId: '6ab289b7ff86f20000054f99', // 24 hex: a hand order, not one of ours
     comboType: 'NORMAL',
+    orderType: 'LIMIT',
     side: 'SELL',
     symbol: 'COIN',
     filledQty: 161,
@@ -349,6 +360,141 @@ describe('correctEstimatedStockExits', () => {
     await correctEstimatedStockExits('ACC1', t0 + 2 * STOCK_EXIT_CORRECTION_INTERVAL_MS);
     expect(mockBatch).toHaveBeenCalledTimes(1);
     expect(mockEquityFills).toHaveBeenCalledTimes(1);
+    // Left an estimate for good, and said so: today's unmatched close was not.
+    const skipped = listAutotradeEvents({ actions: ['live_exit_correction_skipped'] });
+    expect(skipped.map((e) => JSON.parse(e.detail!))).toEqual([
+      expect.objectContaining({ positionId: old.pos.id, cause: 'no_matching_sale' }),
+    ]);
+  });
+
+  // LITE, 2026-09-21: the entry's legs never rested and the automatic re-arm
+  // failed, so a bracket was placed by hand, and its stop filled. The entry's
+  // own combo shows no filled leg, and the match read only NORMAL orders, so
+  // the estimate stayed for good and nothing said so.
+  it("books a stop filled in a bracket placed outside the entry's, as a stop", async () => {
+    const { pos, key } = bracketedCoin();
+    estimatedExit(pos.id, etToday());
+    expect(getLivePortfolioSnapshot().consecutiveLosses).toBe(0);
+    mockBatch.mockResolvedValue(cancelledBracket(key));
+    mockEquityFills.mockResolvedValue({
+      ok: true,
+      fills: [handSale({ comboType: 'STOP_LOSS', orderType: 'STOP_LOSS', filledPrice: 204.37 })],
+    });
+
+    expect(await correctEstimatedStockExits('ACC1')).toBe(1);
+
+    const fixed = getPosition(pos.id)!;
+    expect(fixed.exits[0]).toMatchObject({ exitPrice: 204.37, exitReason: 'stop' });
+    expect(fixed.exits[0].notes).toMatch(/placed outside the entry bracket/);
+    const [row] = listAutotradeEvents({ actions: ['live_exit_corrected'] });
+    expect(JSON.parse(row.detail!)).toMatchObject({
+      source: 'outside_bracket',
+      toPrice: 204.37,
+      fromReason: 'manual',
+      toReason: 'stop',
+    });
+    // The step-down's consumer reads the loss the fill proves.
+    expect(getLivePortfolioSnapshot().consecutiveLosses).toBe(1);
+    // And the leak scan counts it under its own label, read off the row the pass wrote.
+    const findings = new Map(collectExecutionFindings(Date.now()).map((f) => [f.action, f]));
+    expect(findings.get('live_exit_corrected|outside_bracket')?.count).toBe(1);
+  });
+
+  it("books a hand sale 'manual', even where the sync inferred a stop from the price", async () => {
+    const { pos, key } = bracketedCoin();
+    estimatedExit(pos.id, etToday(), 204.3, 'stop');
+    mockBatch.mockResolvedValue(cancelledBracket(key));
+    mockEquityFills.mockResolvedValue({ ok: true, fills: [handSale({ filledPrice: 204.35 })] });
+
+    expect(await correctEstimatedStockExits('ACC1')).toBe(1);
+
+    expect(getPosition(pos.id)!.exits[0]).toMatchObject({ exitPrice: 204.35, exitReason: 'manual' });
+    const [row] = listAutotradeEvents({ actions: ['live_exit_corrected'] });
+    expect(JSON.parse(row.detail!)).toMatchObject({ source: 'broker_history', fromReason: 'stop', toReason: 'manual' });
+  });
+
+  it('confirms an estimate the fill already matches, and never asks about it again', async () => {
+    const { pos, key } = bracketedCoin();
+    estimatedExit(pos.id, etToday(), 204.3701, 'stop');
+    mockBatch.mockResolvedValue(combo(key, [stopLeg(), targetLeg()]));
+
+    expect(await correctEstimatedStockExits('ACC1')).toBe(0);
+
+    const row = getPosition(pos.id)!.exits[0];
+    expect(row).toMatchObject({ exitPrice: 204.3701, exitReason: 'stop' });
+    expect(row.notes).toMatch(/confirmed against the broker's actual fill/);
+    expect(listSyncEstimatedExits()).toHaveLength(0);
+    expect(listAutotradeEvents({ actions: ['live_exit_corrected', 'live_exit_correction_skipped'] })).toHaveLength(0);
+    // A restart asks about every open estimate once more; this is not one.
+    resetStockExitCorrectionState();
+    await correctEstimatedStockExits('ACC1');
+    expect(mockBatch).toHaveBeenCalledTimes(1);
+  });
+
+  describe('an estimate left alone says why', () => {
+    const skips = () =>
+      listAutotradeEvents({ actions: ['live_exit_correction_skipped'] }).map(
+        (e) => JSON.parse(e.detail!) as Record<string, unknown>,
+      );
+
+    it('a filled leg that does not cover the booked quantity, with the legs as evidence', async () => {
+      const { pos, key } = bracketedCoin();
+      estimatedExit(pos.id, etToday());
+      mockBatch.mockResolvedValue(combo(key, [stopLeg({ filledQty: 100 }), targetLeg()]));
+      await correctEstimatedStockExits('ACC1');
+      const [row] = skips();
+      expect(row).toMatchObject({ positionId: pos.id, cause: 'quantity_mismatch' });
+      expect(row.legs).toContainEqual(
+        expect.objectContaining({ comboType: 'STOP_LOSS', status: 'FILLED', filledQty: 100 }),
+      );
+      expect(getPosition(pos.id)!.exits[0].exitPrice).toBe(205.0451);
+    });
+
+    it('a close no set of fills adds up to, listing the sells it read', async () => {
+      const day = etToday(Date.now() - 24 * 60 * 60 * 1000);
+      const { pos, key } = bracketedCoin({ entryDate: day });
+      estimatedExit(pos.id, day);
+      mockBatch.mockResolvedValue(cancelledBracket(key));
+      mockEquityFills.mockResolvedValue({
+        ok: true,
+        fills: [handSale({ filledQty: 100, filledAt: etDateTimeToMs(day, '10:30')! })],
+      });
+      await correctEstimatedStockExits('ACC1');
+      const [row] = skips();
+      expect(row).toMatchObject({ positionId: pos.id, cause: 'no_matching_sale' });
+      expect(row.sells).toEqual([expect.objectContaining({ qty: 100, comboType: 'NORMAL', appOrder: false })]);
+      // The scan reads the cause off the row the pass wrote.
+      const findings = new Map(collectExecutionFindings(Date.now()).map((f) => [f.action, f]));
+      expect(findings.get('live_exit_correction_skipped|no_matching_sale')?.count).toBe(1);
+    });
+
+    it('a leg still working from the day after the close, once a day', async () => {
+      const t0 = Date.now();
+      const day = etToday(t0 - 24 * 60 * 60 * 1000);
+      const { pos, key } = bracketedCoin({ entryDate: day });
+      estimatedExit(pos.id, day);
+      mockBatch.mockResolvedValue(combo(key, [stopLeg({ status: 'WORKING', filledQty: 0 }), targetLeg()]));
+      await correctEstimatedStockExits('ACC1', t0);
+      await correctEstimatedStockExits('ACC1', t0 + STOCK_EXIT_CORRECTION_INTERVAL_MS);
+      expect(skips()).toEqual([expect.objectContaining({ positionId: pos.id, cause: 'combo_working' })]);
+      // Still asked about (the broker may yet finish it), and stated again the next day.
+      await correctEstimatedStockExits('ACC1', t0 + 24 * 60 * 60 * 1000);
+      expect(mockBatch).toHaveBeenCalledTimes(3);
+      expect(skips()).toHaveLength(2);
+    });
+
+    it('an estimate whose entry order is gone from the record', async () => {
+      const { pos, intent } = bracketedCoin({ materialized: true });
+      estimatedExit(pos.id, etToday());
+      // Only reachable with a record that lost its intent: the live order row
+      // cascades with it, so this needs the materialized link and no FK.
+      db.pragma('foreign_keys = OFF');
+      db.prepare('DELETE FROM order_intents WHERE id = ?').run(intent.id);
+      db.pragma('foreign_keys = ON');
+      await correctEstimatedStockExits('ACC1');
+      expect(skips()).toEqual([expect.objectContaining({ positionId: pos.id, cause: 'entry_order_missing' })]);
+      expect(mockBatch).not.toHaveBeenCalled();
+    });
   });
 
   it('never reads the stock history for a bracket still working or one whose leg filled', async () => {
@@ -368,10 +514,19 @@ describe('correctEstimatedStockExits', () => {
     const t0 = Date.now();
     mockBatch.mockResolvedValue(new Map([[key, { ok: false, found: false, error: '429' }]]));
     await correctEstimatedStockExits('ACC1', t0);
+    // A failed read is not a skip: nothing is stated, and it is asked again.
+    expect(listAutotradeEvents({ actions: ['live_exit_correction_skipped'] })).toHaveLength(0);
     mockBatch.mockResolvedValue(new Map([[key, { ok: true, found: false }]]));
     await correctEstimatedStockExits('ACC1', t0 + STOCK_EXIT_CORRECTION_INTERVAL_MS);
     await correctEstimatedStockExits('ACC1', t0 + 3 * STOCK_EXIT_CORRECTION_INTERVAL_MS);
     expect(mockBatch).toHaveBeenCalledTimes(2);
+    // A restart asks once more, and the skip is still stated once.
+    resetStockExitCorrectionState();
+    await correctEstimatedStockExits('ACC1', t0 + 4 * STOCK_EXIT_CORRECTION_INTERVAL_MS);
+    const skipped = listAutotradeEvents({ actions: ['live_exit_correction_skipped'] });
+    expect(skipped.map((e) => JSON.parse(e.detail!))).toEqual([
+      expect.objectContaining({ positionId: pos.id, cause: 'aged_out', exitPrice: 205.0451 }),
+    ]);
   });
 
   it('asks only about this account, and only inside the broker history window', async () => {
@@ -462,11 +617,12 @@ describe('correctEstimatedStockExits', () => {
   });
 });
 
-describe('matchStockHandSale', () => {
+describe('matchSaleOutsideBracket', () => {
   const entered = Date.parse('2026-09-22T14:13:00Z');
   const fill = (over: Partial<BrokerEquityFill> = {}): BrokerEquityFill => ({
     clientOrderId: 'hand-1',
     comboType: 'NORMAL',
+    orderType: 'LIMIT',
     side: 'SELL',
     symbol: 'MRNA',
     filledQty: 23,
@@ -474,12 +630,17 @@ describe('matchStockHandSale', () => {
     filledAt: entered + 15 * 60_000,
     ...over,
   });
-  const exit = { symbol: 'MRNA', quantity: 23 };
+  const exit = { symbol: 'MRNA', quantity: 23, exitDate: '2026-09-22' };
   const none = () => false;
 
   it('takes one sale of the whole quantity, or several adding up exactly, at their weighted price', () => {
-    expect(matchStockHandSale(exit, entered, [fill()], none)).toMatchObject({ price: 181.2, qty: 23 });
-    const two = matchStockHandSale(
+    expect(matchSaleOutsideBracket(exit, entered, [fill()], none)).toMatchObject({
+      price: 181.2,
+      qty: 23,
+      reason: 'manual',
+      source: 'broker_history',
+    });
+    const two = matchSaleOutsideBracket(
       exit,
       entered,
       [
@@ -492,19 +653,53 @@ describe('matchStockHandSale', () => {
     expect(two!.price).toBeCloseTo((10 * 181 + 13 * 182) / 23, 4);
   });
 
-  it("ignores buys, other symbols, sales before entry, bracket legs and the app's own orders", () => {
+  // LITE, 2026-09-21: the entry's legs never rested, the re-arm failed, and the
+  // stop that filled was in a bracket placed by hand. Until this, only NORMAL
+  // orders were candidates, so the fill that closed it could not be read.
+  it("reads a stop or target filled in a bracket placed outside the entry's, with the reason it proves", () => {
+    const stop = { comboType: 'STOP_LOSS', orderType: 'STOP_LOSS' };
+    expect(matchSaleOutsideBracket(exit, entered, [fill(stop)], none)).toMatchObject({
+      reason: 'stop',
+      source: 'outside_bracket',
+    });
+    // A combo label the history does not spell as a leg: the stop order type says it.
+    expect(
+      matchSaleOutsideBracket(exit, entered, [fill({ comboType: 'OCO', orderType: 'STOP_LOSS' })], none),
+    ).toMatchObject({ reason: 'stop', source: 'outside_bracket' });
+    expect(matchSaleOutsideBracket(exit, entered, [fill({ comboType: 'STOP_PROFIT' })], none)).toMatchObject({
+      reason: 'target',
+      source: 'outside_bracket',
+    });
+    // Part on a stop leg, the rest sold by hand: a mix is the operator's close.
+    expect(
+      matchSaleOutsideBracket(
+        exit,
+        entered,
+        [
+          fill({ ...stop, filledQty: 10 }),
+          fill({ clientOrderId: 'b', filledQty: 13, filledAt: entered + 20 * 60_000 }),
+        ],
+        none,
+      ),
+    ).toMatchObject({ qty: 23, reason: 'manual', source: 'broker_history' });
+  });
+
+  it("ignores buys, other symbols, opening orders, the app's own orders, and fills outside the position's life", () => {
     const noise = [
       fill({ side: 'BUY' }),
       fill({ symbol: 'MRVL' }),
       fill({ filledAt: entered - 60_000 }),
-      fill({ comboType: 'STOP_LOSS' }),
+      // The shares were gone when the sync booked the close on 09-22, so a
+      // sale the next day belongs to a later position.
+      fill({ filledAt: Date.parse('2026-09-23T14:00:00Z') }),
+      fill({ comboType: 'MASTER' }),
       fill({ clientOrderId: 'ours' }),
     ];
-    expect(matchStockHandSale(exit, entered, noise, (id) => id === 'ours')).toBeNull();
+    expect(matchSaleOutsideBracket(exit, entered, noise, (id) => id === 'ours')).toBeNull();
   });
 
   it('refuses sales that overshoot or fall short of the booked quantity', () => {
-    expect(matchStockHandSale(exit, entered, [fill({ filledQty: 50 })], none)).toBeNull();
-    expect(matchStockHandSale(exit, entered, [fill({ filledQty: 20 })], none)).toBeNull();
+    expect(matchSaleOutsideBracket(exit, entered, [fill({ filledQty: 50 })], none)).toBeNull();
+    expect(matchSaleOutsideBracket(exit, entered, [fill({ filledQty: 20 })], none)).toBeNull();
   });
 });

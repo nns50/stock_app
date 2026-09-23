@@ -2374,11 +2374,24 @@ because the loop is the only caller that is always flat by the bell, so it is
   calendar. The same seven-day window applies.
   **A stock you sell by hand in Webull is booked at your fill**, the same way as an option.
   When the app's bracket for that position finished with no leg filled (you cancelled it
-  and sold), the app looks in Webull's order history for your own sale of that stock since
-  the entry, and rewrites the exit to it. The reason stays `manual`, and the row says
-  `source: broker_history`. It keeps checking through the day of the close, because the
-  history can lag a sale. Sales that do not add up to the position (you sold part, or
-  traded the same stock again) leave the quote in place.
+  and sold), the app looks in Webull's order history for what closed the position between
+  the entry and the day the close was booked, and rewrites the exit to it. A sale you
+  placed is booked `manual`, even when the quote had crossed a level, and the row says
+  `source: broker_history`. **A stop or target placed outside the app's bracket** (by the
+  app's automatic re-arm, or by you) is booked at its fill as `stop` or `target`, and the
+  row says `source: outside_bracket`. Until 2026-09-23 only a plain sale was read, so the
+  stop you placed by hand on LITE on 2026-09-21 stayed at the quote. It keeps checking
+  through the day of the close, because the history can lag a sale. Fills that do not add
+  up to the position (you sold part, or traded the same stock again) leave the quote in
+  place.
+  **An estimate that was right is marked confirmed, and one left at the quote says why.**
+  When the fill matches the quote to the cent, the exit keeps its price and its note says it
+  was confirmed against the broker's fill. When the app cannot correct an estimate for good,
+  Recent activity shows **`live_exit_correction_skipped`** once, with the cause and what
+  Webull showed: no set of fills that adds up, a filled leg that does not cover the
+  position, or orders older than Webull's seven-day history. A bracket that still shows a
+  working order a day after the shares left is reported the same way, once a day
+  (`cause: combo_working`), because that order may still be live at Webull. Check it there.
   A timed stock close or an options close first seen on a later day than it was placed
   (after an outage, say) is booked on the day its order was placed. Both are day orders, which
   can only fill on the day they were placed.

@@ -139,14 +139,18 @@ async function main(): Promise<void> {
     const broker = statuses.get(accountId)?.get(clientOrderId);
     let decision: ExitCorrection;
     if (!broker) {
-      decision = { action: 'skip', reason: 'no status returned for this order' };
+      decision = { action: 'skip', code: 'unreadable', reason: 'no status returned for this order' };
     } else if (!broker.ok) {
-      decision = { action: 'skip', reason: `broker lookup failed: ${broker.error}` };
+      decision = { action: 'skip', code: 'unreadable', reason: `broker lookup failed: ${broker.error}` };
     } else if (!broker.found) {
       // Not "deleted" — Webull's Trading API order/history covers the past 7
       // days only, so an entry order older than that is gone for good and this
       // row can never be corrected from the broker. Nothing to retry.
-      decision = { action: 'skip', reason: 'entry order predates the broker’s 7-day history window' };
+      decision = {
+        action: 'skip',
+        code: 'aged_out',
+        reason: 'entry order predates the broker’s 7-day history window',
+      };
     } else {
       decision = decideExitCorrection(row, broker.legs ?? []);
     }

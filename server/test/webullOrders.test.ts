@@ -1562,6 +1562,7 @@ describe('parseBrokerEquityFills', () => {
       {
         clientOrderId: 'f2b2e47c',
         comboType: 'NORMAL',
+        orderType: null,
         side: 'SELL',
         symbol: 'SMCI',
         filledQty: 373,
@@ -1571,6 +1572,7 @@ describe('parseBrokerEquityFills', () => {
       {
         clientOrderId: '8db1d316',
         comboType: 'STOP_LOSS',
+        orderType: 'STOP_LOSS',
         side: 'SELL',
         symbol: 'COIN',
         filledQty: 161,

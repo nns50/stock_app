@@ -1003,6 +1003,10 @@ export interface BrokerEquityFill {
   /** The envelope's combo_type: NORMAL for a plain order (a hand sale, or one
    *  of the app's own closes), MASTER / STOP_LOSS / STOP_PROFIT for a bracket. */
   comboType: string | null;
+  /** The order's own order_type (LIMIT, MARKET, STOP_LOSS, ...). A stop leg is
+   *  told from a take-profit by it when the combo label does not say, as in a
+   *  bracket the operator placed by hand. */
+  orderType: string | null;
   side: 'BUY' | 'SELL';
   symbol: string;
   filledQty: number;
@@ -1045,6 +1049,7 @@ export function parseBrokerEquityFills(envelopes: unknown[]): BrokerEquityFill[]
       out.push({
         clientOrderId,
         comboType: typeof env.combo_type === 'string' ? env.combo_type : null,
+        orderType: typeof o.order_type === 'string' ? o.order_type : null,
         side,
         symbol,
         filledQty,
@@ -1058,9 +1063,10 @@ export function parseBrokerEquityFills(envelopes: unknown[]): BrokerEquityFill[]
 
 /**
  * Every stock fill in the broker's order history (the last 7 days), from one
- * paged read. READ-ONLY, never throws. Used to book a stock position the
- * operator sold by hand at the broker's own fill instead of a quote
- * (stockExitCorrection.ts, matchStockHandSale).
+ * paged read. READ-ONLY, never throws. Used to book a stock position closed
+ * outside its entry's bracket (sold by hand, or by a stop or target placed
+ * again by a re-arm or by hand) at the broker's own fill instead of a quote
+ * (stockExitCorrection.ts, matchSaleOutsideBracket).
  */
 export async function listBrokerEquityFills(
   accountId: string,

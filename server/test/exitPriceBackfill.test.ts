@@ -85,7 +85,7 @@ describe('decideExitCorrection', () => {
     // The entry also has a filled price. Reading it would rewrite the exit to
     // the entry price and zero out the trade's P&L entirely.
     const d = decideExitCorrection(exit(), [entryLeg({ filledPrice: 100 })]);
-    expect(d).toEqual({ action: 'skip', reason: expect.stringMatching(/no filled exit leg/) });
+    expect(d).toEqual({ action: 'skip', code: 'no_filled_leg', reason: expect.stringMatching(/no filled exit leg/) });
   });
 
   it('leaves it alone when the combo has aged out of history', () => {
