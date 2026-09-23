@@ -70,6 +70,29 @@ function constants(src: string): Map<string, string | string[]> {
   return out;
 }
 
+/**
+ * Where each CATALOG sits in a file: a `const NAME = [...]` array whose
+ * entries are keyed `action:`. A catalog is a list of things to READ, and its
+ * entries must never count as writes.
+ *
+ * They did until 2026-09-23. The EMIT scan below takes every `action: '…'`
+ * line as an emitter, and EXECUTION_ACTIONS writes each of its entries exactly
+ * that way. So the edge-leak scan's catalog vouched for itself, and three of its
+ * entries were names nothing writes: `live_order_unknown_outcome` (the writers
+ * say `live_order_outcome_unknown`), `daily_drawdown_halt` (a guardrail rule's
+ * name, never journaled) and `give_back_halt` (the writer says
+ * `daily_give_back_halted`). An unknown order outcome or a halt could never
+ * become a finding. The comment on the emit scan already named this failure,
+ * a dead filter "vouching for itself", and guarded two other forms of it.
+ */
+function catalogSpans(src: string): [number, number][] {
+  const spans: [number, number][] = [];
+  for (const m of src.matchAll(/const\s+([A-Za-z0-9_]+)\s*(?::[^=]*)?=\s*\[([^\]]*)\]/g)) {
+    if (/\baction:\s*'/.test(m[2])) spans.push([m.index, m.index + m[0].length]);
+  }
+  return spans;
+}
+
 /** Writers that take the journal action as a POSITIONAL argument. Both scans
  *  below read this, so a new wrapper is taught once rather than twice. */
 const POSITIONAL_SKIP_WRITERS = ['journalEntrySkipOncePerDay', 'journalDeclinedEntry'];
@@ -86,6 +109,7 @@ function scan(): { emitted: Set<string>; consumed: Map<string, Set<string>> } {
   for (const f of files) {
     const src = code(f);
     const consts = constants(src);
+    const catalogs = catalogSpans(src);
 
     // EMIT side. Everything to the end of the `action:` line, so a ternary
     // (`action: role === 'exit' ? 'a' : 'b'`) counts BOTH of its branches —
@@ -103,6 +127,8 @@ function scan(): { emitted: Set<string>; consumed: Map<string, Set<string>> } {
       // (`action: meta.role === 'exit' ? … : …`), and rejecting that reports
       // two live emitters as dead.
       if (/^(?:string|number|boolean|unknown|any)\b/.test(seg.trim())) continue;
+      //   3. An entry of a CATALOG (see catalogSpans) is a read, not a write.
+      if (catalogs.some(([start, end]) => m.index >= start && m.index < end)) continue;
       const emitSeg = seg.split(/\.action\b/)[0];
       for (const a of emitSeg.matchAll(ACTION)) emitted.add(a[1]);
       for (const id of emitSeg.matchAll(/\b([A-Z][A-Za-z0-9_]*)\b/g)) {

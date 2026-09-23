@@ -2024,7 +2024,11 @@ symbol (n ≥ 5) · sector · weekday · ML regime · asset · position size. Pl
 non-behavioural groups: the **day level** (goal reached on N of M active sessions, the
 1R comparison, the red-day decomposition), the **attribution** (paper-versus-live on the
 same decision, and why the live book skipped what paper took), and **findings** —
-execution occurrences and configuration mismatches, where any occurrence is one.
+execution occurrences and configuration mismatches, where any occurrence is one. The
+execution findings include the day-level halts (the live and paper drawdown halts, each
+its own finding, and the give-back guard) and any order whose outcome could not be
+resolved. All three were catalogued under journal names nothing writes until
+2026-09-23, so none of them could appear before then.
 
 One configuration finding is a standing re-fit rather than a mismatch (2026-09-19). The
 live score floor was raised from 72 to 81 when pace scoring went on, as the pace-scored

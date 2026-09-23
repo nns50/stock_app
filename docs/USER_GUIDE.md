@@ -1019,7 +1019,11 @@ tabs of one **Analytics** button (top right) — pick a tab, the report loads on
   **findings** — anything that simply went wrong (an exit that failed, a position with no
   stop, a cap that no longer matches its own formula, a tuner row on a day the tuner is
   off, or **entries being placed at a worse price than they were decided at**, past the
-  0.5% the marketable-limit buffer concedes on purpose), where one occurrence is enough. It reads the database and the journal only: no
+  0.5% the marketable-limit buffer concedes on purpose), where one occurrence is enough.
+  A day-level halt is a finding too: the live and paper drawdown halts, reported
+  separately, and the give-back guard. So is a stock or options order whose outcome the app
+  could not resolve. Until 2026-09-23 those three classes were listed under journal names
+  nothing writes, so none of them could ever appear. It reads the database and the journal only: no
   market data, no provider quota. The Auto page shows the count and the worst open leak;
   the full table is here. It exists because every leak found in this book so far was
   found because a person happened to look, and all of them were already sitting in
@@ -2536,11 +2540,14 @@ because the loop is the only caller that is always flat by the bell, so it is
   and points you at the Auto-Trade journal. Throttled to at most one an hour, and it
   only ever reports what's new since the last one — so it goes quiet on its own once
   they stop.
-  The **daily-drawdown halt** also notifies — paper, live, and live options
-  each alert independently the first time that book's day crosses its own halt level,
-  at most once per (ET) trading day per book, so a rough day in one doesn't drown out or
-  suppress a rough day in another; releasing the next day (a fresh day's P&L starting
-  over) needs no alert of its own, same reasoning as the kill switch's release. A
+  The **daily-drawdown halt** also notifies, once per (ET) trading day per book, the
+  first time that book's realized day reaches the halt level: one alert for **paper** and
+  one for **live**. The live alert measures **stock plus options together**, because that
+  is the figure both live risk checks halt on, and its message shows each sleeve's share.
+  Until 2026-09-23 live stock and live options alerted separately. A halt split across
+  the two sleeves then pushed nothing, and options alone past the level on a green stock
+  day pushed a halt no check was applying. Releasing the next day (a fresh day's P&L
+  starting over) needs no alert of its own, same reasoning as the kill switch's release. A
   **stock split** on a symbol with an open autotrade position (paper or live, stocks
   or options) also notifies — checked at most once a day, since splits are rare and
   the underlying lookup is Yahoo-only (real detection needs `MARKET_DATA_PROVIDER` on
@@ -3071,6 +3078,14 @@ daily goal** — a day that reaches the goal is full strength, half the goal is 
 step — so the whole calendar re-scales itself when the goal or the risk % changes. Badges
 are letters, not colored dots: **G** goal reached, **B** the give-back guard halted the
 day, **H** the drawdown halt tripped, **D** account and strategy diverged.
+
+**H is the live book's halt only.** It comes from the halt alert described under
+Notifications: the day the live book's realized P&L (stock plus options) reaches the halt
+level, that alert is journaled and the day's row reads it. A paper halt never sets H.
+Until 2026-09-23 no day could show an H. The recorder copied the flag from the row it
+was overwriting, and nothing ever set it, so the sizing review's "revert if the halt
+trips twice in any 5 sessions" rule could never fire. A re-record now reads the journal.
+The flag is sticky: once set, a re-record never clears it.
 
 **A dash is not a zero.** Sessions before the daily-baseline record existed have no
 opening equity anywhere, so no account figure exists for them and the cell says so. The

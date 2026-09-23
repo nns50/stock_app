@@ -18,6 +18,7 @@ import {
   strategyDayFor,
 } from '../src/services/autotrading/dailyResults';
 import { seedClosedAutotradeSessions } from './helpers/autotradeSessions';
+import { writeDailyHaltMarker } from '../src/services/autotrading/dailyHaltMarker';
 
 // ---------------------------------------------------------------------------
 // Before this table, the day's percentage lived in a singleton row that was
@@ -33,7 +34,10 @@ beforeEach(() => {
   db.exec(
     'DELETE FROM positions; DELETE FROM position_exits; DELETE FROM autotrade_paper_positions; ' +
       'DELETE FROM autotrade_options_paper_positions; DELETE FROM autotrade_live_options_positions; ' +
-      'DELETE FROM autotrade_daily_results; DELETE FROM autotrade_daily_baseline; DELETE FROM autotrade_config;',
+      'DELETE FROM autotrade_daily_results; DELETE FROM autotrade_daily_baseline; DELETE FROM autotrade_config; ' +
+      // The halt's record is a journal row, so a halt written by one case must
+      // not be read by the next.
+      'DELETE FROM autotrade_events;',
   );
 });
 
@@ -258,6 +262,42 @@ describe('recordDailyResult / recordTodayAfterClose', () => {
     expect(listDailyResults()).toHaveLength(1);
   });
 
+  // THE HALT WAS NEVER RECORDED (2026-09-23). This column read
+  // `existing?.drawdownHalted ?? false`, and nothing had ever set `existing`
+  // true, so every row said "no halt" and the sizing review's two-halts-in-five
+  // revert could never fire. The halt's only dated record is the marker its
+  // alert journals, written here by the same function the alert calls.
+  it('records the LIVE drawdown halt from its journal marker', () => {
+    saveDailyBaseline(DAY, 10_000);
+    setAutotradeConfig({ ...defaultAutotradeConfig(), accountEquityUsd: 9_200 });
+    expect(recordDailyResult(DAY, 1).drawdownHalted).toBe(false);
+
+    writeDailyHaltMarker({ pool: 'live', date: DAY, dailyPnl: -800, haltLevel: -750 });
+    expect(recordDailyResult(DAY, 2).drawdownHalted).toBe(true);
+    expect(listDailyResults()[0].drawdownHalted).toBe(true);
+  });
+
+  it('does not record a PAPER halt, or another day\u2019s, as the live book\u2019s', () => {
+    saveDailyBaseline(DAY, 10_000);
+    setAutotradeConfig({ ...defaultAutotradeConfig(), accountEquityUsd: 10_000 });
+    // The control arm halting is not the live book halting.
+    writeDailyHaltMarker({ pool: 'paper', date: DAY, dailyPnl: -900, haltLevel: -750 });
+    // A live halt on the NEXT session belongs to that session.
+    writeDailyHaltMarker({ pool: 'live', date: '2026-09-11', dailyPnl: -900, haltLevel: -750 });
+    expect(recordDailyResult(DAY, 1).drawdownHalted).toBe(false);
+  });
+
+  it('never clears a halt it already wrote when the day is re-recorded', () => {
+    saveDailyBaseline(DAY, 10_000);
+    setAutotradeConfig({ ...defaultAutotradeConfig(), accountEquityUsd: 9_200 });
+    writeDailyHaltMarker({ pool: 'live', date: DAY, dailyPnl: -800, haltLevel: -750 });
+    recordDailyResult(DAY, 1);
+    // Even with the journal row gone, the stored flag stands.
+    db.exec('DELETE FROM autotrade_events');
+    saveDailyBaseline('2026-09-11', 9_200);
+    expect(recordDailyResult(DAY, 2).drawdownHalted).toBe(true);
+  });
+
   it('re-recording a PAST date keeps the account half it already had', () => {
     // The baseline row is a singleton that rolls over every morning, so a
     // recording for yesterday cannot read yesterday's opening equity from it.
@@ -292,6 +332,21 @@ describe('backfill — exact where the ledger knows, null where nothing does', (
       expect(r.accountGainPct).toBeNull();
       expect(r.strategyGainPct).toBeNull();
     }
+  });
+
+  it('reads the halt from the journal, the one record that reaches back', () => {
+    seedClosedAutotradeSessions({
+      sessions: {
+        '2026-09-08': [{ entryTime: '09:35', exitTime: '10:00', r: -3 }],
+        '2026-09-09': [{ entryTime: '09:35', exitTime: '10:00', r: 1 }],
+      },
+    });
+    writeDailyHaltMarker({ pool: 'live', date: '2026-09-08', dailyPnl: -150, haltLevel: -140 });
+    backfillDailyResults('2026-09-01', 1);
+    expect(listDailyResults().map((r) => [r.etDate, r.drawdownHalted])).toEqual([
+      ['2026-09-08', true],
+      ['2026-09-09', false],
+    ]);
   });
 
   it('never overwrites a day that was already recorded properly', () => {
