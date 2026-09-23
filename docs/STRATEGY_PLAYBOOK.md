@@ -2172,6 +2172,15 @@ monotone shape, rule out the measurement before believing the market.
   book read **−0.45% against a 0.50% buffer on 2026-09-12**: 0.05% paid, execution is not
   where the edge is going.
 
+  Most per-name refusals are journaled **once per symbol per day** (the score floors, the
+  symbol cooldown, the ATR and absorbed-price gates, a symbol already held, the finish
+  line, the short skip). So a paper entry at 11:00 on a name the live floor first refused at
+  09:40 has no row within its minute. Since 2026-09-23 it is filed under that day's latest
+  such refusal made at or before the entry, instead of under `no_live_row`. The re-entry
+  cooldown and the risk check journal on every tick, so their silence at 11:00 means they no
+  longer applied, and an earlier row never stands in for them. Read `no_live_row` after that
+  as what it says: a tick where the journal has nothing for the name at all.
+
   Two classes are matched by **time rather than symbol** (2026-09-12), because they are
   decided for the whole tick before any candidate is looked at and so carry a count and no
   symbol: the end-of-day entry cutoff (`entry_window_closed`) and the live book standing

@@ -13081,3 +13081,44 @@ counts is sales that do not add up to the booked quantity. From the first sessio
 after the deploy, a `position_reconcile_skipped` row for a bracketed position followed by a
 `live_position_closed` from the reconcile, not a `position_reconciled_from_broker`, is the
 race going the right way.
+
+## 2026-09-23 (eighth) — a refusal the journal records once a day stands for that day
+
+The leak scan's attribution files every paper entry the live book did not take under the
+live journal's own word for the skip, read within the minute of the paper entry. What it
+cannot find goes to `no_live_row`, "nothing the journal explains". On the deployed book
+(40 sessions, read 2026-09-23 at 03:55 ET) that was the largest untaken class by far:
+**85 entries, paper +7.07R**, beside 42 paired trades. It was also the evidence read for
+the pending question of lowering the live floor (81 → 77, an exposure change on the
+operator's word).
+
+Most of it was a writer's throttle, not a hole in the record. The declined-entry path
+journals through `journalEntrySkipOncePerDay`: one row per symbol per action per ET day.
+The live floor refuses NVDA at 09:40 and writes its row, then refuses it silently on every
+later tick. Paper, whose floor is 60, takes NVDA at 11:00. The classifier found no row
+within a minute of 11:00, so a gate doing exactly its job read as "unexplained".
+
+**Change.** After the same-minute match and the tick's batch refusals, `classifyUntaken`
+falls back to that symbol's latest once-a-day refusal made the same ET day, at or before
+the paper entry (`ONCE_PER_DAY_SKIP_ACTIONS`). These are the score floors, the symbol
+cooldown, the ATR, absorbed-price and unplaceable gates, a symbol already held, the finish
+line, and the short skip. The re-entry cooldown and the risk check journal on every tick,
+so an earlier row of theirs never stands in: their silence at 11:00 means they had stopped
+refusing.
+
+**Tested.** A 09:40 floor refusal files an 11:00 paper entry, and with two standing
+refusals the latest wins. An earlier every-tick refusal, a refusal from another day or after
+the entry, and another symbol's refusal all leave it `no_live_row`. A same-minute refusal
+and the tick's batch refusal still win over the standing one. The action set is checked
+against the source: every literal action `journalDeclinedEntry` receives in
+`liveExecute.ts`, and every action the score gate can return, must be in it.
+
+**Pre-committed check.** On the first scan after the deploy (the evening routine's, or
+`GET /api/journal/edge-leaks?sessions=40&book=both`):
+- the untaken total must be unchanged: the same trades, with different labels;
+- `no_live_row` must fall below 85;
+- what leaves it must land in once-a-day classes, mostly `live_score_floor_skipped`.
+
+If `no_live_row` does not fall, the writer is not the cause and the bucket needs a
+different explanation. The floor question itself stays the operator's: the re-labelled
+bucket is the evidence for it, not a lever the app pulls.

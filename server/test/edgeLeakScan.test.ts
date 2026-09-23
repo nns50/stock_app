@@ -7,7 +7,9 @@ import {
   CONTROL_MIN_TRADES,
   DIMENSIONS,
   equivalentPaceFloor,
+  JournalSkip,
   LeakTrade,
+  ONCE_PER_DAY_SKIP_ACTIONS,
   LEAK_MIN_TRADES,
   mulberry32,
   paceFloorDrift,
@@ -21,6 +23,8 @@ import {
   WATCH_MIN_TRADES,
 } from '../src/services/autotrading/edgeLeakScan';
 import { etDateTimeToMs } from '../src/util/marketDate';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 // ---------------------------------------------------------------------------
 // The scan's whole reason for existing is that leaks were only ever found when
@@ -455,6 +459,111 @@ describe('attribution — where the live book loses the paper book’s edge', ()
     const paper = [trade({ symbol: 'NVDA', book: 'paper', entryAt: at('14:10'), r: 0.6 })];
     const a = buildAttribution([], paper, [], [halted(at('14:10') + 3_000)], [], MARKETABLE_LIMIT_BUFFER_PCT, RNG());
     expect(a.untaken[0].reason).toBe('live_entries_halted');
+  });
+
+  // 2026-09-23. The live path journals most refusals ONCE per symbol per day,
+  // so the only row for the live floor refusing NVDA all day is the first one.
+  // A paper entry on NVDA hours later found no row within its minute and read
+  // as "nothing the journal explains", the largest untaken bucket on the book.
+  describe('a refusal the journal records once a day stands for the rest of that day', () => {
+    const skip = (symbol: string, time: string, action: string, day = date): JournalSkip => ({
+      symbol,
+      at: etDateTimeToMs(day, time) as number,
+      action,
+      failedRule: null,
+    });
+    const classify = (paperAt: number, skips: JournalSkip[], batch: BatchRefusal[] = []) =>
+      buildAttribution(
+        [],
+        [trade({ symbol: 'NVDA', book: 'paper', entryAt: paperAt, r: 0.4 })],
+        skips,
+        batch,
+        [],
+        MARKETABLE_LIMIT_BUFFER_PCT,
+        RNG(),
+      ).untaken[0].reason;
+
+    it('files a paper entry under the floor refusal journaled at 09:40, not under no_live_row', () => {
+      expect(classify(at('11:00'), [skip('NVDA', '09:40', 'live_score_floor_skipped')])).toBe(
+        'live_score_floor_skipped',
+      );
+      // The latest standing refusal wins when there are several.
+      expect(
+        classify(at('11:00'), [
+          skip('NVDA', '09:40', 'live_score_floor_skipped'),
+          skip('NVDA', '10:15', 'symbol_cooldown_skipped'),
+        ]),
+      ).toBe('symbol_cooldown_skipped');
+    });
+
+    it('does not let an every-tick refusal from earlier stand in for a later one', () => {
+      // These journal on every tick they refuse, so silence at 11:00 means they
+      // had stopped refusing by then.
+      expect(classify(at('11:00'), [skip('NVDA', '09:40', 'symbol_reentry_cooldown_skipped')])).toBe('no_live_row');
+      expect(classify(at('11:00'), [{ ...skip('NVDA', '09:40', 'live_risk_blocked'), failedRule: 'x' }])).toBe(
+        'no_live_row',
+      );
+    });
+
+    it('reads only the same day, only before the entry, and only this symbol', () => {
+      expect(classify(at('11:00'), [skip('NVDA', '09:40', 'live_score_floor_skipped', '2026-09-04')])).toBe(
+        'no_live_row',
+      );
+      expect(classify(at('11:00'), [skip('NVDA', '11:30', 'live_score_floor_skipped')])).toBe('no_live_row');
+      expect(classify(at('11:00'), [skip('AMD', '09:40', 'live_score_floor_skipped')])).toBe('no_live_row');
+    });
+
+    it('still prefers the refusal in the same minute, and a batch refusal of that tick', () => {
+      expect(
+        classify(at('11:00'), [
+          skip('NVDA', '09:40', 'live_score_floor_skipped'),
+          {
+            symbol: 'NVDA',
+            at: at('11:00') + 5_000,
+            action: 'live_risk_blocked',
+            failedRule: 'max_concurrent_positions',
+          },
+        ]),
+      ).toBe('live_risk_blocked:max_concurrent_positions');
+      expect(classify(at('15:56'), [skip('NVDA', '09:40', 'live_score_floor_skipped')], [ewc(at('15:56'))])).toBe(
+        'entry_window_closed',
+      );
+    });
+
+    it('covers exactly the once-a-day writers, and none of the every-tick ones', () => {
+      // Every action the declined-entry path journals through its once-per-day
+      // writer is in the set (liveExecute.ts, journalDeclinedEntry). A new one
+      // added there without joining the set would fall back into no_live_row.
+      for (const a of [
+        'live_score_floor_skipped',
+        'regime_score_floor_skipped',
+        'finish_line_skipped',
+        'symbol_cooldown_skipped',
+        'live_symbol_held_skipped',
+        'risk_atr_unreachable_skipped',
+        'symbol_unplaceable_skipped',
+        'absorbed_price_skipped',
+        'live_short_skipped',
+      ]) {
+        expect(ONCE_PER_DAY_SKIP_ACTIONS.has(a)).toBe(true);
+      }
+      expect(ONCE_PER_DAY_SKIP_ACTIONS.has('symbol_reentry_cooldown_skipped')).toBe(false);
+      expect(ONCE_PER_DAY_SKIP_ACTIONS.has('live_risk_blocked')).toBe(false);
+
+      // And read off the source, so a writer added later cannot slip past a
+      // list someone forgot to update: every literal action the live equity
+      // path hands journalDeclinedEntry, and every action the score gate can
+      // return, is a once-a-day row.
+      const live = readFileSync(join(__dirname, '../src/services/autotrading/liveExecute.ts'), 'utf8');
+      const declined = [...live.matchAll(/journalDeclinedEntry\(\s*candidateSignal,\s*'([a-z_]+)'/g)].map((m) => m[1]);
+      expect(declined.length).toBeGreaterThanOrEqual(5);
+      const gate = readFileSync(join(__dirname, '../src/services/autotrading/entryScoreGate.ts'), 'utf8');
+      const gateActions = [...gate.matchAll(/action: ('[a-z_]+'(?:\s*\|\s*'[a-z_]+')*)/g)]
+        .flatMap((m) => m[1].split('|'))
+        .map((a) => a.trim().replace(/'/g, ''));
+      expect(gateActions).toContain('live_score_floor_skipped');
+      for (const a of [...declined, ...gateActions]) expect([a, ONCE_PER_DAY_SKIP_ACTIONS.has(a)]).toEqual([a, true]);
+    });
   });
 
   it('leaves a paper entry OUTSIDE any batch refusal as no_live_row', () => {
