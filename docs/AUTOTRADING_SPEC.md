@@ -14364,11 +14364,13 @@ seven-day history (the entry was placed 2026-09-23, so until 2026-09-30).
 - an app order in the history is never matched, and the estimate waits and is asked
   again.
 
-**Correction (2026-09-24).** The cause given above, a leg edited by hand, was a guess, and
-it was wrong. DELL's orders were in Webull's history all along. The app's reader skipped
-them: see "2026-09-24 — the order history is read whole". The history match this section
-added stays as a backstop, but it reads the same pages, so it could not have found DELL
-either.
+**Correction (2026-09-24).** The leg was edited by hand: the operator confirmed it, and the
+history shows the stop raised from 548.76 to 552.00, where it filled at 552.04. But the
+edit is not why neither list showed the entry. It kept every order's own id, and the
+app's reader skipped DELL's three orders together with 39 others on other names, from
+09-18 to 09-23: see "2026-09-24 — the order history is read whole". The history match this
+section added stays as a backstop. It reads the same pages, so it could not have found
+DELL either.
 
 ## 2026-09-23 (thirty-first) — the market-direction gate's index leg survives a failed quote
 
@@ -14421,7 +14423,10 @@ thirtieth section's fix. The journal could not say why, because a skip is logged
 day. A read-only probe that can page the order lists by hand (#670) then showed three
 things about the broker's history:
 - DELL's bracket was in it all along: the entry (19 @ 562.52), the stop that filled
-  (19 @ **552.04**) and the cancelled target.
+  (19 @ **552.04**) and the cancelled target. The operator had raised that stop by hand
+  in Webull, from the app's 548.76 to 552.00. The edit kept the orders' own ids, which is
+  how the correction still found the bracket by the entry's id once the pages were read
+  whole.
 - The app's full read had never returned those three orders, nor 39 others.
 - In total, 42 of the history's 176 orders were never read.
 
