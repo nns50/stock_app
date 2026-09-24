@@ -15344,3 +15344,75 @@ control, ignoring the setting, or keeping the old bar; the paper bar at 9; a zer
 passing; the wrong bucket; and in the paper reader, the `books` check dropped, the live
 figures read as the control, a missing cut read as zero, and unread passing (caught at the
 typecheck).
+
+## 2026-09-24 (ninth) — the first live shorts are small
+
+The tape plan's PR 9. Like PR 8 it changes nothing while `liveAllowNakedShort` is off. A
+short is the one live position with unlimited downside, and the live book has never held
+one, so the first ones are sized to find out what the live path does, not for P&L.
+
+**The window.** Two new settings, `liveShortProbationTrades` (default 10) and
+`liveShortProbationSizeMultiplier` (default 0.5), and a stamp, `liveShortsEnabledAt`.
+While fewer than that many short entries have been placed since the stamp, each new short
+entry takes the multiplier. `getShortProbationStatus` derives it the way
+`getProbationStatus` derives the book's window: from real entry orders, never from a
+separate counter. It uses the same query (`countLiveOrdersSince`), now with an optional side;
+`'sell'` is a short, since the live book's only opening sell is one. Rejected, cancelled
+and expired orders don't count, and neither do adds (a scale-in or a second lot is not a
+new short). 0 trades turns it off.
+
+**The stamp** is set in `setAutotradeConfig`, where every writer passes, on the move of
+`liveAllowNakedShort` from false to true, the way the exit geometry's clock is stamped. So
+the window starts however shorts are switched on: the Live trading card, a script, or a
+future rule. A save that leaves shorts on does not restart it. Switching shorts off keeps
+the stamp, and switching them on again starts a new window, so a book whose shorts were
+switched off starts small again. An explicit stamp in the patch wins, which is how a test
+reset or a restore puts a known state back. The route does not accept the field, and
+`config_changed` does not list it (it travels with the transition that set it).
+
+**The cut.** `entryProbation(cfg, side)` returns one multiplier: the book's window, times
+the short window for a short. `attemptLiveEntry` reads it for both places the cut applies:
+- the quantity;
+- the risk budget the quantity is re-sized against when the quote has drifted.
+
+Before, those were two reads of `getProbationStatus` that happened to agree. Now they are
+one number, so the budget cannot pass an order twice the size the quantity was cut to. A
+short placed while both windows run at 0.5 goes out at a quarter. A long never reads the
+short window. The per-lot second lot is split from the cut quantity, so it is cut too.
+`live_order_placed` now carries the `probationMultiplier` the order took, and the
+dashboard carries `shortProbation`. The Live trading card shows the line only while shorts
+are on, since a window for a switched-off side would read as a cut in force.
+
+**Guards.** The three config guards all cover the new fields:
+- `NEVER_TUNED_KEYS` lists all three;
+- the route takes the two settings, and its numeric `PUT` sweep drives them;
+- `configReachability` finds each read in `liveExecute.ts`.
+
+**Tests.** Each is mutation-checked: 15 mutations, all caught.
+- **The window.** It is inactive with no stamp. It counts only short entries since the
+  stamp: not one placed before it, not longs, not a rejected order, not an add. It ends at
+  the tenth, and 0 turns it off.
+- **The sizing.** The first short goes out at `floor(full × 0.5)`, and a long in the same
+  window at full size. After ten shorts, a short is full size again. With the book's own
+  probation running too, a short goes out at a quarter, and the placement row says 0.25.
+- **The budget.** A short decided at 100 with its stop at 105 and quoted at 96 by placement
+  is re-sized against half the approved risk. At the quote, what it risks against its stop
+  is within that half.
+- **The stamp.** It is set on the switch-on, kept through a save that leaves shorts on and
+  through switching them off, and set again on the next switch-on. An explicit one wins,
+  and a stored 0 reads as never.
+- **The route.** A `PUT` that switches shorts on starts the window, and the dashboard reads
+  it. A stamp in the body is ignored, and a later save does not restart the window.
+- **Web.** The two settings save with the live card, and the line shows only while shorts
+  are on.
+
+The mutations:
+- in the entry cut: the short window ignored; the budget reading the book's cut only; the
+  short window counting both sides, or applied to longs; the window never ending; the
+  placement row reading the book's cut;
+- in the query: the side filter made always true;
+- in the stamp: never stamping; restamping on every save while shorts are on; ignoring an
+  explicit stamp;
+- in the plumbing: the sanitizer dropping the multiplier; the route dropping the trade
+  count; the dashboard showing the book's window;
+- in the web: the line shown while shorts are off; the save omitting the trade count.

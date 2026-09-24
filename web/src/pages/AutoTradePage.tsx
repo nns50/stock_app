@@ -1407,6 +1407,10 @@ interface LiveTradingSectionProps {
   setLiveAllowNakedShortDraft: (v: boolean) => void;
   liveShortsRedTapeOnlyDraft: boolean;
   setLiveShortsRedTapeOnlyDraft: (v: boolean) => void;
+  liveShortProbationTradesDraft: number | undefined;
+  setLiveShortProbationTradesDraft: (v: number | undefined) => void;
+  liveShortProbationSizeMultiplierDraft: number | undefined;
+  setLiveShortProbationSizeMultiplierDraft: (v: number | undefined) => void;
   liveProbationTradesDraft: number | undefined;
   setLiveProbationTradesDraft: (v: number | undefined) => void;
   liveProbationSizeMultiplierDraft: number | undefined;
@@ -1622,6 +1626,30 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
           <code>live_scale_in_short_skipped</code>, <code>per_lot_second_lot_short_skipped</code>). The evidence for
           shorts is read on red markets, so this keeps the live book to the trade the evidence covers.
         </p>
+        <div className="grid grid-cols-2 gap-3 mt-2 ml-6">
+          <Field
+            label="Short probation trades"
+            hint="The first N live shorts after you switch shorts on take an extra size cut. 0 = off."
+          >
+            <NumberInput
+              value={p.liveShortProbationTradesDraft}
+              onChange={p.setLiveShortProbationTradesDraft}
+              min={0}
+              placeholder="e.g. 10 shorts"
+              ariaLabel="Short probation trades"
+            />
+          </Field>
+          <Field label="Short probation size multiplier" hint="e.g. 0.5 = half size, on top of the probation above.">
+            <NumberInput
+              value={p.liveShortProbationSizeMultiplierDraft}
+              onChange={p.setLiveShortProbationSizeMultiplierDraft}
+              min={0}
+              max={1}
+              placeholder="e.g. 0.5"
+              ariaLabel="Short probation size multiplier"
+            />
+          </Field>
+        </div>
         {/* Nested under the live-trading gate the same way "Live options trading"
             is: the server fails this closed unless live trading is already (or is
             concurrently becoming) enabled. Left enabled while the master was off,
@@ -1690,6 +1718,13 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
             <p className="text-[11px] text-amber-400">
               Probation active: {p.dashboard.probation.tradesRemaining} of {p.config.liveProbationTrades} trades
               remaining at {p.dashboard.probation.multiplier}× size.
+            </p>
+          )}
+          {p.config.liveAllowNakedShort && p.dashboard?.shortProbation.active && (
+            <p className="text-[11px] text-amber-400">
+              Short probation active: {p.dashboard.shortProbation.tradesRemaining} of{' '}
+              {p.config.liveShortProbationTrades} shorts remaining at {p.dashboard.shortProbation.multiplier}× size, on
+              top of any probation above.
             </p>
           )}
 
@@ -3326,6 +3361,10 @@ export default function AutoTradePage() {
   const [liveRefusalCeilingEnabledDraft, setLiveRefusalCeilingEnabledDraft] = useState(true);
   const [liveAllowNakedShortDraft, setLiveAllowNakedShortDraft] = useState(false);
   const [liveShortsRedTapeOnlyDraft, setLiveShortsRedTapeOnlyDraft] = useState(true);
+  const [liveShortProbationTradesDraft, setLiveShortProbationTradesDraft] = useState<number | undefined>();
+  const [liveShortProbationSizeMultiplierDraft, setLiveShortProbationSizeMultiplierDraft] = useState<
+    number | undefined
+  >();
   const [liveProbationTradesDraft, setLiveProbationTradesDraft] = useState<number | undefined>();
   const [liveProbationSizeMultiplierDraft, setLiveProbationSizeMultiplierDraft] = useState<number | undefined>();
   const [liveScaleInEnabledDraft, setLiveScaleInEnabledDraft] = useState(false);
@@ -3477,6 +3516,8 @@ export default function AutoTradePage() {
     sync('liveRefusalCeilingEnabled', setLiveRefusalCeilingEnabledDraft);
     sync('liveAllowNakedShort', setLiveAllowNakedShortDraft);
     sync('liveShortsRedTapeOnly', setLiveShortsRedTapeOnlyDraft);
+    sync('liveShortProbationTrades', setLiveShortProbationTradesDraft);
+    sync('liveShortProbationSizeMultiplier', setLiveShortProbationSizeMultiplierDraft);
     sync('liveProbationTrades', setLiveProbationTradesDraft);
     sync('liveProbationSizeMultiplier', setLiveProbationSizeMultiplierDraft);
     sync('liveScaleInEnabled', setLiveScaleInEnabledDraft);
@@ -3792,6 +3833,8 @@ export default function AutoTradePage() {
         liveRefusalCeilingEnabled: liveRefusalCeilingEnabledDraft,
         liveAllowNakedShort: liveAllowNakedShortDraft,
         liveShortsRedTapeOnly: liveShortsRedTapeOnlyDraft,
+        liveShortProbationTrades: liveShortProbationTradesDraft,
+        liveShortProbationSizeMultiplier: liveShortProbationSizeMultiplierDraft,
         liveProbationTrades: liveProbationTradesDraft,
         liveProbationSizeMultiplier: liveProbationSizeMultiplierDraft,
         // Omitted (left unchanged server-side) while live trading is off — the
@@ -7215,6 +7258,10 @@ export default function AutoTradePage() {
                 setLiveAllowNakedShortDraft={setLiveAllowNakedShortDraft}
                 liveShortsRedTapeOnlyDraft={liveShortsRedTapeOnlyDraft}
                 setLiveShortsRedTapeOnlyDraft={setLiveShortsRedTapeOnlyDraft}
+                liveShortProbationTradesDraft={liveShortProbationTradesDraft}
+                setLiveShortProbationTradesDraft={setLiveShortProbationTradesDraft}
+                liveShortProbationSizeMultiplierDraft={liveShortProbationSizeMultiplierDraft}
+                setLiveShortProbationSizeMultiplierDraft={setLiveShortProbationSizeMultiplierDraft}
                 liveProbationTradesDraft={liveProbationTradesDraft}
                 setLiveProbationTradesDraft={setLiveProbationTradesDraft}
                 liveProbationSizeMultiplierDraft={liveProbationSizeMultiplierDraft}

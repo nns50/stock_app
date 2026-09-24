@@ -811,6 +811,23 @@ export interface AutotradeConfig {
    *  true; no effect while liveAllowNakedShort is off. LIVE only: paper keeps
    *  taking shorts on every tape as the control. */
   liveShortsRedTapeOnly: boolean;
+  /** Epoch ms of the most recent false -> true transition of
+   *  liveAllowNakedShort, or null if live shorts have never been switched on.
+   *  Anchors the SHORT probation window below, the way liveEnabledAt anchors
+   *  the book's. Stamped in setAutotradeConfig, where every writer passes, so
+   *  the window starts however shorts were switched on; server-owned, not
+   *  settable via the config route. */
+  liveShortsEnabledAt: number | null;
+  /** The first live stock SHORT entries after shorts are switched on are
+   *  small (2026-09-24, the tape plan's PR 9): this many short entries,
+   *  counted from liveShortsEnabledAt, take an extra
+   *  liveShortProbationSizeMultiplier cut on top of the book's own probation
+   *  and every other sizing cut. A short is the one live position with
+   *  unlimited downside, and the book has never held one, so its first ones
+   *  are sized for learning what the live path does rather than for P&L.
+   *  Defaults 10 and 0.5; 0 trades turns it off. Longs are untouched. */
+  liveShortProbationTrades: number;
+  liveShortProbationSizeMultiplier: number;
   /** Gross-exposure cap as a % of accountEquityUsd (default 100).
    *
    *  This was hardcoded to exactly 100% on the reasoning that "a cash account
@@ -1446,6 +1463,9 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     liveFatFingerPct: 10,
     liveAllowNakedShort: false,
     liveShortsRedTapeOnly: true,
+    liveShortsEnabledAt: null,
+    liveShortProbationTrades: 10,
+    liveShortProbationSizeMultiplier: 0.5,
     liveProbationTrades: 20,
     liveProbationSizeMultiplier: 0.5,
     liveScaleInEnabled: false,
@@ -1794,6 +1814,12 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
       typeof input.liveAllowNakedShort === 'boolean' ? input.liveAllowNakedShort : d.liveAllowNakedShort,
     liveShortsRedTapeOnly:
       typeof input.liveShortsRedTapeOnly === 'boolean' ? input.liveShortsRedTapeOnly : d.liveShortsRedTapeOnly,
+    liveShortsEnabledAt: epochMsOrNull(input.liveShortsEnabledAt, d.liveShortsEnabledAt),
+    liveShortProbationTrades: posInt(input.liveShortProbationTrades, d.liveShortProbationTrades),
+    liveShortProbationSizeMultiplier: (() => {
+      const n = Number(input.liveShortProbationSizeMultiplier);
+      return Number.isFinite(n) && n > 0 && n <= 1 ? n : d.liveShortProbationSizeMultiplier;
+    })(),
     liveProbationTrades: posInt(input.liveProbationTrades, d.liveProbationTrades),
     liveProbationSizeMultiplier: (() => {
       const n = Number(input.liveProbationSizeMultiplier);
@@ -1968,8 +1994,16 @@ export function setAutotradeConfig(patch: Partial<AutotradeConfig>): AutotradeCo
     merged.stopAtrMultiple !== prev.stopAtrMultiple || merged.targetRMultiple !== prev.targetRMultiple;
   // An explicit stamp in the patch wins — a caller restoring a known state
   // (a test, a rollback) is not making a fresh change.
-  const next =
+  const stamped =
     geometryMoved && patch.autoTuneExitTunedAt === undefined ? { ...merged, autoTuneExitTunedAt: Date.now() } : merged;
+  // The short probation's clock, for the same reason (2026-09-24, the tape
+  // plan's PR 9): the window starts when live shorts are switched on, by
+  // whichever writer switches them on. Stamped on the false -> true move only,
+  // so a save that leaves shorts on does not restart the window, and switching
+  // them off leaves the stamp (the next switch-on restarts it).
+  const shortsOn = merged.liveAllowNakedShort && !prev.liveAllowNakedShort;
+  const next =
+    shortsOn && patch.liveShortsEnabledAt === undefined ? { ...stamped, liveShortsEnabledAt: Date.now() } : stamped;
   db.prepare(
     `INSERT INTO autotrade_config (id, config, updated_at) VALUES (1, ?, ?)
      ON CONFLICT(id) DO UPDATE SET config = excluded.config, updated_at = excluded.updated_at`,
@@ -1997,6 +2031,7 @@ export interface ConfigFieldChange {
 const CONFIG_STAMP_KEYS: ReadonlySet<keyof AutotradeConfig> = new Set<keyof AutotradeConfig>([
   'liveEnabledAt',
   'liveOptionsEnabledAt',
+  'liveShortsEnabledAt',
   'autoTuneExitTunedAt',
 ]);
 

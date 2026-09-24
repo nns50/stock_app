@@ -426,16 +426,21 @@ export function pendingLiveOrdersRisk(): { risk: number; count: number } {
  *  does not (expired means the broker never filled it before it timed out —
  *  the same "never became a real trade" category as rejected/cancelled, not
  *  a distinct one). ENTRY only, mirroring countLiveOptionsOrdersSince(): a
- *  time-exit closing order is closing an already-counted trade, not a new one. */
-export function countLiveOrdersSince(sinceMs: number): number {
+ *  time-exit closing order is closing an already-counted trade, not a new one.
+ *
+ *  `side` narrows the count to one side's entries (2026-09-24): 'sell' is the
+ *  SHORT probation's count, since the live book's only opening sell is a
+ *  short. One query for both windows, so they cannot count differently. */
+export function countLiveOrdersSince(sinceMs: number, side?: 'buy' | 'sell'): number {
   const row = db
     .prepare(
       `SELECT COUNT(*) AS n
          FROM autotrade_live_orders alo
          JOIN order_intents oi ON oi.id = alo.intent_id
         WHERE alo.created_at >= ? AND alo.role = 'entry' AND alo.addon_of_position_id IS NULL
-          AND oi.state NOT IN ('rejected','cancelled','expired')`,
+          AND oi.state NOT IN ('rejected','cancelled','expired')
+          AND (? IS NULL OR oi.side = ?)`,
     )
-    .get(sinceMs) as { n: number };
+    .get(sinceMs, side ?? null, side ?? null) as { n: number };
   return row.n;
 }
