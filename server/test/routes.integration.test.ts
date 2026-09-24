@@ -4577,6 +4577,186 @@ describe('journal analysis routes tell you what they could not cover (integratio
     expect(typeof rep.totalRealized).toBe('number');
   });
 
+  describe('a counterfactual replays past the exit it replaces (2026-09-24)', () => {
+    // A 1R target banked at 09:37; the name reached 2R at 09:40. Cut at the
+    // actual exit, a 2R candidate saw only the 09:35 bar and ended as a time
+    // exit at 1R, so "a wider target" could never read as better.
+    const dayAt = (day: string, hhmm: string) => Date.parse(`${day}T${hhmm}:00-04:00`);
+    const path = (day: string) => [
+      { time: dayAt(day, '09:35'), open: 100, high: 101.2, low: 99.9, close: 101, volume: 1000 },
+      { time: dayAt(day, '09:40'), open: 101, high: 102.5, low: 100.9, close: 102.3, volume: 1000 },
+      { time: dayAt(day, '09:45'), open: 102.3, high: 102.4, low: 102, close: 102.2, volume: 1000 },
+    ];
+    let candles: ReturnType<typeof vi.spyOn>;
+    let before: ReturnType<typeof getAutotradeConfig>;
+    beforeEach(() => {
+      db.exec('DELETE FROM position_exits; DELETE FROM positions;');
+      candles = vi
+        .spyOn(getProvider(), 'getCandles')
+        .mockImplementation(async (_s: string, _t, q?: { start?: string }) => path(q?.start ?? '2026-06-01'));
+      before = getAutotradeConfig();
+      setAutotradeConfig({
+        targetRMultiple: 1,
+        liveTrailingEnabled: false,
+        liveScaleOutEnabled: false,
+        stagnationExitMinutes: 0,
+      });
+    });
+    afterEach(() => {
+      candles.mockRestore();
+      setAutotradeConfig({
+        targetRMultiple: before.targetRMultiple,
+        liveTrailingEnabled: before.liveTrailingEnabled,
+        liveScaleOutEnabled: before.liveScaleOutEnabled,
+        stagnationExitMinutes: before.stagnationExitMinutes,
+        stagnationExitMinR: before.stagnationExitMinR,
+      });
+      db.exec('DELETE FROM position_exits; DELETE FROM positions;');
+    });
+
+    /** A same-session long at 100 / 99, entered 09:30, closed at 09:37 by `reason`. */
+    const trade = (
+      i: number,
+      reason: 'target' | 'manual' | 'stop' | 'time_exit',
+      { exitPrice, ...extra }: Record<string, unknown> = {},
+    ) => {
+      const day = `2026-05-${String(1 + i).padStart(2, '0')}`;
+      const p = createPosition({
+        assetType: 'stock',
+        symbol: `CFX${i}`,
+        side: 'long',
+        quantity: 10,
+        entryPrice: 100,
+        entryDate: day,
+        entryTime: '09:30',
+        stopPrice: 99,
+        ...extra,
+      });
+      addExit(p.id, {
+        quantity: 10,
+        exitPrice: (exitPrice as number) ?? (extra.targetPrice as number) ?? 101,
+        exitDate: day,
+        exitReason: reason,
+      });
+      db.prepare('UPDATE position_exits SET created_at = ? WHERE position_id = ?').run(dayAt(day, '09:37'), p.id);
+      return p;
+    };
+
+    type Cmp = {
+      comparison: {
+        meanDiffR: number;
+        verdict: string;
+        candidate: { replay: { meanR: number; reasons: Record<string, number> } };
+      };
+    };
+
+    it('exit-replay lets a wider target hold past the target the book banked', async () => {
+      for (let i = 0; i < 24; i++) trade(i, 'target');
+      const rep = (await getJson('/api/journal/exit-replay?cTargetR=2')) as Cmp;
+      expect(rep.comparison.candidate.replay.reasons.target).toBe(24);
+      expect(rep.comparison.candidate.replay.meanR).toBe(2);
+      expect(rep.comparison.meanDiffR).toBeCloseTo(1, 6);
+      expect(rep.comparison.verdict).toBe('better');
+    });
+
+    it('exit-replay still stops at a close made by hand: it would have ended any geometry', async () => {
+      for (let i = 0; i < 24; i++) trade(i, 'manual');
+      const rep = (await getJson('/api/journal/exit-replay?cTargetR=2')) as Cmp;
+      expect(rep.comparison.candidate.replay.reasons.time_exit).toBe(24);
+      expect(rep.comparison.meanDiffR).toBeCloseTo(0, 6);
+    });
+
+    it('exit-tune-validation fits the tuner on the MFE as held, the input autoTune reads', async () => {
+      // Each trade peaked at 1.2R while held and 2.5R by the close. The target
+      // rule is 0.8 × winners' mean MFE, floored at 1R: 1R from the MFE as held,
+      // 2R had the fit read the path past the exit.
+      for (let i = 0; i < 24; i++) trade(i, 'target');
+      const rep = (await getJson('/api/journal/exit-tune-validation')) as {
+        inSample: { oneStep: { fit: { geometry: { targetRMultiple: number }; winners: number } } };
+      };
+      expect(rep.inSample.oneStep.fit.winners).toBe(24);
+      expect(rep.inSample.oneStep.fit.geometry.targetRMultiple).toBe(1);
+    });
+
+    it('exit-tune-validation replays both arms under every live rule but the target, the scratch included', async () => {
+      // Until the paths ran past the exit, cutting each at the trade's own exit
+      // stood in for the stagnation scratch. Past it, a route that carried only
+      // breakeven and trail replayed a book with no scratch at all.
+      setAutotradeConfig({ stagnationExitMinutes: 60, stagnationExitMinR: 0.3, liveTrailingEnabled: false });
+      for (let i = 0; i < 24; i++) trade(i, 'target');
+      const rep = (await getJson('/api/journal/exit-tune-validation')) as {
+        carried: Record<string, number>;
+      };
+      expect(rep.carried).toMatchObject({
+        stagnationMinutes: 60,
+        stagnationMinR: 0.3,
+        // As the loop runs them: trailing off turns the breakeven and trail off.
+        breakevenTriggerR: 0,
+        trailStartR: 0,
+        trailStopR: 0,
+      });
+      expect(rep.carried).not.toHaveProperty('targetR');
+    });
+
+    it('regime-tighten asks whether the FULL target was reached after the tightened exit', async () => {
+      db.exec('DELETE FROM autotrade_paper_positions;');
+      // Tightened to 0.25 of a 2R target: banked 100.5 (0.5R) at 09:37. As held
+      // the path peaked at 1.2R, short of 2R; by 09:40 it reached 2.5R.
+      trade(0, 'target', { symbol: 'TGHX', targetPrice: 100.5, regimeTargetFactor: 0.25, tags: ['live', 'autotrade'] });
+      trade(1, 'manual', { symbol: 'TGHM', targetPrice: 100.5, regimeTargetFactor: 0.5, tags: ['live', 'autotrade'] });
+      // The untightened twin shares the stop and the scratch clock, so a
+      // stop-out or a scratch ends the twin too: those paths stop at 09:37.
+      trade(3, 'stop', {
+        symbol: 'TGHS',
+        targetPrice: 100.5,
+        regimeTargetFactor: 0.25,
+        exitPrice: 99,
+        tags: ['live', 'autotrade'],
+      });
+      trade(4, 'time_exit', {
+        symbol: 'TGHT',
+        targetPrice: 100.5,
+        regimeTargetFactor: 0.25,
+        exitPrice: 100.2,
+        tags: ['live', 'autotrade'],
+      });
+      // The paper twin of the first, closed by its target at the same minute.
+      const paper = openPaperPosition({
+        symbol: 'TGHQ',
+        side: 'buy',
+        quantity: 10,
+        entryPrice: 100,
+        stopPrice: 99,
+        targetPrice: 100.5,
+        riskAmount: 10,
+        riskProfile: 'MODERATE',
+        rationale: 'fixture',
+        regimeTargetFactor: 0.25,
+      });
+      db.prepare(
+        "UPDATE autotrade_paper_positions SET status='closed', exit_price=100.5, exit_at=?, exit_reason='target', entry_at=? WHERE id=?",
+      ).run(dayAt('2026-05-03', '09:37'), dayAt('2026-05-03', '09:30'), paper.id);
+      const rep = (await getJson('/api/journal/regime-tighten')) as {
+        rows: { symbol: string; mfeR: number; fullReached: boolean; bankedWin: boolean; counterfactualR: number }[];
+      };
+      const hit = rep.rows.find((r) => r.symbol === 'TGHX')!;
+      // Measured to the close: 2.5R, past the 2R full target. As held it read
+      // 1.2R, short of it, and the row was a banked win.
+      expect(hit).toMatchObject({ mfeR: 2.5, fullReached: true, bankedWin: false, counterfactualR: 2 });
+      // The hand close stays cut at 09:37: its MFE is the 09:35 bar's 1.2R.
+      expect(rep.rows.find((r) => r.symbol === 'TGHM')!.mfeR).toBe(1.2);
+      // A stop-out and a scratch too. Run to the close, both would read as
+      // reaching the full target, a +3R and a +1.8R "cost" the tighten never had.
+      expect(rep.rows.find((r) => r.symbol === 'TGHS')).toMatchObject({
+        mfeR: 1.2,
+        fullReached: false,
+        counterfactualR: -1,
+      });
+      expect(rep.rows.find((r) => r.symbol === 'TGHT')).toMatchObject({ mfeR: 1.2, fullReached: false });
+      expect(rep.rows.find((r) => r.symbol === 'TGHQ')).toMatchObject({ mfeR: 2.5, fullReached: true });
+    });
+  });
+
   it('regime-tighten joins every tightened trade in both books to its excursion, and says what it could not measure', async () => {
     // The consumer of PR 5's regime_target_factor stamp: the ledger reads the
     // factor off the row, divides the traded target back out to the full one,

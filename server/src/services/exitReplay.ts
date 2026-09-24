@@ -124,6 +124,26 @@ export function liveExitRules(cfg: AutotradeConfig): ExitRules {
 
 export type ReplayExitReason = 'stop' | 'breakeven' | 'trail' | 'target' | 'time_exit' | 'stagnation';
 
+/**
+ * Where a COUNTERFACTUAL path ends (2026-09-24): the epoch ms of the close that
+ * bounds it, or null to run to the end of the session.
+ *
+ * A replay asks what a different exit geometry would have done, so its path
+ * cannot stop at the exit the traded geometry made. Cut there, a 2R target on
+ * a trade that banked 1R at 10:15 ended as a time exit at 10:15, and every
+ * candidate that holds longer than the geometry traded read as no better by
+ * construction. A FACTUAL measurement (the excursion of the trade as held)
+ * still stops at the exit: see excursion.ts's barsWithinHoldingPeriod.
+ *
+ * The one close that bounds every geometry is one no geometry made: by hand
+ * (`manual`), or one the ledger cannot name (no reason recorded). Any other
+ * geometry would have been closed at that same moment, so the path ends there.
+ */
+export function counterfactualPathEnd(lastExit: { at: number; reason: string | null } | null): number | null {
+  if (!lastExit) return null;
+  return lastExit.reason === 'manual' || lastExit.reason == null ? lastExit.at : null;
+}
+
 export interface ReplayResult {
   /** R booked under these rules — the position-weighted blend of the scale-out
    *  (when it fired) and the remainder's exit; the remainder's R alone when

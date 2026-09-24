@@ -686,6 +686,21 @@ The first reading (2026-09-11, 60 paired trades) put all three shapes inside the
 so the settings stayed; the rows are in the spec's 2026-09-11 section, with the next
 reading due at 80 paired trades.
 
+**Readings before 2026-09-24 could not favour a shape that holds longer.** Until then each
+path stopped at the trade's actual exit. So a wider target, a later stagnation scratch or
+a looser trail was cut off exactly where the traded geometry had closed, and read as no
+better by construction. Every path now runs to the end of the session. The exception is
+a close made by hand (or with no reason recorded), which would have ended any geometry.
+Re-read on the production copy over 104 live same-session trades, the censored method
+put every candidate at about 0R. Run to the close with honest fills:
+- no stagnation scratch reads +0.056R a trade (95% interval −0.005 to +0.105);
+- a 90-minute scratch, +0.028R;
+- a 2R target, +0.025R.
+
+The paper book (128 trades) leans the same way: a 2R target +0.038R. None clears its
+interval yet, so the settings stay. But the 2026-09-11 reading was taken with a tool
+that could not have shown otherwise, and the next one is the first that can.
+
 ### The live conviction floor
 
 The screener's score is not decoration — it predicts outcome. Measured 2026-09-06 over the
@@ -1073,6 +1088,15 @@ much") — the bound only leans one way, and a same-session trade measured on a 
 the same way. **Banked wins** (tightened hits whose MFE never reached the full target) are the
 trades the tighten demonstrably converted; the full target would have exited them somewhere at
 or below that peak.
+**Since 2026-09-24 the MFE behind "reached" runs to the end of the session** for a trade
+that banked its tightened target. Measured as held, it stopped at the tightened exit, so
+such a trade could never show that the full one was reachable. A trade that closed any
+other way (a stop, a trailed stop, a scratch, a hand close) is still read as held: the
+untightened twin shares the stop and the scratch clock, so it would have closed at the
+same moment. The bound leaned against the full target
+rather than towards it, and "cannot beat realized, keep the tighten" was the only reading
+the ledger could give. No live tightened trade had closed by then, so no decision rested
+on it.
 
 ---
 

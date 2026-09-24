@@ -18,13 +18,18 @@ import {
 import {
   aggregateReplay,
   compareExitRules,
+  counterfactualPathEnd,
   liveExitRules,
   replayExit,
   type ExitRules,
   type ReplayResult,
   type ReplayTrade,
 } from '../services/exitReplay';
-import { validateExitTuneRules, type ValidationTrade } from '../services/autotrading/exitTuneValidation';
+import {
+  carriedExitRules,
+  validateExitTuneRules,
+  type ValidationTrade,
+} from '../services/autotrading/exitTuneValidation';
 import { computeShortShadowReport, SHORT_SHADOW_SINCE_MS } from '../services/autotrading/shortShadowRecordData';
 import { getLastReentryShadowRecord } from '../db/reentryShadowRecords';
 import { parseDeclinedEntry, type DeclinedEntry } from '../services/autotrading/declinedEntry';
@@ -38,6 +43,7 @@ import {
   isTightenedFactor,
   tightenedStockPositions,
   tightenedTradeRow,
+  tightenedTwinPathEnd,
   TightenedTradeInput,
   TightenedTradeRow,
 } from '../services/autotrading/regimeTightenLedger';
@@ -80,6 +86,14 @@ export const journalRouter = Router();
  *  for a position with no exits. */
 const lastExitAt = (p: Position): number | null =>
   p.exits.length ? Math.max(...p.exits.map((e) => e.createdAt)) : null;
+
+/** The position's final exit — when and why — for counterfactualPathEnd and
+ *  tightenedTwinPathEnd. */
+const lastExitOf = (p: Position): { at: number; reason: string | null } | null => {
+  if (!p.exits.length) return null;
+  const last = p.exits.reduce((a, b) => (b.createdAt > a.createdAt ? b : a));
+  return { at: last.createdAt, reason: last.exitReason };
+};
 
 /** Null when neither an exit nor an entry date is known. */
 const lastExitDate = (p: Position): string | null =>
@@ -243,6 +257,11 @@ interface SameSessionLoad {
  * anything else would be measured on daily bars, where a single bar spans the
  * whole day and a path replay degenerates into the peak-and-distance model
  * these routes exist to replace. Excluded and COUNTED.
+ *
+ * Each path runs from the entry to the END of the session, not to the exit
+ * the traded geometry made (counterfactualPathEnd, 2026-09-24): both routes
+ * replay OTHER geometries, and a path cut at the actual exit could never show
+ * one that holds longer.
  */
 async function loadSameSessionBars(): Promise<SameSessionLoad> {
   const closedStock = listPositions({ status: 'closed', assetType: 'stock' });
@@ -266,7 +285,7 @@ async function loadSameSessionBars(): Promise<SameSessionLoad> {
       });
       const bars = barsWithinHoldingPeriod(candles, p.entryDate, lastExitDate(p), {
         entryAt: p.entryTime ? etDateTimeToMs(p.entryDate, p.entryTime) : null,
-        exitAt: lastExitAt(p),
+        exitAt: counterfactualPathEnd(lastExitOf(p)),
       });
       trades.push({ position: p, stop, bars });
     } catch {
@@ -428,6 +447,11 @@ journalRouter.get(
       // The excursion row is computed from the SAME bars the replay walks, so
       // the rule's input and the outcome it is scored on can never come from
       // two different fetches of two different windows.
+      //
+      // Those bars now run to the end of the session (counterfactualPathEnd),
+      // but the rule is fitted on the excursion AS HELD, bounded by the last
+      // exit, because that is what autoTune.ts's own input reads. Fitted on
+      // the path past the exit, this would validate a tuner that does not exist.
       const excursion = computeExcursion(
         {
           positionId: p.id,
@@ -440,6 +464,8 @@ journalRouter.get(
           realizedPnl: realizedPnlOf(p),
           entryDate: p.entryDate,
           exitDate: lastExitDate(p),
+          entryTime: p.entryTime,
+          exitAt: lastExitAt(p),
         },
         bars,
         'intraday',
@@ -464,11 +490,9 @@ journalRouter.get(
     const result = validateExitTuneRules(
       trades,
       { stopAtrMultiple: cfg.stopAtrMultiple, targetRMultiple: cfg.targetRMultiple },
-      {
-        breakevenTriggerR: cfg.breakevenTriggerRMultiple,
-        trailStartR: cfg.trailStartRMultiple,
-        trailStopR: cfg.trailStopRMultiple,
-      },
+      // Every live rule but the target the tuner varies: the scratch too, which
+      // the paths now run past the exit to meet (carriedExitRules).
+      carriedExitRules(liveExitRules(cfg)),
       {
         minTrades: cfg.autoTuneMinTrades,
         maxStep: cfg.autoTuneExitMaxStep,
@@ -648,7 +672,12 @@ journalRouter.get(
           entryDate: p.entryDate,
           exitDate: lastExitDate(p),
           entryTime: p.entryTime,
-          exitAt: lastExitAt(p),
+          // "Would the FULL target have been reached?" is asked of the path
+          // past the tightened TARGET's fill, to the end of the session: the
+          // MFE as held stops at that exit and can never show it. Any other
+          // exit closed the untightened twin at the same moment, so there the
+          // path stops (tightenedTwinPathEnd, 2026-09-24).
+          exitAt: tightenedTwinPathEnd(lastExitOf(p)),
         },
         realizedR: null,
       });
@@ -686,7 +715,7 @@ journalRouter.get(
           entryDate,
           exitDate: p.exitAt == null ? null : etToday(p.exitAt),
           entryTime: etTimeOfDay(p.entryAt),
-          exitAt: p.exitAt,
+          exitAt: tightenedTwinPathEnd(p.exitAt == null ? null : { at: p.exitAt, reason: p.exitReason }),
         },
         realizedR: paperRealizedR(p),
       });
