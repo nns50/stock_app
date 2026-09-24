@@ -14657,6 +14657,18 @@ minute, and each trade placed against it at its entry minute:
   measures, so live flicker without the band would be lower than 10.1, and the band has
   less to remove. The first sessions with the band read that directly (the checks below).
 
+**First live session (2026-09-24), read after the close.** The gate ran bar-only (this
+change was not deployed yet). It changed label 4 times: mixed from 09:36, red 11:12–12:18,
+red again 14:03–14:07, mixed to the close. It refused no live entry: every live entry of
+the day was placed by 11:08, before the first red reading. The band at 0.1% / 60% would
+have held one of the two exits from red. At 14:07:50, four minutes after the reading
+turned red, SPY was −0.16% with 64.1% of the sample red, inside the band. That is the
+flicker the band exists for. It would have released the other: at 12:18:28 SPY was back
+at +0.02%. Rows are written only on a change, so how long that afternoon hold would have
+lasted cannot be read from them, but no live entry was placed after 11:08 for it to
+refuse. One session moves nothing: the band stays at 0.1% / 60%, and the checks below
+stand.
+
 **Pre-committed checks.**
 - **The first session after the deploy.** Every `market_direction_read` row carries the
   band (`exitIndexPct`, `exitBreadthPct`). A held stretch shows as a row with `heldBy`, and
@@ -14692,8 +14704,9 @@ minute, and each trade placed against it at its entry minute:
   - a long scale-in on a red reading places nothing and journals once;
   - it goes through on a mixed reading, with the gate off, or with a reading older than
     10 minutes;
-  - a second lot is held while red, journaled under its own action, and sent when the
-    tape turns;
+  - a second lot refused while red is journaled once under its own action with
+    `dropped: true`, and is not sent when the tape turns; another position's row does
+    not drop it;
   - removing the gate from the shared function fails both.
 - **Guards:**
   - a held refusal's row says `heldBy`;
