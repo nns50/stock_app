@@ -1751,10 +1751,13 @@ equally-weighted cards in the order they happened to be built:
   **Allow naked short** guardrail under Live trading, below — with Short or Both
   selected but that box unchecked, the loop still screens, decides, and paper-trades
   the short side normally, it just can't send a live short order to the broker. Each
-  short the live book declines this way is journaled once per symbol per day as
-  `live_short_skipped` (2026-09-10) with its score, entry, stop and target, so the
-  live-eligible short flow can be counted and joined to the paper book's outcomes when
-  deciding whether to enable live shorts — until then it left no row at all. Options
+  short the live book declines this way is journaled as `live_short_skipped`
+  (2026-09-10) with its score, entry, stop and target, so the live-eligible short flow
+  can be counted and joined to the paper book's outcomes when deciding whether to enable
+  live shorts — until then it left no row at all. Since 2026-09-24 it is journaled once
+  per symbol per day **for each market direction** it was declined on (a name declined
+  on a mixed market at 09:37 and again after the market turned red at 10:15 has a row
+  for each), and the row also carries that direction and the signal's ATR. Options
   entries are unaffected either way — an autotrade options position is always long the
   contract, a put for a bearish read instead of a call, which is already defined-risk),
   **min relative volume** (a candidate's volume must be at least this many
@@ -3406,6 +3409,14 @@ keeps the result, and the rule reads that record's own verdict against the bar (
 average R ≥ +0.1, win rate ≥ 50%). The card shows the reading under the rule, met or not
 — "19 of 30 shadow shorts, avg +0.08R (bar +0.1R), win 52.6% (bar 50%) as of 2026-09-18 —
 short on trades, avg R" — so the distance to the bar is visible without fetching anything.
+Since 2026-09-24 the reading goes on with the **red-market bar**: the shorts declined on a
+broadly red market, replayed on their own, against 20 trades, an average of +0.15R, a 50%
+win rate and +0.10R more than the shorts declined on mixed or green markets ("red tape: 3
+of 20 shorts, avg …"). A short counts toward a market direction only from the loop's own
+reading at the time, so shorts from before 2026-09-24 count as unlabeled. The record also
+leaves out any short whose stop is too far for its daily range (the same check a live short
+would meet next, at your **max risk vs ATR** setting), where the row says how wide the
+range was.
 When the bar is met the rule writes `config_change_proposed` with the field you would flip
 (`liveAllowNakedShort`) and sends **one** notification, on the session it is first met;
 it never applies the change, and it stops proposing once shorts are on. A replay that

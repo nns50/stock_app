@@ -23,7 +23,7 @@ import {
   leakLeverPatch,
   leakLeverRefusal,
 } from '../src/services/autotrading/gatedSwitches';
-import { SHORT_ENABLE_GATE } from '../src/services/autotrading/shortShadowRecord';
+import { redTapeGateOf, SHORT_ENABLE_GATE, type ShadowTrade } from '../src/services/autotrading/shortShadowRecord';
 
 // ---------------------------------------------------------------------------
 // This engine's output is a config write on live money, so the tests are
@@ -74,6 +74,7 @@ function shortShadow(over: Partial<ShortShadowEvidence> = {}): ShortShadowEviden
     avgR,
     winRatePct,
     gate: { ...g, passesN, passesAvgR, passesWinRate, passes: passesN && passesAvgR && passesWinRate },
+    redTapeGate: null,
     ...over,
   };
 }
@@ -1005,6 +1006,23 @@ describe('the shipped rules', () => {
         },
       ]);
       expect(r.decisions[0].nextState.lastReading).toMatch(/bar met/);
+    });
+
+    // 2026-09-24: the record also carries the red-tape bar, and the reading
+    // says how far the red-tape shorts sit from it, leg by leg.
+    it('reads the red-tape distance beside the old bar', () => {
+      const red = redTapeGateOf({
+        red: { trades: [0.4, -1, 0.5].map((exitR) => ({ exitR }) as ShadowTrade) },
+        mixed: { trades: [0.1].map((exitR) => ({ exitR }) as ShadowTrade) },
+        green: { trades: [] },
+        unlabeled: { trades: [] },
+      });
+      const r = run(snapshot({ shortShadow: shortShadow({ redTapeGate: red }) }));
+      expect(r.decisions[0].nextState.lastReading).toBe(
+        '19 of 30 shadow shorts, avg +0.08R (bar +0.1R), win 52.6% (bar 50%) as of 2026-09-14 — short on trades, avg R' +
+          "; red tape: 3 of 20 shorts, avg -0.03R (bar +0.15R), win 66.7% (bar 50%), -0.13R over the other tapes' 1 " +
+          '(bar +0.1R) — short on trades, avg R, edge over other tapes',
+      );
     });
 
     it('goes quiet once shorts are on — a proposal for the state already in force is noise', () => {

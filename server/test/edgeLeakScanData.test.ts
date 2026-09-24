@@ -1671,12 +1671,14 @@ describe('the re-entry cooldown finding, read from the persisted record', () => 
       before_min_gap: 0,
       no_exit_gap: 0,
       refused_by_direction: 0,
+      refused_by_atr_reach: 0,
     },
     minMinutesSinceExit,
     exitRules: liveExitRules(defaultAutotradeConfig()),
     replayVersion: 2,
     entryConcessionPct: 0.04,
     directionGateReplayed: true,
+    atrReach: null,
   });
   const same = (n: number, r: number) => Array.from({ length: n }, () => r);
   const record = (gaps: DeclinedEntryShadow[]): ReentryShadowReport => ({

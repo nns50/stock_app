@@ -1,7 +1,7 @@
 import { AutotradeConfig, sanitizeAutotradeConfig } from '../../db/autotradeConfig';
 import type { MlRegimeReadiness } from '../mlRegimeReadiness';
 import type { EdgeLeakScanResult, LeakReport } from './edgeLeakScan';
-import type { ShortShadowRecord } from './shortShadowRecord';
+import type { ShortRedTapeGate, ShortShadowRecord } from './shortShadowRecord';
 import type { DollarCapKey } from './targetTune';
 
 // ---------------------------------------------------------------------------
@@ -380,6 +380,9 @@ export interface ShortShadowEvidence {
   avgR: number | null;
   winRatePct: number | null;
   gate: ShortShadowRecord['gate'];
+  /** The red-tape bar (2026-09-24) against the shorts declined on red tapes;
+   *  null on a record persisted before the split existed. */
+  redTapeGate: ShortRedTapeGate | null;
 }
 
 /** The record's three numbers against their bar, in one line, met or not. The
@@ -395,6 +398,23 @@ export function shortShadowReading(r: ShortShadowEvidence): string {
   return (
     `${r.n} of ${g.minTrades} shadow shorts, avg ${avg} (bar +${g.minAvgR}R), win ${win} (bar ${g.minWinRatePct}%)` +
     ` as of ${r.etDate}` +
+    (short.length ? ` — short on ${short.join(', ')}` : ' — bar met') +
+    (r.redTapeGate ? `; ${redTapeReading(r.redTapeGate)}` : '')
+  );
+}
+
+/** The red-tape bar's distance, in one clause: each number against its bar. */
+export function redTapeReading(t: ShortRedTapeGate): string {
+  const signed = (v: number | null) => (v === null ? 'n/a' : `${v >= 0 ? '+' : ''}${v.toFixed(2)}R`);
+  const short: string[] = [];
+  if (!t.passesN) short.push('trades');
+  if (!t.passesAvgR) short.push('avg R');
+  if (!t.passesWinRate) short.push('win rate');
+  if (!t.passesEdge) short.push('edge over other tapes');
+  return (
+    `red tape: ${t.n} of ${t.minTrades} shorts, avg ${signed(t.avgR)} (bar +${t.minAvgR}R), ` +
+    `win ${t.winRatePct === null ? 'n/a' : `${t.winRatePct.toFixed(1)}%`} (bar ${t.minWinRatePct}%), ` +
+    `${signed(t.edgeR)} over the other tapes' ${t.otherTapesN} (bar +${t.minEdgeOverOtherTapesR}R)` +
     (short.length ? ` — short on ${short.join(', ')}` : ' — bar met')
   );
 }

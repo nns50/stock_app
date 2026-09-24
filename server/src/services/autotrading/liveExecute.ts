@@ -1880,16 +1880,30 @@ export async function runLiveExecution(
       // closed below their open, and nothing recorded that live saw any of it.
       // The paper book takes shorts and records the outcome; this records the
       // decline, so the two can be joined. Not a behaviour change.
-      if (claimOncePerDay('live_short_skipped', symbol)) {
+      //
+      // Once per symbol per TAPE per day (2026-09-24), not per day: the red-tape
+      // bar reads the shorts declined on a red tape, and a name first declined
+      // on a mixed tape at 09:37 was never recorded again when the tape turned
+      // red at 10:15, so the record could not say what a red-tape-only switch
+      // would have taken. The key is the reading the gate acts on (held).
+      const tape = marketDirection?.direction ?? 'none';
+      if (claimOncePerDay('live_short_skipped', `${symbol}|${tape}`)) {
         logAutotradeEvent({
           symbol,
           stage: 'execution',
           action: 'live_short_skipped',
           detail: {
+            side: 'short',
             score: candidateSignal.score,
             entry: candidateSignal.entry,
             stop: candidateSignal.stop,
             target: candidateSignal.target,
+            // What the ATR reachability gate right below would read, had
+            // shorts been on: the replay applies the same rule (atrReach.ts).
+            atr: candidateSignal.atr ?? null,
+            direction: marketDirection?.direction ?? null,
+            rawDirection: marketDirection ? (marketDirection.rawDirection ?? marketDirection.direction) : null,
+            heldBy: marketDirection?.heldBy ?? null,
             // This skip runs BEFORE the score floor, both cooldowns and the
             // risk check, so a row exists for every scoring short candidate —
             // not for the ones the live book would actually have taken. On
