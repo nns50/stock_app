@@ -3296,6 +3296,20 @@ job, and a re-price that waited out a partial fill are not counted. None of them
 "root-cause it and fix the path" recommendation. On 2026-09-23 the headline counted five
 defects, and one of the five was your own three hand sales.
 
+**A lever already in force is history, not advice** (since 2026-09-25). Some leaks name
+a setting that already stands at the lever's value, or past it. A score floor of 81 is
+already past a lever that raises the floor to 70. Those leaks are marked `in_force`: the
+bucket's trades come from before the setting, or from a path it does not reach (options
+entries do not apply the live score floor). They carry no estimate and never count in the
+headline. The action is research, not a config change. Until this date a confirmed 60-69
+band would have read "liveMinSignalScore 81 → 70", labelled safe, which is a lowering.
+
+**One lever counts once in the headline** (since 2026-09-25). Two cuts of the scan can
+file the same losing trades under the same setting. **Market direction at entry** and
+**Side and market direction at entry** both put a long bought on a red day under the
+market-direction gate. Within one cut the buckets are different trades, so their
+estimates add. Across cuts, the larger total stands for the lever.
+
 **The exit that closed the red days is not a number to add** (2026-09-23). The
 recommendation "Red days are driven by … exits" is research, and carries no estimate: an
 exit reason is how a losing trade ended, not a setting that could have removed its loss.
@@ -3348,6 +3362,16 @@ and whether it has disqualified itself. When a rule does graduate and act, it wr
 `config_auto_applied` to Recent Activity with the before/after values and the numbers
 that met the criterion, and sends a notification — a config change on live money is not
 something to discover later.
+
+**The leak rule reads past a lever that is already spent** (since 2026-09-25). "Close
+the leak the scan found" takes the first confirmed leak whose lever the app may write and
+that would still change something. A leak stays in the scan's window for weeks after its
+setting is made, because the trades that caused it are still there. Until this date the
+rule stopped at the first leak with a lever and read nothing below it when that lever was
+already in force (a cooldown already at its value, a score floor already above the band's),
+was a setting the app may not write, or would have moved its setting the exposure way. Tune
+advice marks those leaks `in_force` (see
+[Tune advice](#tune-advice-what-to-change-next-and-what-it-is-worth)).
 
 **The shorts rule reads its own evidence** (since 2026-09-19). "Enable live shorts" is
 the one rule that waits for you, and until then it was also the one rule that read nothing:

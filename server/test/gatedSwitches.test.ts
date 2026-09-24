@@ -13,6 +13,7 @@ import {
   patchInForce,
   coherenceGuard,
   exposureGuard,
+  leverInForce,
   PRE_TRIAL_SIZING,
   SAFE_DIRECTION,
   SHADOW_MIN_EVALUATIONS,
@@ -187,6 +188,48 @@ describe('the shadow record', () => {
     expect(nextSwitchState(proposed, false, '2026-09-15', false, true).lastProposedPatch).toEqual({
       mlRegimeEnabled: false,
     });
+  });
+});
+
+describe('leverInForce (2026-09-25)', () => {
+  const config = { ...defaultAutotradeConfig(), liveMinSignalScore: 81, symbolReentryCooldownMinutes: 390 };
+  const lever = (field: string, value: number | boolean, direction: 'safe' | 'exposure' = 'safe') => ({
+    field,
+    value,
+    direction,
+  });
+
+  it('is in force at the lever’s value, and past it in the direction the lever pushes', () => {
+    expect(leverInForce(lever('symbolReentryCooldownMinutes', 390), config)).toBe(true);
+    // The score-band lever is a floor to raise TO: 81 is already past 70.
+    expect(leverInForce(lever('liveMinSignalScore', 70), config)).toBe(true);
+    expect(leverInForce(lever('liveMinSignalScore', 85), config)).toBe(false);
+    // An exposure lever pushes the other way: a cooldown of 390 is not yet 120.
+    expect(leverInForce(lever('symbolReentryCooldownMinutes', 120, 'exposure'), config)).toBe(false);
+    expect(leverInForce(lever('symbolReentryCooldownMinutes', 400, 'exposure'), config)).toBe(true);
+  });
+
+  it('reads a flag, and a number with no written direction, by equality only', () => {
+    expect(leverInForce(lever('marketDirectionGateEnabled', true), config)).toBe(false);
+    expect(
+      leverInForce(lever('marketDirectionGateEnabled', true), { ...config, marketDirectionGateEnabled: true }),
+    ).toBe(true);
+  });
+
+  it('never reads a scratch that is OFF as past a lever that would switch it on', () => {
+    expect(leverInForce(lever('stagnationExitMinutes', 45), { ...config, stagnationExitMinutes: 0 })).toBe(false);
+    expect(leverInForce(lever('stagnationExitMinutes', 45), { ...config, stagnationExitMinutes: 30 })).toBe(true);
+  });
+});
+
+describe('a zero that means OFF (2026-09-25)', () => {
+  it('refuses switching the scratch off, and lets switching it on through', () => {
+    const on = { ...defaultAutotradeConfig(), stagnationExitMinutes: 60 };
+    const off = { ...defaultAutotradeConfig(), stagnationExitMinutes: 0 };
+    expect(exposureGuard({ stagnationExitMinutes: 0 }, on)[0]).toMatch(/switches it OFF/);
+    expect(exposureGuard({ stagnationExitMinutes: 45 }, off)).toEqual([]);
+    expect(exposureGuard({ stagnationExitMinutes: 45 }, on)).toEqual([]);
+    expect(exposureGuard({ stagnationExitMinutes: 90 }, on)[0]).toMatch(/RAISES it/);
   });
 });
 
@@ -700,6 +743,44 @@ describe('the shipped rules', () => {
           }),
         ),
       ).toBeNull();
+    });
+
+    it('reads past a spent lever to the next open one (2026-09-25)', () => {
+      // Each of the first four used to return null, or stand as a patch the
+      // write refuses, and hide every leak below: a cooldown already at its
+      // lever, a floor already above the band's, a field the app may not
+      // write, and a flag whose direction the arithmetic cannot judge.
+      const leak = (dimension: string, field: string, value: number | boolean) => ({
+        dimension,
+        dimensionLabel: dimension,
+        bucket: 'b',
+        n: 20,
+        meanR: -0.3,
+        severityR: 4,
+        verdict: 'leak',
+        lever: { kind: 'config', field, value, direction: 'safe', detail: '' },
+      });
+      const s = snapshot({
+        config: {
+          ...defaultAutotradeConfig(),
+          symbolReentryCooldownMinutes: 390,
+          liveMinSignalScore: 81,
+          stagnationExitMinutes: 60,
+        },
+        leakScan: {
+          leaks: [
+            leak('round', 'symbolReentryCooldownMinutes', 390),
+            leak('scoreBand', 'liveMinSignalScore', 70),
+            leak('marketTape', 'marketDirectionGateEnabled', true),
+            // Writable, but a flag the write refuses from data ('either').
+            leak('exitShape', 'liveScaleOutEnabled', true),
+            leak('holdTime', 'stagnationExitMinutes', 45),
+          ],
+        } as unknown as NonNullable<GatedSwitchSnapshot['leakScan']>,
+      });
+      const f = fire('leak_lever', s);
+      expect(f?.patch).toEqual({ stagnationExitMinutes: 45 });
+      expect(f?.evidence).toMatch(/^holdTime=b:/);
     });
 
     it('is silent once the config already carries the lever’s value', () => {
