@@ -428,6 +428,10 @@ key becomes `client_order_id`.
   An `order-detail` probe (`accountId` + `clientOrderId`) reads one order from
   `/openapi/trade/order/detail`, the only read that tells an order the lists skipped from
   one that does not exist. All are GETs; `POST /api/webull/probe` is session-gated.
+  Paging by hand: a page is the `page_size` highest client order ids below the cursor
+  (string order) plus the rest of their groups, so the next cursor is the page's
+  `page_size`-th highest id below the current one, never its last envelope
+  (`nextPageCursor`, and `AUTOTRADING_SPEC.md` 2026-09-24).
 - **Phase 2 (no broker):** guardrails engine, config + kill-switch persistence, order-intent
   model + lifecycle, dry-run pipeline, the Trade UI.
 - **Phase 3 (LIVE — shipped):** `livePreview` (real account-state → guardrails →

@@ -21,6 +21,8 @@ import {
   parseBrokerOptionFills,
   parseBrokerEquityFills,
   isOptionOrder,
+  listBrokerEquityFills,
+  nextPageCursor,
 } from '../src/providers/webull/orders';
 import type { WebullOpenOrder } from '../src/providers/webull/orders';
 import { decideExitCorrection } from '../src/services/exitPriceBackfill';
@@ -1244,7 +1246,132 @@ describe('order-list pagination', () => {
     expect(r).toMatchObject({ ok: true, found: true, status: 'FILLED' });
     expect(fetchSpy).toHaveBeenCalledTimes(2);
     const url2 = String(fetchSpy.mock.calls[1][0]);
-    expect(url2).toContain('last_client_order_id=OPEN-99');
+    // The 100th highest id on the page, compared as strings: 'OPEN-0' sorts
+    // below 'OPEN-10' and every other. Not the page's last envelope.
+    expect(url2).toContain('last_client_order_id=OPEN-0');
+  });
+
+  // 2026-09-24, measured on the deployed account: a page is the page_size
+  // orders with the highest client_order_id strictly below the cursor, plus
+  // every other order of their groups wherever those sort, listed by group.
+  // This fake answers exactly that way.
+  function webullPagedHistory(all: { id: string; group: string; type: string; symbol: string }[]) {
+    const envOf = (o: (typeof all)[number]) => ({
+      client_order_id: o.id,
+      combo_order_id: o.group,
+      combo_type: o.type,
+      orders: [
+        {
+          client_order_id: o.id,
+          instrument_type: 'EQUITY',
+          symbol: o.symbol,
+          side: o.type === 'MASTER' || o.type === 'NORMAL' ? 'BUY' : 'SELL',
+          status: 'FILLED',
+          filled_quantity: '1',
+          filled_price: '10',
+          filled_time: '1790000000000',
+        },
+      ],
+    });
+    const desc = (a: string, b: string) => (a < b ? 1 : a > b ? -1 : 0);
+    return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = new URL(String(input));
+      const size = Number(url.searchParams.get('page_size') ?? '10');
+      const cursor = url.searchParams.get('last_client_order_id');
+      const base = all
+        .filter((o) => cursor === null || o.id < cursor)
+        .sort((a, b) => desc(a.id, b.id))
+        .slice(0, size);
+      const groups = new Set(base.map((o) => o.group));
+      const members = all.filter((o) => groups.has(o.group));
+      // Groups listed by their first order (the entry, or a lone order), highest first.
+      const head = (g: string) =>
+        members.find((o) => o.group === g && (o.type === 'MASTER' || o.type === 'NORMAL'))!.id;
+      const listed = [...groups].sort((a, b) => desc(head(a), head(b)));
+      return page(listed.flatMap((g) => members.filter((o) => o.group === g).map(envOf)));
+    });
+  }
+
+  // A deterministic stand-in for the ids both sides draw: 32 hex characters
+  // for the app's, 24 for the ones Webull gives the orders placed in its app.
+  function hexIds(seed: number) {
+    let x = seed >>> 0;
+    const next = () => {
+      x = (x + 0x6d2b79f5) >>> 0;
+      let t = x;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0).toString(16).padStart(8, '0');
+    };
+    return (len: 24 | 32) => Array.from({ length: len / 8 }, next).join('');
+  }
+
+  it('reads every order of a history spanning pages once, brackets straddling the cut included', async () => {
+    cfg();
+    const id = hexIds(20260924);
+    const all: { id: string; group: string; type: string; symbol: string }[] = [];
+    for (let i = 0; i < 45; i++) {
+      const g = `B${i}`;
+      all.push({ id: id(32), group: g, type: 'MASTER', symbol: `B${i}` });
+      all.push({ id: id(32), group: g, type: 'STOP_PROFIT', symbol: `B${i}` });
+      all.push({ id: id(32), group: g, type: 'STOP_LOSS', symbol: `B${i}` });
+    }
+    for (let i = 0; i < 70; i++)
+      all.push({ id: id(i % 3 === 0 ? 32 : 24), group: `N${i}`, type: 'NORMAL', symbol: `N${i}` });
+    // The shape that skipped (DELL, 2026-09-23): a bracket on page 1 only
+    // because one leg sorts at the top, listed last because its entry sorts
+    // at the bottom, and ending in a leg that sorts near the bottom too. The
+    // page's last envelope was the old cursor, so the next page began below
+    // nearly everything.
+    all.push({ id: '00000000000000000000000000000001', group: 'EDGE', type: 'MASTER', symbol: 'EDGE' });
+    all.push({ id: 'ffffffffffffffffffffffffffffffff', group: 'EDGE', type: 'STOP_PROFIT', symbol: 'EDGE' });
+    all.push({ id: '00000000000000000000000000000002', group: 'EDGE', type: 'STOP_LOSS', symbol: 'EDGE' });
+    const fetchSpy = webullPagedHistory(all);
+
+    const r = await listBrokerEquityFills('ACC1');
+
+    expect(r.ok).toBe(true);
+    const ids = r.fills.map((f) => f.clientOrderId);
+    expect(new Set(ids).size).toBe(all.length);
+    expect(ids).toHaveLength(all.length);
+    // Each cursor is the 100th highest id below the one before it.
+    const byDesc = all.map((o) => o.id).sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
+    const cursors = fetchSpy.mock.calls.map((c) => new URL(String(c[0])).searchParams.get('last_client_order_id'));
+    expect(cursors).toEqual([null, byDesc[99], byDesc[199]]);
+  });
+
+  it('keeps walking when a bracket pulled onto the next page is listed first (no false replay stop)', async () => {
+    cfg();
+    const id = hexIds(7);
+    // The group listed first on page 1 (highest entry id) has a leg below the
+    // cut, so page 2 carries it again and lists it first again. The walk used
+    // to read "same first envelope" as a server ignoring its cursor and stop.
+    const all: { id: string; group: string; type: string; symbol: string }[] = [
+      { id: 'fffffffffffffffffffffffffffffff0', group: 'TOP', type: 'MASTER', symbol: 'TOP' },
+      { id: 'fffffffffffffffffffffffffffffff1', group: 'TOP', type: 'STOP_PROFIT', symbol: 'TOP' },
+      { id: '0000000000000000000000000000000f', group: 'TOP', type: 'STOP_LOSS', symbol: 'TOP' },
+    ];
+    for (let i = 0; i < 150; i++) all.push({ id: id(32), group: `N${i}`, type: 'NORMAL', symbol: `N${i}` });
+    webullPagedHistory(all);
+
+    const r = await listBrokerEquityFills('ACC1');
+
+    expect(new Set(r.fills.map((f) => f.clientOrderId)).size).toBe(all.length);
+  });
+
+  it('nextPageCursor: the page_size-th highest id below the cursor, or none on the last page', () => {
+    const e = (ids: string[]) => ids.map((client_order_id) => ({ client_order_id }));
+    // String order, mixed lengths: '6ab29' sorts below '6ab291'.
+    expect(nextPageCursor(e(['9', '6ab291', '6ab29', '1']), undefined, 3)).toBe('6ab29');
+    // Ids at or above the cursor were read already (a group pulled in whole)
+    // and do not count toward a full page.
+    expect(nextPageCursor(e(['z', 'y', 'c', 'b']), 'd', 3)).toBeUndefined();
+    expect(nextPageCursor(e(['z', 'c', 'b', 'a']), 'd', 3)).toBe('a');
+    // A repeated id counts once.
+    expect(nextPageCursor(e(['c', 'c', 'b']), undefined, 3)).toBeUndefined();
+    // Envelopes without an id are ignored; an empty page is the last.
+    expect(nextPageCursor([{}, { client_order_id: '' }], undefined, 1)).toBeUndefined();
+    expect(nextPageCursor([], 'x', 1)).toBeUndefined();
   });
 
   // 2026-09-23: two consecutive history pages both carried HOOD's bracket, so
