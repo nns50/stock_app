@@ -216,6 +216,7 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     liveMaxOrdersPerDay: 6,
     liveFatFingerPct: 10,
     liveAllowNakedShort: false,
+    liveShortsRedTapeOnly: true,
     liveMaxExposurePct: 100,
     optionsMaxConcurrentPositions: 0,
     optionsOwnExposurePool: false,
@@ -4474,6 +4475,24 @@ describe('AutoTradePage', () => {
         expect(setConfig).toHaveBeenCalledWith(
           expect.objectContaining({ liveMaxOrderUsd: 30_000, liveMaxDailyLossUsd: 3_000, liveMaxOrdersPerDay: 6 }),
         ),
+      );
+    });
+
+    // 2026-09-24: the red-tape rule for live shorts saves with the live card,
+    // and starts from what the server holds.
+    it('saves the short-only-on-a-red-market setting with the live card', async () => {
+      vi.spyOn(client, 'autotradeConfig').mockResolvedValue(configFixture({ liveShortsRedTapeOnly: true }));
+      const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
+      renderPage();
+      await screen.findByText('VNQ');
+
+      const box = screen.getByLabelText(/Short only on a broadly red market/);
+      expect(box).toBeChecked();
+      fireEvent.click(box);
+      fireEvent.click(screen.getByRole('button', { name: 'Save live-trading settings' }));
+
+      await waitFor(() =>
+        expect(setConfig).toHaveBeenCalledWith(expect.objectContaining({ liveShortsRedTapeOnly: false })),
       );
     });
 

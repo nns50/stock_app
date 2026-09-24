@@ -1405,6 +1405,8 @@ interface LiveTradingSectionProps {
   setLiveRefusalCeilingEnabledDraft: (v: boolean) => void;
   liveAllowNakedShortDraft: boolean;
   setLiveAllowNakedShortDraft: (v: boolean) => void;
+  liveShortsRedTapeOnlyDraft: boolean;
+  setLiveShortsRedTapeOnlyDraft: (v: boolean) => void;
   liveProbationTradesDraft: number | undefined;
   setLiveProbationTradesDraft: (v: number | undefined) => void;
   liveProbationSizeMultiplierDraft: number | undefined;
@@ -1602,6 +1604,24 @@ function LiveTradingSection(p: LiveTradingSectionProps) {
           />
           Allow naked short (defined-risk only is strongly recommended — leave unchecked)
         </label>
+        <label
+          className={cx('flex items-center gap-2 text-sm mt-2 ml-6', !p.liveAllowNakedShortDraft && 'text-slate-500')}
+        >
+          <input
+            type="checkbox"
+            checked={p.liveShortsRedTapeOnlyDraft}
+            onChange={(e) => p.setLiveShortsRedTapeOnlyDraft(e.target.checked)}
+          />
+          Short only on a broadly red market (recommended — leave checked)
+        </label>
+        <p className="text-[11px] text-slate-400 mt-1 ml-6">
+          With naked shorts on, a stock short, and any add to one, goes out only while the market-direction reading is
+          red: SPY and the universe&apos;s breadth both past their red bars (the reading is taken every tick and held
+          the way the gate holds it, whether or not the gate is on). A mixed, green or unread market refuses it, with
+          cause <code>red_tape_only</code> on the journal row (<code>live_short_skipped</code>; adds:{' '}
+          <code>live_scale_in_short_skipped</code>, <code>per_lot_second_lot_short_skipped</code>). The evidence for
+          shorts is read on red markets, so this keeps the live book to the trade the evidence covers.
+        </p>
         {/* Nested under the live-trading gate the same way "Live options trading"
             is: the server fails this closed unless live trading is already (or is
             concurrently becoming) enabled. Left enabled while the master was off,
@@ -3305,6 +3325,7 @@ export default function AutoTradePage() {
   const [liveFatFingerPctDraft, setLiveFatFingerPctDraft] = useState<number | undefined>();
   const [liveRefusalCeilingEnabledDraft, setLiveRefusalCeilingEnabledDraft] = useState(true);
   const [liveAllowNakedShortDraft, setLiveAllowNakedShortDraft] = useState(false);
+  const [liveShortsRedTapeOnlyDraft, setLiveShortsRedTapeOnlyDraft] = useState(true);
   const [liveProbationTradesDraft, setLiveProbationTradesDraft] = useState<number | undefined>();
   const [liveProbationSizeMultiplierDraft, setLiveProbationSizeMultiplierDraft] = useState<number | undefined>();
   const [liveScaleInEnabledDraft, setLiveScaleInEnabledDraft] = useState(false);
@@ -3455,6 +3476,7 @@ export default function AutoTradePage() {
     sync('liveFatFingerPct', setLiveFatFingerPctDraft);
     sync('liveRefusalCeilingEnabled', setLiveRefusalCeilingEnabledDraft);
     sync('liveAllowNakedShort', setLiveAllowNakedShortDraft);
+    sync('liveShortsRedTapeOnly', setLiveShortsRedTapeOnlyDraft);
     sync('liveProbationTrades', setLiveProbationTradesDraft);
     sync('liveProbationSizeMultiplier', setLiveProbationSizeMultiplierDraft);
     sync('liveScaleInEnabled', setLiveScaleInEnabledDraft);
@@ -3769,6 +3791,7 @@ export default function AutoTradePage() {
         liveFatFingerPct: liveFatFingerPctDraft,
         liveRefusalCeilingEnabled: liveRefusalCeilingEnabledDraft,
         liveAllowNakedShort: liveAllowNakedShortDraft,
+        liveShortsRedTapeOnly: liveShortsRedTapeOnlyDraft,
         liveProbationTrades: liveProbationTradesDraft,
         liveProbationSizeMultiplier: liveProbationSizeMultiplierDraft,
         // Omitted (left unchanged server-side) while live trading is off — the
@@ -7190,6 +7213,8 @@ export default function AutoTradePage() {
                 setLiveRefusalCeilingEnabledDraft={setLiveRefusalCeilingEnabledDraft}
                 liveAllowNakedShortDraft={liveAllowNakedShortDraft}
                 setLiveAllowNakedShortDraft={setLiveAllowNakedShortDraft}
+                liveShortsRedTapeOnlyDraft={liveShortsRedTapeOnlyDraft}
+                setLiveShortsRedTapeOnlyDraft={setLiveShortsRedTapeOnlyDraft}
                 liveProbationTradesDraft={liveProbationTradesDraft}
                 setLiveProbationTradesDraft={setLiveProbationTradesDraft}
                 liveProbationSizeMultiplierDraft={liveProbationSizeMultiplierDraft}

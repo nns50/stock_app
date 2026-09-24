@@ -7,6 +7,7 @@ import {
   breadthOf,
   claimDirectionChange,
   directionRefuses,
+  liveShortPermitted,
   holdMarketDirection,
   latestMarketDirection,
   readMarketDirection,
@@ -91,6 +92,46 @@ describe('readMarketDirection', () => {
 
   it('carries the thresholds it was judged against', () => {
     expect(read(-1, breadth(90, 10), 0.4, 70)).toMatchObject({ indexPct: 0.4, breadthPct: 70 });
+  });
+});
+
+// 2026-09-24, the tape plan's PR 8: ONE predicate for every live short (the
+// entry, a scale-in, a second lot).
+describe('liveShortPermitted', () => {
+  const on = { liveAllowNakedShort: true, liveShortsRedTapeOnly: true };
+  const tape = (direction: 'red' | 'green' | 'mixed' | 'unknown') => ({ direction });
+
+  it('refuses every short while the switch is off, whatever the tape', () => {
+    for (const reading of [tape('red'), tape('mixed'), null]) {
+      expect(liveShortPermitted({ ...on, liveAllowNakedShort: false }, reading)).toEqual({
+        permitted: false,
+        cause: 'shorts_off',
+        reason: 'liveAllowNakedShort is off',
+      });
+    }
+  });
+
+  it('admits a short on a red tape only, while held to one', () => {
+    expect(liveShortPermitted(on, tape('red'))).toEqual({ permitted: true });
+    // "Not green" is not the rule: a mixed tape is exactly what it keeps out.
+    for (const [reading, word] of [
+      [tape('mixed'), 'mixed'],
+      [tape('green'), 'green'],
+      [tape('unknown'), 'unknown'],
+      [null, 'unread'],
+    ] as const) {
+      expect(liveShortPermitted(on, reading)).toEqual({
+        permitted: false,
+        cause: 'red_tape_only',
+        reason: `red-tape only: the tape is ${word}`,
+      });
+    }
+  });
+
+  it('admits a short on any tape with the red-tape rule off', () => {
+    for (const reading of [tape('red'), tape('mixed'), tape('green'), null]) {
+      expect(liveShortPermitted({ ...on, liveShortsRedTapeOnly: false }, reading)).toEqual({ permitted: true });
+    }
   });
 });
 

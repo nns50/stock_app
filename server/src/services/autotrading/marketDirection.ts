@@ -375,6 +375,38 @@ export function holdMarketDirection(
  *  stock short or a put is short it. */
 export type Lean = 'long' | 'short';
 
+/** Why a live stock short may not go out: shorts are off, or held to a red
+ *  tape and the tape is not red. */
+export type ShortRefusalCause = 'shorts_off' | 'red_tape_only';
+
+export type ShortPermission = { permitted: true } | { permitted: false; cause: ShortRefusalCause; reason: string };
+
+/**
+ * Whether the live book may put on stock SHORT exposure on this reading
+ * (2026-09-24, the tape plan's PR 8): a fresh entry, a scale-in or a per-lot
+ * second lot. One predicate for all three, so an add can never go out on a
+ * tape a fresh short would be refused on.
+ *
+ * Shorts off refuses everything. With liveShortsRedTapeOnly, only a RED
+ * reading admits; mixed, green, unknown and no reading at all refuse. Asking
+ * "not green" instead would admit a mixed tape, the one the rule exists to
+ * keep shorts out of.
+ */
+export function liveShortPermitted(
+  cfg: { liveAllowNakedShort: boolean; liveShortsRedTapeOnly: boolean },
+  reading: Pick<MarketDirectionReading, 'direction'> | null,
+): ShortPermission {
+  if (!cfg.liveAllowNakedShort) return { permitted: false, cause: 'shorts_off', reason: 'liveAllowNakedShort is off' };
+  if (cfg.liveShortsRedTapeOnly && reading?.direction !== 'red') {
+    return {
+      permitted: false,
+      cause: 'red_tape_only',
+      reason: `red-tape only: the tape is ${reading?.direction ?? 'unread'}`,
+    };
+  }
+  return { permitted: true };
+}
+
 /** A reading refuses an entry that leans AGAINST a one-sided market: a long on
  *  a red day, a short on a green one. A mixed or unknown market refuses
  *  nothing — the gate acts only on a one-sided market it can actually see. */

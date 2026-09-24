@@ -1800,6 +1800,9 @@ export interface AutotradeConfig {
   liveMaxOrdersPerDay: number;
   liveFatFingerPct: number;
   liveAllowNakedShort: boolean;
+  /** With naked shorts on, a live stock short goes out only on a broadly red
+   *  market (2026-09-24). Default true. */
+  liveShortsRedTapeOnly: boolean;
   liveMaxExposurePct: number;
   optionsMaxConcurrentPositions: number;
   optionsOwnExposurePool: boolean;

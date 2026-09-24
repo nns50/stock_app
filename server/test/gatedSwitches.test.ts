@@ -761,7 +761,7 @@ describe('the shipped rules', () => {
   // in the app read it. Driven through the real engine, because the point is
   // the consumer: a firing here must reach `proposed` and never `applied`.
   // -------------------------------------------------------------------------
-  describe('shorts — reads the short shadow record’s own gate', () => {
+  describe('shorts — reads the red-tape bar and the paper control (2026-09-24)', () => {
     const shorts = GATED_SWITCH_RULES.find((r) => r.id === 'shorts')!;
     const run = (s: GatedSwitchSnapshot, state?: SwitchState) =>
       evaluateGatedSwitches({
@@ -771,33 +771,78 @@ describe('the shipped rules', () => {
         now: 1_000,
         rules: [shorts],
       });
+    const trades = (...rs: number[]) => ({ trades: rs.map((exitR) => ({ exitR }) as ShadowTrade) });
+    // 20 red-tape shorts at +0.16R and 60% winners; the other tapes flat.
+    const redMet = redTapeGateOf({
+      red: trades(...Array(12).fill(0.5), ...Array(8).fill(-0.35)),
+      mixed: trades(0, 0),
+      green: trades(0),
+      unlabeled: trades(),
+    });
+    const redShort = redTapeGateOf({
+      red: trades(0.4, -1, 0.5),
+      mixed: trades(0.1),
+      green: trades(),
+      unlabeled: trades(),
+    });
+    /** The last scan, carrying only what the rule reads: which books it read,
+     *  and the paper book's stock shorts taken on a red tape. A null control
+     *  is a scan that read paper and filed none. */
+    const scanWithPaper = (
+      control: { n: number; meanR: number | null } | null,
+      books: ('live' | 'paper')[] = ['live', 'paper'],
+    ) =>
+      ({
+        books,
+        dimensions: [
+          {
+            id: 'marketTapeBySide',
+            buckets: control === null ? [] : [{ bucket: 'equity_short_red', n: 0, meanR: null, control }],
+          },
+        ],
+      }) as unknown as NonNullable<GatedSwitchSnapshot['leakScan']>;
+    const paperMet = scanWithPaper({ n: 12, meanR: 0.21 });
+    /** A scan that cannot answer, each for its own reason. */
+    const liveOnlyScan = scanWithPaper({ n: 12, meanR: 0.21 }, ['live']);
+    const scanBeforeTheCut = { books: ['live', 'paper'], dimensions: [] } as unknown as NonNullable<
+      GatedSwitchSnapshot['leakScan']
+    >;
 
     it('reads nothing while no record exists — an absent input is not a met criterion', () => {
-      const r = run(snapshot());
+      const r = run(snapshot({ leakScan: paperMet }));
       expect(r.decisions[0].outcome).toBe('quiet');
       expect(r.decisions[0].nextState.lastReading).toBeNull();
     });
 
-    it('stays quiet under the bar, and says how far the record sits from it', () => {
-      const r = run(snapshot({ shortShadow: shortShadow() }));
+    it('stays quiet under the bar, and says how far each leg sits from it', () => {
+      const r = run(snapshot({ shortShadow: shortShadow({ redTapeGate: redShort }), leakScan: scanWithPaper(null) }));
       expect(r.decisions[0].outcome).toBe('quiet');
       expect(r.proposed).toEqual([]);
-      // The reading names every leg that is short, so "not yet" is legible.
       expect(r.decisions[0].nextState.lastReading).toBe(
-        '19 of 30 shadow shorts, avg +0.08R (bar +0.1R), win 52.6% (bar 50%) as of 2026-09-14 — short on trades, avg R',
+        "red tape: 3 of 20 shorts, avg -0.03R (bar +0.15R), win 66.7% (bar 50%), -0.13R over the other tapes' 1 " +
+          '(bar +0.1R) — short on trades, avg R, edge over other tapes; paper red-tape stock shorts: 0 of 10, mean ' +
+          'n/a (bar above 0); all tapes: 19 shadow shorts, avg +0.08R, win 52.6%, as of 2026-09-14',
       );
     });
 
-    it('proposes liveAllowNakedShort once the record’s gate passes — and NEVER applies it', () => {
-      const met = shortShadow({ n: 31, avgR: 0.14, winRatePct: 54.8 });
-      expect(met.gate.passes).toBe(true);
+    it('says why the paper control is unread, rather than reading it as zero trades', () => {
+      const cases: [NonNullable<GatedSwitchSnapshot['leakScan']> | null, string][] = [
+        [null, 'no edge-leak scan saved yet'],
+        // A live-only scan persists too, and carries no paper figures at all.
+        [liveOnlyScan, 'the last scan did not read the paper book'],
+        [scanBeforeTheCut, 'the last scan has no side-and-tape cut'],
+      ];
+      for (const [leakScan, why] of cases) {
+        const r = run(snapshot({ shortShadow: shortShadow({ redTapeGate: redMet }), leakScan }));
+        expect(r.decisions[0].outcome, why).toBe('quiet');
+        expect(r.decisions[0].nextState.lastReading).toContain(`paper red-tape stock shorts: unread (${why});`);
+      }
+    });
+
+    it('proposes liveAllowNakedShort once both are met — and NEVER applies it', () => {
+      const s = snapshot({ shortShadow: shortShadow({ redTapeGate: redMet }), leakScan: paperMet });
       // Even against a state that claims a graduation: the direction wins.
-      const r = run(snapshot({ shortShadow: met }), {
-        ...freshSwitchState('shorts'),
-        evaluations: 20,
-        proposals: 6,
-        graduatedAt: 1,
-      });
+      const r = run(s, { ...freshSwitchState('shorts'), evaluations: 20, proposals: 6, graduatedAt: 1 });
       expect(r.decisions[0].outcome).toBe('proposed');
       expect(r.applied).toEqual([]);
       expect(r.proposed).toEqual([
@@ -805,32 +850,54 @@ describe('the shipped rules', () => {
           ruleId: 'shorts',
           direction: 'exposure',
           patch: { liveAllowNakedShort: true },
-          evidence: '31 of 30 shadow shorts, avg +0.14R (bar +0.1R), win 54.8% (bar 50%) as of 2026-09-14 — bar met',
+          evidence:
+            "red tape: 20 of 20 shorts, avg +0.16R (bar +0.15R), win 60.0% (bar 50%), +0.16R over the other tapes' 3 " +
+            '(bar +0.1R) — bar met; paper red-tape stock shorts: 12 of 10, mean +0.21R (bar above 0) — met; all ' +
+            'tapes: 19 shadow shorts, avg +0.08R, win 52.6%, as of 2026-09-14',
         },
       ]);
-      expect(r.decisions[0].nextState.lastReading).toMatch(/bar met/);
     });
 
-    // 2026-09-24: the record also carries the red-tape bar, and the reading
-    // says how far the red-tape shorts sit from it, leg by leg.
-    it('reads the red-tape distance beside the old bar', () => {
-      const red = redTapeGateOf({
-        red: { trades: [0.4, -1, 0.5].map((exitR) => ({ exitR }) as ShadowTrade) },
-        mixed: { trades: [0.1].map((exitR) => ({ exitR }) as ShadowTrade) },
-        green: { trades: [] },
-        unlabeled: { trades: [] },
-      });
-      const r = run(snapshot({ shortShadow: shortShadow({ redTapeGate: red }) }));
-      expect(r.decisions[0].nextState.lastReading).toBe(
-        '19 of 30 shadow shorts, avg +0.08R (bar +0.1R), win 52.6% (bar 50%) as of 2026-09-14 — short on trades, avg R' +
-          "; red tape: 3 of 20 shorts, avg -0.03R (bar +0.15R), win 66.7% (bar 50%), -0.13R over the other tapes' 1 " +
-          '(bar +0.1R) — short on trades, avg R, edge over other tapes',
+    it('does not propose on the red-tape bar alone: the paper control has to agree', () => {
+      for (const control of [null, { n: 9, meanR: 0.4 }, { n: 12, meanR: 0 }, { n: 12, meanR: null }]) {
+        const r = run(
+          snapshot({ shortShadow: shortShadow({ redTapeGate: redMet }), leakScan: scanWithPaper(control) }),
+        );
+        expect(r.decisions[0].outcome, JSON.stringify(control)).toBe('quiet');
+      }
+    });
+
+    it('no longer proposes on the old bar: a record over it on every tape, and short on red, stays quiet', () => {
+      const oldBarMet = shortShadow({ n: 31, avgR: 0.14, winRatePct: 54.8, redTapeGate: redShort });
+      expect(oldBarMet.gate.passes).toBe(true);
+      expect(run(snapshot({ shortShadow: oldBarMet, leakScan: paperMet })).decisions[0].outcome).toBe('quiet');
+      // Nor on a record persisted before the split, which carries no red-tape bar.
+      const unsplit = run(
+        snapshot({ shortShadow: shortShadow({ n: 31, avgR: 0.14, winRatePct: 54.8 }), leakScan: paperMet }),
       );
+      expect(unsplit.decisions[0].outcome).toBe('quiet');
+      expect(unsplit.decisions[0].nextState.lastReading).toMatch(/^red tape: not split in this record/);
+    });
+
+    it('stays quiet with the red-tape rule switched off: the evidence covers red tapes only', () => {
+      const r = run(
+        snapshot({
+          shortShadow: shortShadow({ redTapeGate: redMet }),
+          leakScan: paperMet,
+          config: { ...defaultAutotradeConfig(), liveShortsRedTapeOnly: false },
+        }),
+      );
+      expect(r.decisions[0].outcome).toBe('quiet');
     });
 
     it('goes quiet once shorts are on — a proposal for the state already in force is noise', () => {
-      const met = shortShadow({ n: 31, avgR: 0.14, winRatePct: 54.8 });
-      const r = run(snapshot({ shortShadow: met, config: { ...defaultAutotradeConfig(), liveAllowNakedShort: true } }));
+      const r = run(
+        snapshot({
+          shortShadow: shortShadow({ redTapeGate: redMet }),
+          leakScan: paperMet,
+          config: { ...defaultAutotradeConfig(), liveAllowNakedShort: true },
+        }),
+      );
       expect(r.decisions[0].outcome).toBe('quiet');
       // The reading still travels: "on, and here is what the record says".
       expect(r.decisions[0].nextState.lastReading).toMatch(/bar met/);

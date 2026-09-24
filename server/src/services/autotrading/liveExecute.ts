@@ -71,7 +71,13 @@ import { computeGradeExpectancyMultipliers } from './expectancySizing';
 import { computeMethodMultipliers, methodOfEquitySignal } from './methodSizing';
 import { activeSymbolCooldowns } from './symbolCooldown';
 import { declinedSide, journalDeclinedEntry } from './declinedEntry';
-import { MarketDirectionReading, directionRefuses, latestMarketDirection } from './marketDirection';
+import {
+  MarketDirectionReading,
+  directionRefuses,
+  latestMarketDirection,
+  liveShortPermitted,
+  ShortRefusalCause,
+} from './marketDirection';
 import { isUnparseableSymbolError, markUnplaceableSymbol, unplaceableReason } from './unplaceableSymbols';
 import { markShortRefused, shortRefusedReason } from './refusedShorts';
 import { computeFinishLineFactor } from './finishLine';
@@ -1860,7 +1866,12 @@ export async function runLiveExecution(
       outcomes.push({ symbol, ok: false, reason: `broker cannot trade this symbol: ${unplaceable}` });
       continue;
     }
-    if (candidateSignal.side === 'sell' && !cfg.liveAllowNakedShort) {
+    // Whether a live short may go out on this tape at all (marketDirection.ts,
+    // liveShortPermitted): shorts off, or on and held to a red tape
+    // (liveShortsRedTapeOnly, 2026-09-24) while the tape is not red. The same
+    // predicate rules on a short's scale-in and second lot.
+    const shortPermission = candidateSignal.side === 'sell' ? liveShortPermitted(cfg, marketDirection) : null;
+    if (shortPermission !== null && !shortPermission.permitted) {
       // Journaled once per symbol per ET day (task #61, the shape #43 settled
       // on). Until 2026-09-10 this skip left NO row, so the journal could not
       // say how many live-eligible shorts the live book declined on a day, or
@@ -1905,7 +1916,10 @@ export async function runLiveExecution(
             // liveMinSignalScore cannot silently rewrite history.
             liveEligible: candidateSignal.score >= cfg.liveMinSignalScore,
             liveMinSignalScore: cfg.liveMinSignalScore,
-            reason: 'liveAllowNakedShort is off',
+            // Which refusal: the switch, or the red-tape rule with shorts on.
+            // Both are a declined short, and the shadow record replays both.
+            cause: shortPermission.cause,
+            reason: shortPermission.reason,
           },
           riskProfile: cfg.riskProfile,
         });
@@ -1913,7 +1927,7 @@ export async function runLiveExecution(
       outcomes.push({
         symbol,
         ok: false,
-        reason: 'short entry skipped — liveAllowNakedShort is off',
+        reason: `short entry skipped — ${shortPermission.reason}`,
       });
       continue;
     }
@@ -5292,6 +5306,27 @@ function addOnDirectionRefusal(
   return latest;
 }
 
+/**
+ * A SHORT add's own permission (2026-09-24, the tape plan's PR 8). A scale-in
+ * or a second lot on a short puts on more short, which is the bet
+ * liveShortPermitted rules on for a fresh entry: shorts off refuses it, and
+ * with liveShortsRedTapeOnly only a red reading admits it. The same predicate,
+ * on the reading the direction gate for adds reads (the loop's latest, held),
+ * so an add never goes out on a tape a fresh short would be refused on. A
+ * long add returns null.
+ */
+function addOnShortRefusal(
+  cfg: AutotradeConfig,
+  side: 'long' | 'short',
+  now: number,
+): { cause: ShortRefusalCause; reason: string; direction: MarketDirectionReading['direction'] | null } | null {
+  if (side !== 'short') return null;
+  const latest = latestMarketDirection(now);
+  const verdict = liveShortPermitted(cfg, latest?.reading ?? null);
+  if (verdict.permitted) return null;
+  return { cause: verdict.cause, reason: verdict.reason, direction: latest?.reading.direction ?? null };
+}
+
 /** The journal detail an add refused by the market's direction carries: the
  *  reading, whether it was held, and how old it was. */
 function addOnDirectionDetail(
@@ -5410,10 +5445,40 @@ export async function checkLiveScaleIns(
       );
       if (!add) continue;
 
-      // The market's direction (addOnDirectionRefusal), asked last: every check
-      // above decides whether this add would happen at all, so each row is an
-      // add the book would otherwise have placed. Once per position and
-      // direction a day; the refusal stands every tick the reading does.
+      // A short add's own permission (addOnShortRefusal), then the market's
+      // direction, both asked last: every check above decides whether this add
+      // would happen at all, so each row is an add the book would otherwise
+      // have placed.
+      const shortRefused = addOnShortRefusal(cfg, pos.side, Date.now());
+      if (shortRefused !== null) {
+        const key = `${pos.id}|${shortRefused.cause}|${shortRefused.direction ?? 'none'}`;
+        if (claimOncePerDay('live_scale_in_short_skipped', key)) {
+          logAutotradeEvent({
+            symbol: pos.symbol,
+            stage: 'execution',
+            action: 'live_scale_in_short_skipped',
+            detail: {
+              positionId: pos.id,
+              side: pos.side,
+              addQuantity: add.addQty,
+              rMultiple: add.rMultiple,
+              cause: shortRefused.cause,
+              direction: shortRefused.direction,
+              reason: shortRefused.reason,
+            },
+            riskProfile: cfg.riskProfile,
+          });
+        }
+        outcomes.push({
+          symbol: pos.symbol,
+          positionId: pos.id,
+          requested: false,
+          reason: `Short add-on refused: ${shortRefused.reason}`,
+        });
+        continue;
+      }
+      // Once per position and direction a day; the refusal stands every tick
+      // the reading does.
       const refusedBy = addOnDirectionRefusal(cfg, pos.side, Date.now());
       if (refusedBy !== null) {
         const reason = `${refusedBy.reading.detail} — a ${pos.side} add-on leans against it`;
@@ -6101,6 +6166,36 @@ export async function checkLivePerLotSecondLots(): Promise<LivePerLotOutcome[]> 
       const stopPrice = pos.initialStopPrice ?? entryOrder?.stopPrice ?? null;
       if (stopPrice === null || !(stopPrice > 0)) continue;
 
+      // A short's second lot is more short (addOnShortRefusal): refused where a
+      // fresh short would be, and asked first, like the entry path asks it
+      // before its direction gate. Its own action, for the reason below.
+      const shortRefused = addOnShortRefusal(cfg, pos.side, Date.now());
+      if (shortRefused !== null) {
+        const key = `${pos.id}|${shortRefused.cause}|${shortRefused.direction ?? 'none'}`;
+        if (claimOncePerDay('per_lot_second_lot_short_skipped', key)) {
+          logAutotradeEvent({
+            symbol: pos.symbol,
+            stage: 'execution',
+            action: 'per_lot_second_lot_short_skipped',
+            detail: {
+              positionId: pos.id,
+              side: pos.side,
+              quantity: plan.quantity,
+              cause: shortRefused.cause,
+              direction: shortRefused.direction,
+              reason: shortRefused.reason,
+            },
+            riskProfile: cfg.riskProfile,
+          });
+        }
+        outcomes.push({
+          symbol: pos.symbol,
+          positionId: pos.id,
+          requested: false,
+          reason: `Short second lot refused: ${shortRefused.reason}`,
+        });
+        continue;
+      }
       // The market's direction (addOnDirectionRefusal), after every check that
       // decides whether this position has a second lot to send. The first lot
       // passed the gate at entry; the tape can turn before the second goes.
