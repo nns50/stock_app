@@ -1495,6 +1495,14 @@ Two corollaries that follow from the same reasoning:
   loop's day-level rules must read the loop's own realized P&L. Otherwise your worst
   morning halts a strategy that had nothing to do with it — and the strategy's losses
   read as yours in the numbers you review it by.
+- **Your own trades are booked at their fills too** (since 2026-09-24). A trade you make
+  by hand reaches the Journal through the position sync, which closes it at a quote when
+  it goes. The loop now rewrites that quote to your fill from Webull's order history. So
+  the Journal's numbers (the analytics below, the equity curve) read what you actually got.
+  Before, they read quotes. In the week to 2026-09-23 the Journal's 14 copies of the
+  options sleeve's contracts summed to +$146 at their quotes, against +$1,162 at the
+  sleeve's own fills. A close older than the broker's seven-day history stays an estimate:
+  correct the ones you review by from your confirmations.
 
 **"Can this kill my account?" → Risk of ruin (Journal → Analytics).**
 Set your per-trade risk and a "ruin" drawdown threshold (say 30–50%); the Monte Carlo

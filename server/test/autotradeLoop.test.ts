@@ -46,6 +46,7 @@ vi.mock('../src/services/autotrading/liveOptionsExecute', () => ({
   })),
 }));
 vi.mock('../src/providers/webull/positions', () => ({ runWebullPositionsSync: vi.fn() }));
+vi.mock('../src/services/autotrading/handExitCorrection', () => ({ correctEstimatedHandExits: vi.fn() }));
 // Deterministic regime for the at-entry-context threading assertions below —
 // the real computeMarketRegime would score MockProvider candles (and scan the
 // seeded universe for breadth) inside every loop test.
@@ -113,6 +114,7 @@ import {
   liveOptionsSeedForEquity,
 } from '../src/services/autotrading/liveOptionsExecute';
 import { runWebullPositionsSync } from '../src/providers/webull/positions';
+import { correctEstimatedHandExits } from '../src/services/autotrading/handExitCorrection';
 import { processMoversForPromotion } from '../src/services/autotrading/moversPromotion';
 import {
   checkSessionWindow,
@@ -160,6 +162,7 @@ const mockCheckLiveOptionsExits = vi.mocked(checkLiveOptionsExits);
 const mockReconcileLiveOptions = vi.mocked(reconcileLiveOptionsOrders);
 const mockOptionsPositionsSync = vi.mocked(syncLiveOptionsPositionsFromBroker);
 const mockPositionsSync = vi.mocked(runWebullPositionsSync);
+const mockHandExits = vi.mocked(correctEstimatedHandExits);
 const mockMoversPromotion = vi.mocked(processMoversForPromotion);
 const mockSessionWindow = vi.mocked(checkSessionWindow);
 const mockMarketAtr = vi.mocked(getMarketAtrPct);
@@ -293,6 +296,7 @@ beforeEach(() => {
     skipped: 0,
     unmapped: 0,
   });
+  mockHandExits.mockReset().mockResolvedValue(0);
   mockLiveOptionsExecute.mockReset();
   mockCheckLiveOptionsExits.mockReset().mockResolvedValue([]);
   mockReconcileLiveOptions.mockReset().mockResolvedValue([]);
@@ -555,6 +559,36 @@ describe('runAutotradeLoopTick', () => {
     setAutotradeConfig({ enabled: false }); // default beforeEach state: liveAccountId null
     await runAutotradeLoopTick();
     expect(mockPositionsSync).not.toHaveBeenCalled();
+  });
+
+  // 2026-09-24: an exit the sync above priced at a quote, on a position the
+  // app did not open (the operator's own trades, and the journal's copies of
+  // the options sleeve's contracts), is booked at its fill from the order
+  // history. It has to run AFTER the sync, which is what writes the estimate.
+  it('books the estimates on positions the app did not open, after the sync, for liveAccountId', async () => {
+    setAutotradeConfig({ enabled: false, liveAccountId: 'ACC1' });
+    await runAutotradeLoopTick();
+    expect(mockHandExits).toHaveBeenCalledTimes(1);
+    expect(mockHandExits).toHaveBeenCalledWith('ACC1');
+    expect(mockHandExits.mock.invocationCallOrder[0]).toBeGreaterThan(mockPositionsSync.mock.invocationCallOrder[0]);
+  });
+
+  it('does not look for hand-trade fills when no liveAccountId is configured', async () => {
+    setAutotradeConfig({ enabled: false });
+    await runAutotradeLoopTick();
+    expect(mockHandExits).not.toHaveBeenCalled();
+  });
+
+  it('a failed hand-trade correction is journaled and takes nothing after it down', async () => {
+    setAutotradeConfig({ enabled: false, liveAccountId: 'ACC1' });
+    mockHandExits.mockRejectedValue(new Error('history read threw'));
+    await runAutotradeLoopTick();
+    const failures = mockLogEvent.mock.calls
+      .map((c) => c[0])
+      .filter((e) => e.action === 'loop_stage_failed')
+      .map((e) => e.detail);
+    expect(failures).toContainEqual({ loopStage: 'hand exit correction', reason: 'history read threw' });
+    expect(mockOptionsPositionsSync).toHaveBeenCalled();
   });
 
   it('a broker hiccup during the live position-truth sync does not stop exits, reconcile, or entries from running', async () => {
