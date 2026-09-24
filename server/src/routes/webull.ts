@@ -33,18 +33,33 @@ const probeBody = z.object({
     'balance',
     'open-orders',
     'order-history',
+    'order-detail',
     'subscriptions',
     'instrument',
   ]),
   symbol: z.string().max(24).optional(), // up to a full OCC option symbol
   accountId: z.string().max(64).optional(),
+  // The order-list probes' paging (2026-09-24): walk the broker's pages by hand
+  // with whichever cursor is under test. Passed through as named; see
+  // ProbeOrderListQuery.
+  pageSize: z.number().int().min(1).max(100).optional(),
+  lastClientOrderId: z.string().min(1).max(64).optional(),
+  startDate: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .optional(),
+  endDate: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .optional(),
+  clientOrderId: z.string().min(1).max(64).optional(),
 });
 
 webullRouter.post(
   '/probe',
   asyncHandler(async (req, res) => {
-    const { kind, symbol, accountId } = parseBody(probeBody, req);
-    res.json(await webullProbe(kind as ProbeKind, { symbol, accountId }));
+    const { kind, ...opts } = parseBody(probeBody, req);
+    res.json(await webullProbe(kind as ProbeKind, opts));
   }),
 );
 
