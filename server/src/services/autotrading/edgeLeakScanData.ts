@@ -23,6 +23,7 @@ import {
 import { maxAffordablePremiumPerShare, riskPctUpperBound } from './optionsAffordability';
 import { getOptionsProbationStatus } from './liveOptionsExecute';
 import { buildLiveSlippageRows } from './autoTune';
+import { isStockEntrySlippage } from '../slippage';
 import { MARKETABLE_LIMIT_BUFFER_PCT } from './marketableLimit';
 import { entryDriftPct } from './entryRisk';
 import { getLastReentryShadowRecord } from '../../db/reentryShadowRecords';
@@ -1560,8 +1561,10 @@ export function runEdgeLeakScanFromDb(opts: EdgeLeakScanOptions = {}): EdgeLeakS
   // exit's slippage is the chase doing its job, and pooling the two would hide
   // the number the attribution is actually about.
   const skipRead = collectJournalSkips(windowStart);
+  // Stock entries only (2026-09-24): the buffer this is read against is the
+  // stock's marketable 0.5%, and an option's limit sits at its ask x 1.05.
   const entrySlippagePct = buildLiveSlippageRows()
-    .filter((r) => r.kind === 'entry' && r.date >= (liveCollected.sessionDates[0] ?? '0000-00-00'))
+    .filter((r) => isStockEntrySlippage(r) && r.date >= (liveCollected.sessionDates[0] ?? '0000-00-00'))
     .map((r) => r.pct);
 
   return runEdgeLeakScan({

@@ -5,6 +5,7 @@ const row = (over: Partial<Parameters<typeof computeSlippage>[0]> = {}) =>
   computeSlippage({
     positionId: 1,
     symbol: 'AMC',
+    assetType: 'stock',
     kind: 'entry',
     side: 'buy',
     date: '2026-06-01',

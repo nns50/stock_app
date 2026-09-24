@@ -53,7 +53,7 @@ const sourceOf = (bars: Record<string, Candle[]>) => ({
 
 describe('buildDeclinedEntryShadow — a declined LONG', () => {
   it('replays a winner to its target', async () => {
-    // Enters at the first bar's open, 100, with no concession asked for, so 1R
+    // Enters at the signal's price, 100, with no concession asked for, so 1R
     // is $2 and the 102 target is traded through by the 102.5 bar.
     const src = sourceOf({ MSFT: [bar(0, 100.5, 99.5), bar(5, 102.5, 101)] });
     const out = await buildDeclinedEntryShadow(src, [longAt100()], cfg(), { entryConcessionPct: 0 });
@@ -207,7 +207,7 @@ describe('buildDeclinedEntryShadow — minMinutesSinceExit', () => {
     expect(out.n).toBe(1);
     expect(out.minMinutesSinceExit).toBe(120);
     expect(out.trades[0]).toMatchObject({ at: T0 + 120 * MIN, entry: 102, stop: 100, minutesSinceExit: 121 });
-    // Entered at the 120-minute bar's open, 102: 1R = $2, and the 105 bar
+    // Entered at the 120-minute refusal's price, 102: 1R = $2, and the 105 bar
     // trades through the 104 target.
     expect(out.trades[0].exitR).toBeCloseTo(1, 5);
     expect(out.excluded).toMatchObject({ before_min_gap: 2, duplicate_same_day: 0, no_exit_gap: 0 });
