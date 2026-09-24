@@ -2481,9 +2481,21 @@ User Guide lists them). The evidence is thinner than the rule's count suggests:
   as short of the count. Compare readings only within a version; each record carries its
   `replayVersion`.
 
+**Read the red-market line, not only the total** (2026-09-24). Shorts are meant to trade
+only when the whole market leans red (the tape plan's rule B), so the question is not
+whether shorts pay, but whether shorts declined on a red market pay, and pay more than the
+rest. The switch's reading now says both: the old bar on every declined short, then the
+red-market bar on the ones declined on a red market (20 trades, +0.15R, 50% winners, and
++0.10R above the shorts declined on mixed or green markets). A red-market record that only
+matches the other markets is not a red-market edge: the market's direction would not be
+what pays. Both readings also leave out a short whose stop is too far for its daily range,
+as the live path would. Until the loop had read the market for a while, most of the record
+is unlabeled, and that is the honest answer.
+
 Three checks are worth making when the rule proposes:
 - it still clears with its best day taken out;
-- a one-share test short has shown how Webull reports a short holding (`npm run capture:broker`);
+- a one-share test short has shown how Webull reports a short holding (done 2026-09-24:
+  a negative quantity, a SHORT entry and a BUY cover, booked with a short's sign);
 - the first sessions run at half size.
 
 Since 2026-09-12 that is enforced by **arithmetic, not by a label**. One rule (`leak_lever`)

@@ -66,6 +66,16 @@ beforeEach(() => {
 });
 
 describe('loadSkippedShorts', () => {
+  it('carries the tape a row was declined on and the signal ATR, from 2026-09-24', () => {
+    skip('KLAC', { ...signal, direction: 'red', atr: 4.2 });
+    skip('AMD', { ...signal, direction: 'sideways', atr: 0 }); // neither is a value the record can use
+    const rows = [...loadSkippedShorts().rows].sort((a, b) => a.symbol.localeCompare(b.symbol));
+    expect(rows).toEqual([
+      { symbol: 'AMD', at: T0, score: 80, entry: 100, stop: 102, floorAtSkip: 72 },
+      { symbol: 'KLAC', at: T0, score: 80, entry: 100, stop: 102, floorAtSkip: 72, atr: 4.2, directionAtSkip: 'red' },
+    ]);
+  });
+
   it('reads every scorable live_short_skipped row since the window start, and drops the rest', () => {
     skip('KLAC', signal);
     skip('OLD', signal, SHORT_SHADOW_SINCE_MS - 1); // before the window
@@ -139,8 +149,55 @@ describe('refreshShortShadowRecordAfterClose', () => {
       avgR: row!.report.avgR,
       winRatePct: 100,
       gate: row!.report.gate,
+      redTapeGate: row!.report.redTapeGate,
     });
     expect(shortShadowEvidenceOf(null)).toBeNull();
+  });
+
+  // 2026-09-24: the split the red-tape bar reads, asserted on the record the
+  // switch reads. KLAC is declined on a mixed tape at 09:35 and again when the
+  // tape turns red at 10:15. The price runs to the stop in between and falls
+  // after, so the day's first row loses and the red row wins: the red tape is
+  // replayed from ITS row, not from the day's first.
+  it('persists the record split by tape, the red tape replayed from its own row', async () => {
+    const RED_AT = T0 + 40 * 60_000;
+    const path = [
+      { time: T0, open: 100, high: 100.5, low: 99.5, close: 100, volume: 1000 },
+      { time: T0 + 5 * 60_000, open: 100, high: 102.6, low: 100, close: 102.4, volume: 1000 },
+      { time: RED_AT, open: 100, high: 100.2, low: 99.8, close: 99.9, volume: 1000 },
+      { time: RED_AT + 5 * 60_000, open: 99.9, high: 99.9, low: 94, close: 94.5, volume: 1000 },
+    ];
+    mockGetProvider.mockReturnValue({ getCandles: vi.fn(async () => path) } as never);
+    skip('KLAC', { ...signal, direction: 'mixed' });
+    skip('KLAC', { ...signal, direction: 'red' }, RED_AT);
+
+    const row = await refreshShortShadowRecordAfterClose(AFTER_CLOSE);
+    const report = row!.report;
+    // All tapes together: the day's first row, stopped out.
+    expect(report.n).toBe(1);
+    expect(report.trades[0].at).toBe(T0);
+    expect(report.trades[0].exitR).toBeLessThan(0);
+    // Per tape: the mixed row loses, the red row (10:15) wins.
+    expect(report.byTape.mixed.n).toBe(1);
+    expect(report.byTape.red.n).toBe(1);
+    expect(report.byTape.red.trades[0].at).toBe(RED_AT);
+    expect(report.byTape.red.trades[0].exitR).toBeGreaterThan(0);
+    expect(report.byTape.green.n + report.byTape.unlabeled.n).toBe(0);
+    expect(report.redTapeGate).toMatchObject({ n: 1, winRatePct: 100, otherTapesN: 1, passesN: false });
+    expect(report.redTapeGate.edgeR).toBeGreaterThan(0);
+    // And the switch's evidence carries the same bar.
+    expect(shortShadowEvidenceOf(row)?.redTapeGate).toEqual(report.redTapeGate);
+  });
+
+  it('labels a row with no stamp from the journaled reading in force, and an older one as unlabeled', async () => {
+    db.prepare(
+      "INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) VALUES (NULL,'screen','market_direction_read',?,NULL,?)",
+    ).run(JSON.stringify({ direction: 'red' }), T0 - 60_000);
+    skip('KLAC', signal); // no `direction` on the row: the reading at 09:34 says red
+    skip('AMD', signal, T0 - 86_400_000); // the day before: no reading that day
+    const report = await computeShortShadowReport();
+    expect(report.byTape.red.trades.map((t) => t.symbol)).toEqual(['KLAC']);
+    expect(report.byTape.unlabeled.trades.map((t) => t.symbol)).toEqual(['AMD']);
   });
 
   it('is the number the route serves — one compute path, one loader', async () => {

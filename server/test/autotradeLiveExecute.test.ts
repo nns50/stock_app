@@ -1179,6 +1179,40 @@ describe('runLiveExecution — funding capacity and unplaceable shorts', () => {
     expect(mockPlaceOrder).not.toHaveBeenCalled();
   });
 
+  // 2026-09-24: once per symbol per TAPE per day. A short first declined on a
+  // mixed tape at 09:37 was never recorded again when the tape turned red at
+  // 10:15, so the record could not say what a red-tape-only switch would have
+  // taken. The row now also carries the tape and the ATR the next gate reads.
+  it('journals the declined short once per tape per day, with the tape and the ATR on the row', async () => {
+    setAutotradeConfig({ ...cfgFields, liveAllowNakedShort: false });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }));
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    const short = signal({ side: 'sell', entry: 100, stop: 105, target: 90, atr: 8 });
+    const tape = (indexChangePct: number, red: number, green: number) =>
+      readMarketDirection({
+        indexSymbol: 'SPY',
+        indexChangePct,
+        breadth: { red, green, flat: 500 - red - green, sample: 500 },
+        indexPct: 0.2,
+        breadthPct: 65,
+      });
+    const tick = (reading: ReturnType<typeof tape>) =>
+      runLiveExecution([{ signal: short }], null, undefined, null, undefined, reading);
+
+    await tick(tape(0.5, 360, 140)); // mixed
+    await tick(tape(-0.35, 365, 135)); // red
+    await tick(tape(-0.4, 370, 130)); // red again: already on record today
+
+    const rows = listAutotradeEvents({ stage: 'execution', actions: ['live_short_skipped'] });
+    const details = rows.map((r) => JSON.parse(r.detail!) as Record<string, unknown>);
+    expect(details.map((d) => d.direction).sort()).toEqual(['mixed', 'red']);
+    for (const d of details) {
+      expect(d).toMatchObject({ side: 'short', atr: 8, entry: 100, stop: 105, heldBy: null });
+      expect(d.rawDirection).toBe(d.direction);
+    }
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
   // 2026-09-10: this skip runs BEFORE the score floor, both cooldowns and the
   // risk check, so a row exists for every scoring short candidate rather than
   // for the ones live would actually have taken — 39 distinct symbols against

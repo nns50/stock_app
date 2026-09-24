@@ -1,4 +1,5 @@
 import { TradeSignal } from './decide';
+import type { MarketDirection } from './marketDirection';
 import { journalEntrySkipOncePerDay } from './symbolCooldown';
 
 // ---------------------------------------------------------------------------
@@ -69,6 +70,19 @@ export interface DeclinedEntry {
    * Undefined on every other gate's rows.
    */
   minutesSinceExit?: number;
+  /**
+   * The shorts-off skip only (2026-09-24): the market's direction when the row
+   * was written, as the loop read it that tick (held, as the gate acts on it).
+   * What the short shadow record groups by tape. Undefined on older rows.
+   */
+  directionAtSkip?: MarketDirection;
+  /**
+   * The shorts-off skip only (2026-09-24): the signal's ATR in dollars, which
+   * the live path's ATR reachability gate reads right after that skip
+   * (atrReach.ts). The one gate that runs BEFORE it is the only one whose rows
+   * need it. Undefined on older rows, which a replay counts, never guesses.
+   */
+  atr?: number;
 }
 
 /** A skip row's side, in the replay's vocabulary rather than the order's. */

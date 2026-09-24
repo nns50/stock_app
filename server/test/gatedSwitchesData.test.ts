@@ -522,8 +522,12 @@ describe('the shorts switch, over the persisted record (2026-09-19)', () => {
     expect(shortsPushes()).toHaveLength(0);
     // The dashboard's row reads the same persisted state the engine wrote.
     const row = buildGatedSwitchStatus().find((r) => r.id === 'shorts');
+    // Since 2026-09-24 it goes on with the red-tape bar. These 19 shorts carry
+    // no tape (the loop had not read the market yet), so none count toward it.
     expect(row?.lastReading).toBe(
-      '19 of 30 shadow shorts, avg +2.00R (bar +0.1R), win 100.0% (bar 50%) as of 2026-09-10 — short on trades',
+      '19 of 30 shadow shorts, avg +2.00R (bar +0.1R), win 100.0% (bar 50%) as of 2026-09-10 — short on trades' +
+        "; red tape: 0 of 20 shorts, avg n/a (bar +0.15R), win n/a (bar 50%), n/a over the other tapes' 0 " +
+        '(bar +0.1R) — short on trades, avg R, win rate, edge over other tapes',
     );
   });
 

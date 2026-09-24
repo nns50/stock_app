@@ -7,7 +7,12 @@ import { sessionDatesEndingAt } from '../trading/marketCalendar';
 import { atrReachRefuses } from './atrReach';
 import { lastCompletedSessionDate } from './dailyTargetSweepData';
 import { DeclinedEntry } from './declinedEntry';
-import { buildDeclinedEntryShadow, DECLINED_SHADOW_REPLAY_VERSION, ShadowTrade } from './declinedEntryShadow';
+import {
+  buildDeclinedEntryShadow,
+  DECLINED_SHADOW_REPLAY_VERSION,
+  replayByTape,
+  ShadowTrade,
+} from './declinedEntryShadow';
 import { liveEntryConcessionPct } from './declinedEntryShadowData';
 import { DimensionReport, mulberry32, SCAN_RNG_SEED } from './edgeLeakScan';
 import { runEdgeLeakScanFromDb } from './edgeLeakScanData';
@@ -391,23 +396,17 @@ export async function runTapeBackfill(opts: TapeBackfillOptions): Promise<TapeBa
   // first here too, so the ATR gate only looks up names the replay would keep.
   const clearsFloor = (r: DeclinedEntry) => r.score >= (r.floorAtSkip ?? cfg.liveMinSignalScore);
   // One replay per tape, so each keeps the first row per symbol-day ON that
-  // tape; then all tapes together. The replay does not re-apply the direction
-  // gate: the tape is what is being read, not a filter on it.
-  const replayByTape = async (
+  // tape; then all tapes together. The same function the short shadow record
+  // splits by (declinedEntryShadow.ts, replayByTape), on the rebuilt tape.
+  const readByTape = async (
     rows: DeclinedEntry[],
   ): Promise<{ byTape: TapeBucketStats[]; excluded: Record<string, number> }> => {
-    const tapes = rows.map((r) => tapeOf(r.at));
+    const perTape = await replayByTape(source, rows, (r) => tapeOf(r.at), cfg, { entryConcessionPct });
     const out: TapeBucketStats[] = [];
     const excluded: Record<string, number> = {};
     for (const tape of TAPE_BUCKETS) {
-      const shadow = await buildDeclinedEntryShadow(
-        source,
-        rows.filter((_, i) => tapes[i] === tape),
-        cfg,
-        { entryConcessionPct },
-      );
-      out.push(stats(tape, shadow.trades));
-      for (const [k, v] of Object.entries(shadow.excluded)) excluded[k] = (excluded[k] ?? 0) + v;
+      out.push(stats(tape, perTape[tape].trades));
+      for (const [k, v] of Object.entries(perTape[tape].excluded)) excluded[k] = (excluded[k] ?? 0) + v;
     }
     const all = await buildDeclinedEntryShadow(source, rows, cfg, { entryConcessionPct });
     out.push(stats('all', all.trades));
@@ -416,9 +415,9 @@ export async function runTapeBackfill(opts: TapeBackfillOptions): Promise<TapeBa
 
   progress('short shadow record');
   const skipped = loadSkippedShorts(SHORT_SHADOW_SINCE_MS).rows.map((r) => ({ ...r, side: 'short' as const }));
-  const shadowRead = await replayByTape(skipped);
+  const shadowRead = await readByTape(skipped);
   const shadowAtr = await atrFilter(skipped.filter(clearsFloor));
-  const shadowAtrRead = await replayByTape(shadowAtr.kept);
+  const shadowAtrRead = await readByTape(shadowAtr.kept);
 
   progress('short signals');
   const { signals, truncated: signalsTruncated } = journaledShortSignals(windowStart);
@@ -436,9 +435,9 @@ export async function runTapeBackfill(opts: TapeBackfillOptions): Promise<TapeBa
     side: 'short',
     floorAtSkip: floorAt(s.at),
   }));
-  const cfRead = await replayByTape(signalRows);
+  const cfRead = await readByTape(signalRows);
   const cfAtr = await atrFilter(signalRows.filter(clearsFloor));
-  const cfAtrRead = await replayByTape(cfAtr.kept);
+  const cfAtrRead = await readByTape(cfAtr.kept);
 
   return {
     asOf: now,

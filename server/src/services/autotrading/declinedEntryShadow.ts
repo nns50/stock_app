@@ -3,8 +3,9 @@ import { CandleSource, INTRADAY_TIMEFRAME } from '../excursion';
 import { ExitRules, liveExitRules, replayExit } from '../exitReplay';
 import { Candle } from '../../providers/types';
 import { DeclinedEntry } from './declinedEntry';
+import { atrReachRefuses } from './atrReach';
 import { MARKETABLE_LIMIT_BUFFER_PCT } from './marketableLimit';
-import { MarketDirection, tapeAlignment } from './marketDirection';
+import { MarketDirection, TAPE_BUCKETS, TapeBucket, tapeAlignment } from './marketDirection';
 
 // ---------------------------------------------------------------------------
 // What the live book WOULD have made on the entries it refused (2026-09-14).
@@ -93,7 +94,10 @@ export type ShadowSkipReason =
   | 'no_exit_gap'
   /** The market-direction gate, replayed: the reading in force at the decision
    *  leaned against the side, and the gate is on. */
-  | 'refused_by_direction';
+  | 'refused_by_direction'
+  /** The ATR reachability gate, replayed (ShadowOptions.maxRiskAtrFraction):
+   *  the stop is further than that fraction of the row's own ATR. */
+  | 'refused_by_atr_reach';
 
 export interface ShadowTrade extends DeclinedEntry {
   /** The price the replay entered at: the signal's price (`entry`, from the
@@ -140,6 +144,10 @@ export interface DeclinedEntryShadow {
   /** Whether the market-direction gate was replayed (it is on, and readings
    *  were supplied). */
   directionGateReplayed: boolean;
+  /** The ATR reachability gate, when it was replayed: the fraction it was
+   *  replayed at, the rows it refused, and the TRADES replayed without an ATR
+   *  to check (rows written before the ATR was stamped). Null when not asked. */
+  atrReach: { maxRiskAtrFraction: number; refused: number; unchecked: number } | null;
 }
 
 // The live book's exit geometry lives in exitReplay.ts, beside the rules type,
@@ -151,11 +159,12 @@ const etDate = (ms: number): string => new Date(ms).toLocaleDateString('en-CA', 
 
 /**
  * One trade per symbol per ET day, keeping the EARLIEST — the moment live
- * actually declined it. Duplicates exist for a real reason: the once-per-day
- * claim behind the journal row is in-memory, so a mid-session deploy
- * re-journals a symbol already seen (observed 2026-09-10: 61 rows, 39 symbols).
- * Deduping on the READ side means the record is not hostage to how often the
- * box restarted.
+ * actually declined it. Duplicates exist for two real reasons: the
+ * once-per-day claim behind the journal row is in-memory, so a mid-session
+ * deploy re-journals a symbol already seen (observed 2026-09-10: 61 rows, 39
+ * symbols); and since 2026-09-24 the shorts-off skip writes one row per tape
+ * per day, which replayByTape reads one tape at a time. Deduping on the READ
+ * side means the record is not hostage to how often the box restarted.
  */
 export function dedupeBySymbolDay<T extends { symbol: string; at: number }>(rows: T[]): { kept: T[]; dropped: number } {
   const first = new Map<string, T>();
@@ -233,6 +242,15 @@ export interface ShadowOptions {
    * gate would have refused is excluded. Unset: the gate is not replayed.
    */
   directionAt?: (at: number) => MarketDirection | null;
+  /**
+   * Replay the live path's ATR reachability gate (atrReach.ts) at this
+   * fraction, on rows that carry the signal's ATR (2026-09-24). For a gate
+   * that runs BEFORE it on the live path, which today is the shorts-off skip:
+   * a short the switch would admit still meets the ATR gate next. A row with
+   * no ATR is replayed and counted (`atrReach.unchecked`), never guessed.
+   * Unset or 0: not replayed, as the live gate refuses nothing at 0.
+   */
+  maxRiskAtrFraction?: number;
 }
 
 /** The price a live entry pays against the quote it placed at: through it by
@@ -291,9 +309,12 @@ export async function buildDeclinedEntryShadow(
     before_min_gap: 0,
     no_exit_gap: 0,
     refused_by_direction: 0,
+    refused_by_atr_reach: 0,
   };
   const concessionPct = Math.max(0, options.entryConcessionPct ?? MARKETABLE_LIMIT_BUFFER_PCT);
   const directionAt = cfg.marketDirectionGateEnabled ? (options.directionAt ?? null) : null;
+  const atrFraction =
+    options.maxRiskAtrFraction !== undefined && options.maxRiskAtrFraction > 0 ? options.maxRiskAtrFraction : null;
 
   const eligible = rows.filter((r) => {
     const floor = r.floorAtSkip ?? cfg.liveMinSignalScore;
@@ -307,6 +328,13 @@ export async function buildDeclinedEntryShadow(
     const stopBelow = r.side === 'long' ? r.entry - r.stop : r.stop - r.entry;
     if (!Number.isFinite(r.entry) || !Number.isFinite(r.stop) || !(stopBelow > 0)) {
       excluded.unusable_signal += 1;
+      return false;
+    }
+    // In the live path's order: the ATR gate comes straight after the
+    // shorts-off skip, before anything else asks. The live rule itself, so the
+    // replay and the book cannot disagree about which stop is too wide.
+    if (atrFraction !== null && atrReachRefuses(r.entry, r.stop, r.atr, atrFraction)) {
+      excluded.refused_by_atr_reach += 1;
       return false;
     }
     // The gap filter runs BEFORE the dedupe, so "earliest per symbol-day"
@@ -388,5 +416,46 @@ export async function buildDeclinedEntryShadow(
     replayVersion: DECLINED_SHADOW_REPLAY_VERSION,
     entryConcessionPct: concessionPct,
     directionGateReplayed: directionAt !== null,
+    atrReach:
+      atrFraction === null
+        ? null
+        : {
+            maxRiskAtrFraction: atrFraction,
+            refused: excluded.refused_by_atr_reach,
+            unchecked: trades.filter((t) => t.atr === undefined).length,
+          },
   };
+}
+
+/**
+ * The replay once per tape (2026-09-24): the rows declined on each tape, each
+ * set keeping ITS first row per symbol-day. So `red` reads what a book that
+ * took these entries only on a red tape would have taken, from the first red
+ * reading's row, not the day's first row.
+ *
+ * The direction gate is NOT replayed here, whatever `options` says: the tape is
+ * what is being read, not a filter on it. The short shadow record labels rows
+ * from the loop's own readings (shortShadowRecord.ts); the tape backfill
+ * labels them from its rebuild (historicalTapeData.ts). One function, so the
+ * two tables are the same computation on different labels.
+ */
+export async function replayByTape(
+  source: CandleSource,
+  rows: DeclinedEntry[],
+  tapeOf: (row: DeclinedEntry) => TapeBucket,
+  cfg: AutotradeConfig,
+  options: ShadowOptions = {},
+): Promise<Record<TapeBucket, DeclinedEntryShadow>> {
+  const memo = memoCandleSource(source);
+  const labels = rows.map(tapeOf);
+  const out = {} as Record<TapeBucket, DeclinedEntryShadow>;
+  for (const tape of TAPE_BUCKETS) {
+    out[tape] = await buildDeclinedEntryShadow(
+      memo,
+      rows.filter((_, i) => labels[i] === tape),
+      cfg,
+      { ...options, directionAt: undefined },
+    );
+  }
+  return out;
 }
