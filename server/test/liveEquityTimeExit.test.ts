@@ -2078,7 +2078,7 @@ describe('checkLiveEquityStopAdjusts', () => {
     });
     const { position } = await armed(200);
     mockOpenOrders.mockResolvedValue({ ok: true, orders: [] });
-    bumpMissStreak('ACC1', contractKey(position));
+    bumpMissStreak('ACC1', contractKey(position), 0);
 
     const out = await checkLiveEquityStopAdjusts();
     await checkLiveEquityStopAdjusts();
@@ -2094,6 +2094,23 @@ describe('checkLiveEquityStopAdjusts', () => {
     // With the shares still showing, a missing stop is the defect it always was.
     db.exec('DELETE FROM webull_miss_streak;');
     await checkLiveEquityStopAdjusts();
+    expect(listAutotradeEvents({ limit: 50 }).some((e) => e.action === 'live_stop_adjust_blocked')).toBe(true);
+  });
+
+  it('still reports a missing stop as blocked when the broker shows SOME of the shares (2026-09-25)', async () => {
+    // A partial gap (a hand trim with the bracket cancelled) leaves shares
+    // with no stop: that is the defect, not a filled leg.
+    db.exec('DELETE FROM webull_miss_streak;');
+    onTestFinished(() => {
+      db.exec('DELETE FROM webull_miss_streak;');
+    });
+    const { position } = await armed(200);
+    mockOpenOrders.mockResolvedValue({ ok: true, orders: [] });
+    bumpMissStreak('ACC1', contractKey(position), 40);
+
+    const out = await checkLiveEquityStopAdjusts();
+
+    expect(out[0].reason).not.toBe('shares gone at the broker');
     expect(listAutotradeEvents({ limit: 50 }).some((e) => e.action === 'live_stop_adjust_blocked')).toBe(true);
   });
 

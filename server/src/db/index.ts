@@ -1110,6 +1110,7 @@ CREATE TABLE IF NOT EXISTS webull_miss_streak (
   streak          INTEGER NOT NULL DEFAULT 0,
   updated_at      INTEGER NOT NULL,
   first_missed_at INTEGER,
+  broker_qty      REAL,
   PRIMARY KEY (account_id, contract_key)
 );
 
@@ -1408,6 +1409,13 @@ function migrate(): void {
   const missCols = db.prepare('PRAGMA table_info(webull_miss_streak)').all() as { name: string }[];
   if (!missCols.some((c) => c.name === 'first_missed_at')) {
     db.exec('ALTER TABLE webull_miss_streak ADD COLUMN first_missed_at INTEGER');
+  }
+  // 2026-09-25 (#147, on review): how many shares the broker still showed on
+  // the latest miss. A miss is any gap, and "the shares are gone" is only a
+  // gap to zero. NULL on older rows, and on the options sleeve's own bumps,
+  // reads as not known to be gone.
+  if (!missCols.some((c) => c.name === 'broker_qty')) {
+    db.exec('ALTER TABLE webull_miss_streak ADD COLUMN broker_qty REAL');
   }
 
   // position_exits gained the same provenance link, for exit-side slippage.
