@@ -14935,3 +14935,68 @@ could not show the alternative:
   validation's fit reading past the exit; the ledger extended past a stop-out or a
   scratch; the ledger cut at every exit; the validation carrying breakeven and trail
   only.
+
+## 2026-09-25 (fourth) — a lever already in force is history, not advice
+
+**What happened.** Reading the 09-24 scan (without persisting it), the two leaks were
+`pctOfRange = <50` (no lever) and `scoreBand = 60-69` (unconfirmed, lever
+`liveMinSignalScore` 70). The live floor is 81. The band's 21 live trades were 13 stock
+entries from 08-24 to 09-04, before the floor existed, and 8 options entries from 09-10 to
+09-24, which the floor does not apply to. The live options record by score band: 60-69 is
+8 trades at −0.44R (1 winner); 70-79 is 7 at +0.12R; 80+ is 11 at +0.26R. The paper
+options control disagrees: its 60-69 band is 16 trades at +0.12R, its best, and 80+ is
+17 at −0.13R. So there is no case for an options score floor, and the scan's `unconfirmed`
+is right.
+
+Three readers of a lever that is already spent were wrong:
+- **The tune advisor** would have shown a confirmed 60-69 band as
+  `liveMinSignalScore 81 → 70`, direction safe, actionable, with its estimate in the
+  headline. That is a lowering, advised as a cut.
+- **`leak_lever`** took the first leak with a safe config lever and returned null when it
+  could not apply that lever: a field it may not write, a value already in force, or a
+  patch the exposure check refuses. Every leak ranked below went unread for as long as the
+  spent one stayed in the window.
+- **The headline** summed leaks across dimensions, so a lever named by two cuts counted
+  twice. The tape at entry and the tape by side (2026-09-25 (second)) both file a red-day
+  long under the market-direction gate.
+
+The safe-direction table also read `stagnationExitMinutes` 0 as the shortest scratch. 0
+means off. So a patch to 0 passed as a cut, and switching the scratch on read as a raise.
+
+**The change.**
+- `leverInForce(lever, config)` (gatedSwitches.ts) says whether the book already carries a
+  lever. It does when the field equals the lever's value, or is past it in the direction
+  the lever pushes. A flag, or a number with no written direction, is read by equality
+  only. A feature that is off (`ZERO_IS_OFF`) is never past a lever that switches it on.
+  The advisor and `leak_lever` both call it.
+- **The advisor** marks such a leak `in_force`. It carries no estimate, its action is
+  research, and it never counts in the headline.
+- **The headline** (`headlineEstimate`) counts each lever once, keyed by field and
+  direction. It sums the buckets within a dimension, which are different trades, and
+  takes the largest total across dimensions.
+- **`leak_lever`** takes the first leak that passes every check: confirmed, a config lever
+  in the safe direction, writable, a number or a flag, not in force, and passing the
+  exposure check.
+- **The exposure check** refuses a patch that sets `stagnationExitMinutes` to 0, as
+  switching the scratch off. It lets 0 → N through, as switching it on.
+
+**What it changes today.** Nothing acts differently. Production's two leaks are a bucket
+with no lever and an unconfirmed one. The gate is on, and no lever names the stagnation
+scratch. The 60-69 band now reads `in_force` in tune advice rather than `needs_data`, with a
+research action in place of `81 → 70`. It was already outside the headline.
+
+**Tests** (`gatedSwitches.test.ts`, `tuneAdvisor.test.ts`):
+- the in-force reading at, past and short of a lever, for a safe and an exposure lever;
+- a flag read by equality;
+- off never read as past;
+- switching the scratch off refused, and switching it on allowed;
+- `leak_lever` reading past four spent leaks to an open one;
+- the advisor's `in_force` recommendation;
+- the headline counting one lever once.
+
+Nine mutations were run and eight are caught. The survivor drops the headline's `in_force`
+filter, which is redundant: a spent lever already carries no estimate.
+
+**Pre-committed check.** After deploy, while the 60-69 band is in the scan's window,
+`GET /api/journal/tune-advice` shows `edge:scoreBand:60-69` with status `in_force` and a
+status reason naming `liveMinSignalScore` 81.

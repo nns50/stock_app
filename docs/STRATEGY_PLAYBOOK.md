@@ -2470,6 +2470,15 @@ the other way — the proposal still reaches you, with the refusal at the top of
 Any patch, literal or not, is also refused if it would produce a config the settings route
 itself would reject.
 
+Since 2026-09-25 `leak_lever` also looks past a lever it cannot or need not apply to the
+next confirmed leak, instead of stopping at the first. That covers a lever already in force,
+a field the app may not write, and one that would move its setting the exposure way. So a
+lowering the scan labels safe is no longer proposed by this rule, and tune advice marks it
+`in_force`. The write-time refusal still stands behind every data-sourced patch. The table
+also reads a zero that switches a feature off as *off*. A `stagnationExitMinutes` of 0 turns
+the scratch off, and the arithmetic used to read it as the shortest, safest value. Now a
+patch to 0 is refused and switching the scratch on passes.
+
 **Nothing acts until it has shadowed.** A rule evaluates, journals what it would have
 done, and changes nothing until it has been evaluated on five sessions, fired at least
 once, and never contradicted itself (proposed, then "not met" the next session without

@@ -2,6 +2,7 @@ import type { AutotradeConfig } from '../../db/autotradeConfig';
 import type { DailyGoalEvidence } from './targetTune';
 import { findingNeedsAction, WATCH_MIN_TRADES } from './edgeLeakScan';
 import type { AttributionReport, EdgeLeakScanResult, UntakenClass } from './edgeLeakScan';
+import { leverInForce } from './gatedSwitches';
 import type { SizingReview } from './gatedSwitches';
 
 // ---------------------------------------------------------------------------
@@ -44,7 +45,10 @@ import type { SizingReview } from './gatedSwitches';
  *  option nobody likes: move the target instead of the book. */
 export type TuneFactor = 'flow' | 'risk' | 'edge' | 'execution' | 'configuration' | 'goal';
 
-export type TuneStatus = 'actionable' | 'blocked_by_review' | 'needs_data';
+/** `in_force` (2026-09-25): the change a leak names is already made — its
+ *  trades predate the setting or come from a path it does not reach. History,
+ *  not advice, and never part of the headline. */
+export type TuneStatus = 'actionable' | 'blocked_by_review' | 'needs_data' | 'in_force';
 
 export interface TuneAction {
   /** `config` — a field and a value. `code` — something to build; the detail
@@ -86,6 +90,9 @@ export interface TuneRecommendation {
   lastSeenEtDate: string | null;
   sessionsSinceLastSeen: number | null;
   action: TuneAction;
+  /** The leak scan dimension an `edge` leak was found on; absent elsewhere. The
+   *  headline reads it to count one lever once (headlineEstimate). */
+  dimension?: string;
 }
 
 /** The gap, decomposed — the frame every recommendation is ranked inside. */
@@ -499,36 +506,59 @@ function edgeRecommendations(input: TuneAdvisorInput, gap: GoalGap): TuneRecomme
     // disk does not have to agree.
     const unusableReadings = scan.coverage.extensionQuality?.unusable ?? 0;
     const staleMeasure = EXTENSION_DIMENSIONS.has(leak.dimension) && unusableReadings > 0;
+    // A lever the book already carries (gatedSwitches.ts, leverInForce): the
+    // change is made, so the bucket is history, not advice (2026-09-25). Until
+    // this date the score-band lever read "liveMinSignalScore 81 → 70", safe,
+    // with the floor at 81: a LOWERING, advised as a cut and counted in the
+    // headline as a gain still to come.
+    const current =
+      lever && lever.kind === 'config' && lever.field
+        ? ((input.config as unknown as Record<string, number | string | boolean>)[lever.field] ?? null)
+        : null;
+    const spent = lever !== null && lever.kind === 'config' && leverInForce(lever, input.config);
     out.push({
       id: `edge:${leak.dimension}:${leak.bucket}`,
       factor: 'edge',
+      dimension: leak.dimension,
       title: `${leak.dimensionLabel} = ${leak.bucket} is losing money`,
       evidence:
         `${leak.n} trades at ${leak.meanR}R (95% ${leak.ciLow}…${leak.ciHigh}), ` +
         `${leak.severityR}R left on the table, $${leak.totalPnlUsd}` +
         (leak.verdict === 'unconfirmed' ? ' — paper cannot confirm it yet' : ''),
-      expectedDayPctDelta: dayPctFromEdge(gap.tradesPerSession, gap.riskPerTradePct, dR),
+      // A spent lever has nothing left to add to the day.
+      expectedDayPctDelta: spent ? null : dayPctFromEdge(gap.tradesPerSession, gap.riskPerTradePct, dR),
       sampleSize: leak.n,
       confidence: confidenceFor(leak.n),
       // A leak's lever CUTS, so it is not held by the review rule — the review
       // guards against widening mid-trial, not against closing a hole.
-      status: staleMeasure || leak.verdict === 'unconfirmed' ? 'needs_data' : 'actionable',
-      statusReason: staleMeasure
-        ? `${unusableReadings} extension readings in this window fell outside 0-100% of ` +
-          'their own session range, so the buckets are partly measurement error — not a cut until the window ' +
-          'is all post-fix rows'
-        : leak.verdict === 'unconfirmed'
-          ? 'the paper control has too few trades in this bucket to agree or disagree'
-          : 'reduces exposure — the gated-switch engine can apply this once its rule graduates',
+      status: spent ? 'in_force' : staleMeasure || leak.verdict === 'unconfirmed' ? 'needs_data' : 'actionable',
+      statusReason: spent
+        ? `${lever?.field} is already ${String(current)}, at or past this lever's ${String(lever?.value)}: the ` +
+          "bucket's live trades predate the setting or come from a path it does not reach"
+        : staleMeasure
+          ? `${unusableReadings} extension readings in this window fell outside 0-100% of ` +
+            'their own session range, so the buckets are partly measurement error — not a cut until the window ' +
+            'is all post-fix rows'
+          : leak.verdict === 'unconfirmed'
+            ? 'the paper control has too few trades in this bucket to agree or disagree'
+            : 'reduces exposure — the gated-switch engine can apply this once its rule graduates',
       // Not an occurrence — a distribution has no "last seen".
       lastSeenEtDate: null,
       sessionsSinceLastSeen: null,
-      action:
-        lever && lever.kind === 'config' && lever.field
+      action: spent
+        ? {
+            kind: 'research',
+            field: lever?.field ?? null,
+            detail:
+              `Nothing to change: ${lever?.field} is already ${String(current)}. If trades keep arriving in ` +
+              'this bucket, find the path they come from — the setting does not reach it.',
+            direction: 'neutral',
+          }
+        : lever && lever.kind === 'config' && lever.field
           ? {
               kind: 'config',
               field: lever.field,
-              from: (input.config as unknown as Record<string, number | string | boolean>)[lever.field] ?? null,
+              from: current,
               to: lever.value,
               detail: lever.detail,
               direction: lever.direction === 'exposure' ? 'exposure' : 'safe',
@@ -803,6 +833,41 @@ export function buildTuneAdvice(input: TuneAdvisorInput): TuneAdvice {
 }
 
 /**
+ * What "everything measurable" adds, in percentage points of the day.
+ *
+ * A needs_data recommendation is a question, not a quantity: adding its
+ * estimate would inflate the number with something the advice itself says it
+ * cannot stand behind. An in_force one is a change already made.
+ *
+ * ONE LEVER COUNTS ONCE (2026-09-25). Two scan dimensions can file the same
+ * losing trades and name the same setting: the tape at entry and the tape by
+ * side both hand a long bought on a red day to `marketDirectionGateEnabled`,
+ * and one change cannot deliver its effect twice. Within one dimension the
+ * buckets are disjoint trades, so their estimates add; across dimensions the
+ * largest stands for the lever. Keyed by field AND direction, so a lever that
+ * raises a setting and one that lowers it are never merged.
+ */
+export function headlineEstimate(recommendations: TuneRecommendation[]): number {
+  let sum = 0;
+  const byLever = new Map<string, Map<string, number>>();
+  for (const r of recommendations) {
+    if (r.status === 'needs_data' || r.status === 'in_force') continue;
+    const d = r.expectedDayPctDelta;
+    if (d === null) continue;
+    if (r.dimension === undefined || r.action.kind !== 'config' || r.action.field === null) {
+      sum += d;
+      continue;
+    }
+    const key = `${r.action.field}|${r.action.direction}`;
+    const dims = byLever.get(key) ?? new Map<string, number>();
+    dims.set(r.dimension, (dims.get(r.dimension) ?? 0) + d);
+    byLever.set(key, dims);
+  }
+  for (const dims of byLever.values()) sum += Math.max(...dims.values());
+  return sum;
+}
+
+/**
  * The one sentence a reader takes away. It has to be able to say "nothing
  * here closes the gap", because on this book that is usually true and a
  * recommender that always finds something worth doing trains the reader to
@@ -813,14 +878,7 @@ export function headlineFor(gap: GoalGap, recommendations: TuneRecommendation[],
   if (gap.impliedDailyGainPct === null || gap.targetDailyGainPct === null) {
     return 'Not enough closed trades to place the book against its goal yet.';
   }
-  const estimable = recommendations
-    // A needs_data recommendation is a question, not a quantity: adding its
-    // estimate to "everything measurable adds N points" would inflate the
-    // number with something the advice itself says it cannot stand behind.
-    .filter((r) => r.status !== 'needs_data')
-    .map((r) => r.expectedDayPctDelta)
-    .filter((d): d is number => d !== null)
-    .reduce((a, b) => a + b, 0);
+  const estimable = headlineEstimate(recommendations);
   // Only a defect seen in the LATEST session counts as "open": on 2026-09-12
   // four fixed classes were still inside the ten-session window, and a
   // headline saying four defects outranked everything would have sent the

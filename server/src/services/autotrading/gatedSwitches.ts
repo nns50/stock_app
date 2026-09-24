@@ -223,6 +223,17 @@ export const SAFE_DIRECTION: Record<SwitchWritableKey, 'lower' | 'higher' | 'eit
   targetRMultiple: 'either',
 };
 
+/**
+ * Keys whose ZERO means the feature is OFF, not the far end of its scale
+ * (2026-09-25). A shorter `stagnationExitMinutes` is safer (out of a dead trade
+ * sooner), but 0 switches the scratch off, which is the most exposure rather
+ * than the least. Read as a plain number, the arithmetic let a patch to 0
+ * through as a cut and refused switching the scratch on (0 → 45 read as a
+ * raise). No lever wrote either before this date. Every other 'lower' key
+ * fails closed at 0 (a zero cap refuses every order), so it stays a number.
+ */
+export const ZERO_IS_OFF: ReadonlySet<string> = new Set<SwitchWritableKey>(['stagnationExitMinutes']);
+
 /** Every key in a data-sourced patch that moves toward MORE exposure, with the
  *  numbers, in the words a journal row should carry. Empty means the patch is
  *  safe by arithmetic and not merely by label. */
@@ -239,10 +250,50 @@ export function exposureGuard(patch: SwitchPatch, config: AutotradeConfig): stri
       refusals.push(`${key} is not numeric (${String(from)} → ${String(to)}) — cannot check its direction`);
       continue;
     }
+    if (want === 'lower' && ZERO_IS_OFF.has(key)) {
+      // Off → on is the safe move; on → off is not, whatever the numbers say.
+      if (to === 0 && from !== 0) refusals.push(`${key} ${from} → 0 switches it OFF, which adds exposure`);
+      else if (from !== 0 && to > from) refusals.push(`${key} ${from} → ${to} RAISES it, which adds exposure`);
+      continue;
+    }
     if (want === 'lower' && to > from) refusals.push(`${key} ${from} → ${to} RAISES it, which adds exposure`);
     if (want === 'higher' && to < from) refusals.push(`${key} ${from} → ${to} LOWERS it, which adds exposure`);
   }
   return refusals;
+}
+
+/**
+ * Whether the book ALREADY carries a leak's lever (2026-09-25): the field holds
+ * the lever's value, or sits past it in the direction the lever pushes — a safe
+ * lever the safe way (SAFE_DIRECTION), an exposure lever the other way. A leak
+ * whose lever is in force is history: its trades predate the setting, or come
+ * from a path the setting does not reach. It is not a change still to make.
+ *
+ * The score-band lever is an absolute floor ("raise to at least 70"), so with
+ * the live floor at 81 a losing 60-69 band read as "liveMinSignalScore 81 → 70,
+ * safe" to the tune advisor, and stood in front of every other leak for
+ * `leak_lever` below. On 2026-09-24 that band's 21 live trades were 13 stock
+ * entries from before the floor existed and 8 options entries, which the floor
+ * does not apply to.
+ *
+ * The advisor and `leak_lever` both ask this one function, so they cannot come
+ * to disagree about which leaks are still open. A numeric field with no written
+ * direction is in force only at the lever's exact value.
+ */
+export function leverInForce(
+  lever: { field: string | null; value: unknown; direction: 'safe' | 'exposure' | 'research' },
+  config: AutotradeConfig,
+): boolean {
+  if (lever.field === null) return false;
+  const from = (config as unknown as Record<string, unknown>)[lever.field];
+  if (Object.is(from, lever.value)) return true;
+  if (typeof from !== 'number' || typeof lever.value !== 'number' || lever.direction === 'research') return false;
+  const safeWay = (SAFE_DIRECTION as Partial<Record<string, 'lower' | 'higher' | 'either'>>)[lever.field];
+  if (safeWay !== 'lower' && safeWay !== 'higher') return false;
+  // Off is never "past" a lever that would switch the feature on.
+  if (from === 0 && ZERO_IS_OFF.has(lever.field)) return false;
+  const way = lever.direction === 'exposure' ? (safeWay === 'higher' ? 'lower' : 'higher') : safeWay;
+  return way === 'higher' ? from >= lever.value : from <= lever.value;
 }
 
 /**
@@ -694,21 +745,31 @@ export const GATED_SWITCH_RULES: SwitchRule[] = [
     evaluate: (s) => {
       const scan = s.leakScan;
       if (!scan) return null;
-      const leak = scan.leaks.find(
-        (l: LeakReport) =>
-          l.verdict === 'leak' && l.lever?.kind === 'config' && l.lever.direction === 'safe' && l.lever.field !== null,
-      );
-      if (!leak || !leak.lever || leak.lever.field === null) return null;
-      const field = leak.lever.field as SwitchWritableKey;
-      if (!(SWITCH_WRITABLE_KEYS as readonly string[]).includes(field)) return null;
-      const value = leak.lever.value;
-      if (typeof value !== 'number' && typeof value !== 'boolean') return null;
-      // Already at the lever's value: the leak is historical, not open.
-      if (s.config[field] === value) return null;
-      return {
-        patch: { [field]: value } as SwitchPatch,
-        evidence: `${leak.dimension}=${leak.bucket}: ${leak.n} trades at ${leak.meanR}R, ${leak.severityR}R left on the table`,
-      };
+      // The FIRST leak whose lever this rule could apply and that would still
+      // change something (2026-09-25). Until this date the rule took the first
+      // leak with a safe config lever and then gave up on it: a field it may
+      // not write (the market-direction gate's flag), a value already in force
+      // (a cooldown set after the trades in the window), or a floor already
+      // above the band's lever each returned null, and every open leak ranked
+      // below it went unread for as long as the spent one stayed in the window.
+      for (const leak of scan.leaks as LeakReport[]) {
+        const lever = leak.lever;
+        if (leak.verdict !== 'leak' || !lever || lever.kind !== 'config' || lever.direction !== 'safe') continue;
+        if (lever.field === null || !(SWITCH_WRITABLE_KEYS as readonly string[]).includes(lever.field)) continue;
+        const value = lever.value;
+        if (typeof value !== 'number' && typeof value !== 'boolean') continue;
+        // Already carried: the leak is history, not open.
+        if (leverInForce(lever, s.config)) continue;
+        const patch = { [lever.field]: value } as SwitchPatch;
+        // A patch the write would refuse as adding exposure is not this rule's
+        // to stand behind either, and standing first it would hide the next.
+        if (exposureGuard(patch, s.config).length > 0) continue;
+        return {
+          patch,
+          evidence: `${leak.dimension}=${leak.bucket}: ${leak.n} trades at ${leak.meanR}R, ${leak.severityR}R left on the table`,
+        };
+      }
+      return null;
     },
   },
   {
