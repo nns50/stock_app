@@ -14595,7 +14595,16 @@ had closed, so no decision rested on it yet.
 - The one exception is a close no geometry made: by hand (`manual`), or with no reason
   recorded. Any geometry would have been closed at that same moment, so the path still
   ends there.
-- `loadSameSessionBars` and both books of the regime-tighten ledger read it.
+- `loadSameSessionBars` reads it.
+- **The regime-tighten ledger reads a narrower rule** (`tightenedTwinPathEnd`,
+  `regimeTightenLedger.ts`; corrected before merge, on review). Its question is not
+  "what would another geometry do" but "what would the untightened twin do", and the
+  twin shares the stop, the breakeven and trail, and the scratch clock. It parts from
+  the traded trade only at the tightened target's fill. So its path runs on past a
+  `target` exit and ends at any other. Read through `counterfactualPathEnd`, a long
+  stopped out at −1R that rallied to +1R by the afternoon read as `fullReached`: a +2R
+  "cost" the tighten never had, and a few such rows would have pushed the pre-committed
+  reading to `tighten_costs`.
 - The excursion report stays the trade as held.
 - `time_exit` covers both the stagnation scratch and the end-of-day flatten, and the
   exit row does not say which. Extending both is right: the flatten ends at the close
@@ -14604,6 +14613,15 @@ had closed, so no decision rested on it yet.
   the last exit, because that is the input `autoTune.ts` reads. Only its replay walks
   past the exit. Fitted on the path to the close, it would validate a tuner that does
   not exist.
+- **`/exit-tune-validation` replays both arms under every live rule but the target**
+  (`carriedExitRules(liveExitRules(cfg))`; corrected before merge, on review). It used
+  to carry the breakeven and trail only. Cut at the exit, that did not matter, because
+  the cut stood in for the scratch. Past the exit it replayed a book with no scratch,
+  so its "current" arm was not the geometry the book trades. It now carries the scratch
+  and the scale-out, and gates the breakeven and trail on `liveTrailingEnabled`, as
+  `/exit-replay` always has.
+- **Read the comparisons after the close.** Before the bell, a trade closed today
+  replays on the bars so far, and its path ends at the latest one.
 
 **Measured on the production copy from the 09-23 close,** same-session trades since
 07-27. The current live geometry is a 1R target, breakeven at 0.25R, a 0.5R trail from
@@ -14650,11 +14668,16 @@ could not show the alternative:
   - A 2R candidate reaches its target on all 24, a paired +1R and `better`.
   - The same trades closed by hand keep the candidate at the 09:37 cut, and the
     difference is 0.
-- **`/regime-tighten`:** a live and a paper trade tightened to 0.5, each banking 0.5R
-  at 09:37, read an MFE of 2.5R and `fullReached`. A hand-closed twin keeps the held
-  1.2R.
+- **`/regime-tighten`:** a live and a paper trade tightened to 0.25 of a 2R target, each
+  banking 0.5R at 09:37, read an MFE of 2.5R and `fullReached` (as held, 1.2R: a banked
+  win). A hand close keeps the held 1.2R, and so do a stop-out and a scratch, which end
+  the twin too.
 - **`/exit-tune-validation`:** the same 24 trades fit a 1R target. That is 0.8 × the
-  1.2R MFE as held, floored at 1R; reading the path past the exit would fit 2R.
+  1.2R MFE as held, floored at 1R; reading the path past the exit would fit 2R. Its
+  carried rules are the live ones: the scratch's 60 minutes and 0.3R, and a breakeven
+  and trail of 0 with trailing off.
 - **Mutations**, each caught: the replay path cut at the exit; the ledger's live side cut
   at the exit; its paper side cut at the exit; a hand close not respected; the
-  validation's fit reading past the exit.
+  validation's fit reading past the exit; the ledger extended past a stop-out or a
+  scratch; the ledger cut at every exit; the validation carrying breakeven and trail
+  only.

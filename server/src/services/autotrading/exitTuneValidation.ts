@@ -69,11 +69,28 @@ export interface ExitGeometry {
 
 /** The exit rules the tuner does NOT own. They are R multiples in the config
  *  and stay numerically identical across arms — which is what the live path
- *  would do, since R is defined by whatever stop is actually placed. */
-export interface CarriedExitRules {
-  breakevenTriggerR: number;
-  trailStartR: number;
-  trailStopR: number;
+ *  would do, since R is defined by whatever stop is actually placed.
+ *
+ *  EVERY live rule but the target (2026-09-24, on review): the breakeven and
+ *  trail as the loop runs them, the scale-out, and the stagnation scratch.
+ *  Until the paths ran past the exit (counterfactualPathEnd), cutting each one
+ *  at the trade's own exit stood in for the scratch. Once they ran on, a route
+ *  that carried only breakeven and trail replayed both arms with no scratch, so
+ *  the "current" arm was no longer the geometry the book trades. */
+export type CarriedExitRules = Omit<ExitRules, 'targetR'>;
+
+/** The carried rules from the live exit rules (exitReplay.ts's liveExitRules):
+ *  one derivation, so the validation replays the rules the loop runs. */
+export function carriedExitRules(rules: ExitRules): CarriedExitRules {
+  return {
+    breakevenTriggerR: rules.breakevenTriggerR,
+    trailStartR: rules.trailStartR,
+    trailStopR: rules.trailStopR,
+    scaleOutR: rules.scaleOutR,
+    scaleOutFraction: rules.scaleOutFraction,
+    stagnationMinutes: rules.stagnationMinutes,
+    stagnationMinR: rules.stagnationMinR,
+  };
 }
 
 /** One trade, with the bars to replay it on and the excursion row that is the

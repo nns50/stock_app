@@ -8,11 +8,12 @@
 // every closed stock trade's favorable excursion is already measured
 // (services/excursion.ts, mfeR), and a tightened target's untightened twin is
 // arithmetic: the regime_target_factor stamped at entry divides it back out.
-// The route measures that excursion PAST the tightened exit, to the end of the
-// session (exitReplay.ts's counterfactualPathEnd, 2026-09-24). Measured as
-// held, it stopped at the tightened target, so a trade that banked it could
-// never show the full target was reachable, and the bound below leaned
-// against the full target instead of towards it.
+// The route measures that excursion PAST the tightened target's fill, to the
+// end of the session (tightenedTwinPathEnd, 2026-09-24). Measured as held, it
+// stopped at the tightened target, so a trade that banked it could never show
+// the full target was reachable, and the bound below leaned against the full
+// target instead of towards it. Any other exit ends the twin too, so there the
+// path stops at the exit.
 // So per trade the question "would the FULL target have been reached?" has
 // an answer that is recorded rather than argued — mfeR ≥ fullTargetR — and
 // the ledger is a BOUNDED counterfactual:
@@ -67,6 +68,24 @@ export function tightenedStockPositions<T extends { assetType: string; regimeTar
   rows: T[],
 ): T[] {
   return rows.filter((p) => p.assetType === 'stock' && isTightenedFactor(p.regimeTargetFactor));
+}
+
+/**
+ * Where a tightened trade's UNTIGHTENED TWIN parts from it (2026-09-24, on
+ * review): at the tightened target's fill, and nowhere else. The twin carries
+ * the same stop, the same breakeven and trail, and the same stagnation clock,
+ * so a stop-out, a trailed stop, a scratch or a hand close ends both at the
+ * same moment. Only past a `target` exit is the twin still holding, so only
+ * then does its path run on to the end of the session.
+ *
+ * This is narrower than exitReplay.ts's counterfactualPathEnd, which asks what
+ * any OTHER geometry would have done and so lets a path outlive a stop. Read
+ * through that, a long stopped out at 10:05 for -1R that rallied to +1R by
+ * 14:00 read as `fullReached`, a +2R difference the tighten never cost.
+ */
+export function tightenedTwinPathEnd(lastExit: { at: number; reason: string | null } | null): number | null {
+  if (!lastExit) return null;
+  return lastExit.reason === 'target' ? null : lastExit.at;
 }
 
 export interface TightenedTradeInput {

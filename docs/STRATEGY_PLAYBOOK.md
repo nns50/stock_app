@@ -1043,9 +1043,12 @@ much") — the bound only leans one way, and a same-session trade measured on a 
 the same way. **Banked wins** (tightened hits whose MFE never reached the full target) are the
 trades the tighten demonstrably converted; the full target would have exited them somewhere at
 or below that peak.
-**Since 2026-09-24 the MFE behind "reached" runs to the end of the session.** Measured as
-held, it stopped at the tightened exit, so a trade that banked its tightened target could
-never show that the full one was reachable. The bound leaned against the full target
+**Since 2026-09-24 the MFE behind "reached" runs to the end of the session** for a trade
+that banked its tightened target. Measured as held, it stopped at the tightened exit, so
+such a trade could never show that the full one was reachable. A trade that closed any
+other way (a stop, a trailed stop, a scratch, a hand close) is still read as held: the
+untightened twin shares the stop and the scratch clock, so it would have closed at the
+same moment. The bound leaned against the full target
 rather than towards it, and "cannot beat realized, keep the tighten" was the only reading
 the ledger could give. No live tightened trade had closed by then, so no decision rested
 on it.

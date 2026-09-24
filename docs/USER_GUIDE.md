@@ -999,9 +999,10 @@ tabs of one **Analytics** button (top right) — pick a tab, the report loads on
   Per trade: the target as traded and the full one in R, MFE, realized R, and a
   **counterfactual R** that takes the most optimistic case for the full target (reached →
   banked there with no reversal; not reached → the untightened trade did as well as this
-  one). Since 2026-09-24 "reached" reads the trade's best run to the end of the session,
-  not only while it was held, because a trade that banked its tightened target had
-  stopped being measured at exactly that price. The card reports how many tightened
+  one). Since 2026-09-24 "reached" reads the best run to the end of the session for a
+  trade that banked its tightened target, not only while it was held, because such a
+  trade had stopped being measured at exactly that price. A trade that closed any other
+  way is read as held: its untightened twin would have closed at the same moment. The card reports how many tightened
   targets were hit, how many full targets were reached, the **banked wins** (tightened
   hits the full target would have missed), mean
   realized vs counterfactual R with a 95% bootstrap CI on their difference, and the
