@@ -697,7 +697,7 @@ async function closePositionsFromPreview(
       // fully-confirmed observation in between, before trusting it enough to
       // write a close. See the doc comment above and webull_miss_streak's
       // table comment for the flapping bug this prevents.
-      const streak = bumpMissStreak(preview.accountId, key);
+      const streak = bumpMissStreak(preview.accountId, key, brokerQty);
       if (streak >= MISS_CONFIRM_THRESHOLD)
         toClose.set(key, {
           lots,

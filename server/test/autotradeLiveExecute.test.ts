@@ -4616,8 +4616,13 @@ describe('reconcileLiveOrders', () => {
         ],
       } as WebullOrderStatus);
     };
-    /** The sync found no shares on its last pass. */
-    const sharesMissed = () => bumpMissStreak('ACC1', contractKey(listPositions({ status: 'open' })[0]));
+    /** The sync found none of the shares on its last pass (or `held` of them). */
+    const sharesMissed = (held = 0, pos = listPositions({ status: 'open' })[0]) =>
+      bumpMissStreak('ACC1', contractKey(pos), held);
+    /** What the ledger holds: the order was placed for less than the sizer's
+     *  suggestion, so this, not qty(), is what a whole fill must cover. */
+    const held = () => listPositions({ status: 'open' })[0].remainingQuantity;
+    const skipRows = () => listAutotradeEvents({ actions: ['live_bracket_leg_detail_skipped'] });
 
     it("stores both legs' own ids on the entry row at placement", async () => {
       await openWithRestingLegs();
@@ -4673,6 +4678,123 @@ describe('reconcileLiveOrders', () => {
       await reconcileLiveOrders();
       expect(vi.mocked(webullOrderDetail)).not.toHaveBeenCalled();
       expect(listPositions({ status: 'open' })).toHaveLength(1);
+    });
+
+    it('books the fill once: a second tick finds the position closed and asks nothing (2026-09-25)', async () => {
+      await openWithRestingLegs();
+      const pos = listPositions({ status: 'open' })[0];
+      sharesMissed();
+      vi.mocked(webullOrderDetail).mockImplementation(async (_account, id) =>
+        id === LEGS.stopLoss
+          ? { ok: true, found: true, status: 'FILLED', filledPrice: 94.9, filledQty: qty() }
+          : { ok: true, found: true, status: 'CANCELLED' },
+      );
+
+      await reconcileLiveOrders();
+      sharesMissed(0, pos);
+      await reconcileLiveOrders();
+
+      const [closed] = listPositions({ status: 'closed' });
+      expect(closed.exits).toHaveLength(1);
+      expect(vi.mocked(webullOrderDetail)).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not ask while the broker still shows some of the shares (2026-09-25)', async () => {
+      // A partial gap (a hand trim, a scale-out sold but not yet booked) is a
+      // miss, but not a filled leg: the shares left still need their stop.
+      await openWithRestingLegs();
+      sharesMissed(Math.floor(held() / 2));
+      await reconcileLiveOrders();
+      expect(vi.mocked(webullOrderDetail)).not.toHaveBeenCalled();
+      expect(listPositions({ status: 'open' })).toHaveLength(1);
+    });
+
+    it('books no leg that filled fewer shares than the ledger holds, and says why once (2026-09-25)', async () => {
+      // Booked, it would be booked again the next tick while the gap stayed open.
+      await openWithRestingLegs();
+      sharesMissed();
+      const part = held() - 10;
+      vi.mocked(webullOrderDetail).mockImplementation(async (_account, id) =>
+        id === LEGS.stopLoss
+          ? { ok: true, found: true, status: 'FILLED', filledPrice: 94.9, filledQty: part }
+          : { ok: true, found: true, status: 'CANCELLED' },
+      );
+
+      await reconcileLiveOrders();
+      // DEBUG
+      sharesMissed();
+      await reconcileLiveOrders();
+
+      expect(listPositions({ status: 'open' })[0].exits).toHaveLength(0);
+      expect(legRows()).toHaveLength(0);
+      expect(skipRows()).toHaveLength(1);
+      expect(JSON.parse(skipRows()[0].detail ?? '{}')).toMatchObject({
+        leg: 'stop',
+        filledQty: part,
+        remainingQuantity: part + 10,
+        reason: expect.stringMatching(/fewer shares/),
+      });
+      // Filled is filled: the target is never asked after it.
+      expect(vi.mocked(webullOrderDetail).mock.calls.every((c) => c[1] === LEGS.stopLoss)).toBe(true);
+    });
+
+    it('books no fill reported with a price of 0, or none (2026-09-25)', async () => {
+      await openWithRestingLegs();
+      sharesMissed();
+      vi.mocked(webullOrderDetail).mockImplementation(async (_account, id) =>
+        id === LEGS.stopLoss
+          ? { ok: true, found: true, status: 'FILLED', filledPrice: 0, filledQty: qty() }
+          : { ok: true, found: true, status: 'CANCELLED' },
+      );
+
+      await reconcileLiveOrders();
+
+      expect(listPositions({ status: 'open' })[0].exits).toHaveLength(0);
+      expect(JSON.parse(skipRows()[0].detail ?? '{}').reason).toMatch(/no usable price/);
+    });
+
+    it('journals a lookup that fails, once a day, and books nothing from it (2026-09-25)', async () => {
+      await openWithRestingLegs();
+      sharesMissed();
+      vi.mocked(webullOrderDetail).mockResolvedValue({ ok: false, found: false, error: 'HTTP 429' });
+
+      await reconcileLiveOrders();
+      sharesMissed();
+      await reconcileLiveOrders();
+
+      const rows = listAutotradeEvents({ actions: ['live_bracket_leg_detail_unresolved'] });
+      // One per leg a day, however many ticks ask.
+      expect(rows).toHaveLength(2);
+      expect(JSON.parse(rows[0].detail ?? '{}')).toMatchObject({ error: 'HTTP 429' });
+      expect(listPositions({ status: 'open' })).toHaveLength(1);
+    });
+
+    it('does not spend a lookup on a position whose own close is already working (2026-09-25)', async () => {
+      // A time exit or the end-of-day flatten cancels the legs and books
+      // through its own order; the lookups per tick go to real leg fills.
+      await openWithRestingLegs();
+      const pos = listPositions({ status: 'open' })[0];
+      const close = createIntent(
+        {
+          symbol: 'AAPL',
+          assetKind: 'stock',
+          side: 'sell',
+          openClose: 'close',
+          quantity: pos.remainingQuantity,
+          orderType: 'limit',
+          limitPrice: 95,
+        },
+        'working-close-147',
+      );
+      recordLiveExitOrder({ intentId: close.id, symbol: 'AAPL', riskProfile: 'MODERATE', positionId: pos.id });
+      sharesMissed(0, pos);
+      vi.mocked(webullOrderDetail).mockResolvedValue({ ok: true, found: true, status: 'FILLED', filledPrice: 94.9 });
+
+      await reconcileLiveOrders();
+
+      const asked = vi.mocked(webullOrderDetail).mock.calls.map((c) => c[1]);
+      expect(asked).not.toContain(LEGS.stopLoss);
+      expect(asked).not.toContain(LEGS.takeProfit);
     });
 
     it('books nothing on a leg the broker still reports working', async () => {
