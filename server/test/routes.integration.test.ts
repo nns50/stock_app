@@ -4609,12 +4609,17 @@ describe('journal analysis routes tell you what they could not cover (integratio
         liveTrailingEnabled: before.liveTrailingEnabled,
         liveScaleOutEnabled: before.liveScaleOutEnabled,
         stagnationExitMinutes: before.stagnationExitMinutes,
+        stagnationExitMinR: before.stagnationExitMinR,
       });
       db.exec('DELETE FROM position_exits; DELETE FROM positions;');
     });
 
     /** A same-session long at 100 / 99, entered 09:30, closed at 09:37 by `reason`. */
-    const trade = (i: number, reason: 'target' | 'manual', extra: Record<string, unknown> = {}) => {
+    const trade = (
+      i: number,
+      reason: 'target' | 'manual' | 'stop' | 'time_exit',
+      { exitPrice, ...extra }: Record<string, unknown> = {},
+    ) => {
       const day = `2026-05-${String(1 + i).padStart(2, '0')}`;
       const p = createPosition({
         assetType: 'stock',
@@ -4629,7 +4634,7 @@ describe('journal analysis routes tell you what they could not cover (integratio
       });
       addExit(p.id, {
         quantity: 10,
-        exitPrice: (extra.targetPrice as number) ?? 101,
+        exitPrice: (exitPrice as number) ?? (extra.targetPrice as number) ?? 101,
         exitDate: day,
         exitReason: reason,
       });
@@ -4673,11 +4678,48 @@ describe('journal analysis routes tell you what they could not cover (integratio
       expect(rep.inSample.oneStep.fit.geometry.targetRMultiple).toBe(1);
     });
 
+    it('exit-tune-validation replays both arms under every live rule but the target, the scratch included', async () => {
+      // Until the paths ran past the exit, cutting each at the trade's own exit
+      // stood in for the stagnation scratch. Past it, a route that carried only
+      // breakeven and trail replayed a book with no scratch at all.
+      setAutotradeConfig({ stagnationExitMinutes: 60, stagnationExitMinR: 0.3, liveTrailingEnabled: false });
+      for (let i = 0; i < 24; i++) trade(i, 'target');
+      const rep = (await getJson('/api/journal/exit-tune-validation')) as {
+        carried: Record<string, number>;
+      };
+      expect(rep.carried).toMatchObject({
+        stagnationMinutes: 60,
+        stagnationMinR: 0.3,
+        // As the loop runs them: trailing off turns the breakeven and trail off.
+        breakevenTriggerR: 0,
+        trailStartR: 0,
+        trailStopR: 0,
+      });
+      expect(rep.carried).not.toHaveProperty('targetR');
+    });
+
     it('regime-tighten asks whether the FULL target was reached after the tightened exit', async () => {
       db.exec('DELETE FROM autotrade_paper_positions;');
-      // Tightened to 0.5 of a 1R target: banked 100.5 at 09:37, reached 102.5 by 09:40.
-      trade(0, 'target', { symbol: 'TGHX', targetPrice: 100.5, regimeTargetFactor: 0.5, tags: ['live', 'autotrade'] });
+      // Tightened to 0.25 of a 2R target: banked 100.5 (0.5R) at 09:37. As held
+      // the path peaked at 1.2R, short of 2R; by 09:40 it reached 2.5R.
+      trade(0, 'target', { symbol: 'TGHX', targetPrice: 100.5, regimeTargetFactor: 0.25, tags: ['live', 'autotrade'] });
       trade(1, 'manual', { symbol: 'TGHM', targetPrice: 100.5, regimeTargetFactor: 0.5, tags: ['live', 'autotrade'] });
+      // The untightened twin shares the stop and the scratch clock, so a
+      // stop-out or a scratch ends the twin too: those paths stop at 09:37.
+      trade(3, 'stop', {
+        symbol: 'TGHS',
+        targetPrice: 100.5,
+        regimeTargetFactor: 0.25,
+        exitPrice: 99,
+        tags: ['live', 'autotrade'],
+      });
+      trade(4, 'time_exit', {
+        symbol: 'TGHT',
+        targetPrice: 100.5,
+        regimeTargetFactor: 0.25,
+        exitPrice: 100.2,
+        tags: ['live', 'autotrade'],
+      });
       // The paper twin of the first, closed by its target at the same minute.
       const paper = openPaperPosition({
         symbol: 'TGHQ',
@@ -4689,7 +4731,7 @@ describe('journal analysis routes tell you what they could not cover (integratio
         riskAmount: 10,
         riskProfile: 'MODERATE',
         rationale: 'fixture',
-        regimeTargetFactor: 0.5,
+        regimeTargetFactor: 0.25,
       });
       db.prepare(
         "UPDATE autotrade_paper_positions SET status='closed', exit_price=100.5, exit_at=?, exit_reason='target', entry_at=? WHERE id=?",
@@ -4698,10 +4740,19 @@ describe('journal analysis routes tell you what they could not cover (integratio
         rows: { symbol: string; mfeR: number; fullReached: boolean; bankedWin: boolean; counterfactualR: number }[];
       };
       const hit = rep.rows.find((r) => r.symbol === 'TGHX')!;
-      // Measured to the close: 2.5R. As held it read 1.2R and "never reached" 1R.
-      expect(hit).toMatchObject({ mfeR: 2.5, fullReached: true, bankedWin: false, counterfactualR: 1 });
+      // Measured to the close: 2.5R, past the 2R full target. As held it read
+      // 1.2R, short of it, and the row was a banked win.
+      expect(hit).toMatchObject({ mfeR: 2.5, fullReached: true, bankedWin: false, counterfactualR: 2 });
       // The hand close stays cut at 09:37: its MFE is the 09:35 bar's 1.2R.
       expect(rep.rows.find((r) => r.symbol === 'TGHM')!.mfeR).toBe(1.2);
+      // A stop-out and a scratch too. Run to the close, both would read as
+      // reaching the full target, a +3R and a +1.8R "cost" the tighten never had.
+      expect(rep.rows.find((r) => r.symbol === 'TGHS')).toMatchObject({
+        mfeR: 1.2,
+        fullReached: false,
+        counterfactualR: -1,
+      });
+      expect(rep.rows.find((r) => r.symbol === 'TGHT')).toMatchObject({ mfeR: 1.2, fullReached: false });
       expect(rep.rows.find((r) => r.symbol === 'TGHQ')).toMatchObject({ mfeR: 2.5, fullReached: true });
     });
   });
