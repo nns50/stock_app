@@ -1,4 +1,4 @@
-import { AutotradeConfig } from '../../db/autotradeConfig';
+import { AutotradeConfig, sanitizeAutotradeConfig } from '../../db/autotradeConfig';
 import type { MlRegimeReadiness } from '../mlRegimeReadiness';
 import type { EdgeLeakScanResult, LeakReport } from './edgeLeakScan';
 import type { ShortShadowRecord } from './shortShadowRecord';
@@ -110,6 +110,24 @@ export function patchInForce(patch: SwitchPatch, config: AutotradeConfig): boole
   return keys.every((k) => Object.is(patch[k], config[k as keyof AutotradeConfig]));
 }
 
+/**
+ * Whether a proposed patch has since been acted on, by anyone (2026-09-25, on
+ * review). For a patch assembled from data that includes a setting carried
+ * PAST the lever's value in its safe direction: the score-band lever says
+ * "raise to at least 70", and an operator who set 75 did what it asked. Asked
+ * with patchInForce alone, the next session's quiet reading (leak_lever reads
+ * 75 as in force) counted as a contradiction, and a contradiction bars a rule
+ * from graduating for good.
+ */
+export function patchSettled(patch: SwitchPatch, config: AutotradeConfig, fromData: boolean): boolean {
+  if (patchInForce(patch, config)) return true;
+  if (!fromData) return false;
+  const entries = Object.entries(patch);
+  return (
+    entries.length > 0 && entries.every(([field, value]) => leverInForce({ field, value, direction: 'safe' }, config))
+  );
+}
+
 /** Throws rather than writing a key no rule is allowed to touch. The leak
  *  scan's levers are data read out of a scan result, so "the rule only writes
  *  what its literal says" is not something the type system can promise here. */
@@ -206,8 +224,13 @@ export const SAFE_DIRECTION: Record<SwitchWritableKey, 'lower' | 'higher' | 'eit
   // A WIDER daily halt is more exposure, not less: it lets the day keep losing.
   maxDailyDrawdownPct: 'lower',
   expectancyMaxMultiplier: 'lower',
-  // Out of a dead trade sooner frees the slot and ends the exposure.
-  stagnationExitMinutes: 'lower',
+  // NOT a one-way knob (2026-09-25, on review). A sooner scratch ends a dead
+  // trade's exposure, but the same number sets the end-of-day entry runway
+  // (endOfDayFlatten.ts: max(15, stagnationExitMinutes) before the flatten),
+  // so a shorter scratch also lets entries open later in the day, the
+  // 2026-09-02 failure the runway exists to stop, and 0 switches the scratch
+  // off. Data may not write it; the literal pre-trial revert still can.
+  stagnationExitMinutes: 'either',
   // A LONGER cooldown and a HIGHER floor both refuse more entries.
   symbolReentryCooldownMinutes: 'higher',
   liveMinSignalScore: 'higher',
@@ -223,37 +246,32 @@ export const SAFE_DIRECTION: Record<SwitchWritableKey, 'lower' | 'higher' | 'eit
   targetRMultiple: 'either',
 };
 
-/**
- * Keys whose ZERO means the feature is OFF, not the far end of its scale
- * (2026-09-25). A shorter `stagnationExitMinutes` is safer (out of a dead trade
- * sooner), but 0 switches the scratch off, which is the most exposure rather
- * than the least. Read as a plain number, the arithmetic let a patch to 0
- * through as a cut and refused switching the scratch on (0 → 45 read as a
- * raise). No lever wrote either before this date. Every other 'lower' key
- * fails closed at 0 (a zero cap refuses every order), so it stays a number.
- */
-export const ZERO_IS_OFF: ReadonlySet<string> = new Set<SwitchWritableKey>(['stagnationExitMinutes']);
-
 /** Every key in a data-sourced patch that moves toward MORE exposure, with the
  *  numbers, in the words a journal row should carry. Empty means the patch is
  *  safe by arithmetic and not merely by label. */
 export function exposureGuard(patch: SwitchPatch, config: AutotradeConfig): string[] {
   const refusals: string[] = [];
+  // Judged on the value the write would STORE (2026-09-25, on review):
+  // setAutotradeConfig sanitizes, so an out-of-range number is clamped,
+  // floored or replaced by its default, and a default can be a raise.
+  const stored = sanitizeAutotradeConfig({ ...config, ...patch }) as unknown as Record<string, unknown>;
   for (const [key, to] of Object.entries(patch) as [SwitchWritableKey, unknown][]) {
-    const want = SAFE_DIRECTION[key];
+    const want = (SAFE_DIRECTION as Partial<Record<string, 'lower' | 'higher' | 'either'>>)[key];
     const from = config[key];
+    if (want === undefined) {
+      refusals.push(`${key} has no written safe direction — a data-sourced rule may not write it`);
+      continue;
+    }
     if (want === 'either') {
       refusals.push(`${key} is not an exposure knob on its own — a data-sourced rule may not write it`);
       continue;
     }
-    if (typeof to !== 'number' || typeof from !== 'number') {
-      refusals.push(`${key} is not numeric (${String(from)} → ${String(to)}) — cannot check its direction`);
+    if (typeof to !== 'number' || typeof from !== 'number' || !Number.isFinite(to)) {
+      refusals.push(`${key} is not a finite number (${String(from)} → ${String(to)}) — cannot check its direction`);
       continue;
     }
-    if (want === 'lower' && ZERO_IS_OFF.has(key)) {
-      // Off → on is the safe move; on → off is not, whatever the numbers say.
-      if (to === 0 && from !== 0) refusals.push(`${key} ${from} → 0 switches it OFF, which adds exposure`);
-      else if (from !== 0 && to > from) refusals.push(`${key} ${from} → ${to} RAISES it, which adds exposure`);
+    if (stored[key] !== to) {
+      refusals.push(`${key} → ${to} would be stored as ${String(stored[key])} — the config does not keep that value`);
       continue;
     }
     if (want === 'lower' && to > from) refusals.push(`${key} ${from} → ${to} RAISES it, which adds exposure`);
@@ -276,22 +294,23 @@ export function exposureGuard(patch: SwitchPatch, config: AutotradeConfig): stri
  * entries from before the floor existed and 8 options entries, which the floor
  * does not apply to.
  *
- * The advisor and `leak_lever` both ask this one function, so they cannot come
- * to disagree about which leaks are still open. A numeric field with no written
- * direction is in force only at the lever's exact value.
+ * The advisor, `leak_lever` and the engine's contradiction check (patchSettled)
+ * all ask this one function, so they cannot come to disagree about which leaks
+ * are still open. A numeric field with no written direction, or an 'either'
+ * one, is in force only at the lever's exact value.
  */
 export function leverInForce(
   lever: { field: string | null; value: unknown; direction: 'safe' | 'exposure' | 'research' },
   config: AutotradeConfig,
 ): boolean {
-  if (lever.field === null) return false;
+  // A null value names no setting to be at (2026-09-25, on review): against a
+  // null config field it would otherwise read as in force.
+  if (lever.field === null || lever.value === null) return false;
   const from = (config as unknown as Record<string, unknown>)[lever.field];
   if (Object.is(from, lever.value)) return true;
   if (typeof from !== 'number' || typeof lever.value !== 'number' || lever.direction === 'research') return false;
   const safeWay = (SAFE_DIRECTION as Partial<Record<string, 'lower' | 'higher' | 'either'>>)[lever.field];
   if (safeWay !== 'lower' && safeWay !== 'higher') return false;
-  // Off is never "past" a lever that would switch the feature on.
-  if (from === 0 && ZERO_IS_OFF.has(lever.field)) return false;
   const way = lever.direction === 'exposure' ? (safeWay === 'higher' ? 'lower' : 'higher') : safeWay;
   return way === 'higher' ? from >= lever.value : from <= lever.value;
 }
@@ -646,7 +665,9 @@ export function evaluateGatedSwitches(input: EvaluateInput): GatedSwitchResult {
     // Was the patch this rule last proposed acted on by ANYONE since? The
     // operator is who applies these while a rule is shadowed, and until this
     // was asked their doing so counted against the rule.
-    const settled = state.lastProposedPatch !== null && patchInForce(state.lastProposedPatch, snapshot.config);
+    const settled =
+      state.lastProposedPatch !== null &&
+      patchSettled(state.lastProposedPatch, snapshot.config, rule.patchFromData === true);
     const folded = nextSwitchState(
       state,
       met,
@@ -761,9 +782,10 @@ export const GATED_SWITCH_RULES: SwitchRule[] = [
         // Already carried: the leak is history, not open.
         if (leverInForce(lever, s.config)) continue;
         const patch = { [lever.field]: value } as SwitchPatch;
-        // A patch the write would refuse as adding exposure is not this rule's
-        // to stand behind either, and standing first it would hide the next.
-        if (exposureGuard(patch, s.config).length > 0) continue;
+        // A patch the write would refuse is not this rule's to stand behind
+        // either, and standing first it would hide the next: the same check
+        // the engine applies before a write (applyRefusals).
+        if (applyRefusals(patch, s.config, true).length > 0) continue;
         return {
           patch,
           evidence: `${leak.dimension}=${leak.bucket}: ${leak.n} trades at ${leak.meanR}R, ${leak.severityR}R left on the table`,

@@ -14952,23 +14952,30 @@ Three readers of a lever that is already spent were wrong:
 - **The tune advisor** would have shown a confirmed 60-69 band as
   `liveMinSignalScore 81 → 70`, direction safe, actionable, with its estimate in the
   headline. That is a lowering, advised as a cut.
-- **`leak_lever`** took the first leak with a safe config lever and returned null when it
-  could not apply that lever: a field it may not write, a value already in force, or a
-  patch the exposure check refuses. Every leak ranked below went unread for as long as the
-  spent one stayed in the window.
+- **`leak_lever`** took the first leak with a safe config lever and stopped there. For a
+  field it may not write, or a value already in force, it returned null. A lever the
+  exposure check refuses stood as that session's proposal, journaled with its refusal,
+  every session. Either way every leak ranked below went unread for as long as the spent
+  one stayed in the window.
 - **The headline** summed leaks across dimensions, so a lever named by two cuts counted
   twice. The tape at entry and the tape by side (2026-09-25 (second)) both file a red-day
   long under the market-direction gate.
 
-The safe-direction table also read `stagnationExitMinutes` 0 as the shortest scratch. 0
-means off. So a patch to 0 passed as a cut, and switching the scratch on read as a raise.
+The safe-direction table also read `stagnationExitMinutes` as lower-is-safer. A shorter
+scratch does end a dead trade sooner, but the same number sets the end-of-day entry runway
+(`max(15, stagnationExitMinutes)` before the flatten, endOfDayFlatten.ts). So a shorter
+scratch also lets entries open later in the day, and 0 switches the scratch off.
 
 **The change.**
 - `leverInForce(lever, config)` (gatedSwitches.ts) says whether the book already carries a
   lever. It does when the field equals the lever's value, or is past it in the direction
-  the lever pushes. A flag, or a number with no written direction, is read by equality
-  only. A feature that is off (`ZERO_IS_OFF`) is never past a lever that switches it on.
-  The advisor and `leak_lever` both call it.
+  the lever pushes. A flag, a two-way number, or a number with no written direction is
+  read by equality only. A research lever and a null value are never in force. The
+  advisor, `leak_lever` and the engine's contradiction check all call it.
+- **The contradiction check** (`patchSettled`) counts a data-sourced patch as acted on
+  when its setting is carried past the lever, not only at it. A rule that proposed a
+  cooldown of 390, followed by an operator who set 400, used to read as a rule
+  contradicting itself on the next quiet session, and that bars it for good.
 - **The advisor** marks such a leak `in_force`. It carries no estimate, its action is
   research, and it never counts in the headline.
 - **The headline** (`headlineEstimate`) counts each lever once, keyed by field and
@@ -14976,26 +14983,36 @@ means off. So a patch to 0 passed as a cut, and switching the scratch on read as
   takes the largest total across dimensions.
 - **`leak_lever`** takes the first leak that passes every check: confirmed, a config lever
   in the safe direction, writable, a number or a flag, not in force, and passing the
-  exposure check.
-- **The exposure check** refuses a patch that sets `stagnationExitMinutes` to 0, as
-  switching the scratch off. It lets 0 → N through, as switching it on.
+  refusals the write itself applies (`applyRefusals`).
+- **The exposure check** judges the value the write would store
+  (`sanitizeAutotradeConfig`), since the config clamps or replaces some values. It
+  refuses a number that is not finite and a key with no written direction.
+  `stagnationExitMinutes` is now two-way, so data may not write it; the literal pre-trial
+  revert still can.
 
 **What it changes today.** Nothing acts differently. Production's two leaks are a bucket
 with no lever and an unconfirmed one. The gate is on, and no lever names the stagnation
 scratch. The 60-69 band now reads `in_force` in tune advice rather than `needs_data`, with a
-research action in place of `81 → 70`. It was already outside the headline.
+research action in place of `81 → 70`. It was already outside the headline. A lever the
+exposure check refuses is no longer proposed by `leak_lever` at all: before this date it
+would have written a `config_change_proposed` row with its refusal every session.
 
 **Tests** (`gatedSwitches.test.ts`, `tuneAdvisor.test.ts`):
 - the in-force reading at, past and short of a lever, for a safe and an exposure lever;
-- a flag read by equality;
-- off never read as past;
-- switching the scratch off refused, and switching it on allowed;
-- `leak_lever` reading past four spent leaks to an open one;
+- a flag, a two-way number and a number with no written direction read by equality;
+- a research lever and a null value never in force;
+- the exposure check refusing the scratch, an unclassified key, a non-finite number and a
+  value the config would not keep;
+- `leak_lever` reading past six spent or unusable leaks to an open one;
+- the whole engine counting no contradiction when the operator set a stricter value;
 - the advisor's `in_force` recommendation;
-- the headline counting one lever once.
+- the headline counting one lever once, and two opposite levers on one field twice.
 
-Nine mutations were run and eight are caught. The survivor drops the headline's `in_force`
-filter, which is redundant: a spent lever already carries no estimate.
+Sixteen mutations were run and fifteen are caught. The survivor drops `leak_lever`'s
+writable check, which is now redundant by construction: the exposure check refuses every
+key with no written direction, and those are exactly the keys the app may not write. The
+headline's `in_force` filter is redundant in the same way, since a spent lever carries no
+estimate.
 
 **Pre-committed check.** After deploy, while the 60-69 band is in the scan's window,
 `GET /api/journal/tune-advice` shows `edge:scoreBand:60-69` with status `in_force` and a

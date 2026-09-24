@@ -601,6 +601,24 @@ describe('the review rule holds the exposure recommendations', () => {
     expect(a.headline).toMatch(/adds about 0\.8 points/);
   });
 
+  it('keeps two levers on one field apart when they push opposite ways (2026-09-25)', () => {
+    // A cooldown raise and a cooldown cut are different changes: both count.
+    const a = advise({
+      config: { ...CONFIG, symbolReentryCooldownMinutes: 120 },
+      scan: scan({
+        leaks: [
+          leverLeak('round', '2', 2, { field: 'symbolReentryCooldownMinutes', value: 390 }),
+          leverLeak('reentryGap', '60', 3, {
+            field: 'symbolReentryCooldownMinutes',
+            value: 60,
+            direction: 'exposure',
+          }),
+        ],
+      }),
+    });
+    expect(a.headline).toMatch(/adds about 0\.5 points/);
+  });
+
   it('marks an unconfirmed leak as needing data rather than as a change', () => {
     const a = advise({
       scan: scan({
