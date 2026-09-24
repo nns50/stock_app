@@ -1,7 +1,7 @@
 import { AutotradeConfig } from '../../db/autotradeConfig';
 import { CandleSource } from '../excursion';
 import { DeclinedEntry } from './declinedEntry';
-import { buildDeclinedEntryShadow, DeclinedEntryShadow } from './declinedEntryShadow';
+import { buildDeclinedEntryShadow, DeclinedEntryShadow, ShadowOptions } from './declinedEntryShadow';
 
 /**
  * What the live book WOULD have made on the shorts it declined — measured on
@@ -27,7 +27,9 @@ import { buildDeclinedEntryShadow, DeclinedEntryShadow } from './declinedEntrySh
  *     measures per-trade EXPECTANCY, not money the book could have made. That
  *     is the right quantity for #21's avgR/win-rate gate and the wrong one for
  *     "how much did we leave on the table".
- *  2. Not a fill. The entry is the signal's price, with no slippage and no
+ *  2. A fill the live book could have had, from replay version 2
+ *     (2026-09-26; declinedEntryShadow.ts): the first bar's open plus the
+ *     share of the buffer live entries pay, with honest exits. Still no
  *     assumption that a short was borrowable at that moment.
  *  3. Not neutral about ambiguity — deliberately. It reuses exitReplay, which
  *     resolves every intrabar stop/target collision AGAINST the trade. So this
@@ -79,6 +81,9 @@ export async function buildShortShadowRecord(
   source: CandleSource,
   rows: SkippedShort[],
   cfg: AutotradeConfig,
+  /** The replay's fill inputs (the live entry concession, the direction
+   *  readings): shortShadowRecordData.ts supplies them from the database. */
+  options: Pick<ShadowOptions, 'entryConcessionPct' | 'directionAt'> = {},
 ): Promise<ShortShadowRecord> {
   const shadow = await buildDeclinedEntryShadow(
     source,
@@ -86,6 +91,7 @@ export async function buildShortShadowRecord(
     // doubt even for rows written before `side` was stamped.
     rows.map((r) => ({ ...r, side: 'short' as const })),
     cfg,
+    options,
   );
   const g = SHORT_ENABLE_GATE;
   const passesN = shadow.n >= g.minTrades;

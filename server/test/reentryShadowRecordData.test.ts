@@ -4,6 +4,9 @@ vi.mock('../src/providers', () => ({ getProvider: vi.fn() }));
 
 import { getProvider } from '../src/providers';
 import { initDb, db } from '../src/db';
+import { createIntent } from '../src/db/orders';
+import { createPosition } from '../src/db/positions';
+import { recordLiveOrder } from '../src/db/autotradeLiveOrders';
 import { defaultAutotradeConfig, setAutotradeConfig } from '../src/db/autotradeConfig';
 import { getLastReentryShadowRecord } from '../src/db/reentryShadowRecords';
 import { Candle } from '../src/providers/types';
@@ -36,9 +39,12 @@ const IN_SESSION = Date.parse('2026-09-16T18:00:00Z');
 function bar(offsetMin: number, high: number, low: number): Candle {
   return { time: T0 + offsetMin * MIN, open: (high + low) / 2, high, low, close: (high + low) / 2, volume: 1000 };
 }
-/** Flat around each refusal, then a run to 105 at 125 minutes: a 1R winner
- *  whichever refusal the replay enters at (100 → 102, 101 → 103, 102 → 104). */
-const day = [bar(0, 100.4, 99.8), bar(60, 101.4, 100.6), bar(120, 102.4, 101.6), bar(125, 105, 102)];
+/** Flat around each refusal, then a run to 106 at 125 minutes: a 1R winner
+ *  whichever refusal the replay enters at. It enters at the refusal's bar
+ *  open (100, 101, 102) plus the whole 0.5% buffer here, since no live entry
+ *  has been measured — 102 → 102.51, a 1R target of 105.02 — and 106 trades
+ *  through every one of them. */
+const day = [bar(0, 100.4, 99.8), bar(60, 101.4, 100.6), bar(120, 102.4, 101.6), bar(125, 106, 102)];
 let getCandles = vi.fn(async () => day);
 const armProvider = () => {
   getCandles = vi.fn(async () => day);
@@ -80,7 +86,10 @@ function series(symbol: string): void {
 
 beforeAll(() => initDb());
 beforeEach(() => {
-  db.exec('DELETE FROM autotrade_events; DELETE FROM reentry_shadow_records; DELETE FROM autotrade_config;');
+  db.exec(
+    'DELETE FROM autotrade_events; DELETE FROM reentry_shadow_records; DELETE FROM autotrade_config; ' +
+      'DELETE FROM position_exits; DELETE FROM positions; DELETE FROM autotrade_live_orders; DELETE FROM order_intents;',
+  );
   resetReentryShadowRefreshState();
   mockGetProvider.mockReset();
   armProvider();
@@ -148,6 +157,78 @@ describe('computeReentryShadowReport', () => {
     expect(at180.n).toBe(0);
     // Two symbol-days, four gaps, two fetches.
     expect(getCandles).toHaveBeenCalledTimes(2);
+  });
+});
+
+// THE REPLAY'S FILL INPUTS COME FROM THE DATABASE (2026-09-26, replay version
+// 2). Asserted here, on the record, rather than on the helper that reads them:
+// a record that silently kept the whole-buffer default would pass every
+// replay test and still charge twelve times what live entries pay.
+describe('computeReentryShadowReport — the honest fill inputs', () => {
+  /** A live entry filled at `fill` against a `limit`: one slippage row. */
+  function liveEntryFill(limit: number, fill: number): void {
+    const intent = createIntent(
+      {
+        symbol: 'COIN',
+        assetKind: 'stock',
+        side: 'buy',
+        openClose: 'open',
+        quantity: 10,
+        orderType: 'limit',
+        limitPrice: limit,
+        bracket: { takeProfitPrice: limit + 5, stopLossPrice: limit - 5 },
+      },
+      `cid-${limit}-${fill}`,
+    );
+    recordLiveOrder({
+      intentId: intent.id,
+      symbol: 'COIN',
+      stopPrice: limit - 5,
+      targetPrice: limit + 5,
+      riskAmount: 50,
+      riskProfile: 'MODERATE',
+      accountId: 'ACC1',
+    });
+    createPosition({
+      assetType: 'stock',
+      symbol: 'COIN',
+      side: 'long',
+      quantity: 10,
+      entryPrice: fill,
+      entryDate: '2026-09-15',
+      tags: ['webull', 'live', 'autotrade'],
+      accountId: 'ACC1',
+      sourceIntentId: intent.id,
+    });
+  }
+
+  it('charges the share of the buffer live entries paid, and says so on the record', async () => {
+    // Filled 0.4% inside a 200 limit: 0.1 of the 0.5 buffer paid away.
+    liveEntryFill(200, 199.2);
+    series('HOOD');
+    const report = await computeReentryShadowReport(AFTER_CLOSE);
+    const first = report.gaps[0];
+    expect(first.replayVersion).toBe(2);
+    expect(first.entryConcessionPct).toBeCloseTo(0.1, 5);
+    // The first refusal signalled at 100: entered at 100 × 1.001.
+    expect(first.trades[0].entryFill).toBeCloseTo(100 * 1.001, 6);
+  });
+
+  it('replays the market-direction gate from the journaled readings when the gate is on', async () => {
+    db.prepare(
+      "INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) VALUES (NULL,'screen','market_direction_read',?,NULL,?)",
+    ).run(JSON.stringify({ direction: 'red' }), T0 - MIN);
+    series('HOOD');
+
+    setAutotradeConfig({ marketDirectionGateEnabled: true });
+    const gated = await computeReentryShadowReport(AFTER_CLOSE);
+    // Every refusal was a long on a red tape: none survives the replayed gate.
+    expect(gated.gaps[0]).toMatchObject({ n: 0, directionGateReplayed: true });
+    expect(gated.gaps[0].excluded.refused_by_direction).toBe(3);
+
+    setAutotradeConfig({ marketDirectionGateEnabled: false });
+    const open = await computeReentryShadowReport(AFTER_CLOSE);
+    expect(open.gaps[0]).toMatchObject({ n: 1, directionGateReplayed: false });
   });
 });
 

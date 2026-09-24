@@ -293,3 +293,69 @@ describe('counterfactualPathEnd — where a replay of ANOTHER geometry may walk 
     expect(counterfactualPathEnd({ at, reason: null })).toBe(at);
   });
 });
+
+// THE HONEST FILL MODEL (2026-09-26; ReplayFillModel). The declined-entry
+// records fed rules that add exposure, and the touch model favoured the trade
+// four ways. Each case below replays the same bars under both models: touch is
+// every existing caller's default and must not move; honest is what a live
+// order would have got.
+describe('replayExit — the honest fill model', () => {
+  /** A bar with its open given, since a gap is the open's story. */
+  const gapBar = (open: number, low: number, high: number, close: number): Candle =>
+    ({ time: (t += 300_000), open, high, low, close, volume: 1000 }) as Candle;
+  const flat = rules({ breakevenTriggerR: 0, trailStartR: 0, trailStopR: 0 });
+
+  it('fills a stop the bar opens through at the open, not at the stop', () => {
+    const bars = [bar(99, 101), gapBar(93, 92, 94, 93.5)];
+    expect(replayExit(LONG, bars, flat)).toMatchObject({ exitR: -1, reason: 'stop' });
+    // Opened at 93 against a 95 stop: -7/5 = -1.4R.
+    expect(replayExit(LONG, bars, flat, 'honest')).toMatchObject({ exitR: -1.4, reason: 'stop' });
+    // A short gapped up through 105, mirrored.
+    const up = [bar(99, 101), gapBar(106.5, 106, 107, 106.8)];
+    expect(replayExit(SHORT, up, flat, 'honest')?.exitR).toBe(-1.3);
+  });
+
+  it('fills an ordinary stop at the stop under both models', () => {
+    const bars = [bar(99, 101), bar(94, 99)];
+    expect(replayExit(LONG, bars, flat, 'honest')).toMatchObject({ exitR: -1, reason: 'stop' });
+  });
+
+  it('arms breakeven on a close, not on a high the stop-adjust never saw', () => {
+    // Spikes to 103 (+0.6R) and closes at 100.5 (+0.1R), then dips to 98.
+    const bars = [bar(99.5, 103, 100.5), bar(98, 100.5, 99)];
+    const be = rules({ breakevenTriggerR: 0.5, trailStartR: 0, trailStopR: 0 });
+    expect(replayExit(LONG, bars, be)).toMatchObject({ exitR: 0, reason: 'breakeven' });
+    // Honest: no close reached +0.5R, so the stop stayed at 95 and the trade
+    // ran to the last close, 99: -0.2R.
+    expect(replayExit(LONG, bars, be, 'honest')).toMatchObject({ exitR: -0.2, reason: 'time_exit' });
+  });
+
+  it('trails from the best close, not the best high', () => {
+    // Closes at 104 (+0.8R) with a high of 106 (+1.2R), then falls to 101.
+    const bars = [bar(100, 106, 104), bar(101, 104, 101.5)];
+    const trail = rules({ breakevenTriggerR: 0, trailStartR: 0.5, trailStopR: 0.5, targetR: 0 });
+    // Touch trails 0.5R behind +1.2R = +0.7R (103.5), hit on the way down.
+    expect(replayExit(LONG, bars, trail)).toMatchObject({ exitR: 0.7, reason: 'trail' });
+    // Honest trails 0.5R behind the +0.8R close = +0.3R (101.5).
+    expect(replayExit(LONG, bars, trail, 'honest')).toMatchObject({ exitR: 0.3, reason: 'trail' });
+  });
+
+  it('needs a trade THROUGH the target: a touch does not fill a resting limit', () => {
+    const touch = [bar(99, 110, 108)]; // exactly the 2R target, 110
+    expect(replayExit(LONG, touch, rules())).toMatchObject({ exitR: 2, reason: 'target' });
+    expect(replayExit(LONG, touch, rules(), 'honest')?.reason).toBe('time_exit');
+    const through = [bar(99, 110.01, 108)];
+    expect(replayExit(LONG, through, rules(), 'honest')).toMatchObject({ exitR: 2, reason: 'target' });
+  });
+
+  it('arms the scale-out on a close at the level, not on a spike through it', () => {
+    const scale = rules({ breakevenTriggerR: 0, trailStartR: 0, trailStopR: 0, scaleOutR: 0.5, scaleOutFraction: 0.5 });
+    // Spikes to 103 (+0.6R) but closes at 101 (+0.2R), then stops out.
+    const spike = [bar(100, 103, 101), bar(94, 101)];
+    expect(replayExit(LONG, spike, scale)?.scaledOut).toBe(true);
+    expect(replayExit(LONG, spike, scale, 'honest')).toMatchObject({ scaledOut: false, exitR: -1 });
+    // Closes at 102.5 (+0.5R): armed under both.
+    const close = [bar(100, 103, 102.5), bar(94, 101)];
+    expect(replayExit(LONG, close, scale, 'honest')).toMatchObject({ scaledOut: true, exitR: -0.25 });
+  });
+});

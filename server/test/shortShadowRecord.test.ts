@@ -18,6 +18,14 @@ function bar(offsetMin: number, high: number, low: number): Candle {
   return { time: T0 + offsetMin * MIN, open: (high + low) / 2, high, low, close: (high + low) / 2, volume: 1000 };
 }
 
+/** A bar with every price given. The replay enters at the first bar's OPEN
+ *  (replay version 2), so a test about exits opens its first bar at the
+ *  signal's 100 and passes EXACT (no entry concession) to keep 1R at $2. */
+function ohlc(offsetMin: number, open: number, high: number, low: number, close: number): Candle {
+  return { time: T0 + offsetMin * MIN, open, high, low, close, volume: 1000 };
+}
+const EXACT = { entryConcessionPct: 0 };
+
 const cfg = (over: Partial<AutotradeConfig> = {}): AutotradeConfig => ({
   ...defaultAutotradeConfig(),
   liveMinSignalScore: 72,
@@ -118,9 +126,9 @@ describe('liveExitRules', () => {
 
 describe('buildShortShadowRecord', () => {
   it('replays a winning short to its target and reports +R', async () => {
-    // Falls to 96 = the 2R target for a short entered at 100 with a 102 stop.
-    const src = sourceOf({ KLAC: [bar(0, 100, 99), bar(5, 99, 97), bar(10, 97, 95.5)] });
-    const out = await buildShortShadowRecord(src, [shortAt100()], cfg());
+    // Trades through 96 = the 2R target for a short entered at 100 with a 102 stop.
+    const src = sourceOf({ KLAC: [ohlc(0, 100, 100, 99, 99), bar(5, 99, 97), bar(10, 97, 95.5)] });
+    const out = await buildShortShadowRecord(src, [shortAt100()], cfg(), EXACT);
     expect(out.n).toBe(1);
     expect(out.trades[0].reason).toBe('target');
     expect(out.trades[0].exitR).toBeCloseTo(2, 5);
@@ -129,17 +137,19 @@ describe('buildShortShadowRecord', () => {
   });
 
   it('banks the scale-out on a winner that gives everything back — the understatement this fixes', async () => {
-    // Short at 100, stop 102, so 1R = $2. Falls to 99.5 (0.25R, the scale-out
-    // trigger) and then runs all the way back to the 102 stop. Without the
+    // Short at 100, stop 102, so 1R = $2. Closes at 99.5 (0.25R, the scale-out
+    // trigger: the live scale-out reads a tick's price, so the replay arms it on
+    // a close) and then runs all the way back to the 102 stop. Without the
     // scale-out that is a clean -1R. With 67% banked at 0.25R it is materially
     // better, because two thirds of the position left at a profit.
-    const src = sourceOf({ KLAC: [bar(0, 100, 99.4), bar(5, 102.5, 101)] });
+    const src = sourceOf({ KLAC: [ohlc(0, 100, 100, 99.4, 99.5), bar(5, 102.5, 101)] });
     const withScaleOut = await buildShortShadowRecord(
       src,
       [shortAt100()],
       cfg({ liveScaleOutEnabled: true, partialExitRMultiple: 0.25, partialExitPct: 67 }),
+      EXACT,
     );
-    const without = await buildShortShadowRecord(src, [shortAt100()], cfg({ liveScaleOutEnabled: false }));
+    const without = await buildShortShadowRecord(src, [shortAt100()], cfg({ liveScaleOutEnabled: false }), EXACT);
 
     expect(without.trades[0].exitR).toBeCloseTo(-1, 5);
     expect(withScaleOut.trades[0].exitR).toBeGreaterThan(without.trades[0].exitR);
@@ -153,16 +163,18 @@ describe('buildShortShadowRecord', () => {
     // different geometry; this one proves the record SAYS which geometry, so a
     // reader comparing two evenings cannot mistake a knob turn for the shorts
     // getting better. The gate below puts real money on a threshold.
-    const src = sourceOf({ KLAC: [bar(0, 100, 99.4), bar(5, 102.5, 101)] });
+    const src = sourceOf({ KLAC: [ohlc(0, 100, 100, 99.4, 99.5), bar(5, 102.5, 101)] });
     const before = await buildShortShadowRecord(
       src,
       [shortAt100()],
       cfg({ targetRMultiple: 2, liveScaleOutEnabled: true, partialExitRMultiple: 0.25, stagnationExitMinutes: 90 }),
+      EXACT,
     );
     const after = await buildShortShadowRecord(
       src,
       [shortAt100()],
       cfg({ targetRMultiple: 1, liveScaleOutEnabled: false, stagnationExitMinutes: 60 }),
+      EXACT,
     );
 
     expect(before.exitRules).toMatchObject({ targetR: 2, scaleOutR: 0.25, stagnationMinutes: 90 });
@@ -280,18 +292,26 @@ describe('buildShortShadowRecord', () => {
       row: shortAt100({ symbol: `S${i}`, at: T0 + i * 24 * 60 * MIN }),
       offsetMin: i * 24 * 60,
     }));
-    const bars = Object.fromEntries(many.map(({ row, offsetMin }) => [row.symbol, [bar(offsetMin, 100, 95.5)]]));
+    const bars = Object.fromEntries(
+      many.map(({ row, offsetMin }) => [row.symbol, [ohlc(offsetMin, 100, 100, 95.5, 96)]]),
+    );
     const out = await buildShortShadowRecord(
       sourceOf(bars),
       many.map((m) => m.row),
       cfg(),
+      EXACT,
     );
     expect(out.n).toBe(SHORT_ENABLE_GATE.minTrades);
     expect(out.gate).toMatchObject({ passesN: true, passesAvgR: true, passesWinRate: true, passes: true });
   });
 
   it('fails the gate on sample size alone, even with a perfect record', async () => {
-    const out = await buildShortShadowRecord(sourceOf({ KLAC: [bar(0, 100, 95.5)] }), [shortAt100()], cfg());
+    const out = await buildShortShadowRecord(
+      sourceOf({ KLAC: [ohlc(0, 100, 100, 95.5, 96)] }),
+      [shortAt100()],
+      cfg(),
+      EXACT,
+    );
     expect(out.n).toBe(1);
     expect(out.gate.passesAvgR).toBe(true);
     expect(out.gate.passesWinRate).toBe(true);

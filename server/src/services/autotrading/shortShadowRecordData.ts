@@ -7,6 +7,7 @@ import { isTradingSession } from '../trading/marketCalendar';
 import { isAfterSessionClose } from '../trading/marketHours';
 import type { ShortShadowEvidence } from './gatedSwitches';
 import { buildShortShadowRecord, ShortShadowRecord, SkippedShort } from './shortShadowRecord';
+import { shadowFillInputs } from './declinedEntryShadowData';
 
 // ---------------------------------------------------------------------------
 // The DB half of the short shadow record (2026-09-19): load the declined
@@ -86,7 +87,7 @@ export function loadSkippedShorts(since: number = SHORT_SHADOW_SINCE_MS): {
 export async function computeShortShadowReport(since: number = SHORT_SHADOW_SINCE_MS): Promise<ShortShadowReport> {
   const cfg = getAutotradeConfig();
   const { rows, truncated } = loadSkippedShorts(since);
-  const record = await buildShortShadowRecord(getProvider(), rows, cfg);
+  const record = await buildShortShadowRecord(getProvider(), rows, cfg, shadowFillInputs(since));
   return { since, journaledRows: rows.length, journalTruncated: truncated, ...record };
 }
 
