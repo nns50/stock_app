@@ -14391,6 +14391,10 @@ null when the index was not scored). The loop uses it only when the fresh fetch 
 The `market_direction_read` row carries `indexSource: quote | screen`. With both sources
 missing, the reading is `unknown` as before.
 
+> **Superseded 2026-09-24.** The operator approved both of the first two items below on
+> 2026-09-23 ("go ahead on that schedule"). They are built in "2026-09-24 (third)": the
+> reading now holds inside an exit band, and scale-ins and second lots are gated.
+
 **Not changed, and why:**
 - **No latch.** The gate reads afresh every tick and a mixed tick refuses nothing. This is
   deliberate: a market that stops being red lets longs through again, which is what the
@@ -14562,3 +14566,123 @@ one `…order_cap_skipped` row per name.
 Removing either pre-check fails its sleeve's tests. Loosening the shared predicate to
 `<=` fails both sleeves and the guardrail's own test.
 
+## 2026-09-24 (third) — the market-direction reading holds, and adds are gated
+
+The thirty-first section left two gaps for the operator's word, and the operator
+approved both on 2026-09-23:
+- the reading judged each tick on its own, so a market near the bar flickered;
+- scale-ins and per-lot second lots added shares without asking the gate.
+
+A third gap had the same shape. A tick the reading could not see (`unknown`) refused
+nothing. The index-leg fallback in the thirty-first section covers a failed SPY quote,
+but not a screen that measured fewer than 100 names.
+
+**What changed.**
+- **The exit band.** `holdMarketDirection` (marketDirection.ts) is one pure step: the raw
+  reading plus the previous tick's hold. Once red, the reading stays red while SPY is at
+  least `marketDirectionExitIndexPct` down and at least `marketDirectionExitBreadthPct` of
+  names are red. Green mirrors. Entering still needs the full bar.
+  - The band is judged through the same function as the bar (`sideMet`), on the same raw
+    figures (`measure`), so it can differ from the bar only in its two numbers.
+  - It is never applied stricter than the bar (`min(exit, entry)` per leg).
+  - A band of 0 still needs SPY on the day's side of zero, as the bar does.
+- **The data-gap hold.** An `unknown` tick keeps the last one-sided reading for up to
+  `DIRECTION_DATA_GAP_HOLD_MS` (5 minutes, a little over two ticks) after a readable tick
+  last supported it. A gap never extends itself: only a readable tick that meets the bar
+  or stays inside the band moves the confirmation time.
+- **Neither hold crosses the ET day.** Both legs are measured from the prior close, which
+  moves overnight.
+- **The loop acts on the held reading** (`readMarketDirectionForTick`). A held reading
+  carries `heldBy` (`hysteresis` or `data_gap`), `rawDirection`, and the band as applied.
+  The refusal rows (`live_market_direction_skipped`, `live_options_market_direction_skipped`)
+  carry `heldBy` and `rawDirection` too.
+- **Rows are not flips.** The change detector now keys on direction plus hold, so a hold
+  starting or ending writes a `market_direction_read` row. A flip is a change of `direction`
+  between consecutive rows. The edge-leak scan reads `direction` and is unaffected.
+- **Adds are gated.** A scale-in and a per-lot second lot both call
+  `addOnDirectionRefusal`, one function for both, with the position's side as the lean.
+  - Both run before the tick's screen, so they judge the previous tick's reading
+    (`latestMarketDirection`).
+  - A reading older than `LATEST_DIRECTION_MAX_AGE_MS` (10 minutes) refuses nothing, the
+    same as `unknown`.
+  - A refusal is asked last, after every check that decides whether the add would happen
+    at all. It writes `live_scale_in_direction_skipped` or
+    `per_lot_second_lot_direction_skipped`, once per position and direction a day.
+  - The second lot has its own action rather than `per_lot_second_lot_blocked`, so the
+    guardrail's refusals and the gate's can be counted apart. It is sent on the first
+    tick the reading allows.
+  - Both flags are off in production (`liveScaleInEnabled`, `livePerLotBracketsEnabled`,
+    read 2026-09-24), so today this changes nothing that trades.
+- **Two settings.** `marketDirectionExitIndexPct` (default 0.1, clamped to [0, 5]) and
+  `marketDirectionExitBreadthPct` (default 60, clamped to [50, 100]). Each has its zod
+  bound and patch line, is in `NEVER_TUNED_KEYS`, is driven through the real PUT in the
+  gate's route test, is read by the loop, and has a Settings input beside the bar.
+
+**Calibration.** This used the record the bar came from: 22 sessions, 2026-08-24 to 09-23,
+with breadth from minute bars of a 60-name sample. The held reading was replayed every
+minute, and each trade placed against it at its entry minute:
+
+| exit band (SPY / breadth)  | label changes a session | undone within 10 min | red minutes | live longs refused | their R | paper longs, same readings | their R |
+| -------------------------- | ----------------------- | -------------------- | ----------- | ------------------ | ------- | -------------------------- | ------- |
+| none (the bar, 0.2% / 65%) | 10.1                    | 7.0                  | 31%         | 30                 | −6.50   | 24                         | +5.09   |
+| 0.15% / 62%                | 5.1                     | 2.3                  | 33%         | 34                 | −5.89   | 26                         | +5.91   |
+| 0.1% / 62%                 | 4.9                     | 2.2                  | 33%         | 34                 | −5.89   | 29                         | +6.19   |
+| **0.1% / 60%**             | **2.2**                 | **0.55**             | 35%         | 37                 | −5.96   | 30                         | +6.23   |
+| 0.05% / 55%                | 1.3                     | 0.27                 | 38%         | 41                 | −5.33   | 33                         | +6.19   |
+
+- **Read every 2 minutes, as the loop does,** the default goes from 7.4 label changes a
+  session to 2.0, and the changes undone within 10 minutes from 4.5 to 0.45.
+- **The breadth half does the work.** At 60% breadth, index bands of 0.1%, 0.05% and 0 give
+  the same count. At 65% breadth, 0.1% barely moves it (9.6).
+- **What the band costs.** The default refuses seven more live longs: QCOM, SWKS and DELL
+  on 09-15; LITE twice, NOK and SMCI on 09-08. They made +0.54R between them, and their
+  paper twins +1.13R. So the band does not save money on this record, and it costs a
+  little, inside noise. What it buys is a label that stays put. The scan and the tape
+  plan's measurements cut every trade by this label, and a trade entered in a one-minute
+  dip of a red morning belongs with the red morning.
+- **Caveat.** Breadth from 60 names is noisier than breadth from the ~500 the loop
+  measures, so live flicker without the band would be lower than 10.1, and the band has
+  less to remove. The first sessions with the band read that directly (the checks below).
+
+**Pre-committed checks.**
+- **The first session after the deploy.** Every `market_direction_read` row carries the
+  band (`exitIndexPct`, `exitBreadthPct`). A held stretch shows as a row with `heldBy`, and
+  the Last cycle line reads "held" while it lasts.
+- **After 10 refusals made under a hold** (`heldBy` set on the refusal row), read their
+  paper twins. If the paper mean has a 95% interval above zero, propose raising
+  `marketDirectionExitBreadthPct` to 62. That adds exposure, so it waits for the
+  operator's word.
+- **After 5 sessions,** count flips (direction changes between consecutive rows, not rows).
+  If the mean is above 4 a session, lower the exit breadth to 58, which is the safe
+  direction, and read again.
+
+**Tests (each mutation-checked):**
+- **The pure step:**
+  - it enters on the bar and holds inside the band;
+  - it lets go when either leg leaves the band;
+  - inclusive edges;
+  - a band of 0 still needs SPY red;
+  - green mirrors;
+  - the band is never stricter than the bar;
+  - the data gap holds up to 5 minutes and not a millisecond more, and never extends
+    itself;
+  - a band hold counts as a confirmation for the gap;
+  - no hold crosses the day;
+  - a flickering tape changes label once instead of three times.
+- **The loop:**
+  - it hands the held reading to both live books and journals the hold;
+  - raising the exit breadth to 65 lets the same tape go;
+  - handing either entry bar in place of its exit setting fails.
+- **Adds:**
+  - a long scale-in on a red reading places nothing and journals once;
+  - it goes through on a mixed reading, with the gate off, or with a reading older than
+    10 minutes;
+  - a second lot is held while red, journaled under its own action, and sent when the
+    tape turns;
+  - removing the gate from the shared function fails both.
+- **Guards:**
+  - a held refusal's row says `heldBy`;
+  - the route applies both settings and refuses out-of-range values, and dropping a patch
+    line fails;
+  - the reachability guard fails if the loop stops reading a setting;
+  - both new actions are classified in the journal-action guard.

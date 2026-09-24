@@ -538,6 +538,8 @@ export const client = {
     marketDirectionGateEnabled?: boolean;
     marketDirectionIndexPct?: number;
     marketDirectionBreadthPct?: number;
+    marketDirectionExitIndexPct?: number;
+    marketDirectionExitBreadthPct?: number;
     tradeDirection?: AutotradeTradeDirectionMode;
     minRelVol?: number;
     relVolUsePaceScoring?: boolean;

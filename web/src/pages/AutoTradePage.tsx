@@ -3234,6 +3234,8 @@ export default function AutoTradePage() {
   const [marketDirectionGateEnabled, setMarketDirectionGateEnabled] = useState(false);
   const [marketDirectionIndexPctDraft, setMarketDirectionIndexPctDraft] = useState<number | undefined>();
   const [marketDirectionBreadthPctDraft, setMarketDirectionBreadthPctDraft] = useState<number | undefined>();
+  const [marketDirectionExitIndexPctDraft, setMarketDirectionExitIndexPctDraft] = useState<number | undefined>();
+  const [marketDirectionExitBreadthPctDraft, setMarketDirectionExitBreadthPctDraft] = useState<number | undefined>();
   const [equityCurveDeriskEnabled, setEquityCurveDeriskEnabled] = useState(false);
   const [equityCurveLookbackDaysDraft, setEquityCurveLookbackDaysDraft] = useState<number | undefined>();
   const [equityCurveDeriskCutPctDraft, setEquityCurveDeriskCutPctDraft] = useState<number | undefined>();
@@ -3382,6 +3384,8 @@ export default function AutoTradePage() {
     sync('marketDirectionGateEnabled', setMarketDirectionGateEnabled);
     sync('marketDirectionIndexPct', setMarketDirectionIndexPctDraft);
     sync('marketDirectionBreadthPct', setMarketDirectionBreadthPctDraft);
+    sync('marketDirectionExitIndexPct', setMarketDirectionExitIndexPctDraft);
+    sync('marketDirectionExitBreadthPct', setMarketDirectionExitBreadthPctDraft);
     sync('equityCurveDeriskEnabled', setEquityCurveDeriskEnabled);
     sync('equityCurveLookbackDays', setEquityCurveLookbackDaysDraft);
     sync('equityCurveDeriskCutPct', setEquityCurveDeriskCutPctDraft);
@@ -3504,6 +3508,8 @@ export default function AutoTradePage() {
     marketDirectionGateEnabled?: boolean;
     marketDirectionIndexPct?: number;
     marketDirectionBreadthPct?: number;
+    marketDirectionExitIndexPct?: number;
+    marketDirectionExitBreadthPct?: number;
     equityCurveDeriskEnabled?: boolean;
     equityCurveLookbackDays?: number;
     equityCurveDeriskCutPct?: number;
@@ -5266,9 +5272,13 @@ export default function AutoTradePage() {
                         its prior close, and the share of the universe below (red) or above (green) its own prior close.
                         A day is one-sided only when both agree. When on, the LIVE books refuse an entry that leans
                         against it: a stock long or a call on a broad red day, a short or a put on a broad green one.
-                        Mixed and unknown markets refuse nothing. Paper keeps taking every signal as the control, and
-                        each refusal journals live_market_direction_skipped (options:
-                        live_options_market_direction_skipped). The reading shows under Last tick.
+                        Mixed and unknown markets refuse nothing. Once one-sided, the reading holds while the market
+                        stays inside the exit band below, and through up to 5 minutes the reading cannot see (a failed
+                        screen or index quote); the next tick&apos;s scale-ins and per-lot second lots are refused the
+                        same way. Paper keeps taking every signal as the control, and each refusal journals
+                        live_market_direction_skipped (options: live_options_market_direction_skipped; adds:
+                        live_scale_in_direction_skipped, per_lot_second_lot_direction_skipped). The reading shows under
+                        Last tick.
                       </span>
                     </span>
                   </label>
@@ -5326,6 +5336,66 @@ export default function AutoTradePage() {
                           marketDirectionBreadthPctDraft < 50 ||
                           marketDirectionBreadthPctDraft > 100 ||
                           marketDirectionBreadthPctDraft === config.data?.marketDirectionBreadthPct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Market direction: exit SPY move (%)"
+                    hint="The exit band's index leg: once red (green), the reading stays so while SPY is at least this far down (up) from its prior close (0–5). Never applied stricter than the SPY move above. Default 0.1."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={marketDirectionExitIndexPctDraft}
+                        onChange={setMarketDirectionExitIndexPctDraft}
+                        min={0}
+                        max={5}
+                        step={0.05}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save market direction exit SPY move"
+                        onClick={() =>
+                          marketDirectionExitIndexPctDraft != null &&
+                          saveConfig({ marketDirectionExitIndexPct: marketDirectionExitIndexPctDraft })
+                        }
+                        disabled={
+                          marketDirectionExitIndexPctDraft == null ||
+                          marketDirectionExitIndexPctDraft < 0 ||
+                          marketDirectionExitIndexPctDraft > 5 ||
+                          marketDirectionExitIndexPctDraft === config.data?.marketDirectionExitIndexPct
+                        }
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </Field>
+                  <Field
+                    label="Market direction: exit breadth (%)"
+                    hint="The exit band's breadth leg: once red (green), the reading stays so while at least this % of the universe stays on that side of its prior close (50–100). Never applied stricter than the breadth above. Default 60."
+                  >
+                    <div className="flex gap-2">
+                      <NumberInput
+                        value={marketDirectionExitBreadthPctDraft}
+                        onChange={setMarketDirectionExitBreadthPctDraft}
+                        min={50}
+                        max={100}
+                        step={1}
+                      />
+                      <button
+                        className="btn-ghost shrink-0"
+                        aria-label="Save market direction exit breadth"
+                        onClick={() =>
+                          marketDirectionExitBreadthPctDraft != null &&
+                          saveConfig({ marketDirectionExitBreadthPct: marketDirectionExitBreadthPctDraft })
+                        }
+                        disabled={
+                          marketDirectionExitBreadthPctDraft == null ||
+                          marketDirectionExitBreadthPctDraft < 50 ||
+                          marketDirectionExitBreadthPctDraft > 100 ||
+                          marketDirectionExitBreadthPctDraft === config.data?.marketDirectionExitBreadthPct
                         }
                       >
                         Save

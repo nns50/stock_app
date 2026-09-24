@@ -250,7 +250,9 @@ export function fieldForUntakenReason(
     return {
       field: 'marketDirectionBreadthPct',
       direction: 'exposure',
-      detail: 'raise the breadth bar so the gate refuses only on broader one-sided days, or turn the gate off',
+      detail:
+        'raise the breadth bar so the gate refuses only on broader one-sided days (and the exit band ' +
+        '(marketDirectionExitBreadthPct) toward it, so a one-sided reading is held for less), or turn the gate off',
     };
   }
   // Two thresholds, one verdict, so there is no single field to name: loosening

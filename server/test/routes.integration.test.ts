@@ -2043,8 +2043,16 @@ describe('autotrade config routes (integration)', () => {
   // sweep below, because the sweep probes every number with 1 or 2 and skips a
   // field whose own rule refuses that — and the breadth bar's floor is 50, so
   // the sweep alone would prove nothing about it.
-  it('applies the market-direction gate’s three fields and refuses bars outside their ranges', async () => {
-    const patch = { marketDirectionGateEnabled: true, marketDirectionIndexPct: 0.25, marketDirectionBreadthPct: 70 };
+  it('applies the market-direction gate’s five fields and refuses bars outside their ranges', async () => {
+    const patch = {
+      marketDirectionGateEnabled: true,
+      marketDirectionIndexPct: 0.25,
+      marketDirectionBreadthPct: 70,
+      // The exit band (2026-09-24), whose breadth floor is 50 for the same
+      // reason as the bar's.
+      marketDirectionExitIndexPct: 0.15,
+      marketDirectionExitBreadthPct: 62,
+    };
     expect((await put('/api/autotrade/config', patch)).status).toBe(200);
     expect((await getJson('/api/autotrade/config')) as Record<string, unknown>).toMatchObject(patch);
     for (const bad of [
@@ -2052,6 +2060,10 @@ describe('autotrade config routes (integration)', () => {
       { marketDirectionBreadthPct: 101 },
       { marketDirectionIndexPct: 5.5 },
       { marketDirectionIndexPct: -0.1 },
+      { marketDirectionExitBreadthPct: 49 },
+      { marketDirectionExitBreadthPct: 101 },
+      { marketDirectionExitIndexPct: 5.5 },
+      { marketDirectionExitIndexPct: -0.1 },
     ]) {
       expect((await put('/api/autotrade/config', bad)).status, JSON.stringify(bad)).toBe(400);
     }

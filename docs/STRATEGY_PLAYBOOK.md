@@ -758,10 +758,55 @@ against the reading at its entry minute:
 
 The defaults are the first row. It is the one that catches all four of 2026-09-23's live
 longs; 0.3% misses SHOP, bought with SPY at −0.29%. At those bars the reading was red on 31%
-of session minutes, on some part of 10 of the 22 sessions, and green on 13%. It flips about
-ten times a day around the bars, and each flip is one journal row. In production the reading
-counts the whole scored universe, about 500 names rather than 60, so it is less noisy than
-the sample it was chosen from.
+of session minutes, on some part of 10 of the 22 sessions, and green on 13%. The bar alone
+flips about ten times a day, which is why the reading now holds (below). In production the
+reading counts the whole scored universe, about 500 names rather than 60, so it is less noisy
+than the sample it was chosen from.
+
+**The hold (2026-09-24).** A market sitting near the bar crosses it back and forth. Most of
+those crossings were undone within minutes, and each dip to mixed in the middle of a red
+morning let that tick's longs through. So once the reading is one-sided it holds in two ways:
+
+- **The exit band.** It stays one-sided while SPY is at least `marketDirectionExitIndexPct`
+  (0.1%) on the day's side and at least `marketDirectionExitBreadthPct` (60%) of names stay
+  on it.
+- **The data-gap hold.** It stays through up to 5 minutes of ticks it cannot see.
+
+Entering still needs the full bar. The same 22 sessions, read every minute, with each trade
+placed against the held reading at its entry minute:
+
+| exit band (SPY / breadth) | label changes a session | undone within 10 min | red minutes | live longs refused | their R | paper longs, same readings | their R |
+| ------------------------- | ----------------------- | -------------------- | ----------- | ------------------ | ------- | -------------------------- | ------- |
+| none (the bar, 0.2% / 65%) | 10.1                   | 7.0                  | 31%         | 30                 | −6.50   | 24                         | +5.09   |
+| 0.15% / 62%               | 5.1                     | 2.3                  | 33%         | 34                 | −5.89   | 26                         | +5.91   |
+| 0.1% / 62%                | 4.9                     | 2.2                  | 33%         | 34                 | −5.89   | 29                         | +6.19   |
+| **0.1% / 60%**            | **2.2**                 | **0.55**             | 35%         | 37                 | −5.96   | 30                         | +6.23   |
+| 0.05% / 55%               | 1.3                     | 0.27                 | 38%         | 41                 | −5.33   | 33                         | +6.19   |
+
+Read every 2 minutes, as the loop does, the pattern is the same: 7.4 label changes a session
+without the band, 2.0 with the default. The breadth half of the band does the work: at 60%
+breadth, an index band of 0.1%, 0.05% or 0 gives the same count.
+
+**What the band costs.** At the default it refuses seven more live longs over the 22
+sessions: QCOM, SWKS and DELL on 09-15; LITE (twice), NOK and SMCI on 09-08. Between them
+they made **+0.54R**, and their paper twins +1.13R. So on this record the band does not save
+money; it costs a little, well inside noise. What it buys is a label that means something:
+a trade entered in a one-minute dip of a red morning is filed with the red morning. That
+matters because the edge-leak scan and the tape measurements that follow all cut trades by
+this label.
+
+**Pre-committed review of the hold.** Refusals made while the reading was held carry `heldBy`
+on their row (`live_market_direction_skipped`), so they can be counted apart:
+
+- After 10 of them, read their paper twins. If the paper mean has a 95% interval above zero,
+  the band is refusing winners: propose raising `marketDirectionExitBreadthPct` to 62, the
+  row with half the flicker and three fewer refusals. That adds exposure, so it waits for
+  the operator's word.
+- After 5 sessions, count label changes per session from the `market_direction_read` rows.
+  Count changes of `direction` between consecutive rows, not rows: a hold starting or ending
+  writes a row of its own. If the mean is above 4, the live universe's breadth flickers more
+  than the sample did; lower the exit breadth to 58 (the safe direction: it holds longer)
+  and read again.
 
 **Read the paper column before trusting the live one.** The live longs the gate would have
 refused lost 0.22R a trade. Paper's longs in the same readings made 0.21R a trade, most of it
