@@ -18,9 +18,10 @@ function bar(offsetMin: number, high: number, low: number): Candle {
   return { time: T0 + offsetMin * MIN, open: (high + low) / 2, high, low, close: (high + low) / 2, volume: 1000 };
 }
 
-/** A bar with every price given. The replay enters at the first bar's OPEN
- *  (replay version 2), so a test about exits opens its first bar at the
- *  signal's 100 and passes EXACT (no entry concession) to keep 1R at $2. */
+/** A bar with every price given. The replay enters at the signal's own price
+ *  plus the entry concession (replay version 2), so a test about exits passes
+ *  EXACT (no concession) to keep 1R at $2, and opens its first bar at the
+ *  signal's 100 so the bars and the fill agree. */
 function ohlc(offsetMin: number, open: number, high: number, low: number, close: number): Candle {
   return { time: T0 + offsetMin * MIN, open, high, low, close, volume: 1000 };
 }

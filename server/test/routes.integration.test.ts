@@ -972,6 +972,53 @@ describe('GET /journal/declined-entry-shadow (integration)', () => {
     }
   });
 
+  it('replays a short skip as a short: its row carries no side (2026-09-25, on the second review)', async () => {
+    // `live_short_skipped` is written with no `side`: the action IS the side.
+    // Parsed as a long, W's side-aware checks marked every row unusable and the
+    // route read n 0; before W it replayed them as longs.
+    const t0 = Date.parse('2026-09-24T13:45:00Z'); // 09:45 ET
+    db.prepare(
+      'INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) VALUES (?,?,?,?,NULL,?)',
+    ).run(
+      'BEAM',
+      'execution',
+      'live_short_skipped',
+      JSON.stringify({
+        score: 94.9,
+        entry: 100,
+        stop: 102,
+        liveMinSignalScore: 81,
+        reason: 'liveAllowNakedShort is off',
+      }),
+      t0,
+    );
+    const candles = vi.spyOn(getProvider(), 'getCandles').mockImplementation(async () => [
+      { time: t0, open: 100, high: 100.2, low: 99.4, close: 99.5, volume: 1000 },
+      { time: t0 + 5 * 60_000, open: 99.5, high: 99.6, low: 95.5, close: 96, volume: 1000 },
+    ]);
+    const before = getAutotradeConfig();
+    setAutotradeConfig({
+      targetRMultiple: 1,
+      liveScaleOutEnabled: false,
+      stagnationExitMinutes: 0,
+      breakevenTriggerRMultiple: 0,
+      trailStartRMultiple: 0,
+      trailStopRMultiple: 0,
+    });
+    try {
+      const out = (await getJson(
+        `/api/journal/declined-entry-shadow?action=live_short_skipped&since=${t0 - 3_600_000}`,
+      )) as { n: number; excluded: Record<string, number>; trades: { side: string; exitR: number }[] };
+      expect(out.excluded.unusable_signal).toBe(0);
+      expect(out.n).toBe(1);
+      expect(out.trades[0].side).toBe('short');
+      expect(out.trades[0].exitR).toBeGreaterThan(0);
+    } finally {
+      candles.mockRestore();
+      setAutotradeConfig(before);
+    }
+  });
+
   it('replays the direction gate’s own refusals instead of refusing them again', async () => {
     // The loop journals the tick's reading before it places, so the reading in
     // force at every `live_market_direction_skipped` row is the red that refused

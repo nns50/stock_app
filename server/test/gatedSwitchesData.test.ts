@@ -66,9 +66,9 @@ async function shortReport(n: number): Promise<ShortShadowReport> {
     close: (high + low) / 2,
     volume: 1000,
   });
-  // Opens at the signal's 100; the replay enters at that open less the whole
-  // 0.5% buffer (no live fills measured here), 99.5, so 1R is $2.5 and the 2R
-  // target is 94.5, which the 94 low trades through.
+  // The replay enters at the signal's 100 less the whole 0.5% buffer (no live
+  // fills measured here), 99.5, so 1R is $2.5 and the 2R target is 94.5, which
+  // the 94 low trades through. The first bar opens at 100 to match.
   const source = {
     getCandles: async () => [{ ...bar(0, 100, 99), open: 100 }, bar(5, 99, 97), bar(10, 97, 94)],
   };
