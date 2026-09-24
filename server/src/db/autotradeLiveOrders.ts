@@ -309,6 +309,21 @@ export function getLiveEntryOrderForPosition(positionId: number): LiveOrderMeta 
   return row ? mapRow(row) : undefined;
 }
 
+/** The position's FIRST entry order: the earliest role='entry' row linked to
+ *  it that is not an add-on (2026-09-25). getLiveEntryOrderForPosition returns
+ *  the NEWEST entry row, which is an add-on's once a scale-in or a second lot
+ *  fills; a reader asking when the position was opened needs this one. */
+export function firstEntryOrderForPosition(positionId: number): LiveOrderMeta | undefined {
+  const row = db
+    .prepare(
+      `SELECT * FROM autotrade_live_orders
+        WHERE role = 'entry' AND position_id = ? AND addon_of_position_id IS NULL
+        ORDER BY created_at ASC, intent_id ASC LIMIT 1`,
+    )
+    .get(positionId) as Row | undefined;
+  return row ? mapRow(row) : undefined;
+}
+
 /**
  * The ENTRY intent behind a live position, by EITHER link.
  *

@@ -1083,7 +1083,11 @@ describe('shorts_revert — a losing short book turns itself off', () => {
     // 2026-09-24, on review: once reverted, the window stays tripped although
     // its evidence no longer trips (the replay moved, a skip was superseded).
     const revertedClean = book({ trades: trades(-0.3), revertedAt: 5_000 });
-    expect(shortsRevertTrips(revertedClean)).toEqual([]);
+    // 2026-09-25, second review: the trip itself stands too, so shorts_revert
+    // keeps firing while shorts are on after a trip that was only proposed.
+    expect(shortsRevertTrips(revertedClean)).toEqual([
+      expect.stringMatching(/^the revert already tripped on .* in this window and shorts are still on$/),
+    ]);
     expect(shorts.evaluate(s(revertedClean))).toBeNull();
     expect(shorts.reading!(s(revertedClean))).toMatch(/; held: the last live short window tripped the revert/);
   });

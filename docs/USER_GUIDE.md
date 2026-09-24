@@ -3420,17 +3420,21 @@ live shorts off" reads every live short since you last switched them on, after e
 It switches them off (`liveAllowNakedShort` → false) the first time any of these holds:
 - a live short closed at −1.5R or worse (a stop that did not hold);
 - a short-side execution defect: a row the edge-leak scan counts as a defect, belonging
-  to a live short (a failed exit, a missing stop, an order nobody can find, and so on);
+  to a live short through any order the app placed for it, its entry, an add, or its close
+  (a failed exit, a missing stop, an order nobody can find, and so on);
 - from 10 shorts, their average is below −0.20R;
 - from 10 shorts, they ran more than 0.40R below the replay of their own signals. After
   each close the app replays every live short's own signal the same way it replays the
-  declined ones, and sets it against what the short realized;
+  declined ones, under the exit rules that short was placed with, and sets it against
+  what the short realized;
 - from 20 shorts, the edge-leak scan lists live `equity_short_red` as a leak.
 
 The card shows the reading every session while shorts are on, tripped or not: "12 live
 shorts since 2026-10-07: avg −0.05R …; 0 short-side defects; −0.12R against the replay over
 12 …; equity_short_red no leak". When it trips, it writes `config_auto_applied` with the
-reason and sends a notification. It acts after the close of the session the trip happens
+reason and sends a notification. If it can only propose (the kill switch is on, or
+automatic switches are off), the trip still stands for that window and it keeps asking
+while shorts stay on. It acts after the close of the session the trip happens
 in. The day's other shorts keep their own stops, and the daily drawdown halt still covers
 the day. Switching shorts back on is yours alone. The count starts again from that moment,
 and so does the short probation. Until you do, "Enable live shorts" stays quiet and says

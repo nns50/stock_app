@@ -52,6 +52,7 @@ import {
   WebullOrderStatus,
 } from '../src/providers/webull/orders';
 import { initDb, db } from '../src/db';
+import { liveExitRules } from '../src/services/exitReplay';
 import {
   setAutotradeConfig,
   getAutotradeConfig,
@@ -842,6 +843,17 @@ describe('attemptLiveEntry', () => {
     expect(r.reason).toMatch(/Guardrails blocked/);
     expect(r.reason).toMatch(/naked_short/);
     expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('records the exit rules a trade was placed under on its placement row (2026-09-25, second review)', async () => {
+    // A replay re-run later reads these, not the config it finds then.
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-RULES' });
+    const cfg = liveConfig({ liveScaleOutEnabled: true, partialExitRMultiple: 0.5, partialExitPct: 50 });
+    await attemptLiveEntry(signal(), okResult, 'MODERATE', cfg);
+    const placed = listAutotradeEvents({ actions: ['live_order_placed'] });
+    expect(JSON.parse(placed[0].detail!).exitRules).toEqual(liveExitRules(cfg));
   });
 
   it('places a short live order once liveAllowNakedShort is explicitly enabled', async () => {

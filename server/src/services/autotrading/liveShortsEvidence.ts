@@ -1,7 +1,7 @@
 import { AutotradeConfig } from '../../db/autotradeConfig';
-import { listAutotradeEvents, listAutotradeEventsInWindow } from '../../db/autotradeEvents';
-import { entryIntentIdForPosition, getLiveOrder } from '../../db/autotradeLiveOrders';
-import { getIntent } from '../../db/orders';
+import { listAutotradeEventsInWindow } from '../../db/autotradeEvents';
+import { firstEntryOrderForPosition, getLiveOrder } from '../../db/autotradeLiveOrders';
+import { getIntent, intentIdForKey } from '../../db/orders';
 import { listPositions, Position } from '../../db/positions';
 import { etToday } from '../../util/marketDate';
 import { collectBook, liveEntryAt } from './dailyTargetSweepData';
@@ -42,7 +42,10 @@ interface ShortEntryOrder {
 }
 
 function entryOrderOf(p: Position): ShortEntryOrder {
-  const intentId = entryIntentIdForPosition({ id: p.id, sourceIntentId: p.sourceIntentId });
+  // The FIRST entry order (2026-09-25, second review), not the newest entry
+  // row: once an add-on fills, that is the add-on's, and the short would read
+  // as placed when the add-on was, not when the order the probation counted was.
+  const intentId = p.sourceIntentId ?? firstEntryOrderForPosition(p.id)?.intentId ?? null;
   if (intentId === null) return { intentId: null, clientOrderId: null, placedAt: null };
   return {
     intentId,
@@ -120,15 +123,33 @@ export function shortSideDefectsSince(since: number): LiveShortsEvidence['defect
     const e = row.event;
     if (row.nature !== 'defect' || e.action.startsWith('live_options_') || !e.symbol) continue;
     const named = namedIn(e.detail);
+    const viaOrder = positionOfOrder(named);
     const owner = shorts.find(
       (p) =>
         (named.positionId !== null && p.id === named.positionId) ||
+        (viaOrder !== null && p.id === viaOrder) ||
         (named.intentId !== null && p.intentId === named.intentId) ||
         (named.clientOrderId !== null && p.clientOrderId === named.clientOrderId),
     );
     if (owner) out.push({ label: row.label, symbol: e.symbol, etDate: etToday(e.createdAt) });
   }
   return out;
+}
+
+/**
+ * The position an order belongs to, through the live-orders table (2026-09-25,
+ * second review): an entry, an add-on or second lot (its `addonOfPositionId`),
+ * or a close the app placed. A defect row names the order it is about, and
+ * matching that only against the short's ENTRY order missed the rest: a time
+ * exit acknowledged and then found in no list (SHOP 2026-09-22's state) names
+ * its exit intent, and tripped nothing.
+ */
+function positionOfOrder(named: { intentId: number | null; clientOrderId: string | null }): number | null {
+  const intentId = named.intentId ?? (named.clientOrderId !== null ? intentIdForKey(named.clientOrderId) : null);
+  if (intentId === null) return null;
+  const order = getLiveOrder(intentId);
+  if (!order) return null;
+  return order.positionId ?? order.addonOfPositionId ?? null;
 }
 
 /** The position and order a journal row names, when it names them. */
@@ -152,18 +173,28 @@ function namedIn(detail: string | null): {
   }
 }
 
-/** When `shorts_revert` last turned shorts off at or after `since`: its
- *  `config_auto_applied` row. Null while it has not in this window. */
+/** When `shorts_revert` last tripped at or after `since`: its
+ *  `config_auto_applied` row, or its `config_change_proposed` row (2026-09-25,
+ *  second review) — with the kill switch engaged or the switches engine off,
+ *  a trip is only proposed and shorts stay on, and it must hold just the same
+ *  if the evidence later drifts back under the bars. The whole window is
+ *  read: a capped read of the newest rows could lose the trip behind other
+ *  rules' rows. Null while it has not tripped in this window. */
 export function shortsRevertedAt(since: number): number | null {
-  const rows = listAutotradeEvents({ stage: 'config', actions: ['config_auto_applied'], since, limit: 200 });
-  for (const e of rows) {
+  const { events } = listAutotradeEventsInWindow({
+    actions: ['config_auto_applied', 'config_change_proposed'],
+    since,
+  });
+  let latest: number | null = null;
+  for (const e of events) {
     try {
-      if ((JSON.parse(e.detail ?? '{}') as { rule?: unknown }).rule === 'shorts_revert') return e.createdAt;
+      if ((JSON.parse(e.detail ?? '{}') as { rule?: unknown }).rule !== 'shorts_revert') continue;
     } catch {
       continue;
     }
+    if (latest === null || e.createdAt > latest) latest = e.createdAt;
   }
-  return null;
+  return latest;
 }
 
 /** Whether the last scan lists the live `equity_short_red` bucket among its

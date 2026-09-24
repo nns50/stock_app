@@ -1,3 +1,4 @@
+import type { ExitRules } from '../exitReplay';
 import { TradeSignal } from './decide';
 import type { MarketDirection } from './marketDirection';
 import { journalEntrySkipOncePerDay } from './symbolCooldown';
@@ -68,6 +69,16 @@ export interface DeclinedEntry {
    * a declined row, which the replay gives the config's target.
    */
   target?: number;
+  /**
+   * The exit rules a TAKEN entry was placed under (2026-09-25, second review),
+   * from its `live_order_placed` row. Every other rule of the replay is read
+   * from the config at replay time, and the records are rebuilt every night:
+   * a mid-window change (the sizing revert switching the scale-out on) would
+   * re-replay earlier shorts under a scale-out they never had. Undefined on a
+   * declined row and on a placement row written before the field existed,
+   * which replay under the config's rules as before.
+   */
+  exitRules?: ExitRules;
   /**
    * A re-entry cooldown refusal only (2026-09-19): minutes between the
    * symbol's last closed live exit and this refusal, as the gate itself

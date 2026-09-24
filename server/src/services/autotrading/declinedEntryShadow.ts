@@ -282,6 +282,24 @@ export function memoCandleSource(source: CandleSource): CandleSource {
   };
 }
 
+/** The replay's rules for one entry: the config's, with the entry's OWN
+ *  bracket target when it carries one (a taken entry; see DeclinedEntry's
+ *  `target`). The target is a price, so it is restated in R of this replay's
+ *  own fill and stop, which is where the bracket's price sits against them. A
+ *  target on the wrong side of the fill keeps the config's. */
+export function rulesWithOwnTarget(
+  rules: ExitRules,
+  r: Pick<DeclinedEntry, 'side' | 'stop' | 'target'>,
+  entryFill: number,
+): ExitRules {
+  if (r.target === undefined) return rules;
+  const sign = r.side === 'long' ? 1 : -1;
+  const risk = (entryFill - r.stop) * sign;
+  const reward = (r.target - entryFill) * sign;
+  if (!(risk > 0) || !(reward > 0)) return rules;
+  return { ...rules, targetR: reward / risk };
+}
+
 /**
  * Replay a set of declined entries on real intraday bars under the book's own
  * exit geometry.
@@ -293,20 +311,6 @@ export function memoCandleSource(source: CandleSource): CandleSource {
  * time `liveMinSignalScore` moves. Raising it 72 -> 81 on 2026-09-14 cut the
  * short record's eligible rows from 32 to 1 that way.
  */
-/** The replay's rules for one entry: the config's, with the entry's OWN
- *  bracket target when it carries one (a taken entry; see DeclinedEntry's
- *  `target`). The target is a price, so it is restated in R of this replay's
- *  own fill and stop, which is where the bracket's price sits against them. A
- *  target on the wrong side of the fill keeps the config's. */
-export function rulesWithOwnTarget(rules: ExitRules, r: Pick<DeclinedEntry, 'side' | 'stop' | 'target'>, entryFill: number): ExitRules {
-  if (r.target === undefined) return rules;
-  const sign = r.side === 'long' ? 1 : -1;
-  const risk = (entryFill - r.stop) * sign;
-  const reward = (r.target - entryFill) * sign;
-  if (!(risk > 0) || !(reward > 0)) return rules;
-  return { ...rules, targetR: reward / risk };
-}
-
 export async function buildDeclinedEntryShadow(
   source: CandleSource,
   rows: DeclinedEntry[],
@@ -407,7 +411,7 @@ export async function buildDeclinedEntryShadow(
     const out = replayExit(
       { side: r.side, entryPrice: entryFill, initialStopPrice: r.stop },
       window,
-      rulesWithOwnTarget(rules, r, entryFill),
+      rulesWithOwnTarget(r.exitRules ?? rules, r, entryFill),
       'honest',
     );
     if (!out) {

@@ -1,3 +1,4 @@
+import type { ExitRules } from '../exitReplay';
 import { getAutotradeConfig } from '../../db/autotradeConfig';
 import { listAutotradeEventsInWindow } from '../../db/autotradeEvents';
 import { getLastShortShadowRecord, saveShortShadowRecord, ShortShadowRecordRow } from '../../db/shortShadowRecords';
@@ -109,6 +110,25 @@ export function loadSkippedShorts(since: number = SHORT_SHADOW_SINCE_MS): {
   return { rows, truncated };
 }
 
+/** The exit rules a placement row carries, when every one of them is there
+ *  as a finite number; null otherwise (an older row, or a malformed one). */
+function exitRulesOf(v: unknown): ExitRules | null {
+  if (typeof v !== 'object' || v === null) return null;
+  const o = v as Record<string, unknown>;
+  const keys: (keyof ExitRules)[] = [
+    'breakevenTriggerR',
+    'trailStartR',
+    'trailStopR',
+    'targetR',
+    'scaleOutR',
+    'scaleOutFraction',
+    'stagnationMinutes',
+    'stagnationMinR',
+  ];
+  if (!keys.every((k) => typeof o[k] === 'number' && Number.isFinite(o[k]))) return null;
+  return Object.fromEntries(keys.map((k) => [k, o[k]])) as unknown as ExitRules;
+}
+
 /**
  * Each live short's own signal since `since`, from the `live_order_placed` row
  * its entry wrote: the signal's price, its stop, and when it went out. The
@@ -121,8 +141,15 @@ export function loadLiveShortEntries(since: number): DeclinedEntry[] {
   for (const e of events) {
     if (!e.symbol || !e.detail) continue;
     try {
-      const d = JSON.parse(e.detail) as { side?: unknown; signalEntry?: unknown; stop?: unknown; target?: unknown };
+      const d = JSON.parse(e.detail) as {
+        side?: unknown;
+        signalEntry?: unknown;
+        stop?: unknown;
+        target?: unknown;
+        exitRules?: unknown;
+      };
       if (d.side !== 'sell' || typeof d.signalEntry !== 'number' || typeof d.stop !== 'number') continue;
+      const exitRules = exitRulesOf(d.exitRules);
       out.push({
         symbol: e.symbol,
         at: e.createdAt,
@@ -134,6 +161,8 @@ export function loadLiveShortEntries(since: number): DeclinedEntry[] {
         // be tightened by the regime overlay or capped by a level, and a replay
         // at the config's target would call that difference an execution gap.
         ...(typeof d.target === 'number' ? { target: d.target } : {}),
+        // And the rest of its exits as placed (2026-09-25, second review).
+        ...(exitRules ? { exitRules } : {}),
       });
     } catch {
       continue;

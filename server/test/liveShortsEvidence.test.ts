@@ -10,7 +10,12 @@ import { initDb, db } from '../src/db';
 import { defaultAutotradeConfig, getAutotradeConfig, setAutotradeConfig } from '../src/db/autotradeConfig';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { listPositions } from '../src/db/positions';
-import { recordLiveOrder, setLiveOrderPositionId } from '../src/db/autotradeLiveOrders';
+import {
+  recordLiveAddOnOrder,
+  recordLiveExitOrder,
+  recordLiveOrder,
+  setLiveOrderPositionId,
+} from '../src/db/autotradeLiveOrders';
 import { createIntent } from '../src/db/orders';
 import { etDateTimeToMs } from '../src/util/marketDate';
 import type { Candle } from '../src/providers/types';
@@ -25,6 +30,7 @@ import {
   shortsRevertedAt,
 } from '../src/services/autotrading/liveShortsEvidence';
 import { replayLiveShorts } from '../src/services/autotrading/shortShadowRecordData';
+import { liveExitRules as liveExitRulesOf } from '../src/services/exitReplay';
 import { runGatedSwitches } from '../src/services/autotrading/gatedSwitchesData';
 import { seedClosedAutotradeSessions } from './helpers/autotradeSessions';
 
@@ -165,6 +171,83 @@ describe('a short-side execution defect', () => {
   });
 });
 
+describe("a short-side defect named by another of the short's orders (2026-09-25, second review)", () => {
+  it("is the short's when the row names its CLOSE or an ADD-ON, not only its entry", () => {
+    // SHOP 2026-09-22's state: a time exit acknowledged and then found in no
+    // list names the EXIT's intent. Matched against the entry order alone, it
+    // tripped nothing.
+    seedBook();
+    const tsla = positionId('TSLA');
+    entryOrder('TSLA', at('10:00'));
+    const close = createIntent(
+      { symbol: 'TSLA', assetKind: 'stock', side: 'buy', openClose: 'close', quantity: 10, orderType: 'limit' },
+      'tsla-time-exit',
+    );
+    recordLiveExitOrder({ intentId: close.id, symbol: 'TSLA', riskProfile: 'MODERATE', positionId: tsla });
+    const add = createIntent(
+      { symbol: 'TSLA', assetKind: 'stock', side: 'sell', openClose: 'open', quantity: 5, orderType: 'limit' },
+      'tsla-add',
+    );
+    recordLiveAddOnOrder({
+      intentId: add.id,
+      symbol: 'TSLA',
+      stopPrice: 104,
+      targetPrice: 90,
+      riskAmount: 20,
+      riskProfile: 'MODERATE',
+      addonOfPositionId: tsla,
+    });
+    journal('TSLA', 'live_order_status_unresolved', { intentId: close.id }, at('10:35'));
+    journal('TSLA', 'live_order_outcome_unknown', { clientOrderId: 'tsla-add' }, at('10:20'));
+
+    expect(shortSideDefectsSince(ENABLED_AT).map((d) => d.label)).toEqual([
+      'A stock order ended with an unknown outcome',
+      'A stock order the broker accepted could not be found by any read',
+    ]);
+  });
+
+  it("dates a scaled-in short by its FIRST entry order, not the add-on's", () => {
+    seedBook();
+    const tsla = positionId('TSLA');
+    entryOrder('TSLA', at('10:00'));
+    const add = createIntent(
+      { symbol: 'TSLA', assetKind: 'stock', side: 'sell', openClose: 'open', quantity: 5, orderType: 'limit' },
+      'tsla-add-2',
+    );
+    recordLiveAddOnOrder({
+      intentId: add.id,
+      symbol: 'TSLA',
+      stopPrice: 104,
+      targetPrice: 90,
+      riskAmount: 20,
+      riskProfile: 'MODERATE',
+      addonOfPositionId: tsla,
+    });
+    setLiveOrderPositionId(add.id, tsla);
+    db.prepare('UPDATE autotrade_live_orders SET created_at = ? WHERE intent_id = ?').run(at('10:30'), add.id);
+    // A window that starts between the entry and the add: the short is the
+    // previous window's, whatever its add-on's time says.
+    expect(liveShortTradesSince(at('10:15'), AFTER_CLOSE)).toEqual([]);
+    expect(liveShortTradesSince(ENABLED_AT, AFTER_CLOSE).map((t) => t.symbol)).toEqual(['TSLA']);
+  });
+});
+
+describe('a revert that was only proposed (2026-09-25, second review)', () => {
+  it('counts as the window having tripped, read from the whole window', () => {
+    const row = (action: string, rule: string, createdAt: number) =>
+      db
+        .prepare(
+          'INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) VALUES (NULL,?,?,?,NULL,?)',
+        )
+        .run('config', action, JSON.stringify({ rule }), createdAt);
+    row('config_change_proposed', 'shorts_revert', at('16:40'));
+    // Other rules' rows after it do not hide it (the old read took the newest 200).
+    for (let i = 0; i < 250; i += 1) row('config_change_proposed', 'leak_lever', at('16:41') + i);
+    expect(shortsRevertedAt(ENABLED_AT)).toBe(at('16:40'));
+    expect(shortsRevertedAt(at('16:45'))).toBeNull();
+  });
+});
+
 describe('the live shorts against the replay of their own signals', () => {
   /** The stop, 105, trades on the second bar: the replay loses exactly 1R. */
   const bars: Candle[] = [
@@ -216,6 +299,35 @@ describe('the live shorts against the replay of their own signals', () => {
     db.exec("DELETE FROM autotrade_events WHERE action = 'live_order_placed'");
     journal('TSLA', 'live_order_placed', { side: 'sell', signalEntry: 100, stop: 105, target: 101 }, at('10:00'));
     expect((await replayLiveShorts(source, cfg, ENABLED_AT, 0)).meanReplayR).toBeCloseTo(-1, 9);
+  });
+
+  // 2026-09-25, second review. Only the target was the trade's own; every
+  // other exit rule came from the config at replay time. A scale-out switched
+  // on after the trade (the sizing revert) re-replayed it with a scale-out it
+  // never had: here +0.25R taken on the first bar's 98.75 low, then the stop.
+  it('replays each short under the exit rules its placement row recorded', async () => {
+    // The first bar CLOSES at 99.2, past a 0.1R scale-out (99.5) on the 105
+    // stop, then the second trades through the stop.
+    const scaleBars: Candle[] = [
+      { time: at('10:00'), open: 100, high: 100.2, low: 99, close: 99.2, volume: 1000 },
+      { time: at('10:05'), open: 99.5, high: 106, low: 99.4, close: 105.5, volume: 1000 },
+    ];
+    const scaleSource: CandleSource = { getCandles: async () => scaleBars };
+    seedBook();
+    journal(
+      'TSLA',
+      'live_order_placed',
+      { side: 'sell', signalEntry: 100, stop: 105, exitRules: liveExitRulesOf(cfg) },
+      at('10:00'),
+    );
+    const scaled = { ...cfg, liveScaleOutEnabled: true, partialExitRMultiple: 0.1, partialExitPct: 67 };
+    // Placed with no scale-out: replayed with none, whatever the config says now.
+    expect((await replayLiveShorts(scaleSource, scaled, ENABLED_AT, 0)).meanReplayR).toBeCloseTo(-1, 9);
+    // A row from before the field replays under the config, as before: the
+    // scale-out banks part of the move first.
+    db.exec("DELETE FROM autotrade_events WHERE action = 'live_order_placed'");
+    journal('TSLA', 'live_order_placed', { side: 'sell', signalEntry: 100, stop: 105 }, at('10:00'));
+    expect((await replayLiveShorts(scaleSource, scaled, ENABLED_AT, 0)).meanReplayR).toBeGreaterThan(-0.9);
   });
 });
 

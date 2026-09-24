@@ -15513,6 +15513,33 @@ row at or after `since`, and the `shorts` rule stays quiet while it is set.
 - **The leak** is the last scan's live `equity_short_red` bucket. A bucket only paper
   fills says nothing about the live book and reads unread.
 
+**Second review (2026-09-25), four more corrections before merge:**
+- **A defect is the short's through ANY of its orders.** A row naming an order is
+  resolved through the live-orders table to its position (`positionOfOrder`: the entry,
+  an add-on or second lot by `addonOfPositionId`, or a close the app placed). Matched
+  against the entry order alone, a time exit acknowledged and then found in no list
+  (SHOP 2026-09-22's state) named its exit intent and tripped nothing.
+- **A short is dated by its FIRST entry order** (`firstEntryOrderForPosition`), not the
+  newest entry row, which is an add-on's once one fills.
+- **Each live short replays under the exit rules it was placed under.** The
+  `live_order_placed` row carries `exitRules` (`liveExitRules` at placement), and the
+  replay reads them before the config's. Before, only the target was the trade's own: a
+  scale-out switched on mid-window (the sizing revert) re-replayed every earlier short
+  with a scale-out it never had, about 0.8R on a short that reached +0.25R and then
+  stopped out, enough to trip the gap rule falsely. Rows written before the field replay
+  under the config, as before. A per-lot entry's row still carries lot 1's target; per-lot
+  is off.
+- **A proposed revert holds too, read from the whole window.** With the kill switch
+  engaged or the switches engine off, a trip is only proposed, so shorts stayed on, and
+  once the evidence drifted back under the bars the rule went quiet. `revertedAt` now
+  reads a `shorts_revert` `config_change_proposed` row as well as `config_auto_applied`,
+  from the whole window rather than the newest 200 rows, and `shortsRevertTrips` reports
+  it as a standing trip while shorts stay on in that window.
+
+Six more mutations, each caught: defects matched through the entry order only, a short
+dated by its newest entry row, a proposed revert ignored, no standing trip, the replay
+ignoring the row's exit rules, and a placement row without them.
+
 **Timing.** Every rule runs after the close, so the revert acts after the session the trip
 happens in. The day's other shorts keep their own stops, and the daily drawdown halt
 covers the whole book intraday. An intraday switch-off on a −1.5R close is possible later.

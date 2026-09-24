@@ -1,3 +1,4 @@
+import { etToday } from '../../util/marketDate';
 import { AutotradeConfig } from '../../db/autotradeConfig';
 import type { MlRegimeReadiness } from '../mlRegimeReadiness';
 import type { EdgeLeakScanResult, LeakReport } from './edgeLeakScan';
@@ -387,6 +388,14 @@ const TRIP_EPS = 1e-9;
 export function shortsRevertTrips(e: LiveShortsEvidence): string[] {
   const t = SHORTS_REVERT;
   const trips: string[] = [];
+  // A trip stands for the rest of its window (2026-09-25, second review): one
+  // only PROPOSED (kill switch engaged, or the switches engine off) left shorts
+  // on, and once the evidence drifted back under the bars the rule went quiet
+  // with shorts still on. The operator's own switch-on starts a new window,
+  // and with it a clean record.
+  if (e.revertedAt !== null) {
+    trips.push(`the revert already tripped on ${etToday(e.revertedAt)} in this window and shorts are still on`);
+  }
   for (const x of e.trades) {
     if (x.r <= t.worstR + TRIP_EPS)
       trips.push(`${x.symbol} (${x.etDate}) closed at ${signedR(x.r)} (trips at ${t.worstR}R)`);
