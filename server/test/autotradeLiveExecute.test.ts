@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, onTestFinished } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -26,6 +26,10 @@ vi.mock('../src/providers/webull/orders', async (importOriginal) => {
     webullCancelOrder: vi.fn(async () => ({ ok: false, error: 'Webull is not configured.' })),
     webullOrderStatus,
     webullOrderStatusBatch: batchFromSingle(webullOrderStatus),
+    // Same convention: what the unmocked call answers in tests (Webull is not
+    // configured), overridable by the cases that read a bracket leg by its own
+    // id (#147).
+    webullOrderDetail: vi.fn(async () => ({ ok: false, found: false, error: 'Webull is not configured.' })),
   };
 });
 vi.mock('../src/services/quotes', () => ({ priceMap: vi.fn() }));
@@ -48,9 +52,11 @@ import {
   listWebullOpenOrders,
   webullPlaceStandaloneBracket,
   webullCancelOrder,
+  webullOrderDetail,
   buildStandaloneBracketRequest,
   WebullOrderStatus,
 } from '../src/providers/webull/orders';
+import { bumpMissStreak } from '../src/db/webullMissStreak';
 import { initDb, db } from '../src/db';
 import {
   setAutotradeConfig,
@@ -101,7 +107,7 @@ import {
 } from '../src/services/autotrading/liveExecute';
 import { createLiveOptionsPosition } from '../src/db/autotradeLiveOptionsPositions';
 import { resetUnplaceableSymbols } from '../src/services/autotrading/unplaceableSymbols';
-import { runWebullPositionsSync } from '../src/providers/webull/positions';
+import { contractKey, runWebullPositionsSync } from '../src/providers/webull/positions';
 import { priceMap } from '../src/services/quotes';
 import { writeDailyHaltMarker } from '../src/services/autotrading/dailyHaltMarker';
 import {
@@ -269,6 +275,8 @@ beforeEach(() => {
   vi.mocked(webullPlaceStandaloneBracket).mockResolvedValue({ ok: false, error: 'Webull is not configured.' });
   vi.mocked(webullCancelOrder).mockReset();
   vi.mocked(webullCancelOrder).mockResolvedValue({ ok: false, error: 'Webull is not configured.' });
+  vi.mocked(webullOrderDetail).mockReset();
+  vi.mocked(webullOrderDetail).mockResolvedValue({ ok: false, found: false, error: 'Webull is not configured.' });
   vi.mocked(priceMap).mockReset();
   vi.mocked(priceMap).mockImplementation(
     async (positions) => new Map(positions.map((p) => [p.id, { price: 100, stale: false, asOf: 0 }])),
@@ -3187,6 +3195,25 @@ describe('adoptOrphanedLivePositions', () => {
     }));
   };
 
+  it("points the entry row at the re-armed bracket's own legs (#147)", async () => {
+    // The entry bracket's legs are cancelled by the time a re-arm places new
+    // ones, so the legs a later fill is looked up by must be the new ones.
+    const pos = await agedProtectionCandidate('AAPL', 10);
+    vi.mocked(listWebullOpenOrders).mockResolvedValueOnce({ ok: true, orders: [] });
+    vi.mocked(webullPlaceStandaloneBracket).mockResolvedValueOnce({
+      ok: true,
+      clientComboOrderId: 'GRP-REARM',
+      legClientOrderIds: { takeProfit: 'TP-REARM', stopLoss: 'SL-REARM' },
+    });
+
+    await checkLiveBracketProtection();
+
+    expect(getLiveEntryOrderForPosition(pos.id)).toMatchObject({
+      takeProfitClientOrderId: 'TP-REARM',
+      stopLossClientOrderId: 'SL-REARM',
+    });
+  });
+
   it('RE-ARMS a confirmed-naked position instead of only paging — with SELL legs under a long', async () => {
     await agedProtectionCandidate('AAPL', 10);
     vi.mocked(listWebullOpenOrders).mockResolvedValueOnce({ ok: true, orders: [] });
@@ -4544,6 +4571,122 @@ describe('reconcileLiveOrders', () => {
       priorSameDayExits: 0,
       repeatEntrySizeCutPct: 0,
     });
+
+  // -------------------------------------------------------------------------
+  // A filled bracket leg read by its own id (2026-09-24, #147). The order lists
+  // show a filled leg 4m43s to 5m02s after the sync first misses the shares
+  // (SMCI 09-23, GRML 09-24), past the sync's four-minute grace, so the sync
+  // booked a quote. Order Detail by the leg's own id answers in seconds.
+  // -------------------------------------------------------------------------
+  describe('a bracket leg the lists have not shown filled yet (#147)', () => {
+    const LEGS = { takeProfit: 'TP-LEG-147', stopLoss: 'SL-LEG-147' };
+    const qty = () => entryResult().sizing.suggestedQuantity;
+    const legRows = () => listAutotradeEvents({ actions: ['live_bracket_leg_from_detail'] });
+
+    /** An entry placed with both legs' ids, filled, and its legs still
+     *  resting in the lists' view of it. */
+    const openWithRestingLegs = async () => {
+      db.exec('DELETE FROM webull_miss_streak;');
+      onTestFinished(() => {
+        db.exec('DELETE FROM webull_miss_streak;');
+      });
+      setAutotradeConfig(liveConfig());
+      mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+      mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+      mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-147', legClientOrderIds: LEGS });
+      await attemptLiveEntry(signal(), entryResult(), 'MODERATE', liveConfig());
+      mockOrderStatus.mockResolvedValue({
+        ok: true,
+        found: true,
+        status: 'FILLED',
+        filledQty: qty(),
+        filledPrice: 100,
+        legs: [{ comboType: 'MASTER', status: 'FILLED' }],
+      } as WebullOrderStatus);
+      await reconcileLiveOrders();
+      expect(listPositions({ status: 'open' })).toHaveLength(1);
+      mockOrderStatus.mockResolvedValue({
+        ok: true,
+        found: true,
+        status: 'FILLED',
+        legs: [
+          { comboType: 'MASTER', status: 'FILLED' },
+          { comboType: 'STOP_PROFIT', status: 'WORKING', clientOrderId: LEGS.takeProfit },
+          { comboType: 'STOP_LOSS', status: 'WORKING', clientOrderId: LEGS.stopLoss },
+        ],
+      } as WebullOrderStatus);
+    };
+    /** The sync found no shares on its last pass. */
+    const sharesMissed = () => bumpMissStreak('ACC1', contractKey(listPositions({ status: 'open' })[0]));
+
+    it("stores both legs' own ids on the entry row at placement", async () => {
+      await openWithRestingLegs();
+      expect(listPendingLiveOrders()[0]).toMatchObject({
+        takeProfitClientOrderId: LEGS.takeProfit,
+        stopLossClientOrderId: LEGS.stopLoss,
+      });
+    });
+
+    it('books the stop at the fill Order Detail reports, once the sync has missed the shares', async () => {
+      await openWithRestingLegs();
+      sharesMissed();
+      vi.mocked(webullOrderDetail).mockImplementation(async (_account, id) =>
+        id === LEGS.stopLoss
+          ? { ok: true, found: true, status: 'FILLED', filledPrice: 94.9, filledQty: qty() }
+          : { ok: true, found: true, status: 'CANCELLED' },
+      );
+
+      const outcomes = await reconcileLiveOrders();
+
+      expect(outcomes[0]).toMatchObject({ changed: true, action: 'exit_filled' });
+      const [closed] = listPositions({ status: 'closed' });
+      expect(closed.exits[0]).toMatchObject({ exitPrice: 94.9, exitReason: 'stop' });
+      // The stop was asked first, answered, and the take-profit never was.
+      expect(vi.mocked(webullOrderDetail).mock.calls.map((c) => c[1])).toEqual([LEGS.stopLoss]);
+      expect(legRows()).toHaveLength(1);
+      expect(JSON.parse(legRows()[0].detail ?? '{}')).toMatchObject({
+        leg: 'stop',
+        clientOrderId: LEGS.stopLoss,
+        filledPrice: 94.9,
+        missStreak: 1,
+        listedLegs: ['STOP_PROFIT:WORKING', 'STOP_LOSS:WORKING'],
+      });
+    });
+
+    it('books a filled take-profit as a target, from which of its ids answered', async () => {
+      await openWithRestingLegs();
+      sharesMissed();
+      vi.mocked(webullOrderDetail).mockImplementation(async (_account, id) =>
+        id === LEGS.takeProfit
+          ? { ok: true, found: true, status: 'FILLED', filledPrice: 110.05, filledQty: qty() }
+          : { ok: true, found: true, status: 'CANCELLED' },
+      );
+
+      await reconcileLiveOrders();
+
+      const [closed] = listPositions({ status: 'closed' });
+      expect(closed.exits[0]).toMatchObject({ exitPrice: 110.05, exitReason: 'target' });
+    });
+
+    it('does not ask while the broker still shows the shares', async () => {
+      await openWithRestingLegs();
+      await reconcileLiveOrders();
+      expect(vi.mocked(webullOrderDetail)).not.toHaveBeenCalled();
+      expect(listPositions({ status: 'open' })).toHaveLength(1);
+    });
+
+    it('books nothing on a leg the broker still reports working', async () => {
+      await openWithRestingLegs();
+      sharesMissed();
+      vi.mocked(webullOrderDetail).mockResolvedValue({ ok: true, found: true, status: 'WORKING' });
+
+      await reconcileLiveOrders();
+
+      expect(listPositions({ status: 'open' })).toHaveLength(1);
+      expect(legRows()).toHaveLength(0);
+      expect(vi.mocked(webullOrderDetail).mock.calls.map((c) => c[1])).toEqual([LEGS.stopLoss, LEGS.takeProfit]);
+    });
+  });
 
   it('keeps an AMBIGUOUS placement pending instead of rejecting it, so it cannot be re-placed', async () => {
     // A lost/timed-out response is indistinguishable from a rejection at the

@@ -382,6 +382,34 @@ export interface WebullOrderRequest {
   client_combo_order_id?: string;
 }
 
+/** The client_order_id this client minted for each exit leg of a bracket. */
+export interface BracketLegClientOrderIds {
+  takeProfit?: string;
+  stopLoss?: string;
+}
+
+/**
+ * Each exit leg's own client_order_id, read off the request that carries it
+ * (2026-09-24, #147). A leg is an order of its own, and Order Detail answers
+ * for a leg only by the leg's id: asked with the ENTRY's id it returns the
+ * MASTER alone. The order LISTS show a filled leg late, about 4m43s to 5m02s
+ * after the sync first finds the shares gone (SMCI 09-23, GRML 09-24), while
+ * Order Detail by the leg's id showed GRML's stop FILLED at 15.39 within
+ * seconds. These ids were minted by newClientOrderId() and then lost with the
+ * request, so the one lookup that answers in time had nothing to ask with.
+ * Undefined when the request has no exit legs.
+ */
+export function bracketLegClientOrderIds(request: WebullOrderRequest): BracketLegClientOrderIds | undefined {
+  const ids: BracketLegClientOrderIds = {};
+  for (const order of request.new_orders) {
+    const id = order.client_order_id;
+    if (typeof id !== 'string' || id === '') continue;
+    if (order.combo_type === 'STOP_PROFIT') ids.takeProfit = id;
+    else if (order.combo_type === 'STOP_LOSS') ids.stopLoss = id;
+  }
+  return ids.takeProfit !== undefined || ids.stopLoss !== undefined ? ids : undefined;
+}
+
 export function buildOrderRequest(intent: OrderIntent, clientOrderId: string, isShort = false): WebullOrderRequest {
   const b = intent.bracket;
   const braced = b && (b.takeProfitPrice !== undefined || b.stopLossPrice !== undefined);
@@ -521,9 +549,15 @@ export async function webullPlaceStandaloneBracket(
       ambiguous: r.status === 0 || r.status === 429 || r.status >= 500,
       raw: r.data,
       error: j.msg || j.message || j.error_msg || `Webull request failed (${r.status})`,
+      legClientOrderIds: bracketLegClientOrderIds(request),
     };
   }
-  return { ok: true, raw: r.data, clientComboOrderId: request.client_combo_order_id };
+  return {
+    ok: true,
+    raw: r.data,
+    clientComboOrderId: request.client_combo_order_id,
+    legClientOrderIds: bracketLegClientOrderIds(request),
+  };
 }
 
 export interface WebullPreview {
@@ -587,6 +621,11 @@ export interface WebullPlaceResult {
    *  left no way to name the combo group on a later modify. Undefined for a
    *  plain (non-combo) order. */
   clientComboOrderId?: string;
+  /** Each exit leg's own client_order_id (bracketLegClientOrderIds), on an
+   *  accepted placement AND an unanswered one: an unanswered bracket may well
+   *  be resting, and its legs are still ours to look up. Undefined for an
+   *  order with no exit legs. */
+  legClientOrderIds?: BracketLegClientOrderIds;
   raw?: unknown;
   error?: string;
   /** The placement's outcome is UNKNOWN, not known-rejected: the request may or
@@ -641,12 +680,14 @@ export async function webullPlaceOrder(
       // after the order was processed. Only a definite 4xx refusal means the
       // broker looked at it and said no.
       ambiguous: r.status === 0 || r.status === 429 || r.status >= 500,
+      legClientOrderIds: bracketLegClientOrderIds(request),
     };
   }
   return {
     ok: true,
     orderId: pickOrderId(r.data),
     clientComboOrderId: request.client_combo_order_id,
+    legClientOrderIds: bracketLegClientOrderIds(request),
     raw: r.data,
   };
 }

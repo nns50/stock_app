@@ -2097,7 +2097,9 @@ equally-weighted cards in the order they happened to be built:
   identified — no order the broker labels as a stop, or two of them — the ratchet
   refuses rather than guessing (`live_stop_adjust_blocked`, whose reason names
   each resting leg's labels so the refusal explains itself) and retries next
-  cycle. It reads both of the broker's labels for a stop leg and both spellings
+  cycle. When the stop is missing because the position check has already missed the
+  shares, the stop has most likely filled. Since 2026-09-25 that is recorded once a day as
+  `live_stop_adjust_skipped` instead of as a block, and the order check books the fill. It reads both of the broker's labels for a stop leg and both spellings
   of the order type (`STOP_LOSS` and `STOP_LOSS_LIMIT`), sharing that judgement
   with the scale-out rather than keeping its own copy — a stop resting as a
   stop-*limit* used to be a stop everywhere else in the app and invisible here,
@@ -2478,6 +2480,17 @@ because the loop is the only caller that is always flat by the bell, so it is
   rewrites the exit to that leg's price and to `stop` or `target`
   (**`live_exit_corrected`** on Recent activity), and re-records the day on the Results
   calendar. The same seven-day window applies.
+  **Since 2026-09-25 the stop or target is read directly.** The lists had fallen further
+  behind: on 2026-09-23 and 09-24 a filled leg took about five minutes to appear, past the
+  four-minute wait. So the quote was booked first and corrected half a minute later, and in
+  between the day's P&L and the halts read the quote. The app now keeps each leg's own order
+  id when it places the bracket, and when it re-arms one. Once the position check has missed
+  the shares, the order check asks Webull for the stop, then the take-profit, directly
+  (**Order Detail**, by the leg's id). A leg Webull reports filled is booked at its fill,
+  as `stop` or `target`, about one cycle after the shares go. A
+  **`live_bracket_leg_from_detail`** row on Recent activity marks it. The four-minute wait
+  and the correction stay for anything this does not settle: a position the app did not
+  place, a bracket placed before that date, or a close made by hand.
   The count of missed checks belongs to the position it was counted for. Since 2026-09-23 it
   ends once that position is closed, whoever closed it. Before, a bracket fill booked by the
   order check left its count behind, and the next position on the same stock started with the

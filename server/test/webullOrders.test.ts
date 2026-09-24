@@ -4,6 +4,7 @@ import {
   buildWebullStockOrder,
   buildWebullOptionOrder,
   buildOrderRequest,
+  bracketLegClientOrderIds,
   webullPreviewOrder,
   webullPlaceOrder,
   webullOrderStatus,
@@ -166,6 +167,58 @@ describe('webull stock order + preview', () => {
     );
     const [master] = req.new_orders as Array<Record<string, string>>;
     expect(master.side).toBe('SHORT');
+  });
+
+  it("bracketLegClientOrderIds: each exit leg's own id, by combo type, and nothing for a plain order", () => {
+    // #147: Order Detail answers for a leg only by the leg's id, and these ids
+    // used to be minted here and then lost with the request.
+    const req = buildOrderRequest(
+      intent({ orderType: 'limit', limitPrice: 10, side: 'buy', bracket: { takeProfitPrice: 12, stopLossPrice: 9 } }),
+      'CID-MASTER',
+    );
+    const legs = req.new_orders as Array<Record<string, string>>;
+    const ids = bracketLegClientOrderIds(req);
+    expect(ids).toEqual({
+      takeProfit: legs.find((o) => o.combo_type === 'STOP_PROFIT')!.client_order_id,
+      stopLoss: legs.find((o) => o.combo_type === 'STOP_LOSS')!.client_order_id,
+    });
+    // Never the entry's own id, and never each other's.
+    expect(ids!.stopLoss).not.toBe('CID-MASTER');
+    expect(ids!.takeProfit).not.toBe(ids!.stopLoss);
+    expect(bracketLegClientOrderIds(buildOrderRequest(intent(), 'CID'))).toBeUndefined();
+  });
+
+  it("webullPlaceOrder returns the legs' ids on an accepted AND an unanswered placement", async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const bracketed = intent({
+      orderType: 'limit',
+      limitPrice: 10,
+      side: 'buy',
+      bracket: { takeProfitPrice: 12, stopLossPrice: 9 },
+    });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ order_id: 'WB-9' }),
+    } as Response);
+    const placed = await webullPlaceOrder('ACC1', bracketed, 'CID-OK');
+    const sent = JSON.parse((fetchSpy.mock.calls[0][1] as RequestInit).body as string) as {
+      new_orders: Array<Record<string, string>>;
+    };
+    expect(placed.legClientOrderIds).toEqual({
+      takeProfit: sent.new_orders.find((o) => o.combo_type === 'STOP_PROFIT')!.client_order_id,
+      stopLoss: sent.new_orders.find((o) => o.combo_type === 'STOP_LOSS')!.client_order_id,
+    });
+
+    // A 5xx may have landed: the legs may be resting, so their ids still come back.
+    fetchSpy.mockResolvedValue({
+      ok: false,
+      status: 503,
+      text: async () => JSON.stringify({ msg: 'busy' }),
+    } as Response);
+    const unanswered = await webullPlaceOrder('ACC1', bracketed, 'CID-503');
+    expect(unanswered).toMatchObject({ ok: false, ambiguous: true });
+    expect(unanswered.legClientOrderIds?.stopLoss).toEqual(expect.any(String));
   });
 
   it('buildOrderRequest: threads isShort through to a plain (non-bracketed) sell order', () => {

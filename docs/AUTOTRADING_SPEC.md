@@ -14714,3 +14714,75 @@ stand.
     line fails;
   - the reachability guard fails if the loop stops reading a setting;
   - both new actions are classified in the journal-action guard.
+
+## 2026-09-25 (third) — a filled bracket leg is booked at its fill, not at a quote
+
+**What happened.** A bracket's stop and take-profit are orders of their own. The reconcile
+books a leg's fill from the order lists, and the lists show a filled leg late: 4m43s to
+5m02s after the sync first found the shares gone (SMCI 2026-09-23, GRML 09-24). The sync's
+bracket grace is four minutes (`BRACKET_RECONCILE_GRACE_MS`), so it closed the position at
+a live quote, tagged `manual`, and the stock exit correction replaced that with the leg's
+fill 30 to 50 seconds later. GRML on 09-24: booked at 15.53, stop filled at 15.39,
+corrected 29 seconds on. In between, the day's P&L, the halts and the step-down read the
+quote, and the tune advisor counted each correction as an execution defect. The lists'
+lag had grown: on 2026-09-21 it was about two minutes, which is what the four-minute grace
+was sized for. Order Detail answers for a leg only by the leg's own `client_order_id`.
+Asked with the entry's id it returns the MASTER alone. Those ids were minted when the
+request was built and then lost with it.
+
+**What changed.**
+- **Placement keeps each exit leg's id** (`bracketLegClientOrderIds`, returned by
+  `webullPlaceOrder` and `webullPlaceStandaloneBracket` on an accepted AND an unanswered
+  placement). The entry bracket's legs go on the entry row (`tp_client_order_id`,
+  `sl_client_order_id`). A re-armed bracket's legs replace them when the re-arm succeeds:
+  the protection sweep, the scale-out's remainder bracket, and its full-size restore.
+  Scale-in add-ons and per-lot second lots keep their own.
+- **The reconcile asks the legs directly** (`resolveFilledLegsFromOrderDetail`).
+  - It asks for a filled bracket entry whose position is still open and has stored leg
+    ids, once the sync has missed the shares at least once (`missStreakOf`).
+  - It reads the stop, then the take-profit, by Order Detail: at most four legs a tick.
+  - A FILLED answer is folded into the entry's legs, and the code that books a listed leg
+    books it. The price is the fill; `stop` or `target` comes from which of the app's own
+    ids answered, not from a label in the reply.
+  - Journal: `live_bracket_leg_from_detail`, once per order a day. It says which leg filled
+    and what the lists still showed.
+- **Nothing else moves.** A leg read as working, cancelled or partial books nothing. The
+  sync's grace and the correction still cover what this does not settle: a position the
+  app did not place, a row placed before this change, a close made by hand.
+- **The ratchet.** A position whose stop has filled has no resting stop, and it stays open
+  in the ledger until its fill is booked. The ratchet wrote `live_stop_adjust_blocked` on
+  that every tick (HOOD 09-18, MRNA 09-22), and the advisor read each as an execution
+  defect. When the sync has already missed the shares, it now writes
+  `live_stop_adjust_skipped` once a day instead. With the shares still showing, a missing
+  stop is blocked as before.
+
+**Timing.** The sync misses the shares during a tick (or during the 60-second background
+sync), and the next tick's reconcile asks. So a fill is booked about one tick, roughly two
+minutes, after the shares go. The grace waited four minutes and the lists about five. One
+miss is enough to ask, where the sync waits for two before it acts: this only reads, and
+only a leg the broker itself reports FILLED is booked.
+
+**Tests (each mutation-checked):**
+- **Placement:** the extractor returns each leg's own id by combo type, and nothing for a
+  plain order. `webullPlaceOrder` returns them on an accepted and an unanswered
+  placement. The entry row stores both.
+- **The reconcile, end to end** (`autotradeLiveExecute.test.ts`):
+  - the stop is booked at the Order Detail fill as `stop`, the take-profit is never asked,
+    and one row names the leg and what the lists said;
+  - a filled take-profit books as `target`;
+  - nothing is asked while the broker still shows the shares;
+  - a leg still working books nothing, and both legs are asked, the stop first.
+- **Re-arm:** the entry row points at the re-armed bracket's legs.
+- **Ratchet:** with the shares missed there is one skip row and no block; without the miss
+  a missing stop is still blocked.
+
+Eight mutations, each caught: the miss gate removed, any status booked, the legs' types
+swapped, the ids not stored at placement, a re-arm not recorded, the ratchet ignoring the
+miss, the answer not folded into the reconcile's statuses, and the extractor's ids swapped.
+
+**Pre-committed check.** Read the first three bracket exits after the deploy. Each should
+have a `live_bracket_leg_from_detail` row or a listed-leg booking, and none should be
+booked `manual` at a quote and then corrected. A leg booked from the detail at a price the
+later lists disagree with is a defect in this read: switch it off by reverting this change
+and report it.
+

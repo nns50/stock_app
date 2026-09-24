@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, onTestFinished } from 'vitest';
 
 vi.mock('../src/providers', () => ({ getProvider: vi.fn() }));
 // checkLiveEquityScaleOuts refuses to trade outside the regular session (it is
@@ -72,6 +72,8 @@ import {
   checkLiveBracketProtection,
 } from '../src/services/autotrading/liveExecute';
 import { ORDER_DETAIL_LOOKUPS_PER_TICK } from '../src/services/autotrading/orderDetailFallback';
+import { bumpMissStreak } from '../src/db/webullMissStreak';
+import { contractKey } from '../src/providers/webull/positions';
 import { readMarketDirectionForTick } from '../src/services/autotrading/marketDirection';
 
 const mockGetProvider = vi.mocked(getProvider);
@@ -2063,6 +2065,36 @@ describe('checkLiveEquityStopAdjusts', () => {
     expect(listPositions({ status: 'open', symbol: 'AAPL' })[0].stopPrice).toBe(position.stopPrice);
     const failed = listAutotradeEvents({ limit: 50 }).find((e) => e.action === 'live_stop_adjust_failed')!;
     expect(JSON.parse(failed.detail!)).toMatchObject({ ambiguous: true });
+  });
+
+  it('does not report a missing stop as blocked once the sync has missed the shares (#147)', async () => {
+    // A filled bracket leg leaves no resting stop, and the ledger keeps the
+    // position open until the reconcile books the fill. HOOD 09-18 and MRNA
+    // 09-22 wrote `live_stop_adjust_blocked` on exactly that, and the advisor
+    // read each as an execution defect.
+    db.exec('DELETE FROM webull_miss_streak;');
+    onTestFinished(() => {
+      db.exec('DELETE FROM webull_miss_streak;');
+    });
+    const { position } = await armed(200);
+    mockOpenOrders.mockResolvedValue({ ok: true, orders: [] });
+    bumpMissStreak('ACC1', contractKey(position));
+
+    const out = await checkLiveEquityStopAdjusts();
+    await checkLiveEquityStopAdjusts();
+
+    expect(out[0]).toMatchObject({ positionId: position.id, adjusted: false, reason: 'shares gone at the broker' });
+    const rows = listAutotradeEvents({ limit: 50 });
+    expect(rows.some((e) => e.action === 'live_stop_adjust_blocked')).toBe(false);
+    // Once, not every tick.
+    const skipped = rows.filter((e) => e.action === 'live_stop_adjust_skipped');
+    expect(skipped).toHaveLength(1);
+    expect(String(JSON.parse(skipped[0].detail ?? '{}').reason)).toContain('no longer shows the shares');
+
+    // With the shares still showing, a missing stop is the defect it always was.
+    db.exec('DELETE FROM webull_miss_streak;');
+    await checkLiveEquityStopAdjusts();
+    expect(listAutotradeEvents({ limit: 50 }).some((e) => e.action === 'live_stop_adjust_blocked')).toBe(true);
   });
 
   it('refuses when the stop leg cannot be positively identified', async () => {
