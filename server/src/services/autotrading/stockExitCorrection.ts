@@ -249,7 +249,7 @@ function closingFills(exit: SaleWindow, enteredAt: number, fills: BrokerEquityFi
 /** When this position's exit before `row` was booked, or null for its first.
  *  Read from the ledger, so an exit the reconcile booked or one already
  *  corrected bounds the next as surely as an estimate does. */
-function previousExitBookedAt(row: SyncEstimatedExit): number | null {
+export function previousExitBookedAt(row: SyncEstimatedExit): number | null {
   const earlier = (getPosition(row.positionId)?.exits ?? [])
     .filter(
       (e) =>
@@ -260,12 +260,17 @@ function previousExitBookedAt(row: SyncEstimatedExit): number | null {
 }
 
 /** Fills a correction in the lookback already booked to an exit, from the
- *  journal (`live_exit_corrected.fillClientOrderIds`), so a later pass or a
- *  restart cannot book one of them to a second exit. */
-function fillsClaimedByCorrections(now: number): Set<string> {
+ *  journal (`fillClientOrderIds` on `live_exit_corrected`, and on
+ *  `hand_exit_corrected`, handExitCorrection.ts's row for positions the app did
+ *  not open), so a later pass or a restart cannot book one of them to a second
+ *  exit, in either pass. The second name is spelled out rather than imported,
+ *  since that module imports this one; journalActionsReachability.test.ts
+ *  fails if it stops matching what the writer writes. */
+export function fillsClaimedByCorrections(now: number): Set<string> {
   const since = now - (STOCK_EXIT_CORRECTION_LOOKBACK_DAYS + 1) * 24 * 60 * 60 * 1000;
   const claimed = new Set<string>();
-  for (const e of listAutotradeEventsInWindow({ actions: ['live_exit_corrected'], since }).events) {
+  for (const e of listAutotradeEventsInWindow({ actions: ['live_exit_corrected', 'hand_exit_corrected'], since })
+    .events) {
     try {
       const ids = (JSON.parse(e.detail ?? 'null') as { fillClientOrderIds?: unknown } | null)?.fillClientOrderIds;
       if (Array.isArray(ids)) for (const id of ids) if (typeof id === 'string') claimed.add(id);
