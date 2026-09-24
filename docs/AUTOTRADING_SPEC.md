@@ -14364,6 +14364,12 @@ seven-day history (the entry was placed 2026-09-23, so until 2026-09-30).
 - an app order in the history is never matched, and the estimate waits and is asked
   again.
 
+**Correction (2026-09-24).** The cause given above, a leg edited by hand, was a guess, and
+it was wrong. DELL's orders were in Webull's history all along. The app's reader skipped
+them: see "2026-09-24 — the order history is read whole". The history match this section
+added stays as a backstop, but it reads the same pages, so it could not have found DELL
+either.
+
 ## 2026-09-23 (thirty-first) — the market-direction gate's index leg survives a failed quote
 
 A read-only review of the gate before its first live session found no logic error:
@@ -14407,4 +14413,90 @@ read as `unknown`.
 - a fresh fetch that works stays the source;
 - with neither source the reading is `unknown`;
 - the screen reports the index's quoted move, and null when the index was not scored.
+
+## 2026-09-24 — the order history is read whole
+
+**What happened.** DELL's exit 709 was still booked at a quote after the deploy of the
+thirtieth section's fix. The journal could not say why, because a skip is logged once a
+day. A read-only probe that can page the order lists by hand (#670) then showed three
+things about the broker's history:
+- DELL's bracket was in it all along: the entry (19 @ 562.52), the stop that filled
+  (19 @ **552.04**) and the cancelled target.
+- The app's full read had never returned those three orders, nor 39 others.
+- In total, 42 of the history's 176 orders were never read.
+
+**How Webull pages the lists**, measured on the deployed account:
+- A page is the `page_size` orders with the highest client order id strictly below the
+  cursor, compared as strings.
+- Every other order of their groups comes with them, wherever those ids sort.
+- Groups are listed by their first order's id.
+- Bracket legs carry ids unrelated to the entry's. The app draws a fresh one per leg, and
+  Webull's own ids for orders placed in its app have 24 characters, not 32.
+
+Page one of 100 held 128 orders:
+- the 100 highest ids, down to `6ab291…`;
+- 28 legs and entries pulled in with them, the lowest at `01d3…`.
+
+Each of the 28 had a group member at or above the cut.
+
+**The bug.** The reader passed the page's last envelope as the next cursor. A page
+listed in group order ends in a bracket leg as often as not, and its id can sort
+anywhere:
+- **Below the true cut,** it skipped every order in between. On 2026-09-23 the cursor was
+  `38f7…` against a cut of `6ab2…`.
+- **Above the cut,** it re-read orders already read. That is the overlap the 2026-09-23
+  duplicate fix cleans up.
+- **A page that re-listed the previous page's first group** stopped the walk as "the
+  server ignored the cursor".
+
+**What the skip hid**, all from the missing 42:
+- DELL's bracket.
+- SHOP's stagnation close on 2026-09-22 (91 @ 148.34). This was the "ghost" position of
+  that evening, which the reconcile never saw fill.
+- LITE's stop on 2026-09-21 (21 @ 972.00).
+- Sells of SNOW and MRVL on 2026-09-22.
+- About 30 option fills. One was the MRNA call's 2.15 close, booked by hand that
+  evening. This is the blind spot of the options reconcile, where acknowledged orders were
+  "missing from both lists".
+
+Which orders were skipped moved with every new order, so the same order could be missing
+on one read and present on the next. That read as the lists "lagging a fill".
+
+**Fixed:** the next cursor is the `page_size`-th highest id below the current one. A
+page with fewer ids than that below the cursor is the last. Ids a pulled-in group brings
+from above the cursor were read already and do not count. The replay stop is gone:
+- a server that ignores the cursor answers with the first page again;
+- that page holds no full page below the cursor, so the walk ends;
+- every cursor sorts strictly below the last, and the 20-page cap bounds the rest.
+
+The read costs the same two calls it did. It now reads the 176 orders the history holds.
+
+**What this changes.** Every reader of the lists goes through this one function:
+- the stock and options reconciles;
+- the exit corrections, stock and options;
+- the hand-close matchers;
+- the fill-race read after a cancel;
+- the open-orders read.
+
+Estimates still inside the seven-day window are corrected to their fills on the first
+pass after the deploy, and their days are re-recorded.
+
+**Pre-committed check,** on the first correction pass after the deploy: DELL's exit 709
+reads `live_exit_corrected` with `source: bracket_leg`, $551.878 → $552.04, and the
+2026-09-23 result is re-recorded.
+
+**Tests (each mutation-checked):**
+- A fake broker that pages exactly as measured. It serves 45 brackets, 70 single orders,
+  both id lengths, and DELL's shape: a bracket on page one only because a leg sorts at
+  the top, listed last, ending in a leg near the bottom. Every order is read exactly
+  once, and each cursor is the 100th highest id below the one before.
+  - The old last-envelope cursor fails it.
+  - So does using the 101st highest id instead of the 100th.
+- A bracket pulled onto page two is listed first again, and the walk goes on. The old
+  replay stop fails it.
+- `nextPageCursor` itself:
+  - string order with mixed id lengths;
+  - ids above the cursor do not count toward a full page;
+  - a repeat counts once;
+  - a short or empty page is the last.
 

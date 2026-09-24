@@ -733,7 +733,7 @@ export interface WebullOrderStatus {
  *
  *  `combo_type` sits HERE, at the envelope level — not on the rows inside
  *  `orders`. A bracket is three of these sharing one `combo_order_id`. */
-interface OrderEnvelope {
+export interface OrderEnvelope {
   client_order_id?: string;
   combo_type?: string;
   combo_order_id?: string;
@@ -893,40 +893,35 @@ interface OrderListFetch {
  * intents and frees dedup slots. A single unparameterized fetch silently
  * inherits the server's default page, so once the account carries more than a
  * page of envelopes (a bracket alone is THREE), orders beyond it would read as
- * missing. So: ask for big pages and follow the client_order_id cursor until a
- * short page says the list is complete.
+ * missing. So: ask for big pages and follow the cursor until a page says the
+ * list is complete. Where each page starts is nextPageCursor's to say, and it
+ * is not where it looks (2026-09-24).
  *
  * Defensive on both cursor failure modes: a server that ignores `page_size`
- * still terminates (the short-page test), and one that ignores
- * `last_client_order_id` is detected by the page repeating itself (same first
- * envelope) and stops with what the first page held — never worse than the
- * unpaginated behavior this replaces. A mid-walk fetch failure fails the WHOLE
- * fetch: a partial list must never masquerade as the complete one.
+ * still terminates (a page with fewer than page_size orders below the cursor
+ * is the last), and so does one that ignores `last_client_order_id`: it
+ * answers with the first page again, which holds no page of orders below the
+ * cursor, so the walk ends there. Every cursor sorts strictly below the one
+ * before it, and the page cap bounds the rest. A mid-walk fetch failure fails
+ * the WHOLE fetch: a partial list must never masquerade as the complete one.
  */
 async function fetchFullOrderList(accountId: string, path: string): Promise<OrderListFetch> {
   const envelopes: OrderEnvelope[] = [];
   /** client_order_id → its index in `envelopes` (see PAGES OVERLAP below). */
   const indexById = new Map<string, number>();
   let cursor: string | undefined;
-  let prevFirst: string | undefined;
   for (let page = 0; page < ORDER_LIST_MAX_PAGES; page++) {
     const query: Record<string, string> = { account_id: accountId, page_size: String(ORDER_LIST_PAGE_SIZE) };
     if (cursor !== undefined) query.last_client_order_id = cursor;
     const r = await webullClient().call('GET', path, { query, surface: 'trade' });
     if (!r.ok) return { ok: false, envelopes: [], error: fetchError(path, r) };
     const batch = Array.isArray(r.data) ? (r.data as OrderEnvelope[]) : [];
-    const first = batch[0]?.client_order_id;
-    // The server ignored the cursor and replayed the same page — stop before
-    // pushing duplicates (duplicate legs would break combo-leg counting).
-    if (page > 0 && first !== undefined && first === prevFirst) break;
-    prevFirst = first;
-    // PAGES OVERLAP (2026-09-23). The cursor does not guarantee disjoint pages.
-    // On the deployed account two consecutive history pages both carried a
-    // whole bracket (HOOD 09-18, MRNA 09-22), so every leg of it was read
-    // twice: its one filled exit leg counted as two, and the exit correction
-    // refused it as ambiguous. The same repeat double-counts a sale for the
-    // hand-close matchers. The check above only catches a page replayed from
-    // its first envelope. An order is one envelope with its own
+    // PAGES OVERLAP (2026-09-23), and always will: a page carries the whole
+    // group of every order it lists (nextPageCursor), so a bracket whose legs
+    // straddle two pages comes back on both (HOOD 09-18, MRNA 09-22). Read
+    // twice, its one filled exit leg counted as two and the exit correction
+    // refused it as ambiguous; the same repeat double-counts a sale for the
+    // hand-close matchers. An order is one envelope with its own
     // client_order_id, so a repeat is the same order again: it keeps its first
     // position and takes the later copy, which was read after the first.
     for (const e of batch) {
@@ -939,13 +934,56 @@ async function fetchFullOrderList(accountId: string, path: string): Promise<Orde
       if (id !== null) indexById.set(id, envelopes.length);
       envelopes.push(e);
     }
-    if (batch.length < ORDER_LIST_PAGE_SIZE) break;
-    const last = batch[batch.length - 1]?.client_order_id;
-    // No cursor to advance with — stop with what we have rather than loop.
-    if (typeof last !== 'string' || last.length === 0 || last === cursor) break;
-    cursor = last;
+    const next = nextPageCursor(batch, cursor, ORDER_LIST_PAGE_SIZE);
+    // The last page, or nothing to advance with: stop with what we have.
+    if (next === undefined || (cursor !== undefined && next >= cursor)) break;
+    cursor = next;
   }
   return { ok: true, envelopes };
+}
+
+/**
+ * Where the page after `batch` starts, or undefined when `batch` was the last
+ * page (2026-09-24).
+ *
+ * HOW WEBULL PAGES THE ORDER LISTS, measured on the deployed account's
+ * history: a page is the `page_size` orders with the highest client_order_id
+ * below the cursor (compared as strings, strictly below), PLUS every other
+ * order of their groups, wherever those sort. Groups are then listed by their
+ * first order's id. A bracket's legs carry ids of their own that have nothing
+ * to do with the entry's (the app draws a fresh one per leg; Webull's own ids
+ * are a different, 24-character form), so a page can reach far below its last
+ * listed order. Page one of 100 held 128 orders: the 100 highest ids, down to
+ * 6ab291…, and 28 bracket legs and entries pulled in with them, the lowest at
+ * 01d3….
+ *
+ * So the next page starts at the page_size-th highest id below the cursor.
+ * Until this date the cursor was the page's LAST envelope, a bracket leg as
+ * often as not, whose id could sort anywhere. Below the true cut it skipped
+ * every order in between: on 2026-09-23 that was 42 of the history's 176
+ * orders, among them DELL's whole bracket (its stop filled at 552.04 while
+ * the ledger kept a 551.878 quote), SHOP's 09-22 stagnation close (the ghost
+ * position of that evening), LITE's 09-21 stop and 30 option fills. Above the
+ * cut it re-read orders already read, the overlap handled above.
+ *
+ * A page with fewer than page_size ids below the cursor holds everything
+ * that is left. The ids a group pulls in from above the cursor were read
+ * already and do not count.
+ */
+export function nextPageCursor(
+  batch: readonly OrderEnvelope[],
+  cursor: string | undefined,
+  pageSize: number,
+): string | undefined {
+  const below = new Set<string>();
+  for (const e of batch) {
+    const id = e?.client_order_id;
+    if (typeof id === 'string' && id.length > 0 && (cursor === undefined || id < cursor)) below.add(id);
+  }
+  if (below.size < pageSize) return undefined;
+  // Descending, compared the way the server compares them: as strings.
+  const ids = [...below].sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
+  return ids[pageSize - 1];
 }
 
 /** One single-leg options order from the broker's order history that filled
