@@ -1441,6 +1441,9 @@ export async function runLiveOptionsExecution(
     // round-trips between candidates, and a kill switch engaged mid-batch
     // must stop the NEXT candidate immediately, not just the next cycle.
     const freshCfg = getAutotradeConfig();
+    // The working entry orders before this attempt, so an attempt that leaves
+    // one behind without succeeding is counted below.
+    const pendingBefore = pendingLiveOptionsOrdersRisk();
     // Isolate each candidate (see runLiveExecution): a rare unexpected throw
     // must not abort the rest of the batch.
     let outcome: LiveOptionsExecutionOutcome;
@@ -1482,6 +1485,22 @@ export async function runLiveOptionsExecution(
       placedThisBatch += 1;
       runningPositions.push({ symbol, notional: result.approvedNotional, side: 'long' });
       skipSymbols.add(symbol);
+    } else {
+      // AN UNKNOWN OUTCOME HOLDS A SLOT (2026-09-24, on review). A placement the
+      // broker may or may not have taken records its entry row and returns
+      // ok:false, and until this the rest of the batch counted it as nothing.
+      // With a cap of 2 and none open, A timing out at Webull and landing let
+      // B and C both pass: three short-dated positions. The row is what the
+      // next tick counts (pendingLiveOptionsOrdersRisk), so it is what this
+      // batch counts too, slot and risk alike.
+      const pendingAfter = pendingLiveOptionsOrdersRisk();
+      const left = pendingAfter.count - pendingBefore.count;
+      if (left > 0) {
+        runningRisk += pendingAfter.risk - pendingBefore.risk;
+        runningCount += left;
+        placedThisBatch += left;
+        skipSymbols.add(symbol);
+      }
     }
   }
   return outcomes;

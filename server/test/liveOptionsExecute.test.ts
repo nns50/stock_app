@@ -4487,6 +4487,22 @@ describe('short-dated options — entry gates and the DTE coupling', () => {
       mockPlaceOrder.mockClear();
     }
 
+    // 2026-09-24, on review: a placement whose outcome is unknown records its
+    // entry row and returns ok:false. The rest of the batch counted it as
+    // nothing, so with it landing at Webull, B and C both went: three.
+    it('counts a placement with an unknown outcome as a slot for the rest of its batch', async () => {
+      arm();
+      mockPlaceOrder
+        .mockResolvedValueOnce({ ok: false, ambiguous: true, error: 'timed out' })
+        .mockResolvedValue({ ok: true, orderId: 'WB-SLOT' });
+      const out = await runLiveOptionsExecution([put('AAPL'), put('MSFT'), put('NVDA')]);
+
+      expect(out.map((o) => o.ok)).toEqual([false, true, false]);
+      expect(mockPlaceOrder).toHaveBeenCalledTimes(2);
+      expect(out[2].reason).toMatch(/^short-dated options: 2 of 2 slots taken/);
+      expect(JSON.parse(slotRows()[0].detail!)).toMatchObject({ refused: 1, placedThisBatch: 2 });
+    });
+
     it('fills both slots from one batch and refuses the third, under one row F7 can count', async () => {
       arm();
       const out = await runLiveOptionsExecution([put('AAPL'), put('MSFT'), put('NVDA')]);

@@ -14599,6 +14599,13 @@ sleeve's own cap at any time, counting working entry orders.
   rejected or expired). So the general cap and the short-dated rule agree about what
   holds a slot, and a partly filled entry that has already opened a position is not
   counted twice.
+- **A placement whose outcome is unknown holds its slot in its own batch too** (added
+  before merge, on review). It records its entry row and returns a failure, and the rest
+  of the batch counted only successes: with a cap of 2 and none open, A timing out at
+  Webull (and landing) let B and C both go, three positions. The batch now reads the
+  working entry rows before and after each attempt, and a failed attempt that left one
+  counts as a placement, in the slot count, the risk check's running count and its
+  running risk alike.
 
 **Series boundary.** The paper options control ran one at a time until this deploys and
 two slots after. Any per-day count, and any day-P&L comparison of the sleeve across the
