@@ -36,8 +36,8 @@ import type { ReentryShadowEvidence } from './edgeLeakScan';
 // record the leak scan judges at its own bar.
 //
 // THE SAME CAVEATS AS EVERY SHADOW: not a P&L (slots and risk room ignored);
-// since replay version 2 (2026-09-26) a fill live could have had (the first
-// bar's open plus the buffer live entries pay, honest exits — see
+// since replay version 2 (2026-09-26) a fill live could have had (the
+// signal's price plus the buffer live stock entries pay, honest exits — see
 // declinedEntryShadow.ts); and resolved against the trade on every intrabar
 // collision.
 // ---------------------------------------------------------------------------

@@ -95,6 +95,7 @@ export function buildLiveSlippageRows(): SlippageRow[] {
           computeSlippage({
             positionId: p.id,
             symbol: p.symbol,
+            assetType: p.assetType,
             kind: 'entry',
             side: intent.side,
             date: entryDate,
@@ -114,6 +115,7 @@ export function buildLiveSlippageRows(): SlippageRow[] {
         computeSlippage({
           positionId: p.id,
           symbol: p.symbol,
+          assetType: p.assetType,
           kind: 'exit',
           side: intent.side,
           date: e.exitDate,

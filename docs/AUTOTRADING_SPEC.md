@@ -15432,9 +15432,13 @@ stop-adjust never saw. A target filled on a touch. Replay version 2
 (`DECLINED_SHADOW_REPLAY_VERSION = 2`, in `exitReplay.ts`'s new `honest` fill model):
 
 - **Entry: the signal's price plus the share of the buffer live entries pay.** The
-  concession (`entryConcessionPct`) is the live entries' mean buffer consumed, clamped to
-  0–0.5%. It measures 0.05% on production. With nothing measured it is the whole 0.5%
-  buffer. It moves the fill away from the stop, so a usable signal keeps its 1R.
+  concession (`entryConcessionPct`) is the live STOCK entries' mean buffer consumed,
+  clamped to 0–0.5%. It measures 0.05% on production. With nothing measured it is the
+  whole 0.5% buffer. It moves the fill away from the stop, so a usable signal keeps its
+  1R. Stock only (`isStockEntrySlippage`), because an option's entry limit is a
+  different buffer, the ask × 1.05. No option reached these rows on 2026-09-24 (0 of 142
+  entry rows), but a hand-placed option from the Trade page would. The leak scan's
+  entry-slippage reading uses the same predicate.
 - **A stop the bar opens through fills at that bar's open**, past 1R, as a live stop
   order fills through a gap. A first bar that opens through the stop is therefore a
   stop-out, not a refusal.
@@ -15445,6 +15449,11 @@ stop-adjust never saw. A target filled on a touch. Replay version 2
 - **The market-direction gate is replayed** when it is on, from the
   `market_direction_read` row in force at each decision (`refused_by_direction`). Rows
   start 2026-09-24, so earlier decisions pass unreplayed.
+- **The gate is not replayed over its own refusals.** For
+  `?action=live_market_direction_skipped` (`DIRECTION_GATE_ACTIONS`) the route replays
+  with the gate off. The reading in force at each of those rows is the one that refused
+  it, so replaying the gate refused every row and the route read n 0. It is the reason
+  `SCORE_FLOOR_ACTIONS` skips the floor for the floor's own refusals.
 - **A stop on the wrong side of its signal is `unusable_signal`** for either side. It
   used to count only a stop equal to the entry.
 
@@ -15500,8 +15509,10 @@ than assumed.
 
 **Series boundary.** Every record carries `replayVersion`, `entryConcessionPct` and
 `directionGateReplayed`. Records persisted before this change have no `replayVersion` and
-are version 1. Compare readings only within a version. The red-tape shorts bar (the tape
-plan's rule B) counts version 2 replays only.
+are version 1. Compare readings only within a version. The records are rebuilt from the
+journal on every refresh, so every record written after this change is version 2
+throughout. That, not a check, is what keeps the red-tape shorts bar (the tape plan's
+rule B) on version 2: no reader checks `replayVersion` yet.
 
 **Tests (each mutation-checked):**
 - **The fill model** (`exitReplay.test.ts`, six tests): a gap through the stop fills at
@@ -15517,11 +15528,18 @@ plan's rule B) counts version 2 replays only.
 - **The consumers:**
   - the short and re-entry records read the measured concession and the journaled
     readings from the database;
-  - the route stamps `replayVersion: 2`.
+  - the route stamps `replayVersion: 2`;
+  - the route replays the direction gate's own refusals (n 1, none refused by
+    direction) and still holds another gate's refusal on the same tape to the reading;
+  - the concession and the leak scan's entry slippage leave a hand-placed call out
+    (`declinedEntryShadowData.test.ts`, `edgeLeakScanData.test.ts`).
 
-Eleven mutations were run, and each fails at least one test:
+Sixteen mutations were run, and each fails at least one test:
 - **Entry:** the entry at the next bar's open, no concession, the concession's sign
   flipped, and a side-blind usable check.
 - **Exits:** a gap filled at the stop, a touch filling the target, the ratchet reading
   extremes, the scale-out armed on the extreme, and the shadow replaying `touch`.
 - **Record:** the version stamped 1, and the direction gate not replayed.
+- **Review fixes:** the gate replayed over its own refusals, the gate dropped for every
+  action, the predicate's asset check removed, and each of its two readers filtering on
+  the entry kind alone.

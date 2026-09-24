@@ -35,7 +35,11 @@ import { getLastReentryShadowRecord } from '../db/reentryShadowRecords';
 import { parseDeclinedEntry, type DeclinedEntry } from '../services/autotrading/declinedEntry';
 import { readDay } from '../services/autotrading/dayMarks';
 import { listDayMarkDates } from '../db/dayMarks';
-import { buildDeclinedEntryShadow, SCORE_FLOOR_ACTIONS } from '../services/autotrading/declinedEntryShadow';
+import {
+  buildDeclinedEntryShadow,
+  DIRECTION_GATE_ACTIONS,
+  SCORE_FLOOR_ACTIONS,
+} from '../services/autotrading/declinedEntryShadow';
 import { shadowFillInputs } from '../services/autotrading/declinedEntryShadowData';
 import { listAutotradeEventsInWindow } from '../db/autotradeEvents';
 import type { Candle } from '../providers/types';
@@ -1076,10 +1080,14 @@ journalRouter.get(
     // constitute the evidence and return an empty record that reads as "no
     // signal" instead of "wrong question".
     const applyScoreFloor = !SCORE_FLOOR_ACTIONS.has(action);
+    // The direction gate's own refusals, likewise: the reading in force at each
+    // is the one that refused it, so replaying the gate empties the record.
+    const fill = shadowFillInputs(from);
     const record = await buildDeclinedEntryShadow(getProvider(), rows, cfg, {
       applyScoreFloor,
       minMinutesSinceExit,
-      ...shadowFillInputs(from),
+      entryConcessionPct: fill.entryConcessionPct,
+      directionAt: DIRECTION_GATE_ACTIONS.has(action) ? undefined : fill.directionAt,
     });
     res.json({
       action,

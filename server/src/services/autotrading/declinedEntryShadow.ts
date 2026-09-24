@@ -197,6 +197,16 @@ export const SCORE_FLOOR_ACTIONS = new Set([
   'regime_score_floor_skipped',
 ]);
 
+/**
+ * The gate refusals the DIRECTION replay must not be applied to (2026-09-24,
+ * on review): the market-direction gate's own. The loop journals the tick's
+ * reading before it places, so the reading in force at each of these rows is
+ * the one that refused it, and replaying the gate over them refuses every one:
+ * the route came back n 0 for the question it was asked. The same mistake
+ * SCORE_FLOOR_ACTIONS exists to prevent, one gate over.
+ */
+export const DIRECTION_GATE_ACTIONS = new Set(['live_market_direction_skipped']);
+
 export interface ShadowOptions {
   /**
    * Whether to drop rows below the floor that judged them. True for a gate that

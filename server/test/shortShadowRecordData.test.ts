@@ -34,8 +34,8 @@ const IN_SESSION = Date.parse('2026-09-10T18:00:00Z');
 function bar(offsetMin: number, high: number, low: number): Candle {
   return { time: T0 + offsetMin * 60_000, open: (high + low) / 2, high, low, close: (high + low) / 2, volume: 1000 };
 }
-/** A short signalled at 100 with a 102 stop. The replay enters at the first
- *  bar's open, 100, less the whole 0.5% buffer (no live fills are measured
+/** A short signalled at 100 with a 102 stop. The replay enters at the
+ *  signal's price, 100, less the whole 0.5% buffer (no live fills are measured
  *  here): 99.5, so 1R is $2.5 and the 2R target is 94.5, which the 94 low
  *  trades through. */
 const winning = [{ ...bar(0, 100, 99), open: 100 }, bar(5, 99, 97), bar(10, 97, 94)];

@@ -28,8 +28,8 @@ import { buildDeclinedEntryShadow, DeclinedEntryShadow, ShadowOptions } from './
  *     is the right quantity for #21's avgR/win-rate gate and the wrong one for
  *     "how much did we leave on the table".
  *  2. A fill the live book could have had, from replay version 2
- *     (2026-09-26; declinedEntryShadow.ts): the first bar's open plus the
- *     share of the buffer live entries pay, with honest exits. Still no
+ *     (2026-09-26; declinedEntryShadow.ts): the signal's own price plus the
+ *     share of the buffer live stock entries pay, with honest exits. Still no
  *     assumption that a short was borrowable at that moment.
  *  3. Not neutral about ambiguity — deliberately. It reuses exitReplay, which
  *     resolves every intrabar stop/target collision AGAINST the trade. So this
