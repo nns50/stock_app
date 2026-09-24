@@ -1612,9 +1612,9 @@ describe('short-dated options — the paper book', () => {
 // entire short-dated roll-out rests on, and it cannot produce evidence it is
 // never given a slot to generate.
 // ---------------------------------------------------------------------------
-describe('short_dated_position_already_open — the max-1 gate is countable', () => {
+describe('short_dated_position_already_open — the slot rule is countable, and the paper control keeps it', () => {
   // Pin the clock. The short-dated ENTRY WINDOW gate (210m to the close) runs
-  // BEFORE the max-1 gate, so on the real wall clock this whole block passes or
+  // BEFORE the slot rule, so on the real wall clock this whole block passes or
   // fails by time of day — it was written without this and slipped through CI,
   // then failed at 12:30 ET, exactly 210 minutes before the bell.
   // 2026-08-28T14:30:00Z is 10:30 ET: 330 minutes to the close, well inside.
@@ -1625,53 +1625,86 @@ describe('short_dated_position_already_open — the max-1 gate is countable', ()
   });
   afterEach(() => vi.useRealTimers());
 
-  // The tuning plan's F7 fires when this gate refuses >=5 candidates in a week.
-  // It used to return silently, so the rule had nothing to count and a gate
-  // throttling the book looked exactly like one that never fired.
-  it('journals the refusal, with the candidate count F7 needs', async () => {
-    setAutotradeConfig({
-      accountEquityUsd: 100_000,
-      riskProfile: 'MODERATE',
-      maxConcurrentPositions: 5,
-      optionsMaxConcurrentPositions: 5, // room by every OTHER measure
-      shortDatedOptionsEnabled: true,
-    });
+  const slotRows = () => listAutotradeEvents({ actions: ['short_dated_position_already_open'] });
+  function holdSlot(symbol: string) {
     openOptionsPaperPosition({
-      symbol: 'MSFT',
+      symbol,
       side: 'call',
-      contractSymbol: 'MSFT-shortdated',
+      contractSymbol: `${symbol}-shortdated`,
       strike: 400,
       expiration: '2026-08-28',
       quantity: 1,
       entryPrice: 3,
       riskAmount: 300,
       riskProfile: 'MODERATE',
-      rationale: 'holds the one short-dated slot',
+      rationale: 'holds a short-dated slot',
     });
-    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 3 } }) as never);
-
-    const out = await runOptionsPaperExecution([{ signal: optionSignal() }, { signal: optionSignal() }]);
-
-    expect(out.every((o) => !o.ok)).toBe(true);
-    const ev = listAutotradeEvents({ actions: ['short_dated_position_already_open'] });
-    expect(ev).toHaveLength(1);
-    expect(JSON.parse(ev[0]!.detail!)).toMatchObject({ book: 'paper', refused: 2, openPositions: 1 });
-  });
-
-  it('journals nothing when the gate does not fire', async () => {
-    // The common case. A rule that counts events must not count a quiet tick.
+  }
+  function arm(optionsMaxConcurrentPositions: number) {
     setAutotradeConfig({
       accountEquityUsd: 100_000,
       riskProfile: 'MODERATE',
       maxConcurrentPositions: 5,
-      optionsMaxConcurrentPositions: 5,
+      optionsMaxConcurrentPositions,
       shortDatedOptionsEnabled: true,
     });
-    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 3 } }) as never);
+    mockGetProvider.mockReturnValue(
+      chainsFor({
+        AAPL: { side: 'call', strike: 100, mark: 3 },
+        AMZN: { side: 'call', strike: 100, mark: 3 },
+        GOOG: { side: 'call', strike: 100, mark: 3 },
+      }) as never,
+    );
+  }
+  const call = (symbol: string) => ({ signal: optionSignal({ symbol, contractSymbol: `${symbol}-fixture` }) });
 
-    await runOptionsPaperExecution([{ signal: optionSignal() }]);
+  // The tuning plan's F7 fires when this gate refuses >=5 candidates in a week.
+  // It used to return silently, so the rule had nothing to count and a gate
+  // throttling the book looked exactly like one that never fired.
+  it('journals the refusal once full, with the candidate count F7 needs', async () => {
+    arm(2);
+    holdSlot('MSFT');
+    holdSlot('NFLX');
 
-    expect(listAutotradeEvents({ actions: ['short_dated_position_already_open'] })).toHaveLength(0);
+    const out = await runOptionsPaperExecution([call('AAPL'), call('AMZN')]);
+
+    expect(out.every((o) => !o.ok)).toBe(true);
+    expect(out[0].reason).toMatch(/2 of 2 slots taken \(2 open, 0 working, 0 placed this tick\) — max 2 at a time/);
+    expect(slotRows()).toHaveLength(1);
+    expect(JSON.parse(slotRows()[0]!.detail!)).toMatchObject({
+      book: 'paper',
+      refused: 2,
+      openPositions: 2,
+      pendingEntries: 0,
+      placedThisBatch: 0,
+      slotCap: 2,
+    });
+  });
+
+  // The paper control keeps the live rule (2026-09-24): a second position
+  // beside a first, and never past the cap within one batch.
+  it('opens a second beside one already open, and stops the batch at the cap', async () => {
+    arm(2);
+    holdSlot('MSFT');
+
+    const out = await runOptionsPaperExecution([call('AAPL'), call('AMZN'), call('GOOG')]);
+
+    expect(out.map((o) => o.ok)).toEqual([true, false, false]);
+    expect(JSON.parse(slotRows()[0]!.detail!)).toMatchObject({ refused: 2, openPositions: 1, placedThisBatch: 1 });
+  });
+
+  it('keeps one at a time when the sleeve shares the book’s slots', async () => {
+    arm(0);
+    holdSlot('MSFT');
+    const out = await runOptionsPaperExecution([call('AAPL')]);
+    expect(out[0]).toMatchObject({ ok: false, reason: expect.stringMatching(/max 1 at a time/) });
+  });
+
+  it('journals nothing when the gate does not fire', async () => {
+    // The common case. A rule that counts events must not count a quiet tick.
+    arm(5);
+    await runOptionsPaperExecution([call('AAPL')]);
+    expect(slotRows()).toHaveLength(0);
   });
 });
 

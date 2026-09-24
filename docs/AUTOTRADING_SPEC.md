@@ -14562,3 +14562,74 @@ one `…order_cap_skipped` row per name.
 Removing either pre-check fails its sleeve's tests. Loosening the shared predicate to
 `<=` fails both sleeves and the guardrail's own test.
 
+
+## 2026-09-25 — the options sleeve holds up to two short-dated positions, counted properly
+
+**What happened.** The operator set the options sleeve's own slot cap
+(`optionsMaxConcurrentPositions`) to 2 on 2026-09-12. The short-dated rule beside it
+still said "one short-dated position at a time", and it did not hold even as written.
+It was asked once per tick, before the batch, against open positions only:
+- **A tick that started with none open placed as many as passed the other gates.** On
+  2026-09-23 two opened in the same tick three times: 09:38, 09:55 and 10:13.
+- **A tick that started with one open placed none.** No second position could open
+  beside a first, although the sleeve's cap was 2.
+- **An entry still working at the broker counted as nothing.** The tick after a
+  placement could place again before the first order filled.
+
+**The decision (operator, 2026-09-24):** "two slots, enforced properly". Up to the
+sleeve's own cap at any time, counting working entry orders.
+
+**What changed.**
+- **One rule for both books** (`shortDatedSlot.ts`), asked before every candidate
+  rather than once per tick.
+  - It counts open positions, entry orders placed on an earlier tick that are not
+    positions yet (working, or filled and not yet booked), and the tick's own
+    placements.
+  - Once full, the rest of the batch is refused under one
+    `short_dated_position_already_open` row. The row carries `refused`, `openPositions`,
+    `pendingEntries`, `placedThisBatch` and `slotCap`.
+  - The paper options book runs the same rule on its own positions, so the control
+    keeps the rule the live sleeve trades under.
+- **The cap** is the sleeve's own `optionsMaxConcurrentPositions`, 2 in production.
+  With no sleeve cap set (0, sharing the book's slots), it stays one at a time: more
+  than one is a decision someone makes by setting the sleeve's cap.
+- **The risk check's slot count includes working entries too** in the sleeve's own-slot
+  mode. It uses the count `combinedLiveOpenRisk` already folds into the shared mode
+  (`pendingLiveOptionsOrdersRisk`: entry rows with no position yet, not cancelled,
+  rejected or expired). So the general cap and the short-dated rule agree about what
+  holds a slot, and a partly filled entry that has already opened a position is not
+  counted twice.
+
+**Series boundary.** The paper options control ran one at a time until this deploys and
+two slots after. Any per-day count, and any day-P&L comparison of the sleeve across the
+boundary, has to say which side it is on. Per-trade figures are unaffected. The tuning
+plan's F7 now reads this rule: sum the rows' `refused`, not the rows.
+
+**Exposure, taken knowingly.** Two 0DTE positions can go to zero together on one
+adverse move. What bounds that is the same as before: each position's risk is its
+premium, sized by the risk check, and both count against the shared aggregate open-risk
+budget and the sleeve's daily loss cap. The cap stays at 2 (F7 says so until 30 closed
+trades show the exits work).
+
+**Pre-committed check.** In the first two sessions:
+- never more than 2 live options positions or working entries at any moment;
+- each `short_dated_position_already_open` row's `openPositions + pendingEntries +
+  placedThisBatch` equals its `slotCap`.
+
+**Tests (each mutation-checked):**
+- **Live:**
+  - three put signals with none open place exactly two, and the third is refused under
+    one row;
+  - one open lets exactly one more through;
+  - one open plus one working entry places nothing;
+  - with no sleeve cap, it stays one at a time;
+  - with short-dated off, the sleeve's own cap counts the working entry in the risk
+    check.
+- **Paper:** two open refuse both candidates under one row, one open takes one more and
+  stops the batch, and a shared-slot sleeve stays one at a time.
+- **Mutations that fail:**
+  - dropping the working-entry count;
+  - dropping the per-batch count, in either book;
+  - dropping the risk check's seed;
+  - dropping the one-slot fallback;
+  - loosening `>=` to `>`.
