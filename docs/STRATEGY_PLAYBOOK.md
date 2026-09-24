@@ -631,8 +631,12 @@ Three things it is not, and each matters when quoting it:
 - **Not a P&L.** It ignores slots, aggregate-risk room and cooldowns, so it measures
   per-trade expectancy rather than money the book could have made. That is the right
   quantity for an expectancy gate and the wrong one for "what did we leave on the table".
-- **Not a fill.** The entry is the signal's price, with no slippage and no assumption that
-  the name was borrowable at that moment.
+- **A fill the live book could have had, since replay version 2 (2026-09-26).** The entry
+  is the signal's price plus the share of the buffer live entries actually pay (0.05%). A
+  stop the bar opens through fills at that open. Breakeven and the trail arm on closes,
+  and a target fills only when a bar trades through it. Checked against 109 live fills,
+  the signal's price misses the fill by 0.075R on average and the next bar's open by
+  0.136R, so the entry stays at the signal. It still assumes the name was borrowable.
 - **Not neutral about ambiguity, on purpose.** It reuses the exit replay, which resolves
   every intrabar stop-and-target collision *against* the trade. It therefore understates.
   A gate that passes on this reading passes pessimistically, which is the only direction
@@ -2276,7 +2280,9 @@ its exit (58 of its 62 re-entries inside 30 minutes), so it holds almost no dela
 re-entries, which is why the question needed its own instrument. The first reading, the
 week of 09-14 over nine refused symbol-days: +0.15R at the first refusal, +0.05R at 60
 minutes, −0.06R at 90, −0.12R at 120 (0 of 9 winners), −0.09R at 180 — nothing near the
-bar, and the cooldown stays at 390.
+bar, and the cooldown stays at 390. Re-read under replay version 2 (2026-09-26) over ten
+sessions, every gap is at or below zero: −0.01R at the first refusal (n 26), −0.09R at 60,
+−0.17R at 120 and −0.18R at 180.
 
 **The bar, the same for every dimension.**
 
@@ -2469,9 +2475,11 @@ gaps fixed (protection, closes, adoption, the exit correction and the entry guar
 User Guide lists them). The evidence is thinner than the rule's count suggests:
 - **27 of 30 shadow shorts at +0.21R** read on 2026-09-23. Without that day it was 20 at
   +0.08R, below the bar. Fourteen of the 27 came from two single opening ticks, seven each.
-- **The replay fills at the signal price**, books stops exactly at the stop, and counts a
-  touch of the target as a fill. On the same decision live has earned 0.09 to 0.19R less
-  than paper, so +0.21R is an upper bound.
+- **Re-read honestly, it no longer clears** (replay version 2, 2026-09-26). The same 27
+  shorts read +0.14R at a 48.1% win rate once stops fill through gaps, breakeven and the
+  trail arm on closes, and targets must trade through. That is under the 50% bar as well
+  as short of the count. Compare readings only within a version; each record carries its
+  `replayVersion`.
 
 Three checks are worth making when the rule proposes:
 - it still clears with its best day taken out;

@@ -859,6 +859,17 @@ trades.
   "Enable live shorts" automatic switch reads it (see [Automatic switches](#automatic-switches-what-the-app-changes-by-itself));
   the route and the loop share one loader, which now reads the whole window rather than
   the newest 1,000 rows, and the response says so (`journalTruncated`).
+  **Since 2026-09-26 every one of these replays fills the way a live order fills**
+  (replay version 2):
+  - the entry is the signal's price plus the small share of the buffer live entries pay;
+  - a stop the bar opens through fills at that open;
+  - breakeven and the trail arm on bar closes;
+  - a target fills only when a bar trades through it;
+  - when the market-direction gate is on, an entry it would have refused is left out.
+
+  Each record says which replay built it (`replayVersion`), the concession it charged
+  (`entryConcessionPct`), and whether the gate was replayed (`directionGateReplayed`).
+  Compare readings only within one version.
   Live bracket exits record an **exit reason** (`stop` / `target` /
   `time_exit`) on the exit itself, so you can see *which exit mechanism* is making or
   losing the money instead of inferring it from prices. Since 2026-09-10 that holds even
@@ -3368,9 +3379,11 @@ the declined-entry replay can score it as the long or short it was, and the attr
 files the paper entries it kept out under it.
 Two things remain before shorts should be switched on. Nobody has yet seen how Webull
 reports a stock short in its positions, which a one-share test short and
-`npm run capture:broker` would settle. And the shadow replay behind the rule reads high:
-it fills at the signal price, books stops exactly at the stop, and counts a touch of the
-target as a fill.
+`npm run capture:broker` would settle. And the shadow replay behind the rule read high
+until 2026-09-26. It filled at the signal price, booked stops exactly at the stop, and
+counted a touch of the target as a fill. Replay version 2 fills the way a live order
+does, as described under the declined-entry shadow above. Re-read that way, the record
+is 27 shorts at +0.14R and 48.1% winners, under the rule's 50% bar.
 
 **Two brakes.** The **kill switch** stops every application, and the `gatedSwitchesEnabled`
 setting turns the engine off entirely. Neither stops the *evaluation*: a shadow record

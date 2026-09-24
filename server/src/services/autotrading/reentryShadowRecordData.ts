@@ -12,6 +12,7 @@ import { isAfterSessionClose } from '../trading/marketHours';
 import { DEFAULT_LOOKBACK_SESSIONS, lastCompletedSessionDate } from './dailyTargetSweepData';
 import { DeclinedEntry, parseDeclinedEntry } from './declinedEntry';
 import { buildDeclinedEntryShadow, DeclinedEntryShadow, memoCandleSource } from './declinedEntryShadow';
+import { shadowFillInputs } from './declinedEntryShadowData';
 import type { ReentryShadowEvidence } from './edgeLeakScan';
 
 // ---------------------------------------------------------------------------
@@ -34,11 +35,11 @@ import type { ReentryShadowEvidence } from './edgeLeakScan';
 // not a verdict in either direction. This turns the hand read into a nightly
 // record the leak scan judges at its own bar.
 //
-// THE SAME CAVEATS AS EVERY SHADOW: not a P&L (slots and risk room ignored),
-// not a fill (the signal's price, no slippage — the attribution's same-tick
-// difference, live minus paper on the same entry, is what a live entry gives
-// up against it), and
-// resolved against the trade on every intrabar collision.
+// THE SAME CAVEATS AS EVERY SHADOW: not a P&L (slots and risk room ignored);
+// since replay version 2 (2026-09-26) a fill live could have had (the first
+// bar's open plus the buffer live entries pay, honest exits — see
+// declinedEntryShadow.ts); and resolved against the trade on every intrabar
+// collision.
 // ---------------------------------------------------------------------------
 
 export const REENTRY_SHADOW_ACTION = 'symbol_reentry_cooldown_skipped';
@@ -127,9 +128,10 @@ export async function computeReentryShadowReport(
   const since = reentryShadowWindowStart(now, lookbackSessions);
   const { rows, journaledRows, unscorableRows, truncated } = loadReentryRefusals(since);
   const source = memoCandleSource(getProvider());
+  const fills = shadowFillInputs(since);
   const gaps: DeclinedEntryShadow[] = [];
   for (const gap of REENTRY_SHADOW_GAPS) {
-    gaps.push(await buildDeclinedEntryShadow(source, rows, cfg, { minMinutesSinceExit: gap }));
+    gaps.push(await buildDeclinedEntryShadow(source, rows, cfg, { minMinutesSinceExit: gap, ...fills }));
   }
   return {
     since,

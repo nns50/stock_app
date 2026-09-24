@@ -45,7 +45,8 @@ import {
   ScanFinding,
 } from './edgeLeakScan';
 import { liveDrawdownHaltRetracted } from './dailyHaltMarker';
-import { MARKET_DIRECTION_ACTION, Lean, MarketDirection, tapeAlignment } from './marketDirection';
+import { Lean, tapeAlignment } from './marketDirection';
+import { DirectionIndex, directionAt, directionIndex } from './marketDirectionIndex';
 
 // ---------------------------------------------------------------------------
 // The DB half of the edge-leak scan: turn both books' closed positions into
@@ -485,46 +486,6 @@ function extensionIndex(since: number): { rows: Map<string, ExtensionRow>; quali
 
 function extensionKey(book: 'live' | 'paper', symbol: string, etDate: string, minute: number): string {
   return `${book}|${symbol}|${etDate}|${minute}`;
-}
-
-/** The market-direction readings the loop journaled (`market_direction_read`,
- *  one row per change — marketDirection.ts), grouped by ET date, oldest first.
- *  The reading in force at any moment is the latest row at or before it. */
-export type DirectionIndex = Map<string, { at: number; direction: MarketDirection }[]>;
-
-const MARKET_DIRECTIONS: ReadonlySet<string> = new Set(['red', 'green', 'mixed', 'unknown']);
-
-export function directionIndex(since: number): DirectionIndex {
-  const out: DirectionIndex = new Map();
-  for (const e of listAutotradeEventsInWindow({ actions: [MARKET_DIRECTION_ACTION], since }).events) {
-    if (!e.detail) continue;
-    let direction: unknown;
-    try {
-      direction = (JSON.parse(e.detail) as { direction?: unknown }).direction;
-    } catch {
-      continue;
-    }
-    if (typeof direction !== 'string' || !MARKET_DIRECTIONS.has(direction)) continue;
-    const day = etToday(e.createdAt);
-    const rows = out.get(day) ?? [];
-    rows.push({ at: e.createdAt, direction: direction as MarketDirection });
-    out.set(day, rows);
-  }
-  for (const rows of out.values()) rows.sort((a, b) => a.at - b.at);
-  return out;
-}
-
-/** The reading in force at `at` on `etDate`: the latest row at or before it,
- *  never one from a later minute and never one from another day. Null when the
- *  loop had journaled none yet that day. */
-export function directionAt(index: DirectionIndex, etDate: string, at: number | null): MarketDirection | null {
-  if (at === null) return null;
-  let found: MarketDirection | null = null;
-  for (const r of index.get(etDate) ?? []) {
-    if (r.at > at) break;
-    found = r.direction;
-  }
-  return found;
 }
 
 /** Attributes for one collector id, before the round number is assigned. */
