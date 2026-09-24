@@ -158,6 +158,7 @@ import { dispatchAutotradeNotification } from './notify';
 import { UnprotectedReportState, unprotectedReportState } from './unprotectedReport';
 import { liveDrawdownHaltedOn } from './dailyHaltMarker';
 import { takeRowLimit } from '../../db/rowLimit';
+import { atrReachRefuses } from './atrReach';
 
 // ---------------------------------------------------------------------------
 // The LIVE counterpart to execute.ts's paper execution (Phase 8 — see
@@ -1912,23 +1913,26 @@ export async function runLiveExecution(
     // signals, so the filter silently removed those names from PAPER too and
     // left the experiment measuring it with no control group. Every other
     // entry gate here is live-only for exactly that reason.
+    // The rule itself is atrReach.ts's, shared with the replays that ask what
+    // this path would have taken.
     const atrForReach = candidateSignal.atr;
-    if (cfg.maxRiskAtrFraction > 0 && atrForReach && atrForReach > 0) {
+    if (
+      atrForReach &&
+      atrReachRefuses(candidateSignal.entry, candidateSignal.stop, atrForReach, cfg.maxRiskAtrFraction)
+    ) {
       const stopDistance = Math.abs(candidateSignal.entry - candidateSignal.stop);
-      if (stopDistance > atrForReach * cfg.maxRiskAtrFraction) {
-        const reason =
-          `1R costs ${(stopDistance / atrForReach).toFixed(2)}x this name's daily range ` +
-          `(max ${cfg.maxRiskAtrFraction}) — not reachable in a session`;
-        journalDeclinedEntry(candidateSignal, 'risk_atr_unreachable_skipped', cfg.liveMinSignalScore, {
-          stopDistance: Math.round(stopDistance * 100) / 100,
-          atr: Math.round(atrForReach * 100) / 100,
-          ratio: Math.round((stopDistance / atrForReach) * 100) / 100,
-          maxRiskAtrFraction: cfg.maxRiskAtrFraction,
-          reason,
-        });
-        outcomes.push({ symbol, ok: false, reason });
-        continue;
-      }
+      const reason =
+        `1R costs ${(stopDistance / atrForReach).toFixed(2)}x this name's daily range ` +
+        `(max ${cfg.maxRiskAtrFraction}) — not reachable in a session`;
+      journalDeclinedEntry(candidateSignal, 'risk_atr_unreachable_skipped', cfg.liveMinSignalScore, {
+        stopDistance: Math.round(stopDistance * 100) / 100,
+        atr: Math.round(atrForReach * 100) / 100,
+        ratio: Math.round((stopDistance / atrForReach) * 100) / 100,
+        maxRiskAtrFraction: cfg.maxRiskAtrFraction,
+        reason,
+      });
+      outcomes.push({ symbol, ok: false, reason });
+      continue;
     }
     // Is the price FREE TO MOVE today? The gate above asks whether 1R fits
     // this name's TYPICAL range, from a 14-day ATR. That is the wrong question

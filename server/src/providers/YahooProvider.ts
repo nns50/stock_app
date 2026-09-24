@@ -13,7 +13,7 @@ import {
 } from './types';
 import { bsGreeks, yearsToExpiration } from '../options/blackScholes';
 import { sleep } from '../util/http';
-import { etDayAndMinute, REGULAR_SESSION_CLOSE_MINUTE, REGULAR_SESSION_OPEN_MINUTE } from '../util/marketDate';
+import { etDayAndMinute, isRegularSessionMinute } from '../util/marketDate';
 
 // ---------------------------------------------------------------------------
 // Yahoo Finance provider via `yahoo-finance2`. Free and key-less, and the only
@@ -297,7 +297,7 @@ export class YahooProvider implements MarketDataProvider {
           const { day, minute } = etDayAndMinute(c.time);
           if (query?.start != null && day < query.start) return false;
           if (query?.end != null && day > query.end) return false;
-          return minute >= REGULAR_SESSION_OPEN_MINUTE && minute < REGULAR_SESSION_CLOSE_MINUTE;
+          return isRegularSessionMinute(minute);
         })
       : candles;
     // An explicit window comes back whole unless a limit was asked for too.
