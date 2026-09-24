@@ -88,8 +88,23 @@ export interface Fundamentals {
   industry?: string;
 }
 
+/**
+ * Which bars a candle query returns — the contract every real provider keeps.
+ *
+ * - `start`/`end` are ET trading days, inclusive.
+ * - `limit` caps the result to the most recent N bars. With a `start` and no
+ *   `limit` the WHOLE window comes back: a default cap used to cut the head off
+ *   an explicit window without a trace (a 1-minute session is 390 bars, and
+ *   Yahoo's padded 5-minute day was 192 — both past the old default of 120).
+ * - Intraday bars cover the REGULAR session, 09:30–16:00 ET: what Webull's RTH
+ *   bars and Tradier's `session_filter: 'open'` serve, and all the loop trades.
+ */
 export interface CandleQuery {
   start?: string; // YYYY-MM-DD
   end?: string; // YYYY-MM-DD
   limit?: number; // max bars to return (most recent)
+}
+
+export function isIntradayTimeframe(timeframe: Timeframe): boolean {
+  return timeframe === '1min' || timeframe === '5min' || timeframe === '15min';
 }

@@ -31,8 +31,38 @@ vi.mock('yahoo-finance2', () => {
         };
         return Array.isArray(symbol) ? symbol.map(one) : one(symbol);
       }
-      async chart(symbol?: string) {
+      async chart(symbol?: string, opts?: { includePrePost?: boolean }) {
         reject(symbol);
+        (globalThis as { __yahooChartOpts?: unknown }).__yahooChartOpts = opts;
+        // Yahoo's real intraday shape, read 2026-09-24: with includePrePost on
+        // (its default) one day on 2026-09-01 runs 04:00–19:55 ET; with it off,
+        // 09:30–15:55 PLUS a zero-volume marker bar at the latest close — a
+        // LATER day, at 16:00 ET. PREPOST ignores the flag, as a vendor might.
+        if (symbol === 'INTRA5' || symbol === 'INTRA1' || symbol === 'PREPOST' || symbol === 'INSESSION') {
+          const step = symbol === 'INTRA1' ? 1 : 5;
+          const prePost = symbol === 'PREPOST' || opts?.includePrePost !== false;
+          const midnight = Date.parse('2026-09-01T00:00:00-04:00');
+          const quotes: Array<Record<string, unknown>> = [];
+          for (let m = prePost ? 4 * 60 : 9 * 60 + 30; m < (prePost ? 20 * 60 : 16 * 60); m += step) {
+            quotes.push({
+              date: new Date(midnight + m * 60_000),
+              open: 100,
+              high: 101,
+              low: 99,
+              close: 100,
+              volume: 10,
+            });
+          }
+          if (!prePost) {
+            // Asked during a session, the marker is stamped at the latest TRADE:
+            // inside that session's hours, on that later day.
+            const marker = Date.parse(
+              symbol === 'INSESSION' ? '2026-09-24T11:37:00-04:00' : '2026-09-23T16:00:00-04:00',
+            );
+            quotes.push({ date: new Date(marker), open: 474.38, high: 474.38, low: 474.38, close: 474.38, volume: 0 });
+          }
+          return { quotes };
+        }
         if (symbol === 'SPLIT') {
           // A 2:1 split on the second (later) day: adjclose is HALF of the
           // raw close, same ratio a real Yahoo response carries for every
@@ -202,5 +232,61 @@ describe('YahooProvider mapping', () => {
 
     expect(await p.getOptionsExpirations('BRK.B')).toHaveLength(2);
     expect((await p.getFundamentals('BRK.B')).symbol).toBe('BRK.B');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Intraday windows (2026-09-24). Production reads past-day 5-minute bars from
+// here once a day is older than Webull's ~15-session reach. Yahoo's pre/post
+// default made that day 04:00–19:55 ET, and the 120-bar default kept the newest
+// 120 — 10:00–19:55 — so every replay of an older day lost its open and walked
+// four hours of after-hours prints.
+// ---------------------------------------------------------------------------
+describe('YahooProvider intraday windows', () => {
+  const etTime = (ms: number) =>
+    new Date(ms).toLocaleTimeString('en-US', {
+      timeZone: 'America/New_York',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+  const etDay = (ms: number) => new Date(ms).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+
+  it('serves a past 5-minute day as its regular session, whole', async () => {
+    const c = await p.getCandles('INTRA5', '5min', { start: '2026-09-01', end: '2026-09-01' });
+    expect((globalThis as { __yahooChartOpts?: { includePrePost?: boolean } }).__yahooChartOpts?.includePrePost).toBe(
+      false,
+    );
+    expect(c).toHaveLength(78);
+    expect(etTime(c[0].time)).toBe('09:30');
+    expect(etTime(c[c.length - 1].time)).toBe('15:55');
+  });
+
+  it('drops the zero-volume marker bar Yahoo appends at the latest close', async () => {
+    const c = await p.getCandles('INTRA5', '5min', { start: '2026-09-01', end: '2026-09-01' });
+    expect(c.every((b) => etDay(b.time) === '2026-09-01')).toBe(true);
+    expect(c.some((b) => b.close === 474.38)).toBe(false);
+  });
+
+  it('drops the marker when it is stamped inside a LATER session (a request made while the market is open)', async () => {
+    const c = await p.getCandles('INSESSION', '5min', { start: '2026-09-01', end: '2026-09-01' });
+    expect(c).toHaveLength(78);
+    expect(c.some((b) => b.close === 474.38)).toBe(false);
+  });
+
+  it('keeps only the regular session even when pre- and post-market bars come back', async () => {
+    const c = await p.getCandles('PREPOST', '5min', { start: '2026-09-01', end: '2026-09-01' });
+    expect(c).toHaveLength(78);
+    expect(etTime(c[0].time)).toBe('09:30');
+    expect(etTime(c[c.length - 1].time)).toBe('15:55');
+  });
+
+  it('returns an explicit window whole: a 1-minute session is 390 bars, past the old default of 120', async () => {
+    const c = await p.getCandles('INTRA1', '1min', { start: '2026-09-01', end: '2026-09-01' });
+    expect(c).toHaveLength(390);
+    // A limit, when one IS asked for, still keeps the most recent bars.
+    const capped = await p.getCandles('INTRA1', '1min', { start: '2026-09-01', end: '2026-09-01', limit: 50 });
+    expect(capped).toHaveLength(50);
+    expect(etTime(capped[49].time)).toBe('15:59');
   });
 });

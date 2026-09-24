@@ -86,3 +86,20 @@ export function etDateTimeToMs(date: string, time: string): number | null {
   const second = naiveUtc - etOffsetMinutes(first) * 60_000;
   return second;
 }
+
+/** The ET trading day (YYYY-MM-DD) and minute of that day (0–1439) of `ms`, from
+ *  one cached formatter — for filtering many bars without building a formatter
+ *  per bar. */
+export function etDayAndMinute(ms: number): { day: string; minute: number } {
+  const parts = etParts.formatToParts(ms);
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '';
+  return {
+    day: `${get('year')}-${get('month')}-${get('day')}`,
+    minute: (Number(get('hour')) % 24) * 60 + Number(get('minute')),
+  };
+}
+
+/** Regular US session, 09:30–16:00 ET, as minutes of the ET day. A bar STARTING
+ *  at 16:00 is not a regular-session bar. */
+export const REGULAR_SESSION_OPEN_MINUTE = 9 * 60 + 30;
+export const REGULAR_SESSION_CLOSE_MINUTE = 16 * 60;

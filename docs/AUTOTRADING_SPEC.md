@@ -14562,3 +14562,100 @@ one `…order_cap_skipped` row per name.
 Removing either pre-check fails its sleeve's tests. Loosening the shared predicate to
 `<=` fails both sleeves and the guardrail's own test.
 
+
+## 2026-09-24 (fourth) — a past session is read whole, from the open
+
+**What happened.** Found while measuring the replay-honesty change. Every replay of a
+past day reads that day's 5-minute bars through the app's candle source. That covers:
+- the declined-entry shadow and the short and re-entry records built on it;
+- the excursion report (both books);
+- the exit replay and its validation.
+
+Production's source is Webull, which has no date parameter. It returns the newest 1,200
+bars, about 15 sessions, and hands anything older to Yahoo. Two defects cut the bars
+those replays walked:
+
+- **Yahoo served a 5-minute day as 04:00–19:55 ET.** yahoo-finance2's `chart()` includes
+  pre- and post-market by default, which makes 192 bars. The provider's default cap of
+  120 kept the newest: 10:00–19:55. A day old enough to come from Yahoo lost its first
+  half hour, which is where most of this book's entries are (09:36–09:40). A replay
+  that ran to "the end of the session" then walked four hours of after-hours prints.
+- **Webull's oldest day was passed on as whole when it was not.** The 1,200-bar reach
+  ends wherever the count runs out. On 2026-09-24 that was 13:30 on 09-01: 30 of its 78
+  bars. The fallback only fired when the oldest bar was on a later day than the one asked
+  for, so the afternoon read as the entire session.
+
+Turning pre/post-market off exposed a third quirk: Yahoo appends a zero-volume marker bar
+at the latest trade. A request for 09-01 ended in a 09-23 16:00 bar at 09-23's price, and
+a replay would have booked its time exit there.
+
+**Fixed, at the providers, as one contract** (`providers/types.ts`, `CandleQuery`):
+- **Intraday bars are the regular session, 09:30–16:00 ET.** That's what Webull's RTH
+  bars and Tradier's `session_filter: 'open'` already served. Yahoo now asks for it
+  (`includePrePost: false`). It also keeps only bars inside the requested ET days that
+  start between 09:30 and 16:00, which drops the marker wherever it lands.
+- **An explicit window comes back whole.** With a `start` and no `limit`, no provider
+  cuts the head off anymore. A 1-minute session is 390 bars and two 5-minute sessions are
+  156, both past the old default of 120. A `limit`, when passed, still keeps the most
+  recent bars.
+- **Webull hands the window to Yahoo when the start day is short.** On intraday bars
+  that now also covers an oldest bar on the start day that is later than the 09:30 open.
+  A session with no print in its first bar lands there too, harmlessly: Yahoo serves the
+  same day. Daily bars are unaffected, since one bar is the whole day.
+
+**What it did not touch.** No live decision reads a past day. The loop's VWAP and range
+fetch recent bars without a window and filter to today's session themselves. The
+journal's SPY benchmark reads a daily window. That window is still under 120 trading
+days, so it was whole, but past that the old cap would have cut its start. The contract
+covers it too.
+
+**Measured on the production database copy from the 09-23 close.** Each report was
+recomputed twice with real Yahoo bars:
+- **As production computed it:** in-reach days whole, 09-01 from 13:30, older days
+  10:00–19:55.
+- **Fixed:** every day whole.
+
+The first reproduces the persisted short record exactly.
+
+| Report | As computed | Fixed |
+|---|---|---|
+| Short shadow record | 27 trades, +0.207R, 55.6% win | unchanged: all 27 are 09-14 or later, inside the reach |
+| Live excursions, intraday | winners' heat p90 0.40R, losers' MFE p90 0.60R | 0.39R / 0.59R: 5 rows change, all on 09-01, and 3 move from daily to intraday |
+| Paper excursions, intraday | heat p90 0.92R, losers' MFE p90 0.48R | 0.92R / 0.45R: 2 rows change, both on 09-01 |
+| The 09-17 stop-width reading (edge day 08-26, trades closed by 09-17) | paper heat p90 0.90R | 0.90R: unchanged. 4 XPON rows on 08-26 move from daily to intraday |
+
+The current numbers barely move because the book is young: 96 of the 122 live
+same-session trades are 09-02 or later, inside the reach. The fix is about what came
+next. On 10-05, 09-14 becomes the edge day, and after that its 13 short-record signals
+(seven at 09:37) would have been replayed from 10:00, and then into after-hours prints.
+The 38 live excursions entered before 10:00 since 09-02 would have followed, one day at a
+time. That is the window rule B's red-tape evidence is read in.
+
+**Series note.** Records written before this change are sound for days inside the reach
+at the time they were computed. In both computations measured above, the only rows that
+differ are on that computation's edge day.
+
+**Tests (each mutation-checked):**
+- **Consumers:** `pastDayBars.test.ts` builds the production composition (cache → Webull
+  → Yahoo) with only the network faked, and reads the answers:
+  - a 09:37 signal on a Yahoo-served day replays to its 09:45 target instead of the
+    10:00 collapse;
+  - a 15:37 signal ends at the 15:55 close instead of a post-market stop;
+  - on Webull's partial day the whole session is read;
+  - an excursion entered at 09:36 measures its 09:45 high: 1.3R, not 0.5R.
+
+  All four fail against the providers before this change.
+- **Yahoo:**
+  - a past day is 78 bars, 09:30–15:55, requested without pre/post;
+  - the marker is dropped at 16:00 and inside a later session;
+  - the session bound holds even when pre/post bars come back;
+  - a 1-minute window is 390 bars, and 50 with a limit of 50.
+- **Webull:**
+  - a start day beginning at 13:30 goes to the fallback, while one beginning at 09:30
+    stays;
+  - a two-session window is 156 bars;
+  - the existing boundary-day test proves daily bars never take the intraday rule.
+
+Seven mutations were run, one per mechanism: pre/post back on, no session bound, no day
+filter, a window cut to 120 (in each provider), the edge rule removed, and the edge rule
+applied to daily bars. Each fails at least one test.
