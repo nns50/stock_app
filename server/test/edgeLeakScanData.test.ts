@@ -9,8 +9,6 @@ import { closePaperPosition, openPaperPosition } from '../src/db/autotradePaperP
 import { closeOptionsPaperPosition, openOptionsPaperPosition } from '../src/db/autotradeOptionsPaperPositions';
 import { closeLiveOptionsPosition, createLiveOptionsPosition } from '../src/db/autotradeLiveOptionsPositions';
 import { recordLiveOptionsEntryOrder, setLiveOptionsOrderPositionId } from '../src/db/autotradeLiveOptionsOrders';
-import { recordLiveOrder, setLiveOrderPositionId } from '../src/db/autotradeLiveOrders';
-import { createIntent } from '../src/db/orders';
 import { listPositions } from '../src/db/positions';
 import {
   concentrationCapFloorPct,
