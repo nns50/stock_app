@@ -15377,7 +15377,11 @@ scratch also lets entries open later in the day, and 0 switches the scratch off.
   takes the largest total across dimensions.
 - **`leak_lever`** takes the first leak that passes every check: confirmed, a config lever
   in the safe direction, writable, a number or a flag, not in force, and passing the
-  refusals the write itself applies (`applyRefusals`).
+  refusals the write itself applies (`applyRefusals`). The checks are one function,
+  `leakLeverRefusal` (null, or which check failed), and the advisor's status reason reads
+  it too (second review, 2026-09-25): an actionable lever said "the gated-switch engine can
+  apply this" of a field the engine may not write. It now reads "yours to apply", with
+  the reason.
 - **The exposure check** judges the value the write would store
   (`sanitizeAutotradeConfig`), since the config clamps or replaces some values. It
   refuses a number that is not finite and a key with no written direction.
@@ -15400,13 +15404,17 @@ would have written a `config_change_proposed` row with its refusal every session
 - `leak_lever` reading past six spent or unusable leaks to an open one;
 - the whole engine counting no contradiction when the operator set a stricter value;
 - the advisor's `in_force` recommendation;
-- the headline counting one lever once, and two opposite levers on one field twice.
+- the headline counting one lever once, and two opposite levers on one field twice;
+- each refusal's reason, and the rule proposing exactly the levers the reasons clear;
+- the advisor naming the operator for a field the engine may not write.
 
-Sixteen mutations were run and fifteen are caught. The survivor drops `leak_lever`'s
-writable check, which is now redundant by construction: the exposure check refuses every
-key with no written direction, and those are exactly the keys the app may not write. The
-headline's `in_force` filter is redundant in the same way, since a spent lever carries no
-estimate.
+Sixteen mutations were run at the first review and fifteen were caught. The survivor
+dropped `leak_lever`'s writable check: the exposure check refuses every key with no
+written direction, which are exactly the keys the app may not write, so the outcome did
+not change. Since the second review the refusal says which check failed and the advisor
+shows it, so that mutation is caught, as are two new ones (the advisor ignoring the
+refusal, the rule bypassing the shared function). The headline's `in_force` filter stays
+redundant by construction: a spent lever carries no estimate.
 
 **Pre-committed check.** After deploy, while the 60-69 band is in the scan's window,
 `GET /api/journal/tune-advice` shows `edge:scoreBand:60-69` with status `in_force` and a

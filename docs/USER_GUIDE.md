@@ -3316,6 +3316,12 @@ file the same losing trades under the same setting. **Market direction at entry*
 market-direction gate. Within one cut the buckets are different trades, so their
 estimates add. Across cuts, the larger total stands for the lever.
 
+**Whose change it is** (since 2026-09-25). An actionable leak's status says who can make
+the change. It reads "the gated-switch engine can apply this" only when the automatic leak
+rule would propose it. Otherwise it reads "yours to apply", with the reason: a setting the
+app may not write (the market-direction gate's switch, for one), a lever that adds
+exposure, a change that needs code, or a value the write would refuse.
+
 **The exit that closed the red days is not a number to add** (2026-09-23). The
 recommendation "Red days are driven by … exits" is research, and carries no estimate: an
 exit reason is how a losing trade ended, not a setting that could have removed its loss.

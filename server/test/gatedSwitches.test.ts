@@ -20,6 +20,8 @@ import {
   ShortShadowEvidence,
   SwitchRule,
   SwitchState,
+  leakLeverPatch,
+  leakLeverRefusal,
 } from '../src/services/autotrading/gatedSwitches';
 import { SHORT_ENABLE_GATE } from '../src/services/autotrading/shortShadowRecord';
 
@@ -815,6 +817,42 @@ describe('the shipped rules', () => {
           }),
         ),
       ).toBeNull();
+    });
+
+    it('says why it would not apply a lever, in the words the tune advisor shows (2026-09-25, on review)', () => {
+      const cfg = defaultAutotradeConfig();
+      const leakOf = (over: Record<string, unknown>) =>
+        scanWith(over).leaks[0] as unknown as Parameters<typeof leakLeverRefusal>[0];
+      expect(leakLeverRefusal(leakOf({}), { ...cfg, symbolReentryCooldownMinutes: 120 })).toBeNull();
+      expect(leakLeverRefusal(leakOf({ verdict: 'unconfirmed' }), cfg)).toMatch(/not confirmed/);
+      expect(
+        leakLeverRefusal(
+          leakOf({ lever: { kind: 'code', field: null, value: null, direction: 'safe', detail: '' } }),
+          cfg,
+        ),
+      ).toMatch(/code change/);
+      expect(
+        leakLeverRefusal(
+          leakOf({ lever: { kind: 'config', field: 'riskPerTradePct', value: 5, direction: 'exposure', detail: '' } }),
+          cfg,
+        ),
+      ).toMatch(/adds exposure/);
+      expect(
+        leakLeverRefusal(
+          leakOf({
+            lever: { kind: 'config', field: 'liveTradingEnabled', value: true, direction: 'safe', detail: '' },
+          }),
+          cfg,
+        ),
+      ).toMatch(/may not write liveTradingEnabled/);
+      expect(leakLeverRefusal(leakOf({}), { ...cfg, symbolReentryCooldownMinutes: 390 })).toMatch(
+        /already at or past 390/,
+      );
+      // The rule proposes exactly the levers this clears, so the two cannot disagree.
+      expect(leakLeverPatch(leakOf({}), { ...cfg, symbolReentryCooldownMinutes: 120 })).toEqual({
+        symbolReentryCooldownMinutes: 390,
+      });
+      expect(leakLeverPatch(leakOf({}), { ...cfg, symbolReentryCooldownMinutes: 390 })).toBeNull();
     });
 
     it('reads past a spent lever to the next open one (2026-09-25)', () => {

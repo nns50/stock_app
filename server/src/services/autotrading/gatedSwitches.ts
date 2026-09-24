@@ -712,6 +712,38 @@ export const PRE_TRIAL_SIZING: SwitchPatch = {
   symbolReentryCooldownMinutes: 120,
 };
 
+/**
+ * Why `leak_lever` would NOT apply this leak's lever, or null when it would.
+ * One function for the rule and the tune advisor's wording (2026-09-25, on
+ * review): the advisor told the operator "the gated-switch engine can apply
+ * this" of levers the rule skips — a field it may not write, a value already
+ * in force, a patch the write would refuse.
+ */
+export function leakLeverRefusal(leak: LeakReport, config: AutotradeConfig): string | null {
+  const lever = leak.lever;
+  if (leak.verdict !== 'leak') return 'the paper control has not confirmed it';
+  if (!lever || lever.kind !== 'config') return 'no setting expresses it; it needs a code change';
+  if (lever.direction !== 'safe') return 'it adds exposure, which only the operator applies';
+  if (lever.field === null || !(SWITCH_WRITABLE_KEYS as readonly string[]).includes(lever.field)) {
+    return `the engine may not write ${lever.field ?? 'this field'}`;
+  }
+  const value = lever.value;
+  if (typeof value !== 'number' && typeof value !== 'boolean') return 'the lever names no value to write';
+  // Already carried: the leak is history, not open.
+  if (leverInForce(lever, config)) return `${lever.field} is already at or past ${String(value)}`;
+  // A patch the write would refuse is not the rule's to stand behind either,
+  // and standing first it would hide the next leak: the same check the engine
+  // applies before a write.
+  const refusals = applyRefusals({ [lever.field]: value } as SwitchPatch, config, true);
+  return refusals.length > 0 ? refusals[0] : null;
+}
+
+/** The patch `leak_lever` would propose for this leak, or null (leakLeverRefusal). */
+export function leakLeverPatch(leak: LeakReport, config: AutotradeConfig): SwitchPatch | null {
+  if (leakLeverRefusal(leak, config) !== null || !leak.lever || leak.lever.field === null) return null;
+  return { [leak.lever.field]: leak.lever.value } as SwitchPatch;
+}
+
 export const GATED_SWITCH_RULES: SwitchRule[] = [
   {
     id: 'overlay_revert',
@@ -774,18 +806,8 @@ export const GATED_SWITCH_RULES: SwitchRule[] = [
       // above the band's lever each returned null, and every open leak ranked
       // below it went unread for as long as the spent one stayed in the window.
       for (const leak of scan.leaks as LeakReport[]) {
-        const lever = leak.lever;
-        if (leak.verdict !== 'leak' || !lever || lever.kind !== 'config' || lever.direction !== 'safe') continue;
-        if (lever.field === null || !(SWITCH_WRITABLE_KEYS as readonly string[]).includes(lever.field)) continue;
-        const value = lever.value;
-        if (typeof value !== 'number' && typeof value !== 'boolean') continue;
-        // Already carried: the leak is history, not open.
-        if (leverInForce(lever, s.config)) continue;
-        const patch = { [lever.field]: value } as SwitchPatch;
-        // A patch the write would refuse is not this rule's to stand behind
-        // either, and standing first it would hide the next: the same check
-        // the engine applies before a write (applyRefusals).
-        if (applyRefusals(patch, s.config, true).length > 0) continue;
+        const patch = leakLeverPatch(leak, s.config);
+        if (patch === null) continue;
         return {
           patch,
           evidence: `${leak.dimension}=${leak.bucket}: ${leak.n} trades at ${leak.meanR}R, ${leak.severityR}R left on the table`,
