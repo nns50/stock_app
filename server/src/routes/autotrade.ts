@@ -328,6 +328,7 @@ const configBody = z.object({
   liveMaxOrdersPerDay: z.number().int().nonnegative().optional(),
   liveFatFingerPct: z.number().min(0).max(100).optional(),
   liveAllowNakedShort: z.boolean().optional(),
+  liveShortsRedTapeOnly: z.boolean().optional(),
   liveProbationTrades: z.number().int().nonnegative().optional(),
   liveProbationSizeMultiplier: z.number().positive().max(1).optional(),
   // --- Live scale-into-winners (nested under liveTradingEnabled) --------------
@@ -656,6 +657,7 @@ autotradeRouter.put(
     if (body.liveMaxOrdersPerDay !== undefined) patch.liveMaxOrdersPerDay = body.liveMaxOrdersPerDay;
     if (body.liveFatFingerPct !== undefined) patch.liveFatFingerPct = body.liveFatFingerPct;
     if (body.liveAllowNakedShort !== undefined) patch.liveAllowNakedShort = body.liveAllowNakedShort;
+    if (body.liveShortsRedTapeOnly !== undefined) patch.liveShortsRedTapeOnly = body.liveShortsRedTapeOnly;
     if (body.liveProbationTrades !== undefined) patch.liveProbationTrades = body.liveProbationTrades;
     if (body.liveProbationSizeMultiplier !== undefined) {
       patch.liveProbationSizeMultiplier = body.liveProbationSizeMultiplier;

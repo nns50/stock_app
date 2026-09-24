@@ -1757,7 +1757,10 @@ equally-weighted cards in the order they happened to be built:
   live shorts — until then it left no row at all. Since 2026-09-24 it is journaled once
   per symbol per day **for each market direction** it was declined on (a name declined
   on a mixed market at 09:37 and again after the market turned red at 10:15 has a row
-  for each), and the row also carries that direction and the signal's ATR. Options
+  for each), and the row also carries that direction and the signal's ATR. With the box
+  checked, **Short only on a broadly red market** (on by default) still holds a live short,
+  and any add to one, to a red market reading; a short refused that way is journaled the
+  same way, with cause `red_tape_only` in place of `shorts_off`. Options
   entries are unaffected either way — an autotrade options position is always long the
   contract, a put for a bearish read instead of a call, which is already defined-risk),
   **min relative volume** (a candidate's volume must be at least this many
@@ -2340,6 +2343,18 @@ equally-weighted cards in the order they happened to be built:
   position this app can take live is defined-risk (long stock, long calls, long puts),
   so this stays off by default; check it only once you've deliberately decided you want
   the loop opening real, uncapped-downside equity shorts, not just paper-trading them).
+  Nested under it, **Short only on a broadly red market** (2026-09-24, on by default)
+  holds those shorts to a red market: with naked shorts on, a live stock short, and any
+  scale-in or second lot added to one, goes out only while the market-direction reading is
+  **red** (SPY and the universe's breadth both past their red bars). The reading is taken
+  every tick and held the way the gate holds it, whether or not the market-direction gate
+  is on. A mixed, green or unread market refuses the short, and the journal row says why:
+  `live_short_skipped` (adds: `live_scale_in_short_skipped`,
+  `per_lot_second_lot_short_skipped`) with cause `red_tape_only`, where a short refused
+  because naked shorts are off carries `shorts_off`. The evidence the "Enable live shorts"
+  switch reads is the shorts declined on a red market, so this keeps a live short to the
+  trade that evidence covers. It changes nothing while naked shorts are off, and paper
+  keeps taking shorts on every market as the control.
   **Suggest from
   equity** fills the first three of those from your account equity and the configured
   daily-drawdown %/max-trades-per-day (25% of equity for the order cap on the moderate
@@ -3417,7 +3432,31 @@ reading at the time, so shorts from before 2026-09-24 count as unlabeled. The re
 leaves out any short whose stop is too far for its daily range (the same check a live short
 would meet next, at your **max risk vs ATR** setting), where the row says how wide the
 range was.
-When the bar is met the rule writes `config_change_proposed` with the field you would flip
+
+**Since 2026-09-24 the rule proposes on the red-market bar, not the old one.** Live shorts
+are switched on as a red-market trade (**Short only on a broadly red market**, on the Live
+trading card), so the rule, now "Enable live shorts (red tape only)", reads the evidence
+for that trade. It proposes only when all of these hold:
+- the red-market bar above is met;
+- the paper book's own stock shorts taken on a red market number at least 10, with a
+  mean above zero: the `equity_short_red` bucket of the last edge-leak scan's **Side and
+  market direction at entry** cut. Paper takes shorts on every market, so it is the
+  control;
+- Short only on a broadly red market is checked. With it unchecked, turning shorts on
+  would reach mixed and green markets the evidence says nothing about, so the rule stays
+  quiet.
+
+The old bar (30 trades on every market) no longer decides anything; its numbers stay on
+the card for context. The reading leads with the two things the rule proposes on:
+"red tape: 3 of 20 shorts, avg −0.03R (bar +0.15R), …; paper red-tape stock shorts: 4 of
+10, mean +0.31R (bar above 0); all tapes: 27 shadow shorts, avg +0.14R, win 48.1%, as of
+2026-09-23". A record persisted before the split reads "red tape: not split in this
+record". When the last scan cannot give the paper figures, the clause reads "unread" and
+says why: no scan saved yet, a scan of the live book alone (`?book=live` saves too), or a
+scan saved before the side-and-tape cut. A scan that read paper and found no such short
+reads "0 of 10".
+
+When it proposes, the rule writes `config_change_proposed` with the field you would flip
 (`liveAllowNakedShort`) and sends **one** notification, on the session it is first met;
 it never applies the change, and it stops proposing once shorts are on. A replay that
 fails (no bars) costs that evening's refresh and nothing else — the rule reads the last

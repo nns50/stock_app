@@ -585,6 +585,7 @@ export const client = {
     liveMaxOrdersPerDay?: number;
     liveFatFingerPct?: number;
     liveAllowNakedShort?: boolean;
+    liveShortsRedTapeOnly?: boolean;
     liveProbationTrades?: number;
     liveProbationSizeMultiplier?: number;
     liveScaleInEnabled?: boolean;
