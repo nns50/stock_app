@@ -254,6 +254,18 @@ export interface AutotradeConfig {
    *  same side of its own prior close. Clamped to [50, 100]: at 50 a coin-flip
    *  market would read as one-sided. */
   marketDirectionBreadthPct: number;
+  /** The EXIT band (2026-09-24; marketDirection.ts holdMarketDirection). Once a
+   *  tick reads red (green), the reading stays red while SPY is at least this %
+   *  down (up) AND at least `marketDirectionExitBreadthPct` of names stay red
+   *  (green); entering still needs the full bar above. Never stricter than the
+   *  entry bar: a value above it is applied as the entry value. Clamped to
+   *  [0, 5]. Default 0.1 with a 60% breadth band: replayed over 22 sessions
+   *  and read every 2 minutes as the loop does, the bar alone changed label 7.4
+   *  times a session (4.5 of them undone within 10 minutes); with this band,
+   *  2.0 (docs/AUTOTRADING_SPEC.md, 2026-09-24 (third) section). */
+  marketDirectionExitIndexPct: number;
+  /** The breadth half of the exit band. Clamped to [50, 100]. */
+  marketDirectionExitBreadthPct: number;
   /** Equity-curve de-risking (2026-07-24, services/autotrading/equityCurveDerisk.ts):
    *  a SOFTER, graduated companion to the binary `maxDailyDrawdownPct` halt.
    *  When on, and the strategy's OWN realized equity curve (cumulative closed
@@ -1334,6 +1346,8 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     marketDirectionGateEnabled: false,
     marketDirectionIndexPct: 0.2,
     marketDirectionBreadthPct: 65,
+    marketDirectionExitIndexPct: 0.1,
+    marketDirectionExitBreadthPct: 60,
     equityCurveDeriskEnabled: false,
     equityCurveLookbackDays: 10,
     equityCurveDeriskCutPct: 50,
@@ -1612,6 +1626,13 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
         : d.marketDirectionGateEnabled,
     marketDirectionIndexPct: clampTo(input.marketDirectionIndexPct, 0, 5, d.marketDirectionIndexPct),
     marketDirectionBreadthPct: clampTo(input.marketDirectionBreadthPct, 50, 100, d.marketDirectionBreadthPct),
+    marketDirectionExitIndexPct: clampTo(input.marketDirectionExitIndexPct, 0, 5, d.marketDirectionExitIndexPct),
+    marketDirectionExitBreadthPct: clampTo(
+      input.marketDirectionExitBreadthPct,
+      50,
+      100,
+      d.marketDirectionExitBreadthPct,
+    ),
     equityCurveDeriskEnabled:
       typeof input.equityCurveDeriskEnabled === 'boolean' ? input.equityCurveDeriskEnabled : d.equityCurveDeriskEnabled,
     equityCurveLookbackDays: posIntMin1(input.equityCurveLookbackDays, d.equityCurveLookbackDays),

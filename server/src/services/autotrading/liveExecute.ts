@@ -71,7 +71,7 @@ import { computeGradeExpectancyMultipliers } from './expectancySizing';
 import { computeMethodMultipliers, methodOfEquitySignal } from './methodSizing';
 import { activeSymbolCooldowns } from './symbolCooldown';
 import { declinedSide, journalDeclinedEntry } from './declinedEntry';
-import { MarketDirectionReading, directionRefuses } from './marketDirection';
+import { MarketDirectionReading, directionRefuses, latestMarketDirection } from './marketDirection';
 import { isUnparseableSymbolError, markUnplaceableSymbol, unplaceableReason } from './unplaceableSymbols';
 import { markShortRefused, shortRefusedReason } from './refusedShorts';
 import { computeFinishLineFactor } from './finishLine';
@@ -2045,6 +2045,10 @@ export async function runLiveExecution(
       const reason = `${marketDirection.detail} — a ${declinedSide(candidateSignal.side)} leans against it`;
       journalDeclinedEntry(candidateSignal, 'live_market_direction_skipped', cfg.liveMinSignalScore, {
         direction: marketDirection.direction,
+        // Whether the reading was held (2026-09-24), so the refusals a hold
+        // made can be counted apart from ones the bar made on its own.
+        rawDirection: marketDirection.rawDirection ?? marketDirection.direction,
+        heldBy: marketDirection.heldBy ?? null,
         indexSymbol: marketDirection.indexSymbol,
         indexChangePct: marketDirection.indexChangePct,
         redPct: marketDirection.redPct,
@@ -5245,6 +5249,54 @@ export async function checkLiveEquityTimeExits(): Promise<LiveEquityTimeExitOutc
 // backtest first.
 // ---------------------------------------------------------------------------
 
+/**
+ * THE MARKET-DIRECTION GATE FOR ADDS (2026-09-24). A scale-in and a per-lot
+ * second lot both put more shares on in the position's direction, which is the
+ * bet the gate refuses as a fresh entry: a long add on a broad red day is a
+ * long bought into a red market. Until this date only the entry path asked.
+ *
+ * Both add paths run BEFORE the tick's screen (loop.ts), so they judge the
+ * previous tick's held reading, about one tick old; a reading older than
+ * LATEST_DIRECTION_MAX_AGE_MS is one the loop has not taken lately, and it
+ * refuses nothing, the same as an `unknown` one. One function for both paths,
+ * so the two cannot come to disagree about when an add is refused.
+ *
+ * Returns the reading that refuses this add, or null.
+ */
+function addOnDirectionRefusal(
+  cfg: AutotradeConfig,
+  side: 'long' | 'short',
+  now: number,
+): { reading: MarketDirectionReading; ageMs: number } | null {
+  if (!cfg.marketDirectionGateEnabled) return null;
+  const latest = latestMarketDirection(now);
+  if (latest === null || !directionRefuses(latest.reading, side)) return null;
+  return latest;
+}
+
+/** The journal detail an add refused by the market's direction carries: the
+ *  reading, whether it was held, and how old it was. */
+function addOnDirectionDetail(
+  refusedBy: { reading: MarketDirectionReading; ageMs: number },
+  extra: Record<string, unknown>,
+): Record<string, unknown> {
+  const r = refusedBy.reading;
+  return {
+    ...extra,
+    direction: r.direction,
+    rawDirection: r.rawDirection ?? r.direction,
+    heldBy: r.heldBy ?? null,
+    indexSymbol: r.indexSymbol,
+    indexChangePct: r.indexChangePct,
+    redPct: r.redPct,
+    greenPct: r.greenPct,
+    breadthSample: r.sample,
+    indexPct: r.indexPct,
+    breadthPct: r.breadthPct,
+    readingAgeSec: Math.round(refusedBy.ageMs / 1000),
+  };
+}
+
 export interface LiveScaleInOutcome {
   symbol: string;
   positionId: number;
@@ -5339,6 +5391,41 @@ export async function checkLiveScaleIns(
         },
       );
       if (!add) continue;
+
+      // The market's direction (addOnDirectionRefusal), asked once the trigger
+      // and the add-on cap say an add is due. The daily halt, the aggregate
+      // open-risk cap and the guardrails below are asked after it, so a row can
+      // record an add one of those would also have refused (a red day already
+      // halted for drawdown, say). Once per position and direction a day; the
+      // refusal stands every tick the reading does. Unlike the second lot, a
+      // scale-in is priced and sized afresh every tick, so a refused one is
+      // deferred, not dropped.
+      const refusedBy = addOnDirectionRefusal(cfg, pos.side, Date.now());
+      if (refusedBy !== null) {
+        const reason = `${refusedBy.reading.detail} — a ${pos.side} add-on leans against it`;
+        if (claimOncePerDay('live_scale_in_direction_skipped', `${pos.id}|${refusedBy.reading.direction}`)) {
+          logAutotradeEvent({
+            symbol: pos.symbol,
+            stage: 'execution',
+            action: 'live_scale_in_direction_skipped',
+            detail: addOnDirectionDetail(refusedBy, {
+              positionId: pos.id,
+              side: pos.side,
+              addQuantity: add.addQty,
+              rMultiple: add.rMultiple,
+              reason,
+            }),
+            riskProfile: cfg.riskProfile,
+          });
+        }
+        outcomes.push({
+          symbol: pos.symbol,
+          positionId: pos.id,
+          requested: false,
+          reason: `Market direction: ${reason}`,
+        });
+        continue;
+      }
 
       outcomes.push(await placeLiveScaleInAddOn(pos, add, last, targetPrice, cfg, optionsSeed));
     } catch (err) {
@@ -5933,6 +6020,22 @@ function perLotPlanFor(entryIntentId: number | null): {
   return null;
 }
 
+/** Whether the market-direction gate refused this position's second lot: its
+ *  refusal row ends the lot (see the gate's block in checkLivePerLotSecondLots). */
+function secondLotDroppedByDirection(positionId: number): boolean {
+  return listAutotradeEvents({
+    stage: 'execution',
+    actions: ['per_lot_second_lot_direction_skipped'],
+    limit: 400,
+  }).some((e) => {
+    try {
+      return (JSON.parse(e.detail ?? '{}') as { positionId?: unknown }).positionId === positionId;
+    } catch {
+      return false;
+    }
+  });
+}
+
 export async function checkLivePerLotSecondLots(): Promise<LivePerLotOutcome[]> {
   if (!config.trading.placeEnabled) return []; // server master (TRADING_ENABLED)
   const cfg = getAutotradeConfig();
@@ -5999,6 +6102,49 @@ export async function checkLivePerLotSecondLots(): Promise<LivePerLotOutcome[]> 
       // original plan, not a re-entry at a new level.
       const stopPrice = pos.initialStopPrice ?? entryOrder?.stopPrice ?? null;
       if (stopPrice === null || !(stopPrice > 0)) continue;
+
+      // The market's direction (addOnDirectionRefusal), after every check that
+      // decides whether this position has a second lot to send. The first lot
+      // passed the gate at entry; the tape can turn before the second goes.
+      // Its OWN action rather than per_lot_second_lot_blocked, for the reason
+      // given at the guardrail block below: two gates sharing one action cannot
+      // be counted apart.
+      //
+      // A REFUSED SECOND LOT IS DROPPED, NOT DEFERRED (2026-09-24, review). The
+      // lot is the entry's plan: its quantity and target were sized at entry,
+      // against the frozen entry stop, and it was meant to follow the first lot
+      // within a tick. Sent hours later when the tape turned back, it would buy
+      // at that moment's price against the same stop, with none of the entry's
+      // checks run again: long 34 @ 100, stop 98, a 17-share lot sent at 103.5
+      // risks $93.50 where the sizer budgeted $34. So the refusal row is the
+      // lot's end, and a position that has one never sends it.
+      if (secondLotDroppedByDirection(pos.id)) continue;
+      const refusedBy = addOnDirectionRefusal(cfg, pos.side, Date.now());
+      if (refusedBy !== null) {
+        const reason =
+          `${refusedBy.reading.detail} — a ${pos.side} second lot leans against it; dropped, not deferred ` +
+          '(a later send would go in at a different price against the entry stop)';
+        logAutotradeEvent({
+          symbol: pos.symbol,
+          stage: 'execution',
+          action: 'per_lot_second_lot_direction_skipped',
+          detail: addOnDirectionDetail(refusedBy, {
+            positionId: pos.id,
+            side: pos.side,
+            quantity: plan.quantity,
+            dropped: true,
+            reason,
+          }),
+          riskProfile: cfg.riskProfile,
+        });
+        outcomes.push({
+          symbol: pos.symbol,
+          positionId: pos.id,
+          requested: false,
+          reason: `Market direction: ${reason}`,
+        });
+        continue;
+      }
 
       const symbol = pos.symbol.toUpperCase();
       let last: number;

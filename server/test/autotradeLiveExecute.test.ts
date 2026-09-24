@@ -104,7 +104,13 @@ import { resetUnplaceableSymbols } from '../src/services/autotrading/unplaceable
 import { runWebullPositionsSync } from '../src/providers/webull/positions';
 import { priceMap } from '../src/services/quotes';
 import { writeDailyHaltMarker } from '../src/services/autotrading/dailyHaltMarker';
-import { readMarketDirection, type MarketDirectionReading } from '../src/services/autotrading/marketDirection';
+import {
+  holdMarketDirection,
+  readMarketDirection,
+  readMarketDirectionForTick,
+  LATEST_DIRECTION_MAX_AGE_MS,
+  type MarketDirectionReading,
+} from '../src/services/autotrading/marketDirection';
 
 const mockGetProvider = vi.mocked(getProvider);
 const mockAccountState = vi.mocked(webullAccountState);
@@ -2287,6 +2293,8 @@ describe('runLiveExecution — the market-direction gate (2026-09-23)', () => {
     expect(skipRows()).toHaveLength(1);
     expect(JSON.parse(skipRows()[0].detail!)).toMatchObject({
       direction: 'red',
+      rawDirection: 'red',
+      heldBy: null,
       indexSymbol: 'SPY',
       indexChangePct: -0.35,
       redPct: 73,
@@ -2311,6 +2319,39 @@ describe('runLiveExecution — the market-direction gate (2026-09-23)', () => {
       expect(mockPlaceOrder).toHaveBeenCalled();
       expect(skipRows()).toHaveLength(0);
     }
+  });
+
+  // A held reading (2026-09-24) refuses exactly like a red one, and the row
+  // says it was held, so the refusals a hold made can be counted apart.
+  it('refuses a long on a reading HELD red, and the row says which hold', async () => {
+    arm();
+    const bandInput = {
+      indexSymbol: 'SPY',
+      breadth: { red: 365, green: 135, flat: 0, sample: 500 },
+      indexPct: 0.2,
+      breadthPct: 65,
+      exitIndexPct: 0.1,
+      exitBreadthPct: 60,
+    };
+    const entered = holdMarketDirection({ ...bandInput, indexChangePct: -0.35 }, null, 1, '2026-09-24');
+    const held = holdMarketDirection(
+      { ...bandInput, indexChangePct: -0.15, breadth: { red: 310, green: 190, flat: 0, sample: 500 } },
+      entered.held,
+      2,
+      '2026-09-24',
+    ).reading;
+    expect(held.heldBy).toBe('hysteresis');
+
+    const outcomes = await run(signal(), held);
+    expect(outcomes[0].reason).toMatch(/^Market direction: Broad red market, held/);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(JSON.parse(skipRows()[0].detail!)).toMatchObject({
+      direction: 'red',
+      rawDirection: 'mixed',
+      heldBy: 'hysteresis',
+      indexChangePct: -0.15,
+      redPct: 62,
+    });
   });
 
   it('refuses nothing while the gate is off, even on a red day — the reading alone moves no money', async () => {
@@ -5603,6 +5644,100 @@ describe('checkLiveScaleIns', () => {
       (e) => e.action === 'live_scale_in_blocked',
     );
     expect(JSON.parse(blocked!.detail!)).toMatchObject({ reason: 'daily_drawdown_halt', dailyPnl: -1_000_000 });
+  });
+
+  // THE MARKET-DIRECTION GATE FOR ADDS (2026-09-24). An add-on is more shares
+  // in the position's direction: a long add on a broad red day is the bet the
+  // gate refuses as a fresh long. The add runs before the tick's screen, so it
+  // reads the previous tick's reading — seeded here the way the loop leaves it.
+  describe('the market-direction gate', () => {
+    const RED_TAPE = {
+      indexSymbol: 'SPY',
+      indexChangePct: -0.35,
+      breadth: { red: 365, green: 135, flat: 0, sample: 500 },
+      indexPct: 0.2,
+      breadthPct: 65,
+      exitIndexPct: 0.1,
+      exitBreadthPct: 60,
+    };
+    const GATE_ON = { ...SCALE_ON, marketDirectionGateEnabled: true };
+    const addRows = () =>
+      listAutotradeEvents({ symbol: 'AAPL', stage: 'execution' }).filter(
+        (e) => e.action === 'live_scale_in_direction_skipped',
+      );
+
+    it('refuses a long add-on on a broad red day, places nothing, and journals it once', async () => {
+      const { pos } = await openLivePosition(GATE_ON);
+      readMarketDirectionForTick(RED_TAPE, Date.now() - 130_000, etToday());
+      mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 105 }) as ReturnType<typeof getProvider>);
+      mockPlaceOrder.mockClear();
+
+      const outcomes = await checkLiveScaleIns(NO_OPTIONS_DAY);
+      expect(outcomes).toEqual([
+        {
+          symbol: 'AAPL',
+          positionId: pos.id,
+          requested: false,
+          reason: expect.stringMatching(/^Market direction: Broad red market .* a long add-on leans against it$/),
+        },
+      ]);
+      expect(mockPlaceOrder).not.toHaveBeenCalled();
+      expect(countLiveAddOns(pos.id)).toBe(0);
+      expect(addRows()).toHaveLength(1);
+      expect(JSON.parse(addRows()[0].detail!)).toMatchObject({
+        positionId: pos.id,
+        side: 'long',
+        direction: 'red',
+        rawDirection: 'red',
+        heldBy: null,
+        indexChangePct: -0.35,
+        redPct: 73,
+        readingAgeSec: expect.any(Number),
+      });
+      expect(JSON.parse(addRows()[0].detail!).readingAgeSec).toBeGreaterThanOrEqual(130);
+
+      // The refusal stands every tick the reading does; the row is once a day.
+      expect((await checkLiveScaleIns(NO_OPTIONS_DAY))[0].requested).toBe(false);
+      expect(addRows()).toHaveLength(1);
+    });
+
+    it('places the add when the last reading is too old to stand for now', async () => {
+      const { pos } = await openLivePosition(GATE_ON);
+      mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 105 }) as ReturnType<typeof getProvider>);
+      mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-ADD' });
+
+      // A reading the loop took longer ago than LATEST_DIRECTION_MAX_AGE_MS is
+      // a market it has not seen lately: it refuses nothing.
+      readMarketDirectionForTick(RED_TAPE, Date.now() - LATEST_DIRECTION_MAX_AGE_MS - 60_000, etToday());
+      expect(await checkLiveScaleIns(NO_OPTIONS_DAY)).toEqual([
+        { symbol: 'AAPL', positionId: pos.id, requested: true },
+      ]);
+      expect(countLiveAddOns(pos.id)).toBe(1);
+      expect(addRows()).toHaveLength(0);
+    });
+
+    it('lets the add through on a red day with the gate off', async () => {
+      const { pos } = await openLivePosition(SCALE_ON);
+      readMarketDirectionForTick(RED_TAPE, Date.now(), etToday());
+      mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 105 }) as ReturnType<typeof getProvider>);
+      mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-ADD' });
+
+      expect(await checkLiveScaleIns(NO_OPTIONS_DAY)).toEqual([
+        { symbol: 'AAPL', positionId: pos.id, requested: true },
+      ]);
+      expect(addRows()).toHaveLength(0);
+    });
+
+    it('lets the add through on a mixed market', async () => {
+      const { pos } = await openLivePosition(GATE_ON);
+      readMarketDirectionForTick({ ...RED_TAPE, indexChangePct: 0.1 }, Date.now(), etToday());
+      mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 105 }) as ReturnType<typeof getProvider>);
+      mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-ADD' });
+
+      expect(await checkLiveScaleIns(NO_OPTIONS_DAY)).toEqual([
+        { symbol: 'AAPL', positionId: pos.id, requested: true },
+      ]);
+    });
   });
 
   it('no-ops when the server placement master (TRADING_ENABLED) is off', async () => {

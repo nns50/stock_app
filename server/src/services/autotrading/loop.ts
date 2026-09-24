@@ -68,7 +68,7 @@ import {
   MARKET_DIRECTION_INDEX_SYMBOL,
   MarketDirectionReading,
   claimDirectionChange,
-  readMarketDirection,
+  readMarketDirectionForTick,
 } from './marketDirection';
 import { listMacroEvents } from '../../db/macroEvents';
 import { runWebullPositionsSync } from '../../providers/webull/positions';
@@ -924,17 +924,29 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     // after the tick's heaviest burst of provider calls, and a null there made
     // the reading `unknown`, which refuses nothing — so one rate-limited quote
     // could let a broad red day's longs through for that tick.
+    //
+    // The reading acted on is the HELD one (2026-09-24; holdMarketDirection):
+    // a one-sided reading stays one-sided while the tape stays inside the exit
+    // band, and through a tick the reading cannot see for up to
+    // DIRECTION_DATA_GAP_HOLD_MS. It is remembered for the next tick's
+    // scale-ins and second lots, which run before this screen.
     const freshIndexChangePct = await getMarketChangePct(MARKET_DIRECTION_INDEX_SYMBOL);
     const indexFromScreen = freshIndexChangePct === null && screenResult.indexChangePct !== null;
-    const marketDirection = readMarketDirection({
-      indexSymbol: MARKET_DIRECTION_INDEX_SYMBOL,
-      indexChangePct: freshIndexChangePct ?? screenResult.indexChangePct,
-      breadth: screenResult.breadth,
-      indexPct: config.marketDirectionIndexPct,
-      breadthPct: config.marketDirectionBreadthPct,
-    });
+    const marketDirection = readMarketDirectionForTick(
+      {
+        indexSymbol: MARKET_DIRECTION_INDEX_SYMBOL,
+        indexChangePct: freshIndexChangePct ?? screenResult.indexChangePct,
+        breadth: screenResult.breadth,
+        indexPct: config.marketDirectionIndexPct,
+        breadthPct: config.marketDirectionBreadthPct,
+        exitIndexPct: config.marketDirectionExitIndexPct,
+        exitBreadthPct: config.marketDirectionExitBreadthPct,
+      },
+      Date.now(),
+      etToday(),
+    );
     summary.marketDirection = marketDirection;
-    if (claimDirectionChange(etToday(), marketDirection.direction)) {
+    if (claimDirectionChange(etToday(), marketDirection.direction, marketDirection.heldBy)) {
       logAutotradeEvent({
         stage: 'screen',
         action: MARKET_DIRECTION_ACTION,

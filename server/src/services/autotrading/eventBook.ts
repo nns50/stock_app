@@ -70,6 +70,7 @@ export const LIVE_ACTIONS = new Set([
   'level_veto',
   'per_lot_entry_planned',
   'per_lot_second_lot_blocked',
+  'per_lot_second_lot_direction_skipped',
   'per_lot_second_lot_failed',
   'per_lot_second_lot_placed',
   'risk_atr_unreachable_skipped',

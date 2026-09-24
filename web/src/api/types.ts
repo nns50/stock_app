@@ -1682,6 +1682,12 @@ export interface AutotradeConfig {
   /** The share of the universe on the same side of its prior close that the
    *  breadth leg needs (50–100). */
   marketDirectionBreadthPct: number;
+  /** The exit band (2026-09-24): once red (green), the reading stays so while
+   *  SPY is at least this % down (up) (0–5)... */
+  marketDirectionExitIndexPct: number;
+  /** ...and at least this % of names stay red (green) (50–100). Neither is
+   *  ever applied stricter than the entry bar. */
+  marketDirectionExitBreadthPct: number;
   equityCurveDeriskEnabled: boolean;
   equityCurveLookbackDays: number;
   equityCurveDeriskCutPct: number;
@@ -2668,6 +2674,14 @@ export interface MarketDirectionReading {
   sample: number;
   indexPct: number;
   breadthPct: number;
+  /** The exit band the reading was held against, as applied (2026-09-24).
+   *  Absent on ticks persisted before then. */
+  exitIndexPct?: number;
+  exitBreadthPct?: number;
+  /** Set only when a hold kept the direction: what the tick read on its own,
+   *  and which hold kept it. */
+  rawDirection?: 'red' | 'green' | 'mixed' | 'unknown';
+  heldBy?: 'hysteresis' | 'data_gap';
   detail: string;
 }
 

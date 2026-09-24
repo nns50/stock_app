@@ -2167,10 +2167,65 @@ describe('runAutotradeLoopTick', () => {
       expect(directionRows()).toHaveLength(1);
 
       // ...and a change writes one row: SPY back above the bar reads mixed.
-      mockMarketChange.mockResolvedValue(-0.1);
+      // (−0.05%: outside the exit band too, so the hold lets go.)
+      mockMarketChange.mockResolvedValue(-0.05);
       await runAutotradeLoopTick();
       expect(directionRows()).toHaveLength(2);
       expect(directionRows()[1][0]).toMatchObject({ detail: { direction: 'mixed' } });
+    });
+
+    // THE HOLD (2026-09-24; marketDirection.ts holdMarketDirection). The exit
+    // band is two settings the loop hands to the reading, and the held reading
+    // is what both live books act on — so it is asserted where they receive it,
+    // not only in the pure function's tests.
+    it('holds a red reading inside the exit band, hands the HELD reading to both live books, and journals the hold', async () => {
+      armLive();
+      setAutotradeConfig({ liveOptionsEnabled: true, marketDirectionGateEnabled: true });
+      armScreenAndDecide();
+      const screenWith = (redNames: number) => ({
+        generatedAt: Date.now(),
+        candidates: [candidate('AAPL', 2)],
+        excluded: [],
+        skipped: [],
+        errors: [],
+        rejected: [],
+        relVolMedian: null,
+        breadth: { red: redNames, green: 500 - redNames, flat: 0, sample: 500 },
+        indexChangePct: null,
+        discovery: { universeCount: 500, moversCount: 0, scannedCount: 500, moversError: null },
+      });
+      mockLiveExecute.mockResolvedValue([]);
+      mockLiveOptionsExecute.mockResolvedValue([]);
+      const directionRows = () => mockLogEvent.mock.calls.filter((c) => c[0].action === 'market_direction_read');
+
+      // 73% red, SPY −0.35%: red on the bar.
+      mockScreen.mockResolvedValue(screenWith(365));
+      mockMarketChange.mockResolvedValue(-0.35);
+      await runAutotradeLoopTick();
+
+      // 62% red, SPY −0.15%: under the 0.2 / 65 bar on BOTH legs, inside the
+      // default 0.1 / 60 band on both. Chosen so a loop that handed the entry
+      // bar in place of either exit setting would read mixed here.
+      mockScreen.mockResolvedValue(screenWith(310));
+      mockMarketChange.mockResolvedValue(-0.15);
+      await runAutotradeLoopTick();
+      const held = expect.objectContaining({
+        direction: 'red',
+        rawDirection: 'mixed',
+        heldBy: 'hysteresis',
+        exitIndexPct: 0.1,
+        exitBreadthPct: 60,
+      });
+      expect(mockLiveExecute.mock.calls[1][5]).toEqual(held);
+      expect(mockLiveOptionsExecute.mock.calls[1][4]).toBe(mockLiveExecute.mock.calls[1][5]);
+      expect(directionRows()).toHaveLength(2);
+      expect(directionRows()[1][0]).toMatchObject({ detail: { direction: 'red', heldBy: 'hysteresis' } });
+
+      // The exit band is the operator's: raised to 65%, the same tape lets go.
+      setAutotradeConfig({ marketDirectionExitBreadthPct: 65 });
+      await runAutotradeLoopTick();
+      expect(mockLiveExecute.mock.calls[2][5]).toEqual(expect.objectContaining({ direction: 'mixed' }));
+      expect(directionRows()[2][0]).toMatchObject({ detail: { direction: 'mixed' } });
     });
 
     // The gate's pre-open review (2026-09-23): the index is fetched fresh after
