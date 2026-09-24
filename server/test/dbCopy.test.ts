@@ -49,6 +49,20 @@ describe('databaseCopyPath — a copy, never the database an app runs on', () =>
     expect(databaseCopyPath('link.db', { DATABASE_PATH: live }, dir)).toMatchObject({ ok: false });
   });
 
+  it('refuses the file server/.env names, which the environment does not see yet', () => {
+    // The check runs before config.ts loads server/.env, so a DATABASE_PATH set
+    // only there is read from the file itself.
+    const envFile = path.join(dir, 'server.env');
+    fs.writeFileSync(envFile, `PORT=3001\nDATABASE_PATH=${live}\n`);
+    expect(databaseCopyPath(live, {}, dir, envFile)).toEqual({
+      ok: false,
+      reason: expect.stringContaining('the app itself runs on'),
+    });
+    expect(databaseCopyPath('copy.db', {}, dir, envFile)).toEqual({ ok: true, path: fs.realpathSync(copy) });
+    // A missing file is no objection.
+    expect(databaseCopyPath('copy.db', {}, dir, path.join(dir, 'absent.env'))).toMatchObject({ ok: true });
+  });
+
   it('accepts a copy, resolved against the directory the command was typed in', () => {
     expect(databaseCopyPath('copy.db', { DATABASE_PATH: live }, dir)).toEqual({
       ok: true,

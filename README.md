@@ -505,11 +505,12 @@ npm run backfill:tape -- --db ./copy.db --sessions 60 --out tape.json
 `--db` is required and is resolved from the directory you typed the command in. The
 script refuses a path that does not exist and any path the app itself opens (the
 default `server/data/stock_app.db`, the container's `/app/data/stock_app.db`, or
-whatever `DATABASE_PATH` is set to). `--sessions` sets how many completed sessions to
-rebuild (default 40, the scan's own window). Breadth reads the whole universe, as the loop
-does; `--sample N` reads a seeded N-name sample instead (`--seed`, default 20260926) for a
-key that is rate-limited, at a measured cost in accuracy (below). `--out` also writes the
-whole result as JSON. It needs `POLYGON_API_KEY`: about 1,100 calls on a first run
+whatever `DATABASE_PATH` is set to, in the environment or in `server/.env`). `--sessions`
+sets how many completed sessions to rebuild (default 40, the scan's own window). Breadth
+reads the whole universe, as the loop does; `--sample N` reads a seeded N-name sample
+instead (`--seed`, default 20260926) for a key that is rate-limited, at a measured cost
+in accuracy (below). `--out` also writes the whole result as JSON. It needs
+`POLYGON_API_KEY`: about 1,100 calls on a first run
 (5-minute and daily bars for every universe name, SPY, and the few names a short replay
 needs beyond them), cached in the copy's `backtest_bars`, so a re-run fetches only what is
 new. Polygon's free tier allows 5 calls a minute; with a key not held to that, a first run
