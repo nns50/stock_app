@@ -62,8 +62,12 @@ import {
   getLiveOrder,
   getLiveEntryOrderForPosition,
   entryIntentIdForPosition,
+  setLiveOrderLegClientOrderIds,
+  BracketLegIds,
   LiveOrderMeta,
 } from '../../db/autotradeLiveOrders';
+import { missStreakOf } from '../../db/webullMissStreak';
+import { contractKey } from '../../providers/webull/positions';
 import { computeScaleIn } from './scaleIn';
 import { checkSessionWindow } from './executionGuards';
 import { computeEquityCurveDerisk } from './equityCurveDerisk';
@@ -88,7 +92,11 @@ import {
 import { evaluateStagnation, type SlotPressure } from './stagnationExit';
 import { classifySecondBracketRefusal, lotTargetPrice, splitEntryForPerLot } from './perLotBrackets';
 import { claimOncePerDay } from './oncePerDayEvents';
-import { resolveUnlistedFromOrderDetail } from './orderDetailFallback';
+import {
+  FilledBracketLegCandidate,
+  resolveFilledLegsFromOrderDetail,
+  resolveUnlistedFromOrderDetail,
+} from './orderDetailFallback';
 import { evaluateEndOfDayFlatten, evaluateEntryCutoff } from './endOfDayFlatten';
 import { evaluateStopAdjust } from './stopAdjust';
 import { evaluateScaleOut } from './scaleOut';
@@ -1392,6 +1400,9 @@ export async function attemptLiveEntry(
     // paths below — including the ambiguous one, where the order may well have
     // reached the broker and a later modify would still need to name its group.
     clientComboOrderId: broker.clientComboOrderId ?? null,
+    // Each exit leg's own id (#147), on both paths for the same reason: the
+    // reconcile asks a leg by this id when the sync finds the shares gone.
+    legClientOrderIds: broker.legClientOrderIds ?? null,
   };
   if (!broker.ok && broker.ambiguous) {
     // We do NOT know whether this order reached the broker, so it must not be
@@ -2475,6 +2486,16 @@ export async function reconcileLiveOrders(): Promise<LiveReconcileOutcome[]> {
     statuses,
   );
 
+  // A bracket leg the lists have not shown filled yet (#147): once the sync
+  // has found the position's shares gone, its stored legs are asked by Order
+  // Detail, and a FILLED answer lands in `statuses` for the loop below to book
+  // like a listed leg. See resolveFilledLegsFromOrderDetail.
+  await resolveFilledLegsFromOrderDetail(
+    accountId,
+    filledBracketLegCandidates(accountId, pending, intentsById),
+    statuses,
+  );
+
   const outcomes: LiveReconcileOutcome[] = [];
   for (const meta of pending) {
     const intent = intentsById.get(meta.intentId);
@@ -2529,6 +2550,49 @@ export async function reconcileLiveOrders(): Promise<LiveReconcileOutcome[]> {
     outcomes.push({ intentId: intent.id, symbol: meta.symbol, ...changed });
   }
   return outcomes;
+}
+
+/**
+ * The filled bracket entries whose shares the broker no longer shows (#147):
+ * a filled bracket entry, its position still open in the ledger, at least one
+ * stored exit-leg id, and a sync that missed the position's shares at least
+ * once. One miss is enough here, where the sync waits for two before it acts:
+ * this only ASKS, and only a leg the broker itself reports FILLED is booked.
+ */
+function filledBracketLegCandidates(
+  accountId: string,
+  pending: LiveOrderMeta[],
+  intentsById: Map<number, OrderIntentRecord>,
+): FilledBracketLegCandidate[] {
+  const out: FilledBracketLegCandidate[] = [];
+  for (const meta of pending) {
+    if (meta.role !== 'entry' || meta.positionId === null) continue;
+    if (!meta.takeProfitClientOrderId && !meta.stopLossClientOrderId) continue;
+    const intent = intentsById.get(meta.intentId);
+    if (!intent || intent.state !== 'filled' || !intent.isBracket) continue;
+    const pos = getPosition(meta.positionId);
+    if (!pos || pos.status !== 'open') continue;
+    const missStreak = missStreakOf(accountId, contractKey(pos));
+    if (missStreak < 1) continue;
+    out.push({
+      intent,
+      symbol: meta.symbol,
+      positionId: meta.positionId,
+      riskProfile: meta.riskProfile,
+      takeProfitClientOrderId: meta.takeProfitClientOrderId,
+      stopLossClientOrderId: meta.stopLossClientOrderId,
+      missStreak,
+    });
+  }
+  return out;
+}
+
+/** Point a position's entry row at the legs a re-arm just placed (#147). The
+ *  entry bracket's own legs are cancelled by then, so a leg fill is found only
+ *  by asking these. No entry row (an imported position): nothing to point. */
+function recordRearmedLegs(positionId: number, legs: BracketLegIds | undefined): void {
+  const entry = getLiveEntryOrderForPosition(positionId);
+  if (entry) setLiveOrderLegClientOrderIds(entry.intentId, legs ?? {});
 }
 
 function reconcileOneLiveOrder(
@@ -3858,6 +3922,7 @@ export async function checkLiveBracketProtection(now: number = Date.now()): Prom
       rearmed = rearm.ok;
       rearmNote = rearm.ok ? null : rearm.ambiguous ? 'unanswered' : (rearm.error ?? 'unknown');
       if (rearm.ok) {
+        recordRearmedLegs(pos.id, rearm.legClientOrderIds);
         logAutotradeEvent({
           symbol,
           stage: 'execution',
@@ -4571,6 +4636,7 @@ async function cancelReplaceBracket(
         pos.targetPrice ?? undefined,
         pos.stopPrice ?? undefined,
       );
+      if (restored.ok) recordRearmedLegs(pos.id, restored.legClientOrderIds);
       logAutotradeEvent({
         symbol,
         stage: 'execution',
@@ -4600,6 +4666,7 @@ async function cancelReplaceBracket(
     return { ok: false, reason: `re-bracket failed: ${rearm.error ?? 'unknown'}` };
   }
 
+  recordRearmedLegs(pos.id, rearm.legClientOrderIds);
   logAutotradeEvent({
     symbol,
     stage: 'execution',
@@ -5582,6 +5649,7 @@ async function placeLiveScaleInAddOn(
     riskProfile,
     addonOfPositionId: pos.id,
     accountId,
+    legClientOrderIds: broker.legClientOrderIds ?? null,
   };
   if (!broker.ok && broker.ambiguous) {
     // Unknown outcome, so not terminal — see attemptLiveEntry's own branch.
@@ -5859,6 +5927,31 @@ export async function checkLiveEquityStopAdjusts(): Promise<LiveStopAdjustOutcom
       continue;
     }
     const found = restingStopLeg(listed.orders, symbol, exitSide);
+    if (!found.ok && missStreakOf(accountId, contractKey(pos)) >= 1) {
+      // THE SHARES ARE GONE, NOT THE STOP (2026-09-24, #147). A bracket leg that
+      // filled leaves no resting stop, and the ledger keeps the position open
+      // until the reconcile books the fill. This tick's sync has already missed
+      // the shares, so a missing stop is the fill, not a defect: HOOD 09-18 and
+      // MRNA 09-22 wrote `live_stop_adjust_blocked` on exactly this, and the
+      // advisor counted each as an execution defect. Once per position a day,
+      // on its own key so the "already tighter" skip below keeps its own row.
+      if (claimOncePerDay('live_stop_adjust_skipped', `${pos.id}:shares_gone`)) {
+        logAutotradeEvent({
+          symbol,
+          stage: 'execution',
+          action: 'live_stop_adjust_skipped',
+          detail: {
+            positionId: pos.id,
+            kind: decision.kind,
+            wanted: decision.newStop,
+            reason: 'the broker no longer shows the shares: the stop leg has most likely filled',
+          },
+          riskProfile: cfg.riskProfile,
+        });
+      }
+      outcomes.push({ symbol, positionId: pos.id, adjusted: false, reason: 'shares gone at the broker' });
+      continue;
+    }
     if (!found.ok) {
       logAutotradeEvent({
         symbol,
@@ -6224,6 +6317,7 @@ export async function checkLivePerLotSecondLots(): Promise<LivePerLotOutcome[]> 
         riskProfile: cfg.riskProfile,
         addonOfPositionId: pos.id,
         accountId,
+        legClientOrderIds: broker.legClientOrderIds ?? null,
       };
 
       if (!broker.ok && broker.ambiguous) {

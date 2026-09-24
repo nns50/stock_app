@@ -1365,6 +1365,17 @@ function migrate(): void {
     db.exec('ALTER TABLE autotrade_live_orders ADD COLUMN client_combo_order_id TEXT');
   }
 
+  // 2026-09-24 (#147): each exit leg's own client_order_id. Order Detail
+  // answers for a leg only by the leg's id, and the order lists show a filled
+  // leg minutes late, so without these the reconcile could not ask in time and
+  // the sync booked a quote instead of the fill.
+  if (!aloComboCols.some((c) => c.name === 'tp_client_order_id')) {
+    db.exec('ALTER TABLE autotrade_live_orders ADD COLUMN tp_client_order_id TEXT');
+  }
+  if (!aloComboCols.some((c) => c.name === 'sl_client_order_id')) {
+    db.exec('ALTER TABLE autotrade_live_orders ADD COLUMN sl_client_order_id TEXT');
+  }
+
   const aloEqCols = db.prepare('PRAGMA table_info(autotrade_live_orders)').all() as { name: string }[];
   if (!aloEqCols.some((c) => c.name === 'account_id')) {
     db.exec('ALTER TABLE autotrade_live_orders ADD COLUMN account_id TEXT');

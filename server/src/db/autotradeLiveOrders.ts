@@ -51,6 +51,14 @@ export interface LiveOrderMeta {
    *  later modify can name the combo group. Null for pre-2026-09-04 rows and
    *  for orders placed without a bracket. */
   clientComboOrderId: string | null;
+  /** Each exit leg's own client_order_id (2026-09-24, #147): the entry
+   *  bracket's legs at placement, replaced by a re-armed bracket's legs when
+   *  one is placed over the position. Order Detail answers for a leg only by
+   *  the leg's id, and it answers in seconds where the order lists take
+   *  minutes. Null for rows placed before that date, and for a bracket
+   *  without that leg. */
+  takeProfitClientOrderId: string | null;
+  stopLossClientOrderId: string | null;
   marketRegime: string | null;
   mlRegime: string | null;
   regimeTargetFactor: number | null;
@@ -88,6 +96,8 @@ interface Row {
   entry_score: number | null;
   entry_components: string | null;
   client_combo_order_id: string | null;
+  tp_client_order_id: string | null;
+  sl_client_order_id: string | null;
   market_regime: string | null;
   ml_regime: string | null;
   regime_target_factor: number | null;
@@ -113,6 +123,8 @@ function mapRow(r: Row): LiveOrderMeta {
     grade: r.grade ?? null,
     entryScore: r.entry_score ?? null,
     clientComboOrderId: r.client_combo_order_id ?? null,
+    takeProfitClientOrderId: r.tp_client_order_id ?? null,
+    stopLossClientOrderId: r.sl_client_order_id ?? null,
     entryComponents: (() => {
       if (!r.entry_components) return null;
       try {
@@ -161,11 +173,12 @@ export function recordLiveOrder(input: {
   stopSqueezeRatio?: number | null;
   plannedStopDistancePct?: number | null;
   clientComboOrderId?: string | null;
+  legClientOrderIds?: BracketLegIds | null;
 }): LiveOrderMeta {
   const now = Date.now();
   db.prepare(
-    `INSERT INTO autotrade_live_orders (intent_id, symbol, role, stop_price, target_price, risk_amount, risk_profile, position_id, account_id, grade, entry_score, entry_components, market_regime, ml_regime, regime_target_factor, market_atr_pct, entry_vwap, stop_squeeze_ratio, planned_stop_distance_pct, client_combo_order_id, created_at)
-     VALUES (?, ?, 'entry', ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO autotrade_live_orders (intent_id, symbol, role, stop_price, target_price, risk_amount, risk_profile, position_id, account_id, grade, entry_score, entry_components, market_regime, ml_regime, regime_target_factor, market_atr_pct, entry_vwap, stop_squeeze_ratio, planned_stop_distance_pct, client_combo_order_id, tp_client_order_id, sl_client_order_id, created_at)
+     VALUES (?, ?, 'entry', ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     input.intentId,
     input.symbol.toUpperCase(),
@@ -185,9 +198,29 @@ export function recordLiveOrder(input: {
     input.stopSqueezeRatio ?? null,
     input.plannedStopDistancePct ?? null,
     input.clientComboOrderId ?? null,
+    input.legClientOrderIds?.takeProfit ?? null,
+    input.legClientOrderIds?.stopLoss ?? null,
     now,
   );
   return getLiveOrder(input.intentId)!;
+}
+
+/** The exit legs' own client_order_ids, as the placement returns them. */
+export interface BracketLegIds {
+  takeProfit?: string;
+  stopLoss?: string;
+}
+
+/** Point an entry row at a re-armed bracket's legs (#147). The entry's own
+ *  legs are cancelled by the time a re-arm places new ones, so the row names
+ *  the legs actually resting over the position. A leg the re-arm did not
+ *  place is cleared rather than left naming a cancelled order. */
+export function setLiveOrderLegClientOrderIds(intentId: number, legs: BracketLegIds): void {
+  db.prepare('UPDATE autotrade_live_orders SET tp_client_order_id = ?, sl_client_order_id = ? WHERE intent_id = ?').run(
+    legs.takeProfit ?? null,
+    legs.stopLoss ?? null,
+    intentId,
+  );
 }
 
 /** Record that `intentId` is an autotrade-placed live-equity closing order
@@ -226,11 +259,12 @@ export function recordLiveAddOnOrder(input: {
   riskProfile: string;
   addonOfPositionId: number;
   accountId?: string | null;
+  legClientOrderIds?: BracketLegIds | null;
 }): LiveOrderMeta {
   const now = Date.now();
   db.prepare(
-    `INSERT INTO autotrade_live_orders (intent_id, symbol, role, stop_price, target_price, risk_amount, risk_profile, position_id, account_id, addon_of_position_id, created_at)
-     VALUES (?, ?, 'entry', ?, ?, ?, ?, NULL, ?, ?, ?)`,
+    `INSERT INTO autotrade_live_orders (intent_id, symbol, role, stop_price, target_price, risk_amount, risk_profile, position_id, account_id, addon_of_position_id, tp_client_order_id, sl_client_order_id, created_at)
+     VALUES (?, ?, 'entry', ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
   ).run(
     input.intentId,
     input.symbol.toUpperCase(),
@@ -240,6 +274,8 @@ export function recordLiveAddOnOrder(input: {
     input.riskProfile,
     input.accountId ?? null,
     input.addonOfPositionId,
+    input.legClientOrderIds?.takeProfit ?? null,
+    input.legClientOrderIds?.stopLoss ?? null,
     now,
   );
   return getLiveOrder(input.intentId)!;

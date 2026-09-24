@@ -32,6 +32,15 @@ export function bumpMissStreak(accountId: string, contractKey: string): number {
  * loop's sync and the background scheduler both bump the same row, so in
  * production a streak of 4 has been as little as two minutes (COIN, 2026-09-21).
  */
+/** The current run of consecutive syncs that did not find `contractKey` at
+ *  the broker; 0 when it was last seen, or never missed. Read-only. */
+export function missStreakOf(accountId: string, contractKey: string): number {
+  const row = db
+    .prepare('SELECT streak FROM webull_miss_streak WHERE account_id = ? AND contract_key = ?')
+    .get(accountId, contractKey) as { streak: number } | undefined;
+  return row?.streak ?? 0;
+}
+
 export function missStreakStartedAt(accountId: string, contractKey: string): number | null {
   const row = db
     .prepare(
