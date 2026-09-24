@@ -14750,6 +14750,11 @@ a replay would have booked its time exit there.
   cuts the head off anymore. A 1-minute session is 390 bars and two 5-minute sessions are
   156, both past the old default of 120. A `limit`, when passed, still keeps the most
   recent bars.
+- **So does the candle route** (`GET /api/candles/:symbol`; added before merge, on
+  review). Its query gave `limit` a default of 200 and always passed it on, which cut
+  the head off a window one layer up: a 1-minute session lost 09:30–12:49. With a
+  `start` it now passes no limit; without one it keeps the chart's 200. No in-app
+  caller sends a window, but this is the endpoint the checks below curl.
 - **Webull hands the window to Yahoo when the start day is short.** On intraday bars
   that now also covers an oldest bar on the start day that is later than the 09:30 open.
   A session with no print in its first bar lands there too, harmlessly: Yahoo serves the
