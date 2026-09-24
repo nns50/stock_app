@@ -182,6 +182,9 @@ export interface FilledBracketLegCandidate {
   stopLossClientOrderId: string | null;
   /** The sync's consecutive misses for these shares, for the journal. */
   missStreak: number;
+  /** What the ledger still holds of the position. A leg fill is booked from
+   *  here only when it covers all of it (resolveFilledLegsFromOrderDetail). */
+  remainingQuantity: number;
 }
 
 /**
@@ -189,6 +192,15 @@ export interface FilledBracketLegCandidate {
  * leg into its entry's status in `statuses`, where the reconcile books it.
  * Read-only toward the broker. A candidate whose listed legs already show a
  * FILLED exit is skipped: the lists answered.
+ *
+ * ONLY A WHOLE, PRICED FILL IS FOLDED (2026-09-25, on review). Nothing records
+ * that a leg read here was booked, and the booking takes min(filled, left), so
+ * a leg that fills less than the ledger still holds (a scale-out remainder's
+ * bracket while the sale itself is unbooked, an add-on's own bracket) would be
+ * booked again on the next tick while the gap stays open. And a FILLED reply
+ * with no price, or a price of 0, would book the position at 0 or at the
+ * entry row's original stop. Either is left to the listed legs, the sync and
+ * the correction pass, and journaled once a day, as is a lookup that fails.
  */
 export async function resolveFilledLegsFromOrderDetail(
   accountId: string,
@@ -207,7 +219,53 @@ export async function resolveFilledLegsFromOrderDetail(
       if (budget <= 0) return;
       budget -= 1;
       const detail = await webullOrderDetail(accountId, leg.clientOrderId);
-      if (!detail.ok || !detail.found || detail.status !== 'FILLED') continue;
+      if (!detail.ok) {
+        if (claimOncePerDay('live_bracket_leg_detail_unresolved', `${c.intent.id}:${leg.clientOrderId}`)) {
+          logAutotradeEvent({
+            symbol: c.symbol,
+            stage: 'execution',
+            action: 'live_bracket_leg_detail_unresolved',
+            detail: {
+              intentId: c.intent.id,
+              positionId: c.positionId,
+              leg: leg.comboType === 'STOP_LOSS' ? 'stop' : 'target',
+              clientOrderId: leg.clientOrderId,
+              error: detail.error ?? 'unreadable',
+            },
+            riskProfile: c.riskProfile,
+          });
+        }
+        continue;
+      }
+      if (!detail.found || detail.status !== 'FILLED') continue;
+      const price = detail.filledPrice;
+      const qty = detail.filledQty;
+      const whole = typeof qty === 'number' && qty >= c.remainingQuantity - 1e-9;
+      const priced = typeof price === 'number' && Number.isFinite(price) && price > 0;
+      if (!whole || !priced) {
+        if (claimOncePerDay('live_bracket_leg_detail_skipped', `${c.intent.id}:${leg.clientOrderId}`)) {
+          logAutotradeEvent({
+            symbol: c.symbol,
+            stage: 'execution',
+            action: 'live_bracket_leg_detail_skipped',
+            detail: {
+              intentId: c.intent.id,
+              positionId: c.positionId,
+              leg: leg.comboType === 'STOP_LOSS' ? 'stop' : 'target',
+              clientOrderId: leg.clientOrderId,
+              filledPrice: price ?? null,
+              filledQty: qty ?? null,
+              remainingQuantity: c.remainingQuantity,
+              reason: !priced
+                ? 'the broker reported the leg filled with no usable price'
+                : 'the leg filled fewer shares than the ledger still holds',
+            },
+            riskProfile: c.riskProfile,
+          });
+        }
+        // Filled is filled: the other leg of an OCO cannot fill as well.
+        break;
+      }
       // Which leg filled is known from which of OUR ids answered, not from a
       // label in the broker's reply, so the exit reason is positive.
       const filled: WebullOrderLeg = {

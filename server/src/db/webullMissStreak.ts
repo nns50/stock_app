@@ -8,18 +8,22 @@ export const MISS_CONFIRM_THRESHOLD = 2;
 
 /** Record one more consecutive "not found in this preview" observation for
  *  (accountId, contractKey) and return the new streak. The first miss of a run
- *  also stamps when the run began (see missStreakStartedAt). */
-export function bumpMissStreak(accountId: string, contractKey: string): number {
+ *  also stamps when the run began (see missStreakStartedAt). `brokerQty` is
+ *  what the broker still showed for it (0 when none at all); a caller that
+ *  does not know leaves it null (missStreakBrokerQty). */
+export function bumpMissStreak(accountId: string, contractKey: string, brokerQty: number | null = null): number {
   const now = Date.now();
   // In an ON CONFLICT update, a bare column name is the row's OLD value, so a
   // legacy row with no start recorded takes its previous bump as the start.
   db.prepare(
-    `INSERT INTO webull_miss_streak (account_id, contract_key, streak, updated_at, first_missed_at) VALUES (?, ?, 1, ?, ?)
+    `INSERT INTO webull_miss_streak (account_id, contract_key, streak, updated_at, first_missed_at, broker_qty)
+     VALUES (?, ?, 1, ?, ?, ?)
      ON CONFLICT(account_id, contract_key) DO UPDATE SET
        streak = streak + 1,
        first_missed_at = COALESCE(first_missed_at, updated_at),
-       updated_at = excluded.updated_at`,
-  ).run(accountId, contractKey, now, now);
+       updated_at = excluded.updated_at,
+       broker_qty = excluded.broker_qty`,
+  ).run(accountId, contractKey, now, now, brokerQty);
   const row = db
     .prepare('SELECT streak FROM webull_miss_streak WHERE account_id = ? AND contract_key = ?')
     .get(accountId, contractKey) as { streak: number } | undefined;
@@ -39,6 +43,19 @@ export function missStreakOf(accountId: string, contractKey: string): number {
     .prepare('SELECT streak FROM webull_miss_streak WHERE account_id = ? AND contract_key = ?')
     .get(accountId, contractKey) as { streak: number } | undefined;
   return row?.streak ?? 0;
+}
+
+/**
+ * The shares the broker still showed on the latest miss (2026-09-25, #147), or
+ * null when unknown: no current miss, or a bump that did not say. A miss is ANY
+ * gap between the ledger and the broker; "the shares are gone" is only a gap
+ * to 0, which is what a filled bracket leg leaves.
+ */
+export function missStreakBrokerQty(accountId: string, contractKey: string): number | null {
+  const row = db
+    .prepare('SELECT broker_qty AS brokerQty FROM webull_miss_streak WHERE account_id = ? AND contract_key = ?')
+    .get(accountId, contractKey) as { brokerQty: number | null } | undefined;
+  return row?.brokerQty ?? null;
 }
 
 export function missStreakStartedAt(accountId: string, contractKey: string): number | null {

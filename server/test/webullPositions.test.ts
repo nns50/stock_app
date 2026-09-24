@@ -12,6 +12,7 @@ import {
   syncClosedWebullPositions,
   runWebullPositionsSync,
   comparePositionsToBroker,
+  contractKey,
   BRACKET_RECONCILE_GRACE_MS,
 } from '../src/providers/webull/positions';
 import { priceMap } from '../src/services/quotes';
@@ -19,7 +20,7 @@ import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { createIntent, transitionIntent } from '../src/db/orders';
 import { recordLiveExitOrder, recordLiveOrder, setLiveOrderPositionId } from '../src/db/autotradeLiveOrders';
 import { etToday } from '../src/util/marketDate';
-import { bumpMissStreak, missStreakStartedAt } from '../src/db/webullMissStreak';
+import { bumpMissStreak, missStreakBrokerQty, missStreakStartedAt } from '../src/db/webullMissStreak';
 
 vi.mock('../src/services/quotes', () => ({ priceMap: vi.fn() }));
 
@@ -664,6 +665,30 @@ describe('syncClosedWebullPositions', () => {
 // several hours, each booking a fabricated realized loss). See
 // webull_miss_streak's table comment (db/index.ts).
 describe('miss-streak debounce (flapping-close bug fix)', () => {
+  it('records what the broker still showed on each miss: none when gone, the count when partial (#147)', async () => {
+    // The reconcile's Order Detail read and the ratchet treat a position's
+    // shares as GONE only on a miss with the broker at 0 (2026-09-25). This is
+    // the one writer of that number, so it is asked here, through the sync.
+    const lot = (symbol: string) =>
+      createPosition({
+        assetType: 'stock',
+        symbol,
+        side: 'long',
+        quantity: 10,
+        entryPrice: 3.79,
+        entryDate: '2026-07-09',
+        tags: ['webull'],
+        accountId: 'ACC1',
+      });
+    const gone = lot('IOTR');
+    const trimmed = lot('KC');
+    // One sync, each on its first miss: IOTR not held at all, KC 4 of 10.
+    mockPositions([{ symbol: 'KC', asset_type: 'STOCK', quantity: '4', cost_price: '3.79' }]);
+    await syncClosedWebullPositions('ACC1');
+    expect(missStreakBrokerQty('ACC1', contractKey(gone))).toBe(0);
+    expect(missStreakBrokerQty('ACC1', contractKey(trimmed))).toBe(4);
+  });
+
   it('does NOT close on a single missing observation', async () => {
     const p = createPosition({
       assetType: 'stock',

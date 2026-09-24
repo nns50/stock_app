@@ -14735,26 +14735,47 @@ request was built and then lost with it.
   `webullPlaceOrder` and `webullPlaceStandaloneBracket` on an accepted AND an unanswered
   placement). The entry bracket's legs go on the entry row (`tp_client_order_id`,
   `sl_client_order_id`). A re-armed bracket's legs replace them when the re-arm succeeds:
-  the protection sweep, the scale-out's remainder bracket, and its full-size restore.
-  Scale-in add-ons and per-lot second lots keep their own.
+  the protection sweep, the scale-out's remainder bracket, and its full-size restore. The
+  row written is the position's newest entry-order row, which is the add-on's once a
+  scale-in exists. Scale-in add-ons and per-lot second lots keep their own. A re-arm that
+  got no broker answer, and one placed by hand (`POST /live/standalone-bracket`), record
+  no ids.
 - **The reconcile asks the legs directly** (`resolveFilledLegsFromOrderDetail`).
   - It asks for a filled bracket entry whose position is still open and has stored leg
-    ids, once the sync has missed the shares at least once (`missStreakOf`).
+    ids, once the sync's latest miss found NONE of the shares (`sharesGoneAtBroker`: a
+    miss with `broker_qty` 0 on the streak row). A partial gap is not a filled leg.
+  - It skips a position whose own close is already working (a time exit, the end-of-day
+    flatten), and asks the newest positions first.
   - It reads the stop, then the take-profit, by Order Detail: at most four legs a tick.
   - A FILLED answer is folded into the entry's legs, and the code that books a listed leg
-    books it. The price is the fill; `stop` or `target` comes from which of the app's own
+    books it, only when it covers the whole quantity the ledger still holds at a price
+    above 0. The price is the fill; `stop` or `target` comes from which of the app's own
     ids answered, not from a label in the reply.
   - Journal: `live_bracket_leg_from_detail`, once per order a day. It says which leg filled
-    and what the lists still showed.
+    and what the lists still showed. A FILLED answer not folded writes
+    `live_bracket_leg_detail_skipped` with why, and a read that fails writes
+    `live_bracket_leg_detail_unresolved`, each once per leg a day.
 - **Nothing else moves.** A leg read as working, cancelled or partial books nothing. The
   sync's grace and the correction still cover what this does not settle: a position the
-  app did not place, a row placed before this change, a close made by hand.
+  app did not place, a row placed before this change, a close made by hand, an entry past
+  the lists' seven-day window, a stop-out before the lists show the entry filled (the
+  intent is still `acknowledged`, so it is not a candidate), a re-arm that recorded no
+  ids, and positions beyond the four lookups a tick.
+- **Why only a whole, priced fill** (2026-09-25, on review). Nothing records that a leg
+  read here was booked, and the booking takes `min(filled, left)`. A leg that fills less
+  than the ledger still holds (a scale-out remainder's bracket while the sale itself is
+  unbooked, an add-on's own bracket) would be booked again on every tick the gap stayed
+  open. A FILLED reply with a price of 0 would book the position at 0, and one with no
+  price at the entry row's original stop. A double fill of both legs is not flagged here
+  the way the listed path flags it: once the stop answers FILLED, the target is not
+  asked.
 - **The ratchet.** A position whose stop has filled has no resting stop, and it stays open
   in the ledger until its fill is booked. The ratchet wrote `live_stop_adjust_blocked` on
   that every tick (HOOD 09-18, MRNA 09-22), and the advisor read each as an execution
-  defect. When the sync has already missed the shares, it now writes
-  `live_stop_adjust_skipped` once a day instead. With the shares still showing, a missing
-  stop is blocked as before.
+  defect. When the sync's latest miss found none of the shares, it now writes
+  `live_stop_adjust_skipped` once a day instead. With any of the shares still showing (a
+  hand trim with the bracket cancelled leaves shares with no stop), a missing stop is
+  blocked as before.
 
 **Timing.** The sync misses the shares during a tick (or during the 60-second background
 sync), and the next tick's reconcile asks. So a fill is booked about one tick, roughly two
@@ -14770,15 +14791,25 @@ only a leg the broker itself reports FILLED is booked.
   - the stop is booked at the Order Detail fill as `stop`, the take-profit is never asked,
     and one row names the leg and what the lists said;
   - a filled take-profit books as `target`;
-  - nothing is asked while the broker still shows the shares;
-  - a leg still working books nothing, and both legs are asked, the stop first.
+  - nothing is asked while the broker still shows all or some of the shares;
+  - a leg still working books nothing, and both legs are asked, the stop first;
+  - the fill is booked once, and a second tick asks nothing;
+  - a leg that filled fewer shares than the ledger holds, and a fill at a price of 0, book
+    nothing and write one skip row; a failed read writes one unresolved row per leg;
+  - a position whose own close is working is not asked about.
+- **The sync** (`webullPositions.test.ts`): on a first miss it records 0 for a contract
+  not held at all and the held count for one trimmed.
 - **Re-arm:** the entry row points at the re-armed bracket's legs.
-- **Ratchet:** with the shares missed there is one skip row and no block; without the miss
-  a missing stop is still blocked.
+- **Ratchet:** with none of the shares showing there is one skip row and no block; with
+  some showing, or no miss, a missing stop is still blocked.
 
-Eight mutations, each caught: the miss gate removed, any status booked, the legs' types
-swapped, the ids not stored at placement, a re-arm not recorded, the ratchet ignoring the
-miss, the answer not folded into the reconcile's statuses, and the extractor's ids swapped.
+Seventeen mutations, each caught. From the first build: the miss gate removed, any status
+booked, the legs' types swapped, the ids not stored at placement, a re-arm not recorded,
+the ratchet ignoring the miss, the answer not folded into the reconcile's statuses, and
+the extractor's ids swapped. From the review: a partial fill folded, a zero price folded,
+no unresolved row, no skip row, "gone" read from any miss, the sync not recording the
+broker's count, the store dropping it, the ratchet reading any miss as gone, and a closing
+position asked about.
 
 **Pre-committed check.** Read the first three bracket exits after the deploy. Each should
 have a `live_bracket_leg_from_detail` row or a listed-leg booking, and none should be
