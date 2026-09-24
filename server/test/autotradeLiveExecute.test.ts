@@ -77,11 +77,12 @@ import {
   getLiveEntryOrderForPosition,
   listPendingLiveOrders,
   countLiveAddOns,
+  recordLiveAddOnOrder,
   recordLiveExitOrder,
   recordLiveOrder,
   setLiveOrderPositionId,
 } from '../src/db/autotradeLiveOrders';
-import { getIntent, listIntents, transitionIntent, createIntent } from '../src/db/orders';
+import { advanceMaterialized, getIntent, listIntents, transitionIntent, createIntent } from '../src/db/orders';
 import { UNKNOWN_PLACEMENT_RETIRE_GRACE_MS } from '../src/services/trading/reconcile';
 import { evaluateRiskCheck, RiskCheckResult } from '../src/services/autotrading/riskCheck';
 import { TradeSignal } from '../src/services/autotrading/decide';
@@ -4721,7 +4722,6 @@ describe('reconcileLiveOrders', () => {
       );
 
       await reconcileLiveOrders();
-      // DEBUG
       sharesMissed();
       await reconcileLiveOrders();
 
@@ -4795,6 +4795,131 @@ describe('reconcileLiveOrders', () => {
       const asked = vi.mocked(webullOrderDetail).mock.calls.map((c) => c[1]);
       expect(asked).not.toContain(LEGS.stopLoss);
       expect(asked).not.toContain(LEGS.takeProfit);
+    });
+
+    it('asks for a scaled-out position: a scale-out already filled is not a working close (2026-09-25, on review)', async () => {
+      // The reconcile's pending list keeps a FILLED exit row while its position
+      // is open. Read as "a close is working", it skipped this position for the
+      // rest of its life, and when the stop then filled the sync booked a quote:
+      // the #147 defect, on every scaled-out trade. positionsWithWorkingClose
+      // reads the intent's state, as the positions sync has since NOK (09-08).
+      await openWithRestingLegs();
+      const pos = listPositions({ status: 'open' })[0];
+      const half = Math.floor(pos.remainingQuantity / 2);
+      const scaleOut = createIntent(
+        {
+          symbol: 'AAPL',
+          assetKind: 'stock',
+          side: 'sell',
+          openClose: 'close',
+          quantity: half,
+          orderType: 'limit',
+          limitPrice: 102.5,
+        },
+        'scale-out-147',
+      );
+      for (const s of ['validated', 'confirmed', 'submitted', 'acknowledged', 'filled'] as const) {
+        transitionIntent(scaleOut.id, s);
+      }
+      advanceMaterialized(scaleOut.id, half, half * 102.5);
+      recordLiveExitOrder({ intentId: scaleOut.id, symbol: 'AAPL', riskProfile: 'MODERATE', positionId: pos.id });
+      addExit(pos.id, { quantity: half, exitPrice: 102.5, exitDate: etToday(), exitReason: 'partial' });
+      const rest = listPositions({ status: 'open' })[0].remainingQuantity;
+      expect(rest).toBe(pos.remainingQuantity - half);
+      // Still pending: the list answers "what does the reconcile poll", not this.
+      expect(listPendingLiveOrders().some((o) => o.role === 'exit' && o.intentId === scaleOut.id)).toBe(true);
+
+      sharesMissed(0, pos);
+      vi.mocked(webullOrderDetail).mockImplementation(async (_account, id) =>
+        id === LEGS.stopLoss
+          ? { ok: true, found: true, status: 'FILLED', filledPrice: 97.1, filledQty: rest }
+          : { ok: true, found: true, status: 'CANCELLED' },
+      );
+
+      await reconcileLiveOrders();
+
+      expect(vi.mocked(webullOrderDetail).mock.calls.map((c) => c[1])).toContain(LEGS.stopLoss);
+      const [closed] = listPositions({ status: 'closed' });
+      expect(closed.exits.at(-1)).toMatchObject({ exitPrice: 97.1, exitReason: 'stop', quantity: rest });
+    });
+
+    it('says once a day when the broker does not know a leg id, and books nothing (2026-09-25, on review)', async () => {
+      // Silent, an unknown id spent two lookups every tick without a trace.
+      await openWithRestingLegs();
+      sharesMissed();
+      vi.mocked(webullOrderDetail).mockResolvedValue({ ok: true, found: false });
+
+      await reconcileLiveOrders();
+      sharesMissed();
+      await reconcileLiveOrders();
+
+      const rows = listAutotradeEvents({ actions: ['live_bracket_leg_detail_unresolved'] });
+      expect(rows).toHaveLength(2);
+      expect(JSON.parse(rows[0].detail ?? '{}').error).toMatch(/^not found/);
+      expect(listPositions({ status: 'open' })).toHaveLength(1);
+    });
+
+    it('names a fill reported with no quantity as that, not as too few shares (2026-09-25, on review)', async () => {
+      await openWithRestingLegs();
+      sharesMissed();
+      vi.mocked(webullOrderDetail).mockImplementation(async (_account, id) =>
+        id === LEGS.stopLoss
+          ? { ok: true, found: true, status: 'FILLED', filledPrice: 94.9 }
+          : { ok: true, found: true, status: 'CANCELLED' },
+      );
+
+      await reconcileLiveOrders();
+
+      expect(listPositions({ status: 'open' })[0].exits).toHaveLength(0);
+      expect(JSON.parse(skipRows()[0].detail ?? '{}').reason).toMatch(/no filled quantity/);
+    });
+
+    it("asks only the newest entry row's legs: an older row names legs a re-arm cancelled (2026-09-25, on review)", async () => {
+      await openWithRestingLegs();
+      const pos = listPositions({ status: 'open' })[0];
+      // A scale-in's row, newer, carrying the legs the re-arm placed.
+      const NEW = { takeProfit: 'TP-REARM-147', stopLoss: 'SL-REARM-147' };
+      const add = createIntent(
+        {
+          symbol: 'AAPL',
+          assetKind: 'stock',
+          side: 'buy',
+          openClose: 'open',
+          quantity: 1,
+          orderType: 'limit',
+          limitPrice: 100,
+          // A live add-on carries its own bracket (liveExecute's scale-in).
+          bracket: { takeProfitPrice: 110, stopLossPrice: 95 },
+        },
+        'addon-147',
+      );
+      for (const st of ['validated', 'confirmed', 'submitted', 'acknowledged', 'filled'] as const) {
+        transitionIntent(add.id, st);
+      }
+      recordLiveAddOnOrder({
+        intentId: add.id,
+        symbol: 'AAPL',
+        stopPrice: 95,
+        targetPrice: 110,
+        riskAmount: 5,
+        riskProfile: 'MODERATE',
+        addonOfPositionId: pos.id,
+        legClientOrderIds: NEW,
+      });
+      setLiveOrderPositionId(add.id, pos.id);
+      db.prepare('UPDATE autotrade_live_orders SET created_at = created_at + 1000 WHERE intent_id = ?').run(add.id);
+      sharesMissed(0, pos);
+      vi.mocked(webullOrderDetail).mockImplementation(async (_account, id) =>
+        id === NEW.stopLoss
+          ? { ok: true, found: true, status: 'FILLED', filledPrice: 94.9, filledQty: pos.remainingQuantity }
+          : { ok: true, found: true, status: 'CANCELLED' },
+      );
+
+      await reconcileLiveOrders();
+
+      const asked = vi.mocked(webullOrderDetail).mock.calls.map((c) => c[1]);
+      expect(asked).toEqual([NEW.stopLoss]);
+      expect(asked).not.toContain(LEGS.stopLoss);
     });
 
     it('books nothing on a leg the broker still reports working', async () => {

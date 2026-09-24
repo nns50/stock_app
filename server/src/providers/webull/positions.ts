@@ -26,7 +26,7 @@ import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { claimOncePerDay } from '../../services/autotrading/oncePerDayEvents';
 import { listPendingLiveOrders } from '../../db/autotradeLiveOrders';
 import { getIntent } from '../../db/orders';
-import { isTerminal } from '../../services/trading/orderLifecycle';
+import { positionsWithWorkingClose } from '../../services/trading/orderLifecycle';
 import { inferBracketExitReason } from '../../services/trading/bracketExitReason';
 import { classifyExpiredOptions, ExpiredOptionFinding } from '../../services/expiredOptions';
 import { resolveExpiryCloses } from '../../services/expiredOptionsSweep';
@@ -781,21 +781,13 @@ async function closePositionsFromPreview(
   // different question. A filled exit has already been booked by whoever placed
   // it — which is the whole point of deferring — so it has no claim to defer
   // any longer.
-  const loopClosingPositionIds = new Set(
-    listPendingLiveOrders()
-      .filter((o) => {
-        if (o.role !== 'exit' || o.positionId === null) return false;
-        const state = getIntent(o.intentId)?.state;
-        // Unknown intent -> assume in flight. NOT a live case and not testable:
-        // listPendingLiveOrders JOINs order_intents, so a row without an intent
-        // never reaches this filter at all — only a delete racing between those
-        // two queries could produce it. Kept because the safe default is free
-        // here: deferring one more pass costs a sync, and closing at a guessed
-        // price over a real fill is the bug this whole branch exists to prevent.
-        return state === undefined || !isTerminal(state);
-      })
-      .map((o) => o.positionId as number),
-  );
+  //
+  // One definition, shared with the bracket-leg read (#147): an unknown intent
+  // counts as in flight. NOT a live case and not testable here —
+  // listPendingLiveOrders JOINs order_intents, so a row without an intent never
+  // reaches the helper; only a delete racing between those two queries could
+  // produce one.
+  const loopClosingPositionIds = positionsWithWorkingClose(listPendingLiveOrders(), (id) => getIntent(id)?.state);
 
   // The SAME disease, through the door the 2026-08-24 fix left open.
   //

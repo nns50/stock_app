@@ -219,7 +219,9 @@ export async function resolveFilledLegsFromOrderDetail(
       if (budget <= 0) return;
       budget -= 1;
       const detail = await webullOrderDetail(accountId, leg.clientOrderId);
-      if (!detail.ok) {
+      // A failed read, or an id the broker does not know, is said once a day:
+      // either spends a lookup every tick, and neither should do so unseen.
+      if (!detail.ok || !detail.found) {
         if (claimOncePerDay('live_bracket_leg_detail_unresolved', `${c.intent.id}:${leg.clientOrderId}`)) {
           logAutotradeEvent({
             symbol: c.symbol,
@@ -230,14 +232,14 @@ export async function resolveFilledLegsFromOrderDetail(
               positionId: c.positionId,
               leg: leg.comboType === 'STOP_LOSS' ? 'stop' : 'target',
               clientOrderId: leg.clientOrderId,
-              error: detail.error ?? 'unreadable',
+              error: !detail.ok ? (detail.error ?? 'unreadable') : 'not found: the broker does not know this leg id',
             },
             riskProfile: c.riskProfile,
           });
         }
         continue;
       }
-      if (!detail.found || detail.status !== 'FILLED') continue;
+      if (detail.status !== 'FILLED') continue;
       const price = detail.filledPrice;
       const qty = detail.filledQty;
       const whole = typeof qty === 'number' && qty >= c.remainingQuantity - 1e-9;
@@ -258,7 +260,9 @@ export async function resolveFilledLegsFromOrderDetail(
               remainingQuantity: c.remainingQuantity,
               reason: !priced
                 ? 'the broker reported the leg filled with no usable price'
-                : 'the leg filled fewer shares than the ledger still holds',
+                : typeof qty !== 'number'
+                  ? 'the broker reported the leg filled with no filled quantity'
+                  : 'the leg filled fewer shares than the ledger still holds',
             },
             riskProfile: c.riskProfile,
           });

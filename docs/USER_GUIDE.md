@@ -2490,8 +2490,11 @@ because the loop is the only caller that is always flat by the bell, so it is
   id). A leg Webull reports filled for the whole position, at a real price, is booked at its
   fill, as `stop` or `target`, about one cycle after the shares go. A
   **`live_bracket_leg_from_detail`** row on Recent activity marks it. A leg that filled only
-  part of the position, or with no price, is left to the correction and noted once as
-  **`live_bracket_leg_detail_skipped`**. The four-minute wait and the correction stay for
+  part of the position, or with no price or quantity, is left to the correction and noted
+  once as **`live_bracket_leg_detail_skipped`**; a lookup that fails, or a leg id Webull
+  does not know, is noted once as **`live_bracket_leg_detail_unresolved`**. A position the
+  app is already closing with its own order is not asked about, and a scale-out that has
+  already sold does not count as that. The four-minute wait and the correction stay for
   anything this does not settle: a position the app did not place, a bracket placed before
   that date, or a close made by hand.
   The count of missed checks belongs to the position it was counted for. Since 2026-09-23 it

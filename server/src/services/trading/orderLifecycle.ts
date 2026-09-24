@@ -48,6 +48,34 @@ export function isTerminal(state: OrderState): boolean {
   return TERMINAL_STATES.has(state);
 }
 
+/**
+ * The positions with a CLOSING order still working: a role='exit' row whose
+ * intent has not reached a terminal state. One definition for the positions
+ * sync and the bracket-leg read (#147, on review 2026-09-25).
+ *
+ * The rows passed in are the reconcile's pending list, which answers a
+ * different question — which rows it still polls — and keeps a FILLED exit row
+ * for as long as its position is open (a scale-out's booked slice, for one).
+ * Read as "a close is working", that pinned a scaled-out position for good:
+ * the sync deferred to a close that had already happened (NOK, 2026-09-08),
+ * and the Order Detail read skipped the position when its stop then filled,
+ * so the sync booked a quote after all. `stateOf` returns undefined for an
+ * intent it cannot find, which counts as working: deferring costs a tick, and
+ * booking a guess over a real fill is the bug both callers exist to prevent.
+ */
+export function positionsWithWorkingClose(
+  rows: readonly { role: string; positionId: number | null; intentId: number }[],
+  stateOf: (intentId: number) => OrderState | undefined,
+): Set<number> {
+  const out = new Set<number>();
+  for (const row of rows) {
+    if (row.role !== 'exit' || row.positionId === null) continue;
+    const state = stateOf(row.intentId);
+    if (state === undefined || !isTerminal(state)) out.add(row.positionId);
+  }
+  return out;
+}
+
 /** The states reachable from `from` in one step. */
 export function nextStates(from: OrderState): OrderState[] {
   return [...TRANSITIONS[from]];
