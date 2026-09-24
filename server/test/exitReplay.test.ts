@@ -5,6 +5,7 @@ import {
   compareExitRules,
   type ExitRules,
   type ReplayInput,
+  counterfactualPathEnd,
 } from '../src/services/exitReplay';
 import type { Candle } from '../src/providers/types';
 
@@ -274,5 +275,21 @@ describe('compareExitRules — two shapes over the SAME trades', () => {
     expect(c.trades).toBe(5);
     expect(c.unpaired).toBe(1);
     expect(c.verdict).toBe('insufficient');
+  });
+});
+
+describe('counterfactualPathEnd — where a replay of ANOTHER geometry may walk to (2026-09-24)', () => {
+  const at = Date.parse('2026-09-10T13:37:00Z');
+
+  it('runs past every exit a geometry made: to the end of the session', () => {
+    for (const reason of ['stop', 'target', 'time_exit', 'partial']) {
+      expect(counterfactualPathEnd({ at, reason })).toBeNull();
+    }
+    expect(counterfactualPathEnd(null)).toBeNull();
+  });
+
+  it('stops at a close no geometry made — by hand, or with no reason recorded', () => {
+    expect(counterfactualPathEnd({ at, reason: 'manual' })).toBe(at);
+    expect(counterfactualPathEnd({ at, reason: null })).toBe(at);
   });
 });
