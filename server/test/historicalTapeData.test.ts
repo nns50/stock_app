@@ -203,4 +203,19 @@ describe('runTapeBackfill — the rebuilt tape, read by the app’s own readers'
     expect(bucket(r, 'all', true)?.n).toBe(3);
     expect(r.counterfactual.atrUnknown).toBe(0);
   });
+
+  it("reads the floor from the floor's own refusal where the row predates liveMinSignalScore", async () => {
+    // 2026-09-08 to 09-10: the only record of the floor is the `bar` of a
+    // `live_floor` refusal. Read as no floor, TPB005 (75) would clear it.
+    insertEvent('ZZZ', 'execution', 'live_score_floor_skipped', { bar: 81, source: 'live_floor' }, at('09:40'));
+    // Another source's bar is not the everyday floor, and must not be read as it.
+    insertEvent('YYY', 'execution', 'live_score_floor_skipped', { bar: 95, source: 'armed_day' }, at('09:41'));
+    shortSignal('TPB004', '10:30', 85); // red, over 81
+    shortSignal('TPB005', '10:30', 75); // red, under 81
+    const r = await run();
+
+    expect(r.counterfactual.signals).toBe(2);
+    expect(bucket(r, 'red')?.n).toBe(1); // TPB004 only: 95 would refuse it, 0 would keep both
+    expect(r.counterfactual.excluded.below_live_floor).toBe(1);
+  });
 });

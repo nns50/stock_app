@@ -1,6 +1,7 @@
+import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
-import { resolveFromRoot } from './paths';
+import { resolveFromRoot, SERVER_ROOT } from './paths';
 
 // ---------------------------------------------------------------------------
 // Which database a research script may open: a COPY, never the one an app
@@ -11,7 +12,8 @@ import { resolveFromRoot } from './paths';
 // the database a running loop is trading from. So the script is handed a path
 // and refuses one that is missing, or is the file the app itself would open:
 // the default local database, the production container's, or whatever
-// DATABASE_PATH is set to in the environment the script runs in.
+// DATABASE_PATH is set to in the environment the script runs in or in
+// server/.env.
 // ---------------------------------------------------------------------------
 
 /** Where the app's database lives when nothing overrides it: locally, and in
@@ -26,6 +28,21 @@ function canonical(p: string): string {
 export type DatabaseCopyCheck = { ok: true; path: string } | { ok: false; reason: string };
 
 /**
+ * DATABASE_PATH as server/.env sets it, read WITHOUT loading the file into the
+ * environment (2026-09-24, on review). This check runs before config.ts, which
+ * is what loads server/.env, so a path set only there was invisible to it: the
+ * app's own database, named in the file the app reads, passed as a copy.
+ */
+function envFileDatabasePath(file: string): string | undefined {
+  try {
+    if (!fs.existsSync(file)) return undefined;
+    return dotenv.parse(fs.readFileSync(file)).DATABASE_PATH || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * The absolute path of a database copy a script may open, or why not.
  * `arg` is resolved against `cwd` — the directory the command was typed in
  * (npm sets INIT_CWD to it; `npm run -w server` itself runs in server/).
@@ -34,6 +51,7 @@ export function databaseCopyPath(
   arg: string | undefined,
   env: { DATABASE_PATH?: string } = process.env,
   cwd: string = process.env.INIT_CWD ?? process.cwd(),
+  envFile: string = path.join(SERVER_ROOT, '.env'),
 ): DatabaseCopyCheck {
   if (!arg) return { ok: false, reason: '--db <path to a COPY of the database> is required' };
   const abs = path.resolve(cwd, arg);
@@ -41,9 +59,12 @@ export function databaseCopyPath(
     return { ok: false, reason: `${abs} does not exist: take a copy first (GET /api/export/backup.db)` };
   }
   const real = canonical(abs);
-  const own = [...APP_DATABASE_PATHS, ...(env.DATABASE_PATH ? [env.DATABASE_PATH] : [])].map((p) =>
-    canonical(resolveFromRoot(p)),
-  );
+  const fromEnvFile = envFileDatabasePath(envFile);
+  const own = [
+    ...APP_DATABASE_PATHS,
+    ...(env.DATABASE_PATH ? [env.DATABASE_PATH] : []),
+    ...(fromEnvFile ? [fromEnvFile] : []),
+  ].map((p) => canonical(resolveFromRoot(p)));
   if (own.includes(real)) {
     return { ok: false, reason: `${abs} is a database the app itself runs on: point --db at a copy of it` };
   }

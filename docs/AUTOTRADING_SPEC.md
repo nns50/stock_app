@@ -15619,7 +15619,10 @@ their inputs, never in the rule. The inputs differ in these ways:
   `candidate_found` row (the signal row carries no score). It is kept when it cleared
   the live floor in force at that moment. That floor is read from the journal's own
   refusal rows, not from a list of dates: it moved 72 → 81 at 11:42 ET on 2026-09-14,
-  mid-session. Before the first recorded floor there was none.
+  mid-session. Rows carry it as `liveMinSignalScore` from 09-11. Before that (09-08 to
+  09-10) only the floor's own refusals recorded it, as the `bar` of a `live_floor`
+  refusal, and those are read too; another source's bar (armed day, High-Vol) is not.
+  Before the first recorded floor there was none.
   - Per tape, the first qualifying signal per symbol-day is replayed. That is what a
     short book trading only on that tape would have taken.
   - The declined-short record cannot say this. Its row is claimed once per symbol per day
@@ -15695,8 +15698,9 @@ copy that includes live journal days for parity.
   - every short signal is replayed by tape under the floor in force, with the ATR gate
     removing the one wide stop.
 - **The guard** (`dbCopy.test.ts`): a missing path, and `DATABASE_PATH`'s file however it
-  is reached, are refused. The script, spawned, reaches its key check only with config
-  pointing at the copy.
+  is reached, are refused, including a path set only in `server/.env`, which the guard
+  reads itself because it runs before config loads that file. The script, spawned,
+  reaches its key check only with config pointing at the copy.
 
 Nineteen mutations were run, and each fails at least one test:
 - **The rebuild:**
