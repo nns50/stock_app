@@ -959,6 +959,24 @@ describe('short probation clock (liveShortsEnabledAt)', () => {
     expect(setAutotradeConfig({ riskProfile: 'MODERATE' }).liveShortsEnabledAt).toBe(stamp);
   });
 
+  it('stamps a switch-on whose explicit stamp the config would store as null (2026-09-25, on review)', () => {
+    // 0 is not null, so a test of the PATCH let it through; the sanitizer then
+    // stored it as null, and shorts were on with no stamp.
+    setAutotradeConfig({ liveAllowNakedShort: false });
+    const before = Date.now();
+    for (const bad of [0, -5, Number.NaN]) {
+      setAutotradeConfig({ liveAllowNakedShort: false });
+      const next = setAutotradeConfig({ liveAllowNakedShort: true, liveShortsEnabledAt: bad });
+      expect(next.liveShortsEnabledAt, String(bad)).toBeGreaterThanOrEqual(before);
+      expect(getAutotradeConfig().liveShortsEnabledAt, String(bad)).toBe(next.liveShortsEnabledAt);
+    }
+    // An explicit, valid stamp still wins on the switch-on.
+    setAutotradeConfig({ liveAllowNakedShort: false });
+    expect(setAutotradeConfig({ liveAllowNakedShort: true, liveShortsEnabledAt: 5_000 }).liveShortsEnabledAt).toBe(
+      5_000,
+    );
+  });
+
   it('reads a stored 0 back as never', () => {
     db.prepare('INSERT INTO autotrade_config (id, config, updated_at) VALUES (1, ?, ?)').run(
       JSON.stringify({ ...defaultAutotradeConfig(), liveShortsEnabledAt: 0 }),

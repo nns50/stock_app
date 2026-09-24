@@ -375,11 +375,28 @@ export function holdMarketDirection(
  *  stock short or a put is short it. */
 export type Lean = 'long' | 'short';
 
-/** Why a live stock short may not go out: shorts are off, or held to a red
- *  tape and the tape is not red. */
-export type ShortRefusalCause = 'shorts_off' | 'red_tape_only';
+/** Why a live stock short may not go out: shorts are off, on without the
+ *  stamp their window counts from, or held to a red tape and the tape is not
+ *  red. */
+export type ShortRefusalCause = 'shorts_off' | 'shorts_unstamped' | 'red_tape_only';
 
 export type ShortPermission = { permitted: true } | { permitted: false; cause: ShortRefusalCause; reason: string };
+
+/**
+ * Live stock shorts are ARMED: switched on AND carrying the stamp their
+ * probation and revert window count from (2026-09-25, on review). Every writer
+ * stamps shorts that are on (setAutotradeConfig), but only when it writes: a
+ * row restored or edited by hand with shorts on and no stamp, on a tick whose
+ * equity sync writes nothing, would size a short in full, and the stamp the
+ * next write sets would then start AFTER it, so neither the probation nor the
+ * tripwires would ever count it. Unarmed shorts refuse instead, until that
+ * write. The same truthiness test getShortProbationStatus uses, and the ONE
+ * test behind both this predicate and the placement guardrail's
+ * `allowNakedShort` (liveExecute.ts), so the two cannot disagree.
+ */
+export function liveShortsArmed(cfg: { liveAllowNakedShort: boolean; liveShortsEnabledAt: number | null }): boolean {
+  return cfg.liveAllowNakedShort && Boolean(cfg.liveShortsEnabledAt);
+}
 
 /**
  * Whether the live book may put on stock SHORT exposure on this reading
@@ -393,10 +410,19 @@ export type ShortPermission = { permitted: true } | { permitted: false; cause: S
  * keep shorts out of.
  */
 export function liveShortPermitted(
-  cfg: { liveAllowNakedShort: boolean; liveShortsRedTapeOnly: boolean },
+  cfg: { liveAllowNakedShort: boolean; liveShortsEnabledAt: number | null; liveShortsRedTapeOnly: boolean },
   reading: Pick<MarketDirectionReading, 'direction'> | null,
 ): ShortPermission {
   if (!cfg.liveAllowNakedShort) return { permitted: false, cause: 'shorts_off', reason: 'liveAllowNakedShort is off' };
+  if (!liveShortsArmed(cfg)) {
+    return {
+      permitted: false,
+      cause: 'shorts_unstamped',
+      reason:
+        'shorts are on without liveShortsEnabledAt: the probation and the revert window count from it, ' +
+        'so a short now would be sized in full and never counted (the next config write stamps it)',
+    };
+  }
   if (cfg.liveShortsRedTapeOnly && reading?.direction !== 'red') {
     return {
       permitted: false,
