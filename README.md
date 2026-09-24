@@ -505,7 +505,8 @@ npm run backfill:tape -- --db ./copy.db --sessions 60 --out tape.json
 `--db` is required and is resolved from the directory you typed the command in. The
 script refuses a path that does not exist and any path the app itself opens (the
 default `server/data/stock_app.db`, the container's `/app/data/stock_app.db`, or
-whatever `DATABASE_PATH` is set to, in the environment or in `server/.env`). `--sessions`
+whatever `DATABASE_PATH` is set to, in the environment or in `server/.env`), by name
+and by the file itself, so a hard link to one of them is refused too. `--sessions`
 sets how many completed sessions to rebuild (default 40, the scan's own window). Breadth
 reads the whole universe, as the loop does; `--sample N` reads a seeded N-name sample
 instead (`--seed`, default 20260926) for a key that is rate-limited, at a measured cost
