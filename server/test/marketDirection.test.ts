@@ -16,6 +16,7 @@ import {
   tapeAlignment,
   type HeldDirection,
   type MarketBreadth,
+  liveShortsArmed,
 } from '../src/services/autotrading/marketDirection';
 
 // The market-direction reading (2026-09-23). On 2026-09-23 SPY sat 0.3-0.5%
@@ -98,7 +99,7 @@ describe('readMarketDirection', () => {
 // 2026-09-24, the tape plan's PR 8: ONE predicate for every live short (the
 // entry, a scale-in, a second lot).
 describe('liveShortPermitted', () => {
-  const on = { liveAllowNakedShort: true, liveShortsRedTapeOnly: true };
+  const on = { liveAllowNakedShort: true, liveShortsEnabledAt: 1_790_000_000_000, liveShortsRedTapeOnly: true };
   const tape = (direction: 'red' | 'green' | 'mixed' | 'unknown') => ({ direction });
 
   it('refuses every short while the switch is off, whatever the tape', () => {
@@ -132,6 +133,34 @@ describe('liveShortPermitted', () => {
     for (const reading of [tape('red'), tape('mixed'), tape('green'), null]) {
       expect(liveShortPermitted({ ...on, liveShortsRedTapeOnly: false }, reading)).toEqual({ permitted: true });
     }
+  });
+
+  // 2026-09-25, on review: shorts on with no stamp would size in full and fall
+  // outside the probation and the revert window for good. They refuse instead,
+  // on every tape and with the red-tape rule either way.
+  it('refuses every short while shorts are on without the stamp their window counts from', () => {
+    for (const stamp of [null, 0]) {
+      for (const redOnly of [true, false]) {
+        const cfg = { ...on, liveShortsEnabledAt: stamp, liveShortsRedTapeOnly: redOnly };
+        for (const reading of [tape('red'), tape('mixed'), null]) {
+          const verdict = liveShortPermitted(cfg, reading);
+          expect(verdict).toMatchObject({ permitted: false, cause: 'shorts_unstamped' });
+        }
+        expect(liveShortsArmed(cfg)).toBe(false);
+      }
+    }
+    // Off stays "off": the stamp is not the reason then.
+    expect(
+      liveShortPermitted({ ...on, liveAllowNakedShort: false, liveShortsEnabledAt: null }, tape('red')),
+    ).toMatchObject({
+      cause: 'shorts_off',
+    });
+  });
+
+  it('arms shorts only when they are on AND stamped', () => {
+    expect(liveShortsArmed(on)).toBe(true);
+    expect(liveShortsArmed({ ...on, liveAllowNakedShort: false })).toBe(false);
+    expect(liveShortsArmed({ ...on, liveShortsEnabledAt: null })).toBe(false);
   });
 });
 

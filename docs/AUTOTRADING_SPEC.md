@@ -15378,6 +15378,17 @@ on before the stamp existed. So an explicit null while shorts are on is stamped 
 any write that finds shorts on with no stamp stamps it (the equity sync writes every
 minute). An explicit number still wins.
 
+**And shorts with no stamp refuse** (second review, 2026-09-25). The heal runs only on a
+write. A row restored or edited by hand with shorts on and no stamp, read on a tick whose
+equity sync writes nothing (the account read failed, or the guard rejected a jump), would
+have sized a short in full, and the stamp the next write sets would start after it, so
+neither the probation nor the tripwires would ever count that short. Now shorts are
+**armed** only when they are on AND stamped (`liveShortsArmed`, marketDirection.ts): the
+entry path's predicate refuses with cause `shorts_unstamped`, and the placement
+guardrail's `allowNakedShort` reads the same test. The heal also judges the stored
+value, not the patch: an explicit `liveShortsEnabledAt: 0` passed a null check on the
+patch and was then stored as null.
+
 **The cut.** `entryProbation(cfg, side)` returns one multiplier: the book's window, times
 the short window for a short. `attemptLiveEntry` reads it for both places the cut applies:
 - the quantity;
