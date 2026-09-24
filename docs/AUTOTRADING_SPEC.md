@@ -14500,3 +14500,60 @@ reads `live_exit_corrected` with `source: bracket_leg`, $551.878 → $552.04, an
   - a repeat counts once;
   - a short or empty page is the last.
 
+## 2026-09-24 (second) — a sleeve at its daily order budget stops before it builds an order
+
+**What happened.** The Trade page's recent orders held only rejected option entries: 50
+of them between 11:56 and 12:28 on 2026-09-23 (PLTR, CRWD, META, GOOGL), each refused
+`max_orders_per_day: 6 placed vs 6/day`. The options sleeve had spent its
+`liveOptionsMaxOrdersPerDay` by 11:56. After that it still built every candidate:
+- a risk check;
+- a quote fetch;
+- an account read;
+- an order intent;
+- a guardrail refusal at the very end, with a `live_options_entry_blocked` row.
+
+It did this every tick until the 12:30 short-dated cutoff. The stock sleeve has the same
+shape for `liveMaxOrdersPerDay`.
+
+**Fixed:** each sleeve checks its budget per candidate, after every gate that decides
+whether the book wants the trade and before anything costly:
+- for stocks, after the market-direction gate and before the level fetch, the
+  correlation and sector lookups, the risk check and placement;
+- for options, after its market-direction gate and before the correlation lookup and the
+  risk check.
+
+The check uses the guardrail's own predicate (`withinDailyOrderCap`, which the
+`max_orders_per_day` rule now calls too) with the same count (`countTodaysOrders` for the
+sleeve) and the same cap (the sleeve's trading-config builder). So the skip can never
+refuse an order the guardrail would pass. The guardrail stays the authority for an order
+placed later in the same batch.
+
+A refusal writes `live_order_cap_skipped` (stocks, through `journalDeclinedEntry`, so it
+carries entry, stop and side for a replay) or `live_options_order_cap_skipped` (options).
+Each is written once per name per day with `ordersToday` and `maxOrdersPerDay`.
+- **What is refused is unchanged.** Only the work, and the order rows, stop.
+- **The stock row is an attribution class.** The paper book is not held to the cap, so
+  its untaken paper R is what the budget costs. The advisor names `liveMaxOrdersPerDay`
+  (exposure) as the lever, with the warning that the cap is also the runaway-loop
+  backstop.
+- **The options row is named as not attributed**, with its reason, in the reachability
+  guard.
+
+**Pre-committed check:** on the next day a sleeve reaches its cap, the Trade page's
+recent orders show no rejected entries after the cap was reached. Recent activity shows
+one `…order_cap_skipped` row per name.
+
+**Tests (each mutation-checked):**
+- stock, at the cap:
+  - no intent is written;
+  - no placement goes out;
+  - no per-candidate account read happens;
+  - one replayable row per name per day;
+  - the existing sleeve-split test now sees the early refusal instead of the
+    guardrail's.
+- options, at the cap: no intent, no account read, no order, one row a day per name.
+- options, one under the cap: the entry goes out.
+
+Removing either pre-check fails its sleeve's tests. Loosening the shared predicate to
+`<=` fails both sleeves and the guardrail's own test.
+

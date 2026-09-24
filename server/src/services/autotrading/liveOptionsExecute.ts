@@ -14,6 +14,7 @@ import {
   OrderIntent,
   blockingFailures,
   TradingConfig,
+  withinDailyOrderCap,
 } from '../trading/guardrails';
 import { marketOpenContext } from '../trading/marketHours';
 import { evaluateEndOfDayFlatten, minutesUntilClose } from './endOfDayFlatten';
@@ -1245,6 +1246,23 @@ export async function runLiveOptionsExecution(
         reason,
       });
       outcomes.push({ symbol, ok: false, reason: `Market direction: ${reason}` });
+      continue;
+    }
+    // The day's opening-order budget is spent (2026-09-24): the stock path's
+    // twin, with this sleeve's own count and cap. On 2026-09-23 the sleeve hit
+    // liveOptionsMaxOrdersPerDay by 11:56 and then built, and the guardrail
+    // refused, 50 entry intents (PLTR, CRWD, META, GOOGL) before the 12:30
+    // cutoff: a quote fetch, an account read and an intent row each.
+    const ordersToday = countTodaysOrders(Date.now(), 'option');
+    const orderCap = buildLiveOptionsTradingConfig(cfg).maxOrdersPerDay;
+    if (!withinDailyOrderCap(ordersToday, orderCap)) {
+      journalEntrySkipOncePerDay(symbol, 'live_options_order_cap_skipped', {
+        side: signal.side,
+        score: signal.score,
+        ordersToday,
+        maxOrdersPerDay: orderCap,
+      });
+      outcomes.push({ symbol, ok: false, reason: `Daily order cap: ${ordersToday} placed vs ${orderCap}/day` });
       continue;
     }
     const { amount: correlated } = await correlatedNotional(

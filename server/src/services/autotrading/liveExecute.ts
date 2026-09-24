@@ -10,6 +10,7 @@ import {
   OrderIntent,
   blockingFailures,
   TradingConfig,
+  withinDailyOrderCap,
   wouldOpenShort,
 } from '../trading/guardrails';
 import { marketOpenContext, minutesIntoSession } from '../trading/marketHours';
@@ -2054,6 +2055,28 @@ export async function runLiveExecution(
         reason,
       });
       outcomes.push({ symbol, ok: false, reason: `Market direction: ${reason}` });
+      continue;
+    }
+    // THE DAY'S ORDER BUDGET IS SPENT (2026-09-24). The guardrail refuses every
+    // opening order past liveMaxOrdersPerDay, but only at placement: after the
+    // level fetch, the correlation and sector lookups, the risk check, the
+    // account read and the quote, and after an order intent has been written.
+    // A sleeve at its cap paid all of that for every candidate on every tick
+    // until the entry cutoff. The options sleeve did so 50 times in 32 minutes
+    // on 2026-09-23, and those refused intents pushed the day's real orders out
+    // of the Trade page's recent list. Asked here, after every gate that
+    // decides whether the book wants the trade, so the declined-entry rows
+    // those gates write are unchanged. Same predicate and inputs as the
+    // guardrail, which stays the authority for an order placed later in this
+    // same batch.
+    const ordersToday = countTodaysOrders(Date.now(), 'stock');
+    const orderCap = buildLiveTradingConfig(cfg).maxOrdersPerDay;
+    if (!withinDailyOrderCap(ordersToday, orderCap)) {
+      journalDeclinedEntry(candidateSignal, 'live_order_cap_skipped', cfg.liveMinSignalScore, {
+        ordersToday,
+        maxOrdersPerDay: orderCap,
+      });
+      outcomes.push({ symbol, ok: false, reason: `Daily order cap: ${ordersToday} placed vs ${orderCap}/day` });
       continue;
     }
     // Level-aware exits (levelPlan.ts): re-place this signal's ATR stop and R

@@ -377,6 +377,11 @@ export const SKIP_ACTIONS = [
   // unreadable holding, a short the broker refused earlier today. Live-only,
   // once a day per symbol and guard.
   'live_entry_guard_refused',
+  // The day's order budget spent (2026-09-24): the stock sleeve's
+  // liveMaxOrdersPerDay, checked after every gate that decides whether the book
+  // wants the trade. Live-only; the paper book is not held to it, so this
+  // bucket's paper R is what the budget costs or saves. Once a day per symbol.
+  'live_order_cap_skipped',
 ];
 // NOT here: `live_entry_cutoff_skipped`. It sat in this list from the day the
 // list was written and nothing has ever emitted it — the equity entry cutoff

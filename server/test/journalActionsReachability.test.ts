@@ -238,6 +238,11 @@ describe('journal action reachability', () => {
       // is a journal row with the reading on it.
       live_options_market_direction_skipped:
         'options sleeve — the market-direction dimension cuts both options books by the same reading',
+      // The options sleeve's spent daily order budget (2026-09-24). A cap the
+      // operator sets, not a flow refusal the options finding counts, and not a
+      // pair the equity attribution makes.
+      live_options_order_cap_skipped:
+        "options sleeve — the day's order budget (liveOptionsMaxOrdersPerDay), not a flow refusal",
     };
 
     const unclassified = [...entrySkips]

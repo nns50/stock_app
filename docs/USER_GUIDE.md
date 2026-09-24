@@ -2555,6 +2555,18 @@ because the loop is the only caller that is always flat by the bell, so it is
   (since 2026-09-18 — before that one account-wide count served both caps, so on
   2026-09-18 four stock entries plus two options entries read as `6 placed vs 6/day`
   and every options entry from 10:27 ET was refused with two on the sleeve's book).
+  **Once a sleeve's budget is spent, it stops asking** (since 2026-09-24). Each
+  candidate goes through the gates that decide whether the book wants it, and then
+  meets the cap before anything is built or sent: no risk check, no quote, no account
+  read, no order row. Recent activity shows `live_order_cap_skipped` (stocks) or
+  `live_options_order_cap_skipped` (options) once per name per day, with the count and
+  the cap. Until then the sleeve built every candidate as an order and the guardrail
+  refused it at the last step: on 2026-09-23 the options sleeve did that 50 times in
+  32 minutes, and those refused orders pushed the day's real ones out of the Trade
+  page's recent list. What gets refused is unchanged; the guardrail still has the
+  final say on any order placed. For stocks, the nightly scan counts these refusals
+  as their own untaken class, with `liveMaxOrdersPerDay` as the setting that would
+  admit them.
   The options sleeve's **exposure ceiling** is the same `liveMaxExposurePct` × equity
   the equity sleeve uses; it had stayed pinned at 100% of equity while the equity
   sleeve's moved to 190%, which shut the options sleeve whenever the stock book held

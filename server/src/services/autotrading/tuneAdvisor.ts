@@ -292,6 +292,18 @@ export function fieldForUntakenReason(
   if (reason === 'live_entry_failed' || reason === 'live_entry_blocked' || reason === 'live_order_outcome_unknown') {
     return null;
   }
+  // The day's order budget (2026-09-24). Live-only: the paper book is not held
+  // to liveMaxOrdersPerDay, so this bucket's paper R is what the budget costs.
+  if (reason === 'live_order_cap_skipped') {
+    return {
+      field: 'liveMaxOrdersPerDay',
+      direction: 'exposure',
+      detail:
+        "liveMaxOrdersPerDay counts the stock sleeve's opening orders; raising it admits the entries refused " +
+        'after the budget was spent. It is also the backstop against a runaway loop, so move it a step, never ' +
+        'to "unlimited".',
+    };
+  }
   // The END-OF-DAY entry cutoff (2026-09-12), and it is worth a lever rather
   // than a shrug. `endOfDayFlatten.ts` keeps the cutoff live-only ON PURPOSE —
   // paper flattens on the same window but keeps OPENING late entries, "which
@@ -451,6 +463,7 @@ function humanReason(reason: string): string {
   if (reason === 'live_entry_failed') return 'the broker refusing the order (buying power, or its preview)';
   if (reason === 'live_entry_blocked') return 'a guardrail refusing the order at placement';
   if (reason === 'live_order_outcome_unknown') return 'a placement the broker never answered';
+  if (reason === 'live_order_cap_skipped') return "the day's order budget already spent";
   if (reason === NEVER_A_LEVER) return 'the live book standing down (banked day, give-back guard or kill switch)';
   return reason.replace(/_/g, ' ');
 }

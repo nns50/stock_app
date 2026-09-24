@@ -2551,15 +2551,49 @@ describe('runLiveExecution — options orders do not spend the equity sleeve’s
     expect(listAutotradeEvents({ actions: ['live_entry_blocked'] })).toHaveLength(0);
 
     // Its own placement is now the day's one stock order, and the cap is real.
+    // Since 2026-09-24 it refuses before the order is built, not at placement.
     mockPlaceOrder.mockClear();
     const [second] = await runLiveExecution([{ signal: signal({ symbol: 'MSFT' }) }]);
-    expect(second.ok).toBe(false);
+    expect(second).toMatchObject({ ok: false, reason: 'Daily order cap: 1 placed vs 1/day' });
     expect(mockPlaceOrder).not.toHaveBeenCalled();
-    const blocked = listAutotradeEvents({ actions: ['live_entry_blocked'] });
-    expect(blocked).toHaveLength(1);
-    expect((JSON.parse(blocked[0].detail!) as { reasons: string }).reasons).toBe(
-      'max_orders_per_day: 1 placed vs 1/day',
-    );
+    expect(listAutotradeEvents({ actions: ['live_entry_blocked'] })).toHaveLength(0);
+    const skipped = listAutotradeEvents({ actions: ['live_order_cap_skipped'] });
+    expect(skipped.map((e) => e.symbol)).toEqual(['MSFT']);
+  });
+
+  // 2026-09-24. At the cap the guardrail refused every candidate, but only at
+  // placement, after the order intent was written and the account re-read: the
+  // options sleeve built 50 such intents in 32 minutes on 2026-09-23.
+  it('at the cap, refuses before an intent is written or the account read, once a day per name', async () => {
+    setAutotradeConfig({ ...liveConfig(), levelExitsEnabled: false, liveMaxOrdersPerDay: 2 });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-NEVER' });
+    placedToday('stock', 'stk-a');
+    placedToday('stock', 'stk-b');
+    const intentsBefore = listIntents().length;
+    mockAccountState.mockClear();
+
+    const [out] = await runLiveExecution([{ signal: signal() }]);
+    await runLiveExecution([{ signal: signal() }]); // the next tick, still at the cap
+
+    expect(out).toMatchObject({ ok: false, reason: 'Daily order cap: 2 placed vs 2/day' });
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(listIntents()).toHaveLength(intentsBefore);
+    // Only the batch's one buying-power read; no per-candidate account read.
+    expect(mockAccountState.mock.calls.length).toBeLessThanOrEqual(2);
+    const rows = listAutotradeEvents({ actions: ['live_order_cap_skipped'] });
+    expect(rows).toHaveLength(1);
+    // Replayable like every declined entry, and says which budget refused it.
+    expect(JSON.parse(rows[0].detail!)).toMatchObject({
+      ordersToday: 2,
+      maxOrdersPerDay: 2,
+      side: 'long',
+      entry: expect.any(Number),
+      stop: expect.any(Number),
+      liveEligible: true,
+    });
+    expect(listAutotradeEvents({ actions: ['live_entry_blocked'] })).toHaveLength(0);
   });
 });
 

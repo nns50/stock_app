@@ -1271,6 +1271,67 @@ describe('runLiveOptionsExecution', () => {
     expect(mockPlaceOrder).toHaveBeenCalledTimes(2);
   });
 
+  // 2026-09-24. On 2026-09-23 the sleeve reached liveOptionsMaxOrdersPerDay by
+  // 11:56 and then built, and the guardrail refused, 50 entry intents before
+  // the 12:30 cutoff. At the cap it now stops before the risk check.
+  describe('the daily order budget, checked before anything is built (2026-09-24)', () => {
+    const placedOption = (key: string) => {
+      const i = createIntent(
+        {
+          symbol: 'NVDA',
+          assetKind: 'option',
+          side: 'buy',
+          openClose: 'open',
+          quantity: 1,
+          orderType: 'limit',
+          limitPrice: 1,
+          optionType: 'call',
+          strike: 100,
+          expiration: '2030-01-18',
+        },
+        key,
+      );
+      for (const st of ['validated', 'confirmed', 'submitted', 'acknowledged', 'filled'] as const) {
+        transitionIntent(i.id, st);
+      }
+    };
+    function arm(cap: number) {
+      mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4 } }) as never);
+      mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+      mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-CAP' });
+      setAutotradeConfig({ ...liveConfig(), liveOptionsMaxOrdersPerDay: cap });
+    }
+    const rows = () => listAutotradeEvents({ actions: ['live_options_order_cap_skipped'] });
+
+    it('at the cap: no intent, no account read, no order, and one row a day per name', async () => {
+      arm(2);
+      placedOption('opt-a');
+      placedOption('opt-b');
+      const before = listIntents().length;
+      mockAccountState.mockClear();
+
+      const [out] = await runLiveOptionsExecution([{ signal: optionSignal() }]);
+      await runLiveOptionsExecution([{ signal: optionSignal() }]); // the next tick
+
+      expect(out).toMatchObject({ ok: false, reason: 'Daily order cap: 2 placed vs 2/day' });
+      expect(mockPlaceOrder).not.toHaveBeenCalled();
+      expect(mockAccountState).not.toHaveBeenCalled();
+      expect(listIntents()).toHaveLength(before);
+      expect(listAutotradeEvents({ actions: ['live_options_entry_blocked'] })).toHaveLength(0);
+      expect(rows()).toHaveLength(1);
+      expect(JSON.parse(rows()[0].detail!)).toMatchObject({ side: 'call', ordersToday: 2, maxOrdersPerDay: 2 });
+    });
+
+    it('one under the cap, the entry still goes out', async () => {
+      arm(2);
+      placedOption('opt-a');
+      const [out] = await runLiveOptionsExecution([{ signal: optionSignal() }]);
+      expect(out).toMatchObject({ ok: true });
+      expect(mockPlaceOrder).toHaveBeenCalledTimes(1);
+      expect(rows()).toHaveLength(0);
+    });
+  });
+
   // The options twin of the stock gate: a call leans long the underlying and a
   // put short it, so a call on a broad red day and a put on a broad green one
   // are refused, and each leaves a row (2026-09-23).
