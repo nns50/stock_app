@@ -9,7 +9,7 @@ import {
   SweepTrade,
 } from './dailyTargetSweep';
 import { etToday } from '../../util/marketDate';
-import { TapeAlignment } from './marketDirection';
+import { Lean, MarketDirection, TapeAlignment } from './marketDirection';
 
 // ---------------------------------------------------------------------------
 // The edge-leak scan (Decision 11, 2026-09-12).
@@ -95,8 +95,16 @@ export interface LeakTrade {
    *  marketDirection.ts): `against` is a long on a broad red day or a short on a
    *  broad green one. From the `market_direction_read` journal rows in force at
    *  the entry; null before those rows existed and whenever the reading was
-   *  unknown. */
+   *  unknown. Derived from `tapeDirection` and `lean` below, by
+   *  tapeAlignment, and nowhere else. */
   marketTape: TapeAlignment | null;
+  /** Which way the entry leaned (2026-09-25): a stock buy or a call is long the
+   *  underlying, a stock short or a put is short it. */
+  lean: Lean;
+  /** The market's reading in force at the entry: the latest
+   *  `market_direction_read` row at or before it, that day. Null before those
+   *  rows existed; `unknown` when the reading could not see the tape. */
+  tapeDirection: MarketDirection | null;
 }
 
 // --- the bar ---------------------------------------------------------------
@@ -551,6 +559,12 @@ interface Dimension {
    *  verdict is `descriptive`, never a leak or a watch, and it carries no lever.
    *  See EXIT_TIME_CUT. */
   descriptive?: string;
+  /** Also report the buckets only the PAPER book has (live n = 0, the paper
+   *  figures as the control), with the reason. The bar needs live trades, so
+   *  such a bucket is always `ok`; it is reported because the question asked of
+   *  it is asked of paper first — the live book takes no stock shorts, so every
+   *  short bucket is paper's alone. */
+  controlOnlyBuckets?: string;
 }
 
 /**
@@ -723,6 +737,40 @@ export const DIMENSIONS: Dimension[] = [
           }
         : null,
   },
+  // THE SAME CUT BY SIDE (2026-09-25). `against` pools a long on a red day with
+  // a short on a green one, and `with` pools a short on a red day with a long on
+  // a green one: the cut above says whether leaning against the tape costs,
+  // and cannot say whether SHORTS pay on red days, which is the question the
+  // tape plan turns on (puts and red-day-only stock shorts). So every entry is
+  // also filed by what it was, which side it leaned, and the tape it met:
+  // `equity_short_red` is a stock short taken on a broad red day,
+  // `options_long_red` a call on one. An unknown or missing reading files
+  // nothing, as above. Both books, the same bar. The buckets that lean against
+  // the tape share the gate's lever; the others have none, because no setting
+  // takes more of a trade the book already takes.
+  {
+    id: 'marketTapeBySide',
+    label: 'Side and market direction at entry',
+    bucketOf: (t) => tapeSideBucket(t.assetKind, t.lean, t.tapeDirection),
+    controlOnlyBuckets:
+      'The live book takes no stock shorts and few puts, so the short buckets are the paper book’s: reported with ' +
+      'live n = 0 rather than left out.',
+    lever: (bucket) => {
+      const [, lean, direction] = bucket.split('_');
+      const against = (lean === 'long' && direction === 'red') || (lean === 'short' && direction === 'green');
+      return against
+        ? {
+            kind: 'config',
+            field: 'marketDirectionGateEnabled',
+            value: true,
+            direction: 'safe',
+            detail:
+              'Refuse live entries that lean against a one-sided market (a long or a call on a broad red day, a ' +
+              'short or a put on a broad green one). Paper keeps taking them as the control.',
+          }
+        : null;
+    },
+  },
   // STOP WIDTH, in dollars per share (2026-09-23). A stop fills a few cents
   // through its price whatever the stock, so the narrower it is, the more of R
   // one fill takes. Full-loss live stops on names under $20 filled 0.13-0.18R
@@ -749,6 +797,17 @@ export const DIMENSIONS: Dimension[] = [
         : null,
   },
 ];
+
+/** The side-and-tape bucket of one entry: `${asset}_${lean}_${direction}`,
+ *  e.g. `equity_short_red`. Null when the reading was missing or unknown. */
+export function tapeSideBucket(
+  assetKind: 'equity' | 'options',
+  lean: Lean,
+  direction: MarketDirection | null,
+): string | null {
+  if (direction === null || direction === 'unknown') return null;
+  return `${assetKind}_${lean}_${direction}`;
+}
 
 // --- the machinery ---------------------------------------------------------
 
@@ -833,6 +892,20 @@ function runDimension(dim: Dimension, live: LeakTrade[], paper: LeakTrade[], rng
       lever: verdict === 'ok' || verdict === 'descriptive' ? null : (dim.lever?.(bucket) ?? null),
       severityR: Math.max(0, round4(-stats.totalR)),
     });
+  }
+  if (dim.controlOnlyBuckets) {
+    for (const [bucket, controlRows] of paperBuckets) {
+      if (liveBuckets.has(bucket) || controlRows.length < min) continue;
+      buckets.push({
+        ...statsFor(bucket, [], rng),
+        // No live trades, so no verdict the bar can reach: reported, never judged.
+        verdict: dim.descriptive ? 'descriptive' : 'ok',
+        control: statsFor(bucket, controlRows, rng),
+        controlAgrees: false,
+        lever: null,
+        severityR: 0,
+      });
+    }
   }
   buckets.sort((a, b) => b.severityR - a.severityR || a.bucket.localeCompare(b.bucket));
   return {

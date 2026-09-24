@@ -783,6 +783,25 @@ The tune advisor ranks the same class with `marketDirectionBreadthPct` as its le
 scan's **Market direction at entry** cut shows the live book's with and mixed buckets with
 paper beside them. An `against` bucket appears on live only while the gate is off.
 
+**Reading the tape by side (2026-09-25).** `with` pools a short on a red day with a long on a
+green one, so it cannot answer the question that decides the next step: do **shorts** pay on
+red days? The scan's **Side and market direction at entry** cut files every entry by what it
+was, which way it leaned, and the reading it met. `equity_short_red` is a stock short on a
+broad red day; `equity_long_red` a stock long on one; `options_short_red` a put; and
+`options_long_red` a call. How to read it:
+- **`equity_short_red` against `equity_long_red`, on paper.** Paper takes both sides on every
+  tape, so this pair is the red-day comparison the live book cannot make (it takes no stock
+  shorts). Shorts earning more than longs on the same red days is what red-day-only shorts
+  would buy; the reverse says the shorts' edge is not the tape's.
+- **The short buckets show live n = 0.** They are reported rather than left out, and they are
+  never judged, because the bar needs live trades. Their numbers are the paper column.
+- **`options_short_red` is rule A's measure** (puts on red days). With the gate on, a red
+  day's calls are refused and puts take the freed slots, so this bucket grows on live as
+  well as paper.
+- **Levers.** A bucket that leans against the tape (`*_long_red`, `*_short_green`) carries the
+  gate as its lever. The others have none: a losing short on a red day is a finding, and no
+  setting refuses it.
+
 One mechanical thing worth knowing, because it decides whether an exit is placeable at
 all: **an option under $3 of premium can only be priced in nickels.** Webull rejects
 anything else outright, so the live path snaps every option limit onto that grid — a buy
@@ -2094,7 +2113,8 @@ book" read differently.
 aggregate · score band · VWAP extension · % of session range · exit reason · hold time ·
 symbol (n ≥ 5) · sector · weekday · ML regime · asset · position size · stop width per
 share · market direction at entry (with, against or mixed, from the `market_direction_read`
-rows in force at the entry; see "Don't buy into a falling market" above). **Exit reason and hold time
+rows in force at the entry; see "Don't buy into a falling market" above) · the same by side
+(`${asset}_${long|short}_${red|mixed|green}`, 2026-09-25; below). **Exit reason and hold time
 are reported, never judged** (2026-09-23): both are known only once the trade has ended,
 so a bucket of them is chosen by the outcome. A stop exit loses by construction, and on
 2026-09-23 "exit reason = stop" cleared the bar (31 live stop exits at −0.27R, paper
