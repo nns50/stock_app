@@ -2494,18 +2494,23 @@ takes its field and its number from the leak scan's output rather than from lite
 and the scan's own score-band lever would have proposed lowering the live score floor while
 calling itself safe. So before the app applies any data-sourced patch it checks each key
 against a written table of which direction is *less* exposure, and refuses anything moving
-the other way — the proposal still reaches you, with the refusal at the top of its reasons.
+the other way. Until 2026-09-25 such a proposal still reached you, with the refusal at the
+top of its reasons (see below for what changed).
 Any patch, literal or not, is also refused if it would produce a config the settings route
 itself would reject.
 
 Since 2026-09-25 `leak_lever` also looks past a lever it cannot or need not apply to the
 next confirmed leak, instead of stopping at the first. That covers a lever already in force,
-a field the app may not write, and one that would move its setting the exposure way. So a
-lowering the scan labels safe is no longer proposed by this rule, and tune advice marks it
-`in_force`. The write-time refusal still stands behind every data-sourced patch. The table
-also reads a zero that switches a feature off as *off*. A `stagnationExitMinutes` of 0 turns
-the scratch off, and the arithmetic used to read it as the shortest, safest value. Now a
-patch to 0 is refused and switching the scratch on passes.
+a field the app may not write, and one the write would refuse. So a lowering the scan labels
+safe is no longer proposed by this rule at all, and tune advice marks it `in_force`. The
+refusal described above still stands behind every data-sourced patch that reaches the
+write. It now judges the value the write would store, since the config clamps some values,
+and it refuses a number that is not finite or a key with no written direction.
+`stagnationExitMinutes` is two-way: a shorter scratch ends a dead trade sooner, but the same
+number sets the end-of-day entry runway, so it also lets entries open later, and 0 switches
+the scratch off. Data may not write it. And an operator who sets a stricter value than a
+lever asked for (a score floor of 75 where it said at least 70) has acted on it: the rule
+going quiet afterwards is not counted against it as a contradiction.
 
 **Nothing acts until it has shadowed.** A rule evaluates, journals what it would have
 done, and changes nothing until it has been evaluated on five sessions, fired at least
