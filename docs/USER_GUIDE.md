@@ -3352,6 +3352,14 @@ this is true:
   next without its change having been applied. A rule that flip-flops is reading noise,
   and it never graduates.
 
+**One exception: a tripwire** (2026-09-24). "Turn live shorts off" acts the first time it
+fires, with no shadow. A shadow asks a rule to fire once before it may act, and this rule
+exists for a rare event, so a shadow would turn the one trip that matters into a
+proposal. What earns the exception is its change: it can only switch live shorts **off**.
+That is the most conservative change there is, on a switch only you turn on. The app
+refuses anything else from a tripwire, and it can never switch shorts on. The master
+switch for automatic changes and the kill switch still hold it like any rule.
+
 The card shows each rule's progress (`shadow 2/5`), whether its criterion is **met now**,
 and whether it has disqualified itself. When a rule does graduate and act, it writes
 `config_auto_applied` to Recent Activity with the before/after values and the numbers
@@ -3403,6 +3411,27 @@ When it proposes, the rule writes `config_change_proposed` with the field you wo
 it never applies the change, and it stops proposing once shorts are on. A replay that
 fails (no bars) costs that evening's refresh and nothing else — the rule reads the last
 record it has.
+
+**A losing short book turns itself off** (2026-09-24). While live shorts are on, "Turn
+live shorts off" reads every live short since you last switched them on, after each close.
+It switches them off (`liveAllowNakedShort` → false) the first time any of these holds:
+- a live short closed at −1.5R or worse (a stop that did not hold);
+- a short-side execution defect: a row the edge-leak scan counts as a defect, belonging
+  to a live short (a failed exit, a missing stop, an order nobody can find, and so on);
+- from 10 shorts, their average is below −0.20R;
+- from 10 shorts, they ran more than 0.40R below the replay of their own signals. After
+  each close the app replays every live short's own signal the same way it replays the
+  declined ones, and sets it against what the short realized;
+- from 20 shorts, the edge-leak scan lists live `equity_short_red` as a leak.
+
+The card shows the reading every session while shorts are on, tripped or not: "12 live
+shorts since 2026-10-07: avg −0.05R …; 0 short-side defects; −0.12R against the replay over
+12 …; equity_short_red no leak". When it trips, it writes `config_auto_applied` with the
+reason and sends a notification. It acts after the close of the session the trip happens
+in. The day's other shorts keep their own stops, and the daily drawdown halt still covers
+the day. Switching shorts back on is yours alone. The count starts again from that moment,
+and so does the short probation. Until you do, "Enable live shorts" stays quiet and says
+why.
 
 **What a live short needed before the rule could matter** (2026-09-23). No live short has
 ever traded, and an audit of every path a short would run for the first time found it

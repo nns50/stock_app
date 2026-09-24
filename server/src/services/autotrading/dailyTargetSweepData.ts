@@ -61,6 +61,18 @@ export interface CollectedBook extends CollectedTrades {
 
 const isAutotradePosition = (p: Position): boolean => p.tags.includes('autotrade');
 
+/** When a live position was entered, as the goal sweep reads it: `entryDate`
+ *  and `entryTime` read back as an instant, else `createdAt` when that lands on
+ *  the entry date; null otherwise. One derivation for the collector below and
+ *  the live-short evidence (liveShortsEvidence.ts), which also dates OPEN
+ *  positions. */
+export function liveEntryAt(p: Position): number | null {
+  if (p.entryDate === null) return null;
+  const at = p.entryTime ? etDateTimeToMs(p.entryDate, p.entryTime) : null;
+  if (at !== null) return at;
+  return etToday(p.createdAt) === p.entryDate ? p.createdAt : null;
+}
+
 /**
  * The live book: the journal's autotrade-tagged closed positions (auto-tune's
  * own population) plus the live options table — the daily goal gates both.
@@ -82,8 +94,7 @@ export function collectLiveTrades(closed: Position[], liveOptionsClosed: LiveOpt
       drops.noEntryOrExit += 1;
       continue;
     }
-    let entryAt = p.entryTime ? etDateTimeToMs(p.entryDate, p.entryTime) : null;
-    if (entryAt === null && etToday(p.createdAt) === p.entryDate) entryAt = p.createdAt;
+    const entryAt = liveEntryAt(p);
     const risk = initialRiskOf(p);
     // Counted SEPARATELY, and deliberately not as one "unusable" bucket: a
     // missing entry time is a fixed history gap, a missing initial risk means

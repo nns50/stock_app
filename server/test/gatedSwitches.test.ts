@@ -19,6 +19,10 @@ import {
   ShortShadowEvidence,
   SwitchRule,
   SwitchState,
+  isSwitchOff,
+  LiveShortsEvidence,
+  shortsRevertTrips,
+  TRIPWIRE_REFUSAL,
 } from '../src/services/autotrading/gatedSwitches';
 import { redTapeGateOf, SHORT_ENABLE_GATE, type ShadowTrade } from '../src/services/autotrading/shortShadowRecord';
 
@@ -49,6 +53,7 @@ function snapshot(over: Partial<GatedSwitchSnapshot> = {}): GatedSwitchSnapshot 
     },
     capsCoherence: [],
     shortShadow: null,
+    liveShorts: null,
     ...over,
   };
 }
@@ -72,6 +77,7 @@ function shortShadow(over: Partial<ShortShadowEvidence> = {}): ShortShadowEviden
     winRatePct,
     gate: { ...g, passesN, passesAvgR, passesWinRate, passes: passesN && passesAvgR && passesWinRate },
     redTapeGate: null,
+    liveReplay: null,
     ...over,
   };
 }
@@ -104,12 +110,23 @@ describe('the blast radius is explicit', () => {
     expect(() => assertWritable({ killSwitch: true } as never)).toThrow(/killSwitch/);
   });
 
-  it('lets an exposure rule NAME the shorts switch and still refuses to write it', () => {
-    // A proposal-only key: reportable, never writable. Both checks in one
-    // place so the next key added here is judged on both questions.
+  it('lets an exposure rule NAME the shorts switch and still refuses to write it on', () => {
+    // Reportable as true, never writable as true. Both checks in one place so
+    // the next key added here is judged on both questions.
     expect(() => assertProposable({ liveAllowNakedShort: true })).not.toThrow();
-    expect(() => assertWritable({ liveAllowNakedShort: true })).toThrow(/may not write liveAllowNakedShort/);
+    expect(() => assertWritable({ liveAllowNakedShort: true })).toThrow(/may only switch liveAllowNakedShort off/);
     expect(() => assertProposable({ killSwitch: true } as never)).toThrow(/may not propose killSwitch/);
+  });
+
+  // 2026-09-24 (the tape plan's PR 10): the shorts switch is off-only for
+  // the app. A tripwire may turn it off; nothing the app runs may turn it on.
+  it('lets the app write the shorts switch OFF, and only off', () => {
+    expect(() => assertWritable({ liveAllowNakedShort: false })).not.toThrow();
+    expect(isSwitchOff({ liveAllowNakedShort: false })).toBe(true);
+    expect(isSwitchOff({ liveAllowNakedShort: true })).toBe(false);
+    // A switch-off beside anything else is not a switch-off.
+    expect(isSwitchOff({ liveAllowNakedShort: false, riskPerTradePct: 1 })).toBe(false);
+    expect(isSwitchOff({})).toBe(false);
   });
 });
 
@@ -501,7 +518,7 @@ describe('evaluateGatedSwitches', () => {
       evaluate: () => ({ patch: { liveAllowNakedShort: true }, evidence: '' }),
     };
     expect(() => run({ rules: [rogue], states: new Map([['stub', graduated()]]) })).toThrow(
-      /may not write liveAllowNakedShort/,
+      /may only switch liveAllowNakedShort off/,
     );
   });
 });
@@ -902,5 +919,165 @@ describe('the shipped rules', () => {
       // The reading still travels: "on, and here is what the record says".
       expect(r.decisions[0].nextState.lastReading).toMatch(/bar met/);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A LOSING SHORT BOOK TURNS ITSELF OFF (2026-09-24, the tape plan's PR 10).
+// Rule C's tripwires, pre-committed before any live short traded. The rule is
+// a TRIPWIRE: it acts on its first firing, because a shadow would turn the one
+// trip it exists for into a proposal. What earns that is its patch: shorts
+// off, and nothing else.
+// ---------------------------------------------------------------------------
+describe('shorts_revert — a losing short book turns itself off', () => {
+  const revert = GATED_SWITCH_RULES.find((r) => r.id === 'shorts_revert')!;
+  const shortsOn = { ...defaultAutotradeConfig(), liveAllowNakedShort: true, liveShortsEnabledAt: 1_000 };
+  const book = (over: Partial<LiveShortsEvidence> = {}): LiveShortsEvidence => ({
+    since: 1_000,
+    sinceEtDate: '2026-10-07',
+    trades: [],
+    defects: [],
+    replay: null,
+    equityShortRedLeak: null,
+    ...over,
+  });
+  const trades = (...rs: number[]) => rs.map((r, i) => ({ symbol: `S${i}`, etDate: '2026-10-08', r }));
+  const run = (liveShorts: LiveShortsEvidence, over: Partial<Parameters<typeof evaluateGatedSwitches>[0]> = {}) =>
+    evaluateGatedSwitches({
+      snapshot: snapshot({ config: shortsOn, liveShorts }),
+      states: new Map(),
+      enabled: true,
+      now: 5_000,
+      rules: [revert],
+      ...over,
+    });
+
+  it('turns shorts off on its FIRST firing: a short closed at -1.5R or worse', () => {
+    const r = run(book({ trades: trades(0.4, -1.6) }));
+    // A fresh state: no shadow sessions, no shadow firing. A tripwire acts.
+    expect(r.decisions[0].outcome).toBe('applied');
+    expect(r.applied).toEqual([
+      {
+        ruleId: 'shorts_revert',
+        patch: { liveAllowNakedShort: false },
+        evidence: expect.stringMatching(/^S1 \(2026-10-08\) closed at -1\.60R/),
+      },
+    ]);
+    expect(r.decisions[0].nextState.graduatedAt).toBe(5_000);
+  });
+
+  it('trips at -1.5R exactly, float and all, and not at -1.49R', () => {
+    expect(shortsRevertTrips(book({ trades: trades(-1.4999999999999998) }))).toHaveLength(1);
+    expect(shortsRevertTrips(book({ trades: trades(-1.49) }))).toEqual([]);
+  });
+
+  it('trips on a short-side execution defect', () => {
+    const r = run(book({ defects: [{ label: 'A timed stock exit failed', symbol: 'TSLA', etDate: '2026-10-08' }] }));
+    expect(r.applied[0]?.evidence).toBe('a short-side execution defect: A timed stock exit failed (TSLA, 2026-10-08)');
+  });
+
+  it('trips on the average from 10 shorts: not at 9, not at exactly -0.20R', () => {
+    expect(shortsRevertTrips(book({ trades: trades(...Array(9).fill(-0.5)) }))).toEqual([]);
+    expect(shortsRevertTrips(book({ trades: trades(...Array(10).fill(-0.2)) }))).toEqual([]);
+    expect(shortsRevertTrips(book({ trades: trades(...Array(10).fill(-0.25)) }))).toEqual([
+      '10 live shorts average -0.25R (trips below -0.2R from 10)',
+    ]);
+  });
+
+  it('trips when live runs more than 0.40R below the replay of the same shorts, over 10 pairs', () => {
+    expect(shortsRevertTrips(book({ replay: { n: 10, meanGapR: -0.45 } }))).toEqual([
+      'live shorts ran -0.45R against their replay over 10 (trips below -0.4R from 10)',
+    ]);
+    expect(shortsRevertTrips(book({ replay: { n: 9, meanGapR: -0.9 } }))).toEqual([]);
+    expect(shortsRevertTrips(book({ replay: { n: 10, meanGapR: -0.4 } }))).toEqual([]);
+    expect(shortsRevertTrips(book({ replay: { n: 10, meanGapR: null } }))).toEqual([]);
+  });
+
+  it('trips on a live equity_short_red leak from 20 shorts, and only on a leak', () => {
+    const flat20 = trades(...Array(20).fill(0));
+    expect(shortsRevertTrips(book({ trades: flat20, equityShortRedLeak: true }))).toEqual([
+      'the edge-leak scan lists live equity_short_red as a leak after 20 shorts',
+    ]);
+    expect(shortsRevertTrips(book({ trades: trades(...Array(19).fill(0)), equityShortRedLeak: true }))).toEqual([]);
+    expect(shortsRevertTrips(book({ trades: flat20, equityShortRedLeak: false }))).toEqual([]);
+    expect(shortsRevertTrips(book({ trades: flat20, equityShortRedLeak: null }))).toEqual([]);
+  });
+
+  it('is quiet while shorts are off, however the book reads, and while none has been switched on', () => {
+    const tripped = book({ trades: trades(-3) });
+    const off = run(tripped, {
+      snapshot: snapshot({ config: { ...shortsOn, liveAllowNakedShort: false }, liveShorts: tripped }),
+    });
+    expect(off.decisions[0].outcome).toBe('quiet');
+    expect(off.decisions[0].nextState.lastReading).toBeNull();
+    expect(run(tripped, { snapshot: snapshot({ config: shortsOn, liveShorts: null }) }).decisions[0].outcome).toBe(
+      'quiet',
+    );
+  });
+
+  it('reads every tripwire against the book while shorts are on, tripped or not', () => {
+    const r = run(book({ trades: trades(0.5, -0.8), replay: { n: 2, meanGapR: -0.1 }, equityShortRedLeak: false }));
+    expect(r.decisions[0].outcome).toBe('quiet');
+    expect(r.decisions[0].nextState.lastReading).toBe(
+      '2 live shorts since 2026-10-07: avg -0.15R (trips below -0.2R from 10), worst -0.80R (trips at -1.5R); ' +
+        '0 short-side defects; -0.10R against the replay over 2 (trips below -0.4R from 10); equity_short_red no ' +
+        'leak (trips from 20)',
+    );
+  });
+
+  it('is held by the master flag and by the kill switch, like any rule', () => {
+    const tripped = book({ trades: trades(-2) });
+    expect(run(tripped, { enabled: false }).decisions[0].outcome).toBe('held');
+    const killed = snapshot({ config: { ...shortsOn, killSwitch: true }, liveShorts: tripped });
+    expect(run(tripped, { snapshot: killed }).decisions[0].outcome).toBe('held');
+  });
+
+  it('refuses anything but a switch-off from a tripwire, at the write', () => {
+    for (const patch of [{ riskPerTradePct: 0.5 }, { liveAllowNakedShort: false, riskPerTradePct: 0.5 }]) {
+      const rogue: SwitchRule = {
+        id: 'trip',
+        label: 'trip',
+        direction: 'safe',
+        tripwire: true,
+        criterion: '',
+        evaluate: () => ({ patch, evidence: '' }),
+      };
+      const r = run(book(), { rules: [rogue] });
+      expect(r.applied, JSON.stringify(patch)).toEqual([]);
+      expect(r.decisions[0].outcome).toBe('proposed');
+      expect(r.decisions[0].exposureRefusals).toContain(TRIPWIRE_REFUSAL);
+    }
+  });
+
+  it('keeps the shorts switch quiet after the revert tripped the current window', () => {
+    // Everything the shorts switch asks for is met, and shorts are off — but
+    // they are off because the last live window tripped the revert. The app
+    // does not ask to turn them back on; the operator's own switch-on does.
+    const shorts = GATED_SWITCH_RULES.find((r) => r.id === 'shorts')!;
+    const trades20 = Array.from({ length: 20 }, () => ({ exitR: 0.5 }) as ShadowTrade);
+    const met = shortShadow({
+      redTapeGate: redTapeGateOf({
+        red: { trades: trades20 },
+        mixed: { trades: [{ exitR: 0 } as ShadowTrade] },
+        green: { trades: [] },
+        unlabeled: { trades: [] },
+      }),
+    });
+    const paper = {
+      books: ['live', 'paper'],
+      dimensions: [
+        {
+          id: 'marketTapeBySide',
+          buckets: [{ bucket: 'equity_short_red', n: 0, meanR: null, control: { n: 12, meanR: 0.3 } }],
+        },
+      ],
+    } as unknown as NonNullable<GatedSwitchSnapshot['leakScan']>;
+    const s = (liveShorts: LiveShortsEvidence | null) =>
+      snapshot({ config: { ...shortsOn, liveAllowNakedShort: false }, shortShadow: met, leakScan: paper, liveShorts });
+    expect(shorts.evaluate(s(null))).not.toBeNull(); // the control: it would propose
+    expect(shorts.evaluate(s(book({ trades: trades(-1.7) })))).toBeNull();
+    expect(shorts.reading!(s(book({ trades: trades(-1.7) })))).toMatch(
+      /; held: the last live short window tripped the revert — only your own switch-on starts a new one$/,
+    );
   });
 });

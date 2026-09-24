@@ -7,8 +7,10 @@ import {
   memoCandleSource,
   replayByTape,
   ShadowOptions,
+  ShadowTrade,
 } from './declinedEntryShadow';
 import { TAPE_BUCKETS, TapeBucket, tapeBucketOf } from './marketDirection';
+import { etToday } from '../../util/marketDate';
 
 /**
  * What the live book WOULD have made on the shorts it declined — measured on
@@ -212,5 +214,76 @@ export async function buildShortShadowRecord(
     gate: { ...g, passesN, passesAvgR, passesWinRate, passes: passesN && passesAvgR && passesWinRate },
     byTape,
     redTapeGate: redTapeGateOf(tapes),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// THE LIVE SHORTS AGAINST THEIR OWN REPLAY (2026-09-24, the tape plan's PR 10).
+//
+// Rule C's "live more than 0.40R below the shadow on the same symbol-days"
+// cannot be read off the declined-short shadow: once shorts are on, the
+// symbol-days live takes are the ones nothing declined, so that shadow has no
+// row there. The comparison that does exist is each live short's OWN signal,
+// replayed the same way (the same replay, the same exit rules, the same fill
+// model), against what the short actually realized. A gap well below zero is
+// the live short path doing worse than the model of it: fills, borrow, a
+// squeeze, a stop that did not hold.
+// ---------------------------------------------------------------------------
+
+/** A closed live short as the pairing reads it: where, and what it realized. */
+export interface LiveShortOutcome {
+  symbol: string;
+  etDate: string;
+  r: number;
+}
+
+export interface LiveShortReplay {
+  /** liveShortsEnabledAt, the window the live shorts were drawn from. A
+   *  reader holds this against the config, so a record from before shorts
+   *  were switched on again is not read as the new window's. */
+  since: number;
+  /** Live shorts paired with a replay of their own signal on the same
+   *  symbol-day. */
+  n: number;
+  meanLiveR: number | null;
+  meanReplayR: number | null;
+  /** meanLiveR less meanReplayR: below zero, live did worse than the replay. */
+  meanGapR: number | null;
+  /** Live shorts with no replay on their symbol-day (no bars, no placement
+   *  row), or a second short on a symbol-day the first already paired. */
+  unpaired: number;
+}
+
+/** Pair each live short with the replay of its own signal on the same
+ *  symbol-day, oldest first; a symbol-day pairs once. */
+export function pairLiveWithReplay(
+  since: number,
+  live: LiveShortOutcome[],
+  replay: Pick<ShadowTrade, 'symbol' | 'at' | 'exitR'>[],
+): LiveShortReplay {
+  const byKey = new Map<string, number>();
+  for (const t of replay) {
+    const key = `${t.symbol}|${etToday(t.at)}`;
+    if (!byKey.has(key)) byKey.set(key, t.exitR);
+  }
+  const pairs: { live: number; replay: number }[] = [];
+  const used = new Set<string>();
+  for (const l of live) {
+    const key = `${l.symbol}|${l.etDate}`;
+    const replayR = byKey.get(key);
+    if (replayR === undefined || used.has(key)) continue;
+    used.add(key);
+    pairs.push({ live: l.r, replay: replayR });
+  }
+  const mean = (xs: number[]): number | null => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
+  const meanLiveR = mean(pairs.map((p) => p.live));
+  const meanReplayR = mean(pairs.map((p) => p.replay));
+  return {
+    since,
+    n: pairs.length,
+    meanLiveR,
+    meanReplayR,
+    meanGapR: meanLiveR !== null && meanReplayR !== null ? meanLiveR - meanReplayR : null,
+    unpaired: live.length - pairs.length,
   };
 }

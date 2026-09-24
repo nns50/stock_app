@@ -15416,3 +15416,103 @@ The mutations:
 - in the plumbing: the sanitizer dropping the multiplier; the route dropping the trade
   count; the dashboard showing the book's window;
 - in the web: the line shown while shorts are off; the save omitting the trade count.
+
+## 2026-09-24 (tenth) — a losing short book turns itself off
+
+The tape plan's PR 10: rule C's tripwires, applied by the app. Like PRs 8 and 9 it does
+nothing while live shorts are off.
+
+**Two changes to the engine.**
+- **An off-only key.** `SWITCH_OFF_ONLY_KEYS = ['liveAllowNakedShort']`. `assertWritable`
+  accepts `liveAllowNakedShort: false` and throws on anything else ("may only switch
+  liveAllowNakedShort off"). It stays a proposal-only key for `true`: the `shorts` rule
+  still names it, and nothing the app runs can write it on.
+- **A tripwire.** `SwitchRule.tripwire` makes a rule graduate at once: no shadow. A shadow
+  asks a rule to have fired once before it may act. So a revert whose trigger is rare would
+  only ever propose on the one occasion it exists for. What earns the exception is the
+  patch: `isSwitchOff` (every key off-only, every value `false`). A tripwire's firing that
+  is anything else is refused at the write (`TRIPWIRE_REFUSAL`) and reaches the operator
+  as a proposal. The master flag and the kill switch still hold a tripwire like any rule.
+
+**The rule, `shorts_revert`** (safe, tripwire). It is evaluated only while
+`liveAllowNakedShort` is on, over the live shorts entered since `liveShortsEnabledAt`
+(PR 9's stamp). Switching shorts back on therefore starts a clean window, and a short from
+an earlier window can never trip it. Its patch is `{ liveAllowNakedShort: false }`. It
+trips on any of (`SHORTS_REVERT`):
+1. a live short closed at −1.5R or worse (1e-9 of float slack);
+2. a short-side execution defect;
+3. from 10 shorts, a mean below −0.20R;
+4. from 10 paired shorts, live more than 0.40R below the replay of the same shorts;
+5. from 20 shorts, the last scan lists live `equity_short_red` among its leaks (`leak`,
+   or `unconfirmed`, as the scan's own leaks list does).
+
+The evidence is one line on the card every session while shorts are on, tripped or not.
+While the current window stands tripped, the `shorts` exposure rule stays quiet: its
+reading says why, and only the operator's own switch-on starts a new window.
+
+**The evidence** (`liveShortsEvidence.ts`) derives nothing of its own:
+- **The trades** are the closed live stock shorts tagged `autotrade`, with the R the goal
+  sweep and the scan read (`collectBook`). A hand-traded short is not the app's, and is
+  not counted.
+- **A defect** is a row the scan's execution catalog counts as a `defect`. The per-row
+  classification is now one function, `classifyExecutionRows`, which the scan's counts
+  read too, so a row is a defect to both or to neither. Superseded rows, `countsIf`
+  exclusions, `operator` and `control` rows, and options rows are out. A row belongs to a
+  short by the `positionId` it names, or else by its symbol inside the short's life: from
+  5 minutes before its entry to 8 days after its close, the reach of an exit correction.
+  The entry moment is the collector's own (`liveEntryAt`, factored out of
+  `collectLiveTrades`).
+- **The replay gap.** The declined-short shadow has no row for a symbol-day the live book
+  took, so "below the shadow on the same symbol-days" is read as each live short against
+  its own signal:
+  - the after-close refresh (`computeShortShadowReport`) loads each short's
+    `live_order_placed` row (side `sell`: the signal's price, its stop, the moment);
+  - it replays them with `buildDeclinedEntryShadow` (no score floor; no direction or ATR
+    gate, since each was taken; the measured entry concession);
+  - it pairs each with the realized R on the same symbol-day (`pairLiveWithReplay`);
+  - it persists `liveReplay { since, n, meanLiveR, meanReplayR, meanGapR, unpaired }`.
+
+  The snapshot reads it only when its `since` is the current window's. The refresh uses
+  one provider for both replays.
+- **The leak** is the last scan's live `equity_short_red` bucket. A bucket only paper
+  fills says nothing about the live book and reads unread.
+
+**Timing.** Every rule runs after the close, so the revert acts after the session the trip
+happens in. The day's other shorts keep their own stops, and the daily drawdown halt
+covers the whole book intraday. An intraday switch-off on a −1.5R close is possible later.
+It is not built here: rule C was written for the evening engine.
+
+**Tests.** Each is mutation-checked: 21 mutations, all caught.
+- **The engine.** The off-only key is writable as `false` only. `isSwitchOff` rejects a
+  mixed patch and an empty one. A tripwire acts on its first firing, from a fresh state.
+  A tripwire firing anything but a switch-off is refused. The master flag and the kill
+  switch hold it. The dashboard shows it graduated from day one, with no blockers.
+- **The trips.** Each trips, with exact evidence, and each stops one step short: −1.49R;
+  9 shorts; exactly −0.20R; 9 pairs; exactly −0.40R; 19 shorts; a leak that is false or
+  unread. The rule is quiet while shorts are off and before they were ever on, and reads
+  the whole book on the card.
+- **The evidence, over real rows.**
+  - Only the app's own shorts since the stamp count: not a long, not a hand short, not a
+    short from the day before.
+  - A defect counts when it is the catalog's, on a short, inside its life, or named by
+    position id days later. Not a long's row, the operator's, an options row, one from
+    before the entry, or a superseded skip.
+  - The replay pairs a short that lost 1.6R with its own signal's −1R, and counts a short
+    with no placement row as unpaired.
+  - The refresh persists the comparison, and the switch evidence carries it.
+  - A replay from another window is ignored, and a paper-only bucket reads unread.
+- **The consumer.** A live short that lost 1.6R after the stamp turns shorts off in the
+  stored config on that evening's run. It journals `config_auto_applied` with the reason
+  and sends one push. The same short from before the last switch-on changes nothing.
+
+The mutations:
+- in the engine: the tripwire keeping its shadow; the off-only key accepting `true`; the
+  tripwire refusal dropped; `isSwitchOff` accepting a mixed patch;
+- in the rule: evaluating while shorts are off; the worst-R trip losing its float slack;
+  the mean trip counted from 11; the gap trip's sign flipped; the leak trip ignoring the
+  count; defects never tripping; the `shorts` proposal ignoring a tripped window;
+- in the evidence: the window start ignored; longs counted; a defect's nature ignored;
+  options rows counted; the position id ignored; a replay from any window read; a
+  paper-only bucket read as the live verdict;
+- in the wiring: the pairing's gap sign flipped; the refresh never replaying; the
+  snapshot dropping the book.

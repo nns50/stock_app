@@ -650,10 +650,13 @@ describe('gatedSwitches — the shadow is visible while it runs', () => {
     const rules = getAutotradeDashboard().gatedSwitches;
     expect(rules.length).toBeGreaterThanOrEqual(5);
     for (const r of rules) {
-      expect(r.graduated).toBe(false);
+      // The one exception is a tripwire (2026-09-24): it acts on its first
+      // firing, so there is no shadow for it to have served.
+      expect(r.graduated, r.id).toBe(r.id === 'shorts_revert');
       expect(r.evaluations).toBe(0);
       expect(r.criterion.length).toBeGreaterThan(20);
     }
+    expect(rules.find((r) => r.id === 'shorts_revert')).toMatchObject({ direction: 'safe', blockers: [] });
     const overlay = rules.find((r) => r.id === 'overlay_revert');
     expect(overlay?.blockers.join(' ')).toMatch(/evaluated on 0 of 5 sessions/);
     // An exposure rule says WHY it will never graduate, rather than showing a
