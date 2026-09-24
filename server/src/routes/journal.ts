@@ -31,6 +31,7 @@ import { parseDeclinedEntry, type DeclinedEntry } from '../services/autotrading/
 import { readDay } from '../services/autotrading/dayMarks';
 import { listDayMarkDates } from '../db/dayMarks';
 import { buildDeclinedEntryShadow, SCORE_FLOOR_ACTIONS } from '../services/autotrading/declinedEntryShadow';
+import { shadowFillInputs } from '../services/autotrading/declinedEntryShadowData';
 import { listAutotradeEventsInWindow } from '../db/autotradeEvents';
 import type { Candle } from '../providers/types';
 import {
@@ -1046,7 +1047,11 @@ journalRouter.get(
     // constitute the evidence and return an empty record that reads as "no
     // signal" instead of "wrong question".
     const applyScoreFloor = !SCORE_FLOOR_ACTIONS.has(action);
-    const record = await buildDeclinedEntryShadow(getProvider(), rows, cfg, { applyScoreFloor, minMinutesSinceExit });
+    const record = await buildDeclinedEntryShadow(getProvider(), rows, cfg, {
+      applyScoreFloor,
+      minMinutesSinceExit,
+      ...shadowFillInputs(from),
+    });
     res.json({
       action,
       since: from,
