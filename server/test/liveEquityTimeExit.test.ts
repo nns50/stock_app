@@ -2349,7 +2349,7 @@ describe('checkLivePerLotSecondLots', () => {
   // addOnDirectionRefusal). The first lot passed the gate at entry; the tape can
   // turn before the second goes, and a long lot bought into a broad red day is
   // the bet the gate refuses as a fresh entry.
-  it('holds the second lot while the market reads red against it, says why once, and sends it when the tape turns', async () => {
+  it('drops the second lot when the market reads red against it, says why once, and does not send it when the tape turns', async () => {
     const { position, entryIntentId } = await openAgedLivePosition(0);
     setAutotradeConfig(
       liveConfig({ livePerLotBracketsEnabled: true, maxHoldDays: 0, marketDirectionGateEnabled: true }),
@@ -2374,10 +2374,14 @@ describe('checkLivePerLotSecondLots', () => {
         symbol: 'AAPL',
         positionId: position.id,
         requested: false,
-        reason: expect.stringMatching(/^Market direction: Broad red market .* a long second lot leans against it$/),
+        reason: expect.stringMatching(
+          /^Market direction: Broad red market .* a long second lot leans against it; dropped, not deferred/,
+        ),
       },
     ]);
-    await checkLivePerLotSecondLots();
+    // The refusal ends the lot: a later tick on the same red tape writes no
+    // second row and asks nothing.
+    expect(await checkLivePerLotSecondLots()).toEqual([]);
     expect(mockPlaceOrder).not.toHaveBeenCalled();
     const skipped = listAutotradeEvents({ actions: ['per_lot_second_lot_direction_skipped'], limit: 10 });
     expect(skipped).toHaveLength(1);
@@ -2386,12 +2390,35 @@ describe('checkLivePerLotSecondLots', () => {
       side: 'long',
       quantity: 5,
       direction: 'red',
+      dropped: true,
     });
     // Not the guardrail's action: the two refusals are counted apart.
     expect(listAutotradeEvents({ actions: ['per_lot_second_lot_blocked'], limit: 10 })).toHaveLength(0);
 
-    // SPY back over its prior close: the next tick sends the lot.
+    // SPY back over its prior close. Sent now, the lot would buy at this
+    // moment's price against the entry's frozen stop, sized for the entry's:
+    // so it is not sent at all.
     readMarketDirectionForTick({ ...redTape, indexChangePct: 0.1 }, Date.now(), '2026-09-24');
+    expect(await checkLivePerLotSecondLots()).toEqual([]);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  it("drops only the refused position's second lot, not another position's", async () => {
+    // Another position's refusal row is not this one's: the marker is read by
+    // positionId, so a lot refused on one name never ends a lot on another.
+    const { position, entryIntentId } = await openAgedLivePosition(0);
+    setAutotradeConfig(liveConfig({ livePerLotBracketsEnabled: true, maxHoldDays: 0 }));
+    planFor(entryIntentId, { quantity: 5, targetR: 2, targetPrice: 110 });
+    logAutotradeEvent({
+      symbol: 'MSFT',
+      stage: 'execution',
+      action: 'per_lot_second_lot_direction_skipped',
+      detail: { positionId: position.id + 1000, dropped: true },
+    });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(accountStateWith(0) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-LOT2' });
+
     expect(await checkLivePerLotSecondLots()).toEqual([
       { symbol: 'AAPL', positionId: position.id, requested: true, quantity: 5 },
     ]);

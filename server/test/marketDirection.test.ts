@@ -248,6 +248,26 @@ describe('holdMarketDirection — the exit band and the data-gap hold', () => {
     expect(blind.reading).toMatchObject({ direction: 'red', heldBy: 'data_gap' });
   });
 
+  it('carries no band hold across a gap in the reading longer than DIRECTION_DATA_GAP_HOLD_MS', () => {
+    // Red confirmed at 10:00, then the loop stops reading the tape (a kill
+    // switch, a stop, a macro blackout: the loop returns before its screen).
+    // Hours later the tape sits inside the band. The bar has to be met again,
+    // exactly as after a stretch of ticks the reading could not see.
+    const entered = step(-0.35, breadth(73, 27), null, T0);
+    expect(step(-0.15, breadth(62, 38), entered.held, T0 + 180 * MIN)).toMatchObject({
+      reading: { direction: 'mixed' },
+      held: null,
+    });
+    // At the bound it still holds (inclusive, like the data-gap hold)...
+    expect(step(-0.15, breadth(62, 38), entered.held, T0 + DIRECTION_DATA_GAP_HOLD_MS).reading.heldBy).toBe(
+      'hysteresis',
+    );
+    // ...and one millisecond past it, it does not.
+    expect(step(-0.15, breadth(62, 38), entered.held, T0 + DIRECTION_DATA_GAP_HOLD_MS + 1).reading.direction).toBe(
+      'mixed',
+    );
+  });
+
   it('never carries a hold into another ET day', () => {
     const yesterday: HeldDirection = { direction: 'red', day: '2026-09-23', confirmedAt: T0 - MIN };
     expect(step(-0.15, breadth(62, 38), yesterday, T0).reading.direction).toBe('mixed');

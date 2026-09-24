@@ -14592,6 +14592,12 @@ but not a screen that measured fewer than 100 names.
   or stays inside the band moves the confirmation time.
 - **Neither hold crosses the ET day.** Both legs are measured from the prior close, which
   moves overnight.
+- **Neither hold outlives a gap in the reading.** A hold is carried only from a reading
+  confirmed in the last `DIRECTION_DATA_GAP_HOLD_MS`. While a kill switch, a stop or a
+  macro blackout holds the loop, it returns before its screen and nothing reads the
+  tape. Without this bound, the first tick after hours of that, under the bar but inside
+  the band, re-confirmed the morning's red. Consecutive ticks refresh a band hold, so
+  this bites only across a gap. (Added before merge, on review.)
 - **The loop acts on the held reading** (`readMarketDirectionForTick`). A held reading
   carries `heldBy` (`hysteresis` or `data_gap`), `rawDirection`, and the band as applied.
   The refusal rows (`live_market_direction_skipped`, `live_options_market_direction_skipped`)
@@ -14605,12 +14611,19 @@ but not a screen that measured fewer than 100 names.
     (`latestMarketDirection`).
   - A reading older than `LATEST_DIRECTION_MAX_AGE_MS` (10 minutes) refuses nothing, the
     same as `unknown`.
-  - A refusal is asked last, after every check that decides whether the add would happen
-    at all. It writes `live_scale_in_direction_skipped` or
-    `per_lot_second_lot_direction_skipped`, once per position and direction a day.
+  - A scale-in is asked once the trigger and the add-on cap say an add is due. The daily
+    halt, the aggregate open-risk cap and the guardrails are asked after the gate, so a
+    `live_scale_in_direction_skipped` row can record an add one of those would also have
+    refused. Once per position and direction a day. A refused scale-in is asked again the
+    next tick, priced and sized afresh.
   - The second lot has its own action rather than `per_lot_second_lot_blocked`, so the
-    guardrail's refusals and the gate's can be counted apart. It is sent on the first
-    tick the reading allows.
+    guardrail's refusals and the gate's can be counted apart.
+    `per_lot_second_lot_direction_skipped` **drops the lot for good** (`dropped: true`;
+    the row is the marker, read by `positionId`). The lot is the entry's plan, sized at
+    entry against the frozen entry stop and meant to follow within a tick. Sent hours
+    later it would buy at that moment's price against the same stop, with no aggregate
+    risk, cutoff or same-day check: long 34 @ 100, stop 98, a 17-share lot sent at 103.5
+    risks $93.50 where the sizer budgeted $34. (Changed before merge, on review.)
   - Both flags are off in production (`liveScaleInEnabled`, `livePerLotBracketsEnabled`,
     read 2026-09-24), so today this changes nothing that trades.
 - **Two settings.** `marketDirectionExitIndexPct` (default 0.1, clamped to [0, 5]) and
@@ -14649,7 +14662,9 @@ minute, and each trade placed against it at its entry minute:
   band (`exitIndexPct`, `exitBreadthPct`). A held stretch shows as a row with `heldBy`, and
   the Last cycle line reads "held" while it lasts.
 - **After 10 refusals made under a hold** (`heldBy` set on the refusal row), read their
-  paper twins. If the paper mean has a 95% interval above zero, propose raising
+  paper twins. The refusal rows are written once per name a day, so a name refused at the
+  bar in the morning and under a hold later carries only the first, unheld row. The count
+  of held refusals is therefore a floor, not the whole number. If the paper mean has a 95% interval above zero, propose raising
   `marketDirectionExitBreadthPct` to 62. That adds exposure, so it waits for the
   operator's word.
 - **After 5 sessions,** count flips (direction changes between consecutive rows, not rows).

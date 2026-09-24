@@ -5392,10 +5392,14 @@ export async function checkLiveScaleIns(
       );
       if (!add) continue;
 
-      // The market's direction (addOnDirectionRefusal), asked last: every check
-      // above decides whether this add would happen at all, so each row is an
-      // add the book would otherwise have placed. Once per position and
-      // direction a day; the refusal stands every tick the reading does.
+      // The market's direction (addOnDirectionRefusal), asked once the trigger
+      // and the add-on cap say an add is due. The daily halt, the aggregate
+      // open-risk cap and the guardrails below are asked after it, so a row can
+      // record an add one of those would also have refused (a red day already
+      // halted for drawdown, say). Once per position and direction a day; the
+      // refusal stands every tick the reading does. Unlike the second lot, a
+      // scale-in is priced and sized afresh every tick, so a refused one is
+      // deferred, not dropped.
       const refusedBy = addOnDirectionRefusal(cfg, pos.side, Date.now());
       if (refusedBy !== null) {
         const reason = `${refusedBy.reading.detail} — a ${pos.side} add-on leans against it`;
@@ -6016,6 +6020,22 @@ function perLotPlanFor(entryIntentId: number | null): {
   return null;
 }
 
+/** Whether the market-direction gate refused this position's second lot: its
+ *  refusal row ends the lot (see the gate's block in checkLivePerLotSecondLots). */
+function secondLotDroppedByDirection(positionId: number): boolean {
+  return listAutotradeEvents({
+    stage: 'execution',
+    actions: ['per_lot_second_lot_direction_skipped'],
+    limit: 400,
+  }).some((e) => {
+    try {
+      return (JSON.parse(e.detail ?? '{}') as { positionId?: unknown }).positionId === positionId;
+    } catch {
+      return false;
+    }
+  });
+}
+
 export async function checkLivePerLotSecondLots(): Promise<LivePerLotOutcome[]> {
   if (!config.trading.placeEnabled) return []; // server master (TRADING_ENABLED)
   const cfg = getAutotradeConfig();
@@ -6088,25 +6108,35 @@ export async function checkLivePerLotSecondLots(): Promise<LivePerLotOutcome[]> 
       // passed the gate at entry; the tape can turn before the second goes.
       // Its OWN action rather than per_lot_second_lot_blocked, for the reason
       // given at the guardrail block below: two gates sharing one action cannot
-      // be counted apart. The next tick asks again, so a tape that turns back
-      // sends the lot then.
+      // be counted apart.
+      //
+      // A REFUSED SECOND LOT IS DROPPED, NOT DEFERRED (2026-09-24, review). The
+      // lot is the entry's plan: its quantity and target were sized at entry,
+      // against the frozen entry stop, and it was meant to follow the first lot
+      // within a tick. Sent hours later when the tape turned back, it would buy
+      // at that moment's price against the same stop, with none of the entry's
+      // checks run again: long 34 @ 100, stop 98, a 17-share lot sent at 103.5
+      // risks $93.50 where the sizer budgeted $34. So the refusal row is the
+      // lot's end, and a position that has one never sends it.
+      if (secondLotDroppedByDirection(pos.id)) continue;
       const refusedBy = addOnDirectionRefusal(cfg, pos.side, Date.now());
       if (refusedBy !== null) {
-        const reason = `${refusedBy.reading.detail} — a ${pos.side} second lot leans against it`;
-        if (claimOncePerDay('per_lot_second_lot_direction_skipped', `${pos.id}|${refusedBy.reading.direction}`)) {
-          logAutotradeEvent({
-            symbol: pos.symbol,
-            stage: 'execution',
-            action: 'per_lot_second_lot_direction_skipped',
-            detail: addOnDirectionDetail(refusedBy, {
-              positionId: pos.id,
-              side: pos.side,
-              quantity: plan.quantity,
-              reason,
-            }),
-            riskProfile: cfg.riskProfile,
-          });
-        }
+        const reason =
+          `${refusedBy.reading.detail} — a ${pos.side} second lot leans against it; dropped, not deferred ` +
+          '(a later send would go in at a different price against the entry stop)';
+        logAutotradeEvent({
+          symbol: pos.symbol,
+          stage: 'execution',
+          action: 'per_lot_second_lot_direction_skipped',
+          detail: addOnDirectionDetail(refusedBy, {
+            positionId: pos.id,
+            side: pos.side,
+            quantity: plan.quantity,
+            dropped: true,
+            reason,
+          }),
+          riskProfile: cfg.riskProfile,
+        });
         outcomes.push({
           symbol: pos.symbol,
           positionId: pos.id,

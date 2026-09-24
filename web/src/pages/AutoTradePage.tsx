@@ -5275,10 +5275,10 @@ export default function AutoTradePage() {
                         Mixed and unknown markets refuse nothing. Once one-sided, the reading holds while the market
                         stays inside the exit band below, and through up to 5 minutes the reading cannot see (a failed
                         screen or index quote); the next tick&apos;s scale-ins and per-lot second lots are refused the
-                        same way. Paper keeps taking every signal as the control, and each refusal journals
-                        live_market_direction_skipped (options: live_options_market_direction_skipped; adds:
-                        live_scale_in_direction_skipped, per_lot_second_lot_direction_skipped). The reading shows under
-                        Last tick.
+                        same way (a refused second lot is dropped for good, not sent later). Paper keeps taking every
+                        signal as the control, and each refusal journals live_market_direction_skipped (options:
+                        live_options_market_direction_skipped; adds: live_scale_in_direction_skipped,
+                        per_lot_second_lot_direction_skipped). The reading shows under Last tick.
                       </span>
                     </span>
                   </label>

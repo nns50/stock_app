@@ -1484,7 +1484,9 @@ equally-weighted cards in the order they happened to be built:
     full bar, and the band is never applied stricter than the bar.
   - **The data-gap hold.** A tick the reading cannot see (no SPY move, or fewer than 100
     names measured) keeps the last one-sided reading for up to 5 minutes after a
-    readable tick last supported it. After that it reads unknown.
+    readable tick last supported it. After that it reads unknown. Neither hold survives
+    5 minutes without a reading at all: after the loop has stopped reading the tape (a
+    kill switch, a stopped loop, a macro blackout), the full bar has to be met again.
 
   Without the band, a market sitting near the bar crossed it back and forth about ten
   times a session, and each dip to mixed let that tick's longs through. A held reading
@@ -1499,7 +1501,9 @@ equally-weighted cards in the order they happened to be built:
   journaled once per position a day (`live_scale_in_direction_skipped`,
   `per_lot_second_lot_direction_skipped`). Both run before the tick's screen, so they
   judge the previous tick's reading, and one older than 10 minutes refuses nothing. A
-  second lot held back this way is sent on the first tick the reading allows it. Both
+  refused scale-in is asked again the next tick, priced afresh. A refused second lot is
+  dropped for good: it was sized at entry against the entry's stop, and sent later it
+  would buy at a different price with none of the entry's checks run again. Both
   are off by default. Paper
   keeps taking every signal as the control. A refusal is journaled as `live_market_direction_skipped` (stock, with the
   entry, stop and score a replay needs) or `live_options_market_direction_skipped`

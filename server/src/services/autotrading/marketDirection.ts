@@ -314,7 +314,16 @@ export function holdMarketDirection(
   if (raw.direction === 'red' || raw.direction === 'green') {
     return { reading: unheld, held: { direction: raw.direction, day, confirmedAt: now } };
   }
-  const carried = prev !== null && prev.day === day ? prev : null;
+  // A hold is carried only from a reading the loop confirmed in the last
+  // DIRECTION_DATA_GAP_HOLD_MS (2026-09-24, review). The loop returns before
+  // its screen while a kill switch, a stop or a macro blackout holds it, and
+  // then nothing reads the tape at all. Without this bound the first tick
+  // after hours of that, under the bar but inside the band, re-confirmed a red
+  // from the morning; the same stretch seen as unreadable ticks would have
+  // released after five minutes. Consecutive ticks (~2m10s apart) each
+  // refresh a band hold, so this bites only across a gap in the reading.
+  const carried =
+    prev !== null && prev.day === day && now - prev.confirmedAt <= DIRECTION_DATA_GAP_HOLD_MS ? prev : null;
   if (carried === null) return { reading: unheld, held: null };
   const side = carried.direction;
   const word = side === 'red' ? 'down' : 'up';
