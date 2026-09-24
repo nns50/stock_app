@@ -18,6 +18,7 @@ import {
   reentryCooldownFinding,
   reentryGapReadings,
   runEdgeLeakScan,
+  tapeSideBucket,
   SLIPPAGE_MIN_TRADES,
   ENTRY_DRIFT_MIN_TRADES,
   verdictFor,
@@ -66,6 +67,8 @@ function trade(over: Partial<LeakTrade> = {}): LeakTrade {
     pctOfRange: 60,
     stopWidthUsd: 1,
     marketTape: null,
+    lean: 'long',
+    tapeDirection: null,
     ...over,
   };
 }
@@ -1169,5 +1172,55 @@ describe('the re-entry cooldown finding — what a shorter cooldown would have a
     expect(readings.map((r) => r.minMinutesSinceExit)).toEqual([0, 120]);
     expect(readings[0]).toMatchObject({ n: 20, meanR: 0, winRatePct: 50, clearsBar: false });
     expect(readings[1]).toMatchObject({ n: 20, meanR: 0.3, ciLow: 0.3, ciHigh: 0.3, winRatePct: 100, clearsBar: true });
+  });
+});
+
+// THE TAPE BY SIDE (2026-09-25). The `marketTape` cut pools a long on a red day
+// with a short on a green one, so it cannot say whether shorts pay on red days;
+// this one files by asset, side and the tape the entry met.
+describe('marketTapeBySide — side and tape, both books', () => {
+  const bySide = (live: LeakTrade[], paper: LeakTrade[] = []) =>
+    scan(live, paper).dimensions.find((d) => d.id === 'marketTapeBySide')!;
+
+  it('names each bucket by asset, side and direction, and files nothing without a reading', () => {
+    expect(tapeSideBucket('equity', 'short', 'red')).toBe('equity_short_red');
+    expect(tapeSideBucket('options', 'long', 'green')).toBe('options_long_green');
+    expect(tapeSideBucket('equity', 'long', 'mixed')).toBe('equity_long_mixed');
+    expect(tapeSideBucket('equity', 'long', 'unknown')).toBeNull();
+    expect(tapeSideBucket('equity', 'long', null)).toBeNull();
+  });
+
+  it('names the gate as the lever only where the side leans against the tape', () => {
+    const dim = bySide(
+      [
+        ...bucket(16, -1, { lean: 'long', tapeDirection: 'red' }),
+        ...bucket(16, -1, { lean: 'short', tapeDirection: 'red' }),
+      ],
+      [
+        ...bucket(12, -1, { book: 'paper', lean: 'long', tapeDirection: 'red' }),
+        ...bucket(12, -1, { book: 'paper', lean: 'short', tapeDirection: 'red' }),
+      ],
+    );
+    const against = dim.buckets.find((b) => b.bucket === 'equity_long_red')!;
+    const withTape = dim.buckets.find((b) => b.bucket === 'equity_short_red')!;
+    expect(against).toMatchObject({ verdict: 'leak', lever: { field: 'marketDirectionGateEnabled', value: true } });
+    // A losing short on a red day is a finding with no setting to turn: the
+    // gate would never refuse it.
+    expect(withTape.verdict).toBe('leak');
+    expect(withTape.lever).toBeNull();
+  });
+
+  it('reports a bucket only paper has, unjudged', () => {
+    const dim = bySide(
+      bucket(16, -1, { lean: 'long', tapeDirection: 'red' }),
+      bucket(12, 0.3, { book: 'paper', lean: 'short', tapeDirection: 'red' }),
+    );
+    expect(dim.buckets.find((b) => b.bucket === 'equity_short_red')).toMatchObject({
+      n: 0,
+      meanR: null,
+      verdict: 'ok',
+      lever: null,
+      control: expect.objectContaining({ n: 12 }),
+    });
   });
 });

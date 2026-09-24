@@ -580,7 +580,7 @@ function attributesForLiveBook(
       vwapExtPct: ext?.vwapExtPct ?? null,
       pctOfRange: ext?.pctOfRange ?? null,
       stopWidthUsd: liveStopWidthUsd(p),
-      marketTape: tapeAlignment(directionAt(directions, etDate, entryAt), p.side),
+      ...tapeFieldsOf(directions, etDate, entryAt, p.side),
     });
   }
   for (const p of liveOptionsClosed) {
@@ -609,7 +609,7 @@ function attributesForLiveBook(
       // An option's stop is on premium; a width in dollars per share means
       // nothing for it.
       stopWidthUsd: null,
-      marketTape: tapeAlignment(directionAt(directions, etDate, p.entryAt), leanOfOption(p.side)),
+      ...tapeFieldsOf(directions, etDate, p.entryAt, leanOfOption(p.side)),
     });
   }
   return out;
@@ -651,7 +651,7 @@ function attributesForPaperBook(
       vwapExtPct: ext?.vwapExtPct ?? null,
       pctOfRange: ext?.pctOfRange ?? null,
       stopWidthUsd: paperStopWidthUsd(p),
-      marketTape: tapeAlignment(directionAt(directions, etDate, p.entryAt), p.side === 'sell' ? 'short' : 'long'),
+      ...tapeFieldsOf(directions, etDate, p.entryAt, p.side === 'sell' ? 'short' : 'long'),
     });
   }
   for (const p of optionsPaper) {
@@ -675,7 +675,7 @@ function attributesForPaperBook(
       vwapExtPct: null,
       pctOfRange: null,
       stopWidthUsd: null,
-      marketTape: tapeAlignment(directionAt(directions, etDate, p.entryAt), leanOfOption(p.side)),
+      ...tapeFieldsOf(directions, etDate, p.entryAt, leanOfOption(p.side)),
     });
   }
   return out;
@@ -684,6 +684,20 @@ function attributesForPaperBook(
 /** A call leans long the underlying and a put short it. */
 function leanOfOption(side: 'call' | 'put'): Lean {
   return side === 'call' ? 'long' : 'short';
+}
+
+/** One entry's tape fields, derived once for every collector: the reading in
+ *  force at the entry, the side it leaned, and the alignment read from both
+ *  (tapeAlignment), so the `marketTape` and `marketTapeBySide` cuts cannot
+ *  disagree about a trade. */
+function tapeFieldsOf(
+  directions: DirectionIndex,
+  etDate: string,
+  at: number | null,
+  lean: Lean,
+): Pick<LeakTrade, 'lean' | 'tapeDirection' | 'marketTape'> {
+  const tapeDirection = directionAt(directions, etDate, at);
+  return { lean, tapeDirection, marketTape: tapeAlignment(tapeDirection, lean) };
 }
 
 /**
@@ -1522,6 +1536,11 @@ export interface EdgeLeakScanOptions {
   lookbackSessions?: number;
   books?: LeakBook[];
   now?: number;
+  /** The market-direction readings to place each entry against. Defaults to the
+   *  journal's `market_direction_read` rows over the window; a caller that has
+   *  rebuilt the readings for sessions before those rows existed hands its own
+   *  (the tape plan's backfill, run against a copy of the database). */
+  directions?: DirectionIndex;
 }
 
 /** The one call a route or the routine makes. */
@@ -1541,7 +1560,7 @@ export function runEdgeLeakScanFromDb(opts: EdgeLeakScanOptions = {}): EdgeLeakS
   // One scan of the journal, read by both books — the index is keyed by book,
   // so each takes its own rows out of it.
   const { rows: extensions, quality: extensionQuality } = extensionIndex(windowStart);
-  const directions = directionIndex(windowStart);
+  const directions = opts.directions ?? directionIndex(windowStart);
   const live = joinLeakTrades(
     liveCollected,
     attributesForLiveBook(
