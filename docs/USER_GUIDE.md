@@ -2513,13 +2513,16 @@ because the loop is the only caller that is always flat by the bell, so it is
   behind: on 2026-09-23 and 09-24 a filled leg took about five minutes to appear, past the
   four-minute wait. So the quote was booked first and corrected half a minute later, and in
   between the day's P&L and the halts read the quote. The app now keeps each leg's own order
-  id when it places the bracket, and when it re-arms one. Once the position check has missed
-  the shares, the order check asks Webull for the stop, then the take-profit, directly
-  (**Order Detail**, by the leg's id). A leg Webull reports filled is booked at its fill,
-  as `stop` or `target`, about one cycle after the shares go. A
-  **`live_bracket_leg_from_detail`** row on Recent activity marks it. The four-minute wait
-  and the correction stay for anything this does not settle: a position the app did not
-  place, a bracket placed before that date, or a close made by hand.
+  id when it places the bracket, and when it re-arms one itself (not a bracket you re-arm
+  by hand). Once the position check finds none of the shares at Webull, the order check
+  asks Webull for the stop, then the take-profit, directly (**Order Detail**, by the leg's
+  id). A leg Webull reports filled for the whole position, at a real price, is booked at its
+  fill, as `stop` or `target`, about one cycle after the shares go. A
+  **`live_bracket_leg_from_detail`** row on Recent activity marks it. A leg that filled only
+  part of the position, or with no price, is left to the correction and noted once as
+  **`live_bracket_leg_detail_skipped`**. The four-minute wait and the correction stay for
+  anything this does not settle: a position the app did not place, a bracket placed before
+  that date, or a close made by hand.
   The count of missed checks belongs to the position it was counted for. Since 2026-09-23 it
   ends once that position is closed, whoever closed it. Before, a bracket fill booked by the
   order check left its count behind, and the next position on the same stock started with the

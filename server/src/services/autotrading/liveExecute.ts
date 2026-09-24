@@ -66,7 +66,7 @@ import {
   BracketLegIds,
   LiveOrderMeta,
 } from '../../db/autotradeLiveOrders';
-import { missStreakOf } from '../../db/webullMissStreak';
+import { missStreakBrokerQty, missStreakOf } from '../../db/webullMissStreak';
 import { contractKey } from '../../providers/webull/positions';
 import { computeScaleIn } from './scaleIn';
 import { checkSessionWindow } from './executionGuards';
@@ -2557,27 +2557,51 @@ export async function reconcileLiveOrders(): Promise<LiveReconcileOutcome[]> {
 }
 
 /**
+ * Whether the broker no longer holds ANY of a position's shares, by the sync's
+ * latest reading (2026-09-25, #147 on review): at least one miss, with the
+ * broker showing 0. A miss alone is any gap, and a partial one (a hand trim, a
+ * scale-out sold but not yet booked) leaves shares that still need their stop.
+ * The Order Detail candidates and the ratchet both ask this, so the two cannot
+ * disagree about when a position's shares are gone.
+ */
+function sharesGoneAtBroker(accountId: string, pos: Position): { gone: boolean; missStreak: number } {
+  const key = contractKey(pos);
+  const missStreak = missStreakOf(accountId, key);
+  return { gone: missStreak >= 1 && missStreakBrokerQty(accountId, key) === 0, missStreak };
+}
+
+/**
  * The filled bracket entries whose shares the broker no longer shows (#147):
  * a filled bracket entry, its position still open in the ledger, at least one
- * stored exit-leg id, and a sync that missed the position's shares at least
- * once. One miss is enough here, where the sync waits for two before it acts:
- * this only ASKS, and only a leg the broker itself reports FILLED is booked.
+ * stored exit-leg id, and a sync whose latest miss found none of the shares.
+ * One miss is enough here, where the sync waits for two before it acts: this
+ * only ASKS, and only a leg the broker itself reports FILLED for the whole
+ * remaining quantity is booked.
+ *
+ * Newest first (2026-09-25, on review): the lookups per tick are budgeted, and
+ * a position whose own closing order is already working (a time exit, the
+ * end-of-day flatten) has cancelled its legs and books through that order, so
+ * it is left out rather than spending the budget a real leg fill needs.
  */
 function filledBracketLegCandidates(
   accountId: string,
   pending: LiveOrderMeta[],
   intentsById: Map<number, OrderIntentRecord>,
 ): FilledBracketLegCandidate[] {
+  const closing = new Set(
+    pending.filter((m) => m.role === 'exit' && m.positionId !== null).map((m) => m.positionId as number),
+  );
   const out: FilledBracketLegCandidate[] = [];
-  for (const meta of pending) {
+  for (const meta of [...pending].reverse()) {
     if (meta.role !== 'entry' || meta.positionId === null) continue;
     if (!meta.takeProfitClientOrderId && !meta.stopLossClientOrderId) continue;
+    if (closing.has(meta.positionId)) continue;
     const intent = intentsById.get(meta.intentId);
     if (!intent || intent.state !== 'filled' || !intent.isBracket) continue;
     const pos = getPosition(meta.positionId);
     if (!pos || pos.status !== 'open') continue;
-    const missStreak = missStreakOf(accountId, contractKey(pos));
-    if (missStreak < 1) continue;
+    const { gone, missStreak } = sharesGoneAtBroker(accountId, pos);
+    if (!gone) continue;
     out.push({
       intent,
       symbol: meta.symbol,
@@ -2586,6 +2610,7 @@ function filledBracketLegCandidates(
       takeProfitClientOrderId: meta.takeProfitClientOrderId,
       stopLossClientOrderId: meta.stopLossClientOrderId,
       missStreak,
+      remainingQuantity: pos.remainingQuantity,
     });
   }
   return out;
@@ -5931,7 +5956,7 @@ export async function checkLiveEquityStopAdjusts(): Promise<LiveStopAdjustOutcom
       continue;
     }
     const found = restingStopLeg(listed.orders, symbol, exitSide);
-    if (!found.ok && missStreakOf(accountId, contractKey(pos)) >= 1) {
+    if (!found.ok && sharesGoneAtBroker(accountId, pos).gone) {
       // THE SHARES ARE GONE, NOT THE STOP (2026-09-24, #147). A bracket leg that
       // filled leaves no resting stop, and the ledger keeps the position open
       // until the reconcile books the fill. This tick's sync has already missed
