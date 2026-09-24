@@ -228,6 +228,19 @@ function liveConfig(overrides: Partial<AutotradeConfig> = {}): AutotradeConfig {
   };
 }
 
+/** Live shorts switched on AND stamped, the way every writer leaves them
+ *  (setAutotradeConfig), with the short probation off so a test about the
+ *  path is not also about sizing. A config object passed straight to the
+ *  execution functions bypasses the writer, so it has to carry the stamp. */
+function shortsArmed(o: Partial<AutotradeConfig> = {}): AutotradeConfig {
+  return liveConfig({
+    liveAllowNakedShort: true,
+    liveShortsEnabledAt: Date.now() - 60_000,
+    liveShortProbationTrades: 0,
+    ...o,
+  });
+}
+
 /** Mocks the raw broker positions-list fetch — providers/webull/positions.ts's
  *  own fetchPositions(), one level below runWebullPositionsSync() — same
  *  pattern as webullPositions.test.ts's own mockPositions() helper. */
@@ -439,6 +452,10 @@ describe('short probation', () => {
    *  cut below is the short window's alone unless a test turns the book's on. */
   const cfg = (o: Partial<AutotradeConfig> = {}) =>
     liveConfig({ liveAllowNakedShort: true, liveEnabledAt: null, liveShortsEnabledAt: ENABLED_AT(), ...o });
+  /** The full-size baseline: the short probation off (no trades to serve).
+   *  Not a null stamp: since 2026-09-25 shorts on without a stamp are refused
+   *  outright (liveShortsArmed), rather than sized in full. */
+  const FULL_SIZE: Partial<AutotradeConfig> = { liveShortProbationTrades: 0 };
   const armBroker = () => {
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
     mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
@@ -503,7 +520,7 @@ describe('short probation', () => {
   it('sizes the first short at half, and leaves a long at full size', async () => {
     armBroker();
     clearOrders();
-    await attemptLiveEntry(signal(SHORT), shortResult(), 'MODERATE', cfg({ liveShortsEnabledAt: null }));
+    await attemptLiveEntry(signal(SHORT), shortResult(), 'MODERATE', cfg(FULL_SIZE));
     const fullShort = placedQty();
     clearOrders();
     await attemptLiveEntry(signal(SHORT), shortResult(), 'MODERATE', cfg());
@@ -514,7 +531,7 @@ describe('short probation', () => {
     expect(JSON.parse(placed[0].detail!)).toMatchObject({ side: 'sell', probationMultiplier: 0.5 });
 
     clearOrders();
-    await attemptLiveEntry(signal(), longResult(), 'MODERATE', cfg({ liveShortsEnabledAt: null }));
+    await attemptLiveEntry(signal(), longResult(), 'MODERATE', cfg(FULL_SIZE));
     const fullLong = placedQty();
     clearOrders();
     await attemptLiveEntry(signal(), longResult(), 'MODERATE', cfg());
@@ -524,7 +541,7 @@ describe('short probation', () => {
   it('sizes a short at full size once ten have been placed', async () => {
     armBroker();
     clearOrders();
-    await attemptLiveEntry(signal(SHORT), shortResult(), 'MODERATE', cfg({ liveShortsEnabledAt: null }));
+    await attemptLiveEntry(signal(SHORT), shortResult(), 'MODERATE', cfg(FULL_SIZE));
     const fullShort = placedQty();
     clearOrders();
     const at = ENABLED_AT();
@@ -537,7 +554,7 @@ describe('short probation', () => {
   it('takes both cuts on a short while the book is in its own probation too', async () => {
     armBroker();
     clearOrders();
-    await attemptLiveEntry(signal(SHORT), shortResult(), 'MODERATE', cfg({ liveShortsEnabledAt: null }));
+    await attemptLiveEntry(signal(SHORT), shortResult(), 'MODERATE', cfg(FULL_SIZE));
     const fullShort = placedQty();
     clearOrders();
     const both = cfg({ liveEnabledAt: ENABLED_AT(), liveProbationSizeMultiplier: 0.5 });
@@ -842,7 +859,7 @@ describe('attemptLiveEntry', () => {
     mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-SHORT' });
     const shortSignal = signal({ side: 'sell', stop: 105, target: 90 });
 
-    const r = await attemptLiveEntry(shortSignal, okResult, 'MODERATE', liveConfig({ liveAllowNakedShort: true }));
+    const r = await attemptLiveEntry(shortSignal, okResult, 'MODERATE', shortsArmed());
 
     expect(r.ok).toBe(true);
     expect(mockPlaceOrder).toHaveBeenCalledTimes(1);
@@ -863,7 +880,7 @@ describe('attemptLiveEntry', () => {
     listAutotradeEvents({ stage: 'execution', actions: ['live_entry_guard_refused'] }).map((e) =>
       JSON.parse(e.detail ?? '{}'),
     );
-  const shorts = () => liveConfig({ liveAllowNakedShort: true });
+  const shorts = () => shortsArmed();
 
   it('refuses a long whose quote is already at or below its stop, and journals it once a day', async () => {
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 94.9 }) as ReturnType<typeof getProvider>);
@@ -2645,6 +2662,29 @@ describe('runLiveExecution — the market-direction gate (2026-09-23)', () => {
     const outcomes = await run(signal({ side: 'sell', stop: 105, target: 90 }), MIXED);
     expect(outcomes[0].reason).toBe('short entry skipped — liveAllowNakedShort is off');
     expect(JSON.parse(shortSkipRows()[0].detail!)).toMatchObject({ cause: 'shorts_off' });
+  });
+
+  // 2026-09-25, on review: every WRITER stamps shorts that are on, but a row
+  // restored or edited by hand is read without a write. Such a short would be
+  // sized in full, and the stamp a later write sets would start after it, so
+  // neither the probation nor the tripwires would ever count it. The ORDER is
+  // what this test holds to, not the stored row.
+  it('places no short while shorts are on without their stamp, on a red tape', async () => {
+    arm({ liveAllowNakedShort: true });
+    db.prepare('INSERT OR REPLACE INTO autotrade_config (id, config, updated_at) VALUES (1, ?, ?)').run(
+      JSON.stringify({ ...getAutotradeConfig(), liveShortsEnabledAt: null }),
+      Date.now(),
+    );
+    expect(getAutotradeConfig()).toMatchObject({ liveAllowNakedShort: true, liveShortsEnabledAt: null });
+
+    const outcomes = await run(signal({ side: 'sell', stop: 105, target: 90 }), RED);
+    expect(outcomes[0]).toMatchObject({ ok: false });
+    expect(outcomes[0].reason).toMatch(/^short entry skipped — shorts are on without liveShortsEnabledAt/);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    expect(JSON.parse(shortSkipRows()[0].detail!)).toMatchObject({ side: 'short', cause: 'shorts_unstamped' });
+    // The placement guardrail agrees by construction: it refuses new short
+    // exposure on the same test.
+    expect(buildLiveTradingConfig(getAutotradeConfig()).allowNakedShort).toBe(false);
   });
 });
 
@@ -6403,7 +6443,7 @@ describe('checkLiveScaleIns', () => {
       mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
       mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
       mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-SHORT-ENTRY' });
-      const cfg = liveConfig({ liveAllowNakedShort: true, ...overrides });
+      const cfg = shortsArmed(overrides);
       setAutotradeConfig(cfg);
       await attemptLiveEntry(short, evaluateRiskCheck(short, riskCtx), 'MODERATE', cfg);
       const orderedQty = listIntents()[0].quantity;

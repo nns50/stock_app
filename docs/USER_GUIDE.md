@@ -1760,7 +1760,10 @@ equally-weighted cards in the order they happened to be built:
   for each), and the row also carries that direction and the signal's ATR. With the box
   checked, **Short only on a broadly red market** (on by default) still holds a live short,
   and any add to one, to a red market reading; a short refused that way is journaled the
-  same way, with cause `red_tape_only` in place of `shorts_off`. Options
+  same way, with cause `red_tape_only` in place of `shorts_off`. A short is also refused,
+  with cause `shorts_unstamped`, while shorts are on without the date they were switched
+  on (a restored or hand-edited settings row): that date starts the first-shorts size cut
+  and the automatic switch-off's count, and the next save sets it. Options
   entries are unaffected either way — an autotrade options position is always long the
   contract, a put for a bearish read instead of a call, which is already defined-risk),
   **min relative volume** (a candidate's volume must be at least this many

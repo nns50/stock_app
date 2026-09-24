@@ -2014,12 +2014,13 @@ export function setAutotradeConfig(patch: Partial<AutotradeConfig>): AutotradeCo
   // patch spreading the defaults (`liveShortsEnabledAt: null` is an explicit
   // value, so it used to win), and shorts already on before the stamp existed.
   // An explicit NUMBER still wins; a null while shorts are on is stamped now.
+  // Judged on the SANITIZED value (2026-09-25, on review): an explicit 0 is not
+  // null, so a test of the patch let it through, and the sanitizer then stored
+  // it as null — shorts on, no stamp.
   const shortsOn = merged.liveAllowNakedShort && !prev.liveAllowNakedShort;
-  const needsStamp = merged.liveAllowNakedShort
-    ? shortsOn
-      ? patch.liveShortsEnabledAt == null
-      : merged.liveShortsEnabledAt === null
-    : false;
+  const needsStamp =
+    merged.liveAllowNakedShort &&
+    (!merged.liveShortsEnabledAt || (shortsOn && patch.liveShortsEnabledAt === undefined));
   const next = needsStamp ? { ...stamped, liveShortsEnabledAt: Date.now() } : stamped;
   db.prepare(
     `INSERT INTO autotrade_config (id, config, updated_at) VALUES (1, ?, ?)

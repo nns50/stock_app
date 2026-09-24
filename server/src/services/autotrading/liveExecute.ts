@@ -80,6 +80,7 @@ import {
   directionRefuses,
   latestMarketDirection,
   liveShortPermitted,
+  liveShortsArmed,
   ShortRefusalCause,
 } from './marketDirection';
 import { isUnparseableSymbolError, markUnplaceableSymbol, unplaceableReason } from './unplaceableSymbols';
@@ -308,7 +309,9 @@ export function buildLiveTradingConfig(autotradeCfg: AutotradeConfig): TradingCo
     // riskCheck reads the same budget and blocks first.
     maxDailyLossUsd: dayLossBudgetUsd(autotradeCfg.maxDailyDrawdownPct, dayStart),
     fatFingerPct: autotradeCfg.liveFatFingerPct,
-    allowNakedShort: autotradeCfg.liveAllowNakedShort,
+    // Armed, not merely on (2026-09-25): a short with no probation stamp is
+    // refused here too, by the same test the entry path's predicate uses.
+    allowNakedShort: liveShortsArmed(autotradeCfg),
   };
 }
 
