@@ -861,7 +861,8 @@ trades.
   the newest 1,000 rows, and the response says so (`journalTruncated`).
   **Since 2026-09-26 every one of these replays fills the way a live order fills**
   (replay version 2):
-  - the entry is the signal's price plus the small share of the buffer live entries pay;
+  - the entry is the signal's price plus the small share of the buffer live stock
+    entries pay;
   - a stop the bar opens through fills at that open;
   - breakeven and the trail arm on bar closes;
   - a target fills only when a bar trades through it;

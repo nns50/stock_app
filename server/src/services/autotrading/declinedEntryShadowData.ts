@@ -1,4 +1,5 @@
 import { buildLiveSlippageRows } from './autoTune';
+import { isStockEntrySlippage } from '../slippage';
 import type { ShadowOptions } from './declinedEntryShadow';
 import { MARKETABLE_LIMIT_BUFFER_PCT, meanBufferConsumedPct } from './marketableLimit';
 import { directionReaderSince } from './marketDirectionIndex';
@@ -19,8 +20,13 @@ import { directionReaderSince } from './marketDirectionIndex';
  * no live entry has been measured: the most a live entry can pay.
  */
 export function liveEntryConcessionPct(): number {
+  // Stock entries only (2026-09-24, on review). An option reaches these rows
+  // as a hand order from the Trade page (the reconcile links it by
+  // source_intent_id); its limit sits at the ask x 1.05, so one filled at the
+  // ask would read about -4.8% against a 0.5% stock buffer and drag the mean
+  // toward "no concession". None had on 2026-09-24 (0 of 142 entry rows).
   const entrySlippage = buildLiveSlippageRows()
-    .filter((r) => r.kind === 'entry')
+    .filter(isStockEntrySlippage)
     .map((r) => r.pct);
   const consumed = meanBufferConsumedPct(entrySlippage, MARKETABLE_LIMIT_BUFFER_PCT);
   if (consumed === null) return MARKETABLE_LIMIT_BUFFER_PCT;

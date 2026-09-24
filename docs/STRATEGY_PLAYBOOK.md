@@ -632,11 +632,12 @@ Three things it is not, and each matters when quoting it:
   per-trade expectancy rather than money the book could have made. That is the right
   quantity for an expectancy gate and the wrong one for "what did we leave on the table".
 - **A fill the live book could have had, since replay version 2 (2026-09-26).** The entry
-  is the signal's price plus the share of the buffer live entries actually pay (0.05%). A
-  stop the bar opens through fills at that open. Breakeven and the trail arm on closes,
-  and a target fills only when a bar trades through it. Checked against 109 live fills,
-  the signal's price misses the fill by 0.075R on average and the next bar's open by
-  0.136R, so the entry stays at the signal. It still assumes the name was borrowable.
+  is the signal's price plus the share of the buffer live stock entries actually pay
+  (0.05%). A stop the bar opens through fills at that open. Breakeven and the trail arm
+  on closes, and a target fills only when a bar trades through it. Checked against 109
+  live fills, the signal's price misses the fill by 0.075R on average and the next bar's
+  open by 0.136R, so the entry stays at the signal. It still assumes the name was
+  borrowable.
 - **Not neutral about ambiguity, on purpose.** It reuses the exit replay, which resolves
   every intrabar stop-and-target collision *against* the trade. It therefore understates.
   A gate that passes on this reading passes pessimistically, which is the only direction

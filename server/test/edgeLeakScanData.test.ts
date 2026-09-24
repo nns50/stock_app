@@ -1,5 +1,8 @@
-import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, onTestFinished } from 'vitest';
 import { initDb, db } from '../src/db';
+import { recordLiveOrder, setLiveOrderPositionId } from '../src/db/autotradeLiveOrders';
+import { createIntent } from '../src/db/orders';
+import { createPosition } from '../src/db/positions';
 import { defaultAutotradeConfig, getAutotradeConfig, setAutotradeConfig } from '../src/db/autotradeConfig';
 import { logAutotradeEvent } from '../src/db/autotradeEvents';
 import { closePaperPosition, openPaperPosition } from '../src/db/autotradePaperPositions';
@@ -1626,5 +1629,87 @@ describe('the scan end to end, over the database', () => {
     // what buildSessionPaths is supposed to do with a non-session date).
     expect(scan.dayLevel.activeSessions).toBe(9);
     expect(scan.dayLevel.sessions).toBe(9);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The attribution's entry slippage reads STOCK entries only (2026-09-24, on
+// review). It is read against the stock's marketable 0.5% buffer, and an
+// option's entry limit is a different one: a hand-placed call (the Trade page's
+// reconcile links it by source_intent_id) filled at its ask reads about -4.8%
+// against a limit at the ask x 1.05. Pooled, one of them turns 0.2% of the
+// buffer paid into "none of it". None had on 2026-09-24 (0 of 142 entry rows).
+// ---------------------------------------------------------------------------
+describe('runEdgeLeakScanFromDb — entry slippage', () => {
+  it('reads the stock entries against the stock buffer, not an option’s fill', () => {
+    onTestFinished(() => {
+      db.exec('DELETE FROM autotrade_live_orders; DELETE FROM order_intents;');
+    });
+    // The loop's stock buy, limited at 100.5 and filled at 100.2 (-0.30%
+    // against its limit: 0.2% of the 0.5% buffer paid), adopted and linked
+    // from its entry order.
+    const stockIntent = createIntent(
+      {
+        symbol: 'AAPL',
+        assetKind: 'stock',
+        side: 'buy',
+        openClose: 'open',
+        quantity: 1,
+        orderType: 'limit',
+        limitPrice: 100.5,
+      },
+      'AAPL-stock',
+    );
+    const stock = createPosition({
+      assetType: 'stock',
+      symbol: 'AAPL',
+      side: 'long',
+      quantity: 1,
+      entryPrice: 100.2,
+      entryDate: SESSIONS[0],
+      entryTime: '10:00',
+      tags: ['live', 'autotrade'],
+    });
+    recordLiveOrder({
+      intentId: stockIntent.id,
+      symbol: 'AAPL',
+      stopPrice: 95,
+      targetPrice: 110,
+      riskAmount: 5,
+      riskProfile: 'MODERATE',
+    });
+    setLiveOrderPositionId(stockIntent.id, stock.id);
+    // A hand-placed call limited at 1.05 and filled at 1.00.
+    const optionIntent = createIntent(
+      {
+        symbol: 'AAPL',
+        assetKind: 'option',
+        side: 'buy',
+        openClose: 'open',
+        quantity: 1,
+        orderType: 'limit',
+        limitPrice: 1.05,
+      },
+      'AAPL-option',
+    );
+    createPosition({
+      assetType: 'option',
+      symbol: 'AAPL',
+      side: 'long',
+      quantity: 1,
+      entryPrice: 1.0,
+      entryDate: SESSIONS[0],
+      entryTime: '10:00',
+      optionType: 'call',
+      strike: 100,
+      expiration: SESSIONS[2],
+      multiplier: 100,
+      tags: ['live'],
+      sourceIntentId: optionIntent.id,
+    });
+
+    const scan = runEdgeLeakScanFromDb({ now: Date.parse('2026-09-11T21:00:00Z') });
+    expect(scan.attribution.meanEntrySlippagePct).toBeCloseTo(-0.3, 2);
+    expect(scan.attribution.meanEntryBufferConsumedPct).toBeCloseTo(0.2, 2);
   });
 });
