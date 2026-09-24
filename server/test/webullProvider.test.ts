@@ -176,6 +176,56 @@ describe('WebullProvider', () => {
     expect(candles).toEqual([{ time: 1, open: 9, high: 9, low: 9, close: 9, volume: 9 }]);
   });
 
+  // Intraday windows (2026-09-24). The reach is 1,200 bars — about 15 sessions
+  // of 5-minute bars — and it ends wherever the count runs out: on 09-24 that
+  // was 13:30 on 09-01. The oldest-day check above passed that day as whole, so
+  // a replay of a 09:37 signal read its afternoon as the entire session.
+  const rthBars = (day: string, fromMinute = 9 * 60 + 30) => {
+    const midnight = Date.parse(`${day}T00:00:00-04:00`);
+    const out = [];
+    for (let m = fromMinute; m < 16 * 60; m += 5) {
+      out.push({
+        symbol: 'AAPL',
+        time: new Date(midnight + m * 60_000).toISOString(),
+        open: '1',
+        high: '1',
+        low: '1',
+        close: '1',
+        volume: '1',
+      });
+    }
+    return out;
+  };
+
+  it('hands an intraday window to the aux provider when its first day starts after the open', async () => {
+    mockFetch([...rthBars('2026-09-01', 13 * 60 + 30), ...rthBars('2026-09-02')]);
+    const aux = fakeAux();
+    const p = new WebullProvider(client(), aux);
+    const q = { start: '2026-09-01', end: '2026-09-01' };
+    const candles = await p.getCandles('AAPL', '5min', q);
+    expect(aux.getCandles).toHaveBeenCalledWith('AAPL', '5min', q);
+    expect(candles).toEqual([{ time: 1, open: 9, high: 9, low: 9, close: 9, volume: 9 }]);
+  });
+
+  it('serves the start day itself when its first bar is the 09:30 open', async () => {
+    mockFetch([...rthBars('2026-09-01'), ...rthBars('2026-09-02')]);
+    const aux = fakeAux();
+    const p = new WebullProvider(client(), aux);
+    const candles = await p.getCandles('AAPL', '5min', { start: '2026-09-01', end: '2026-09-01' });
+    expect(aux.getCandles).not.toHaveBeenCalled();
+    expect(candles).toHaveLength(78);
+  });
+
+  it('returns an explicit intraday window whole: two sessions are 156 bars, not the newest 120', async () => {
+    mockFetch([...rthBars('2026-09-01'), ...rthBars('2026-09-02')]);
+    const p = new WebullProvider(client(), fakeAux());
+    const candles = await p.getCandles('AAPL', '5min', { start: '2026-09-01', end: '2026-09-02' });
+    expect(candles).toHaveLength(156);
+    // A limit, when one IS asked for, still keeps the most recent bars.
+    const capped = await p.getCandles('AAPL', '5min', { start: '2026-09-01', end: '2026-09-02', limit: 100 });
+    expect(capped).toHaveLength(100);
+  });
+
   it('leaves plain limit-only queries alone (the hot path)', async () => {
     mockFetch([barAt('2026-06-16', '1'), barAt('2026-06-17', '2'), barAt('2026-06-18', '3')]);
     const p = new WebullProvider(client(), fakeAux());

@@ -1447,6 +1447,13 @@ Two things the excursion read could not do until now, and one it never should:
   replay says the same from the other side — the 0.5-ATR fixed point nets 0.00R
   (inside noise) with stop-outs 2 → 16. **No change to the stop** on this reading; the
   numbers live in the spec's 2026-09-17 section.
+- **The bars under that reading (checked 2026-09-24).** Replays of days older than
+  Webull's ~15-session reach had been reading 10:00–19:55 ET, so they lost the open
+  where most entries sit. The oldest day in reach was read from wherever its history ran
+  out. Both are fixed: every past session is now read as its regular hours, whole. The
+  17 September reading was recomputed both ways on the production copy, and paper
+  winners' heat p90 stayed at 0.90R. The decision stands. Only that day's edge day
+  (08-26) differed.
 
 ## Reducing slippage with execution quality
 
