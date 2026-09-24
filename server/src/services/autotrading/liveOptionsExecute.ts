@@ -62,6 +62,7 @@ import {
   recordLiveOptionsExitOrder,
   setLiveOptionsOrderPositionId,
   listPendingLiveOptionsOrders,
+  pendingLiveOptionsOrdersRisk,
   countLiveOptionsOrdersSince,
   listFilledExitsOfClosedPositions,
   listHandClosedPositionIds,
@@ -91,6 +92,7 @@ import { evaluateOptionsRiskCheck, OptionsRiskCheckResult, optionsPositionNotion
 import { journalMethodMultipliers, methodOfOptionsSignal } from './methodSizing';
 import { activeSymbolCooldowns, journalEntrySkipOncePerDay } from './symbolCooldown';
 import { MarketDirectionReading, directionRefuses } from './marketDirection';
+import { SHORT_DATED_SLOTS_FULL_ACTION, shortDatedSlotsFull, shortDatedSlotsFullDetail } from './shortDatedSlot';
 import { claimOncePerDay } from './oncePerDayEvents';
 import { resolveUnlistedFromOrderDetail } from './orderDetailFallback';
 import { computeFinishLineFactor, finishLineScoreGate } from './finishLine';
@@ -341,8 +343,8 @@ export function getLiveOptionsPortfolioSnapshot(
   //                         a second position against exposure we already
   //                         have, so ambiguity means DO count it.
   //
-  // A legacy row with no account_id must therefore still hold the "max 1 at a
-  // time" gate shut and still consume open-risk budget. Getting this backwards
+  // A legacy row with no account_id must therefore still hold a short-dated
+  // slot (shortDatedSlot.ts) and still consume open-risk budget. Getting this backwards
   // first — excluding unassigned rows here by symmetry with the close path —
   // made an existing test fail, which is exactly what that test is for.
   const openPositions =
@@ -1112,7 +1114,13 @@ export async function runLiveOptionsExecution(
   // and money genuinely is shared.
   const ownSlots = cfg.optionsMaxConcurrentPositions > 0;
   const slotCap = ownSlots ? cfg.optionsMaxConcurrentPositions : cfg.maxConcurrentPositions;
-  let runningCount = ownSlots ? optSnapshot.openPositionsCount : combined.count;
+  // Entry orders placed on an earlier tick that are not positions yet (still
+  // working, or filled and not yet booked) hold a slot too (2026-09-24): each
+  // becomes a position the moment it fills. The same count combinedLiveOpenRisk
+  // folds into the shared count, so the two modes agree about what holds a slot.
+  const pendingEntries = pendingLiveOptionsOrdersRisk().count;
+  let runningCount = ownSlots ? optSnapshot.openPositionsCount + pendingEntries : combined.count;
+  let placedThisBatch = 0;
   // Options positions are always 'long' (see riskCheck.ts's
   // correlatedNotional() doc comment); equity positions folded in here carry
   // their REAL side so an options candidate (always effectively 'long', per
@@ -1168,8 +1176,9 @@ export async function runLiveOptionsExecution(
   // per-signal. See computeFinishLineFactor's own note.
 
   // --- Short-dated entry gates (docs/SHORT_DATED_OPTIONS_SPEC.md) ----------
-  // Both are batch-level: neither depends on which candidate is being looked
-  // at, so evaluating them per-candidate would just repeat the same answer.
+  // The entry window is batch-level: it does not depend on which candidate is
+  // being looked at. The slot rule is asked per candidate, in the loop below,
+  // because each placement takes a slot.
   if (cfg.shortDatedOptionsEnabled && cfg.optionsNoEntryMinutesBeforeClose > 0) {
     const left = minutesUntilClose(Date.now());
     if (left !== null && left <= cfg.optionsNoEntryMinutesBeforeClose) {
@@ -1189,25 +1198,24 @@ export async function runLiveOptionsExecution(
       return candidates.map(({ signal }) => ({ symbol: signal.symbol.toUpperCase(), ok: false, reason }));
     }
   }
-  // One short-dated position at a time. Tighter than the shared 2-slot cap on
-  // purpose: two 0DTE positions can both go to zero inside the same half hour
-  // on a single adverse market move — a correlation stock positions do not
-  // have, and one this account cannot absorb twice in a day.
-  if (cfg.shortDatedOptionsEnabled && optSnapshot.openPositionsCount >= 1) {
-    const reason = 'a short-dated options position is already open (max 1 at a time)';
-    // Counted by the tuning plan's F7 -- see the paper path's twin for why a
-    // silent return made that rule unmeasurable.
-    logAutotradeEvent({
-      stage: 'execution',
-      action: 'short_dated_position_already_open',
-      detail: { book: 'live', reason, refused: candidates.length, openPositions: optSnapshot.openPositionsCount },
-    });
-    return candidates.map(({ signal }) => ({ symbol: signal.symbol.toUpperCase(), ok: false, reason }));
-  }
-
   const outcomes: LiveOptionsExecutionOutcome[] = [];
-  for (const { signal } of candidates) {
+  for (const [index, { signal }] of candidates.entries()) {
     const symbol = signal.symbol.toUpperCase();
+    // The short-dated slots (2026-09-24; shortDatedSlot.ts): asked before EVERY
+    // candidate, counting open positions, working entry orders and this
+    // batch's placements, so neither two in one tick past the cap nor none
+    // while a slot is free. Once full, nothing later in the batch can use a
+    // slot either: the rest are refused under one row, whose `refused` the
+    // tuning plan's F7 counts.
+    const slots = { open: optSnapshot.openPositionsCount, pendingEntries, placedThisBatch };
+    if (shortDatedSlotsFull(cfg, slots)) {
+      const rest = candidates.slice(index);
+      const { reason, detail } = shortDatedSlotsFullDetail('live', cfg, slots, rest.length);
+      logAutotradeEvent({ stage: 'execution', action: SHORT_DATED_SLOTS_FULL_ACTION, detail });
+      for (const { signal: refused } of rest)
+        outcomes.push({ symbol: refused.symbol.toUpperCase(), ok: false, reason });
+      break;
+    }
     if (skipSymbols.has(symbol)) {
       outcomes.push({ symbol, ok: false, reason: 'Already has an open live options position' });
       continue;
@@ -1473,6 +1481,7 @@ export async function runLiveOptionsExecution(
     if (outcome.ok) {
       runningRisk += result.approvedRiskAmount;
       runningCount += 1;
+      placedThisBatch += 1;
       runningPositions.push({ symbol, notional: result.approvedNotional, side: 'long' });
       skipSymbols.add(symbol);
     }
@@ -2052,7 +2061,7 @@ export async function checkLiveOptionsExits(): Promise<LiveOptionsExitCheckOutco
   // Unassigned rows are KEPT, and note this looks like it contradicts the
   // "closing means don't act on ambiguity" rule stated in the snapshot's
   // comment. It does not, because excluding them here DEADLOCKS against that
-  // gate: the snapshot counts an unassigned row (holding "max 1 at a time"
+  // gate: the snapshot counts an unassigned row (holding a short-dated slot
   // shut), so an exit sweep that refused to close one would leave it blocking
   // every future options entry forever with no mechanism able to clear it. A
   // legacy row without account_id was written by this same loop, so closing it

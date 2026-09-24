@@ -59,7 +59,12 @@ import { previewWebullPositions } from '../src/providers/webull/positions';
 import { webullOptionQuotes } from '../src/providers/webull/optionQuotes';
 import { initDb, db } from '../src/db';
 import { UNKNOWN_PLACEMENT_RETIRE_GRACE_MS } from '../src/services/trading/reconcile';
-import { setAutotradeConfig, defaultAutotradeConfig, AutotradeConfig } from '../src/db/autotradeConfig';
+import {
+  setAutotradeConfig,
+  defaultAutotradeConfig,
+  getAutotradeConfig,
+  AutotradeConfig,
+} from '../src/db/autotradeConfig';
 import { setTradingConfig } from '../src/db/trading';
 import { createPosition } from '../src/db/positions';
 import { addSymbols } from '../src/db/universe';
@@ -4450,6 +4455,105 @@ describe('short-dated options — entry gates and the DTE coupling', () => {
 
     expect(out[0]).toMatchObject({ ok: false, reason: expect.stringMatching(/max 1 at a time/) });
     expect(mockPlaceOrder).not.toHaveBeenCalled();
+  });
+
+  // THE SLOTS (2026-09-24; shortDatedSlot.ts). The one-at-a-time rule was
+  // asked once per batch and against open positions only: on 2026-09-23 two
+  // opened in one tick three times, while a second could never open beside a
+  // first although the sleeve's own cap was 2. The operator's decision: up to
+  // the sleeve's cap at any time, counting working entry orders, asked before
+  // every candidate.
+  describe('the short-dated slots, with the sleeve capped at 2', () => {
+    const put = (symbol: string) => ({
+      signal: optionSignal({ symbol, side: 'put', contractSymbol: `${symbol}-fixture` }),
+    });
+    const slotRows = () => listAutotradeEvents({ actions: ['short_dated_position_already_open'] });
+    function arm(over: Partial<AutotradeConfig> = {}) {
+      setAutotradeConfig(shortDated({ optionsMaxConcurrentPositions: 2, ...over }));
+      mockGetProvider.mockReturnValue(
+        chainsFor({
+          AAPL: { side: 'put', strike: 100, mark: 3 },
+          MSFT: { side: 'put', strike: 100, mark: 3 },
+          NVDA: { side: 'put', strike: 100, mark: 3 },
+          TSLA: { side: 'put', strike: 100, mark: 3 },
+        }) as never,
+      );
+      mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+      mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-SLOT' });
+      atClock(EARLY);
+    }
+    /** An entry placed on an earlier tick and still working at the broker. */
+    async function workingEntry(symbol: string) {
+      const { signal } = put(symbol);
+      const placed = await attemptLiveOptionsEntry(signal, okResult(signal), 'MODERATE', getAutotradeConfig());
+      expect(placed.ok).toBe(true);
+      mockPlaceOrder.mockClear();
+    }
+
+    it('fills both slots from one batch and refuses the third, under one row F7 can count', async () => {
+      arm();
+      const out = await runLiveOptionsExecution([put('AAPL'), put('MSFT'), put('NVDA')]);
+
+      expect(out.map((o) => o.ok)).toEqual([true, true, false]);
+      expect(out[2].reason).toMatch(/^short-dated options: 2 of 2 slots taken .* max 2 at a time$/);
+      expect(mockPlaceOrder).toHaveBeenCalledTimes(2);
+      expect(slotRows()).toHaveLength(1);
+      expect(JSON.parse(slotRows()[0].detail!)).toMatchObject({
+        book: 'live',
+        refused: 1,
+        openPositions: 0,
+        pendingEntries: 0,
+        placedThisBatch: 2,
+        slotCap: 2,
+      });
+    });
+
+    it('opens a second position beside one already open', async () => {
+      arm();
+      openLivePosition({ symbol: 'TSLA', side: 'put' });
+
+      const out = await runLiveOptionsExecution([put('AAPL'), put('MSFT')]);
+
+      expect(out.map((o) => o.ok)).toEqual([true, false]);
+      expect(mockPlaceOrder).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(slotRows()[0].detail!)).toMatchObject({ refused: 1, openPositions: 1, placedThisBatch: 1 });
+    });
+
+    it('counts an entry still working at the broker: one open and one working leave no slot', async () => {
+      arm();
+      openLivePosition({ symbol: 'TSLA', side: 'put' });
+      await workingEntry('NVDA');
+
+      const out = await runLiveOptionsExecution([put('AAPL')]);
+
+      expect(out[0]).toMatchObject({
+        ok: false,
+        reason: expect.stringMatching(/1 open, 1 working, 0 placed this tick/),
+      });
+      expect(mockPlaceOrder).not.toHaveBeenCalled();
+      expect(JSON.parse(slotRows()[0].detail!)).toMatchObject({ openPositions: 1, pendingEntries: 1, refused: 1 });
+    });
+
+    it('keeps one at a time when the sleeve shares the book’s slots', async () => {
+      arm({ optionsMaxConcurrentPositions: 0 });
+      const out = await runLiveOptionsExecution([put('AAPL'), put('MSFT')]);
+      expect(out.map((o) => o.ok)).toEqual([true, false]);
+      expect(out[1].reason).toMatch(/max 1 at a time/);
+    });
+
+    it('with short-dated options off, the sleeve’s own slot cap counts the working entry too', async () => {
+      arm({ shortDatedOptionsEnabled: false });
+      openLivePosition({ symbol: 'TSLA', side: 'put' });
+      await workingEntry('NVDA');
+
+      const out = await runLiveOptionsExecution([put('AAPL')]);
+
+      expect(out[0]).toMatchObject({ ok: false, reason: 'Risk check blocked' });
+      expect(mockPlaceOrder).not.toHaveBeenCalled();
+      expect(slotRows()).toHaveLength(0);
+      const blocked = listAutotradeEvents({ actions: ['live_options_risk_blocked'] });
+      expect(JSON.parse(blocked[0].detail!).failedRules).toContain('max_concurrent_positions');
+    });
   });
 
   it('does not apply either gate while the flag is off', async () => {
