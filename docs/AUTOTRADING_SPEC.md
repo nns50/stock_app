@@ -15238,8 +15238,14 @@ request was built and then lost with it.
   - It asks for a filled bracket entry whose position is still open and has stored leg
     ids, once the sync's latest miss found NONE of the shares (`sharesGoneAtBroker`: a
     miss with `broker_qty` 0 on the streak row). A partial gap is not a filled leg.
-  - It skips a position whose own close is already working (a time exit, the end-of-day
-    flatten), and asks the newest positions first.
+  - It skips a position whose own close is still working (a time exit, the end-of-day
+    flatten). "Working" is read from the closing order's own state, by the same function
+    the positions sync uses (`positionsWithWorkingClose`): a scale-out's sale that has
+    already filled stays in the reconcile's pending list while its position is open, and
+    read as a working close it hid the position from this read for good.
+  - It asks the newest positions first, and each position once, from its newest filled
+    bracket row: a re-arm writes the legs it placed on that row, and an older row of a
+    scaled-in position still names legs the re-arm cancelled.
   - It reads the stop, then the take-profit, by Order Detail: at most four legs a tick.
   - A FILLED answer is folded into the entry's legs, and the code that books a listed leg
     books it, only when it covers the whole quantity the ledger still holds at a price
@@ -15247,8 +15253,9 @@ request was built and then lost with it.
     ids answered, not from a label in the reply.
   - Journal: `live_bracket_leg_from_detail`, once per order a day. It says which leg filled
     and what the lists still showed. A FILLED answer not folded writes
-    `live_bracket_leg_detail_skipped` with why, and a read that fails writes
-    `live_bracket_leg_detail_unresolved`, each once per leg a day.
+    `live_bracket_leg_detail_skipped` with why (no usable price, no filled quantity, or
+    fewer shares than the ledger holds), and a read that fails, or an id the broker does
+    not know, writes `live_bracket_leg_detail_unresolved`, each once per leg a day.
 - **Nothing else moves.** A leg read as working, cancelled or partial books nothing. The
   sync's grace and the correction still cover what this does not settle: a position the
   app did not place, a row placed before this change, a close made by hand, an entry past
@@ -15290,20 +15297,32 @@ only a leg the broker itself reports FILLED is booked.
   - the fill is booked once, and a second tick asks nothing;
   - a leg that filled fewer shares than the ledger holds, and a fill at a price of 0, book
     nothing and write one skip row; a failed read writes one unresolved row per leg;
-  - a position whose own close is working is not asked about.
+  - a position whose own close is working is not asked about;
+  - a scaled-out position IS asked about: its filled scale-out is not a working close, and
+    the stop is booked at its fill (2026-09-25, second review);
+  - an id the broker does not know writes one unresolved row per leg; a FILLED reply with
+    no quantity says so; only the newest row's legs are asked.
 - **The sync** (`webullPositions.test.ts`): on a first miss it records 0 for a contract
   not held at all and the held count for one trimmed.
 - **Re-arm:** the entry row points at the re-armed bracket's legs.
 - **Ratchet:** with none of the shares showing there is one skip row and no block; with
   some showing, or no miss, a missing stop is still blocked.
 
-Seventeen mutations, each caught. From the first build: the miss gate removed, any status
+Twenty-two mutations, each caught. From the first build: the miss gate removed, any status
 booked, the legs' types swapped, the ids not stored at placement, a re-arm not recorded,
 the ratchet ignoring the miss, the answer not folded into the reconcile's statuses, and
 the extractor's ids swapped. From the review: a partial fill folded, a zero price folded,
 no unresolved row, no skip row, "gone" read from any miss, the sync not recording the
 broker's count, the store dropping it, the ratchet reading any miss as gone, and a closing
-position asked about.
+position asked about. From the second review: every pending exit row read as working, no
+row per position, the row not recorded as asked, an unknown id left silent, and the
+no-quantity reason.
+
+**Not changed here (second review, 2026-09-25).** The LISTED-leg path books
+`min(filled, left)` on every tick a FILLED leg stays in the lists, and a listed fill with
+a price of 0 books at 0. With per-lot brackets or scale-in on, a second lot's target would
+be booked again against the first lot's shares. Both are off in production; the fix is its
+own change (task #151).
 
 **Pre-committed check.** Read the first three bracket exits after the deploy. Each should
 have a `live_bracket_leg_from_detail` row or a listed-leg booking, and none should be

@@ -49,7 +49,7 @@ import {
   recordIntentNoteOnce,
   OrderIntentRecord,
 } from '../../db/orders';
-import { canTransition, isTerminal } from '../trading/orderLifecycle';
+import { canTransition, isTerminal, positionsWithWorkingClose } from '../trading/orderLifecycle';
 import {
   recordLiveOrder,
   recordLiveExitOrder,
@@ -2584,18 +2584,25 @@ function filledBracketLegCandidates(
   pending: LiveOrderMeta[],
   intentsById: Map<number, OrderIntentRecord>,
 ): FilledBracketLegCandidate[] {
-  const closing = new Set(
-    pending.filter((m) => m.role === 'exit' && m.positionId !== null).map((m) => m.positionId as number),
-  );
+  // A close still WORKING, not merely listed: a scale-out's filled exit row
+  // stays pending while its position is open (positionsWithWorkingClose).
+  const closing = positionsWithWorkingClose(pending, (id) => intentsById.get(id)?.state);
   const out: FilledBracketLegCandidate[] = [];
+  // One candidate per position, from its NEWEST filled bracket row: a re-arm
+  // writes the legs it placed there (recordRearmedLegs), and an older row of a
+  // scaled-in position still names legs that re-arm cancelled. Asking those
+  // spent the tick's lookups on orders that cannot have filled. An add-on not
+  // filled yet does not qualify, so the original row still stands for it.
+  const asked = new Set<number>();
   for (const meta of [...pending].reverse()) {
     if (meta.role !== 'entry' || meta.positionId === null) continue;
     if (!meta.takeProfitClientOrderId && !meta.stopLossClientOrderId) continue;
-    if (closing.has(meta.positionId)) continue;
+    if (closing.has(meta.positionId) || asked.has(meta.positionId)) continue;
     const intent = intentsById.get(meta.intentId);
     if (!intent || intent.state !== 'filled' || !intent.isBracket) continue;
     const pos = getPosition(meta.positionId);
     if (!pos || pos.status !== 'open') continue;
+    asked.add(meta.positionId);
     const { gone, missStreak } = sharesGoneAtBroker(accountId, pos);
     if (!gone) continue;
     out.push({
