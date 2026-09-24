@@ -1015,6 +1015,33 @@ describe('matchSaleOutsideBracket', () => {
     expect(matchSaleOutsideBracket(exit, entered, [fill({ filledQty: 20 })], none)).toBeNull();
   });
 
+  // 2026-09-24, on review. The sync misses a round trip that finishes between
+  // two of its reads, so one window can hold two: the operator covers the AMC
+  // short at 2.82, shorts again, and covers at 2.70 before the sync books the
+  // exit. Oldest first booked 2.82 and claimed it.
+  it('refuses a window holding more than one round trip: a later close, or the position opened again', () => {
+    const t = (min: number) => entered + min * 60_000;
+    const short = { ...exit, symbol: 'AMC', quantity: 1, positionSide: 'short' as const, createdAt: t(60) };
+    const amc = { symbol: 'AMC', filledQty: 1 };
+    const cover1 = fill({ ...amc, clientOrderId: 'cover-1', side: 'BUY', filledPrice: 2.82, filledAt: t(10) });
+    const reShort = fill({ ...amc, clientOrderId: 'short-2', side: 'SHORT', filledPrice: 2.83, filledAt: t(11) });
+    const cover2 = fill({ ...amc, clientOrderId: 'cover-2', side: 'BUY', filledPrice: 2.7, filledAt: t(47) });
+    expect(matchSaleOutsideBracket(short, entered, [cover1, reShort, cover2], none)).toBeNull();
+    // Either sign alone is enough: another close in the window...
+    expect(matchSaleOutsideBracket(short, entered, [cover1, cover2], none)).toBeNull();
+    // ...or the short opened again after the cover that matched.
+    expect(matchSaleOutsideBracket(short, entered, [cover1, reShort], none)).toBeNull();
+    // The short's own entry, before its cover, is no second trip.
+    const entry = fill({ ...amc, clientOrderId: 'short-1', side: 'SHORT', filledPrice: 2.83, filledAt: t(1) });
+    expect(matchSaleOutsideBracket(short, entered, [entry, cover1], none)).toMatchObject({ price: 2.82, qty: 1 });
+    // Nor is a trade after the sync booked this exit: that is the next position's.
+    const later = fill({ ...amc, clientOrderId: 'short-3', side: 'SHORT', filledAt: t(62) });
+    expect(matchSaleOutsideBracket(short, entered, [cover1, later], none)).toMatchObject({ price: 2.82 });
+    // A long bought again after its sale.
+    const rebuy = fill({ clientOrderId: 'rebuy', side: 'BUY', filledAt: entered + 20 * 60_000 });
+    expect(matchSaleOutsideBracket(exit, entered, [fill(), rebuy], none)).toBeNull();
+  });
+
   it('reads only its own window: after the previous exit, before this one was booked, and nothing claimed', () => {
     const early = fill({ clientOrderId: 'early', filledAt: entered + 5 * 60_000 });
     const mid = fill({ clientOrderId: 'mid', filledAt: entered + 30 * 60_000 });

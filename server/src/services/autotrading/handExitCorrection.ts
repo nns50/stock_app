@@ -113,27 +113,57 @@ export function optionClosingFills(row: HandOptionWindow, fills: BrokerOptionFil
  * The fills that closed an imported options row, or null when the history
  * cannot say. PURE. Oldest first until they add up to exactly the booked
  * quantity; a fill another exit already booked is never booked twice. An
- * overshoot (the contract traded again) or a shortfall leaves the estimate.
+ * overshoot (the contract traded again) or a shortfall leaves the estimate,
+ * and so does a window with more than one round trip in it (below).
  */
 export function matchHandOptionClose(
   row: HandOptionWindow,
   fills: BrokerOptionFill[],
   claimed: ReadonlySet<string> = new Set(),
 ): { price: number; qty: number; filledAt: number; clientOrderIds: string[] } | null {
+  const closing = optionClosingFills(row, fills).filter((f) => !claimed.has(f.clientOrderId));
   let qty = 0;
   let notional = 0;
   const ids: string[] = [];
-  for (const f of optionClosingFills(row, fills)) {
-    if (claimed.has(f.clientOrderId)) continue;
+  for (const [i, f] of closing.entries()) {
     if (qty + f.filledQty > row.quantity + 1e-9) return null;
     qty += f.filledQty;
     notional += f.filledQty * f.filledPrice;
     ids.push(f.clientOrderId);
     if (Math.abs(qty - row.quantity) < 1e-9) {
+      // ONE ROUND TRIP OR NONE (2026-09-24, on review). The window can hold more
+      // than one: the sync misses a round trip finished between two of its
+      // reads, and the options sleeve trades the same contracts (a hand DELL
+      // call, and the sleeve buying and selling the same one). Another closing
+      // fill still in the window, or the contract opened again after the first
+      // matched fill, means the history cannot say which close was this row's.
+      if (i < closing.length - 1 || contractOpenedAgain(row, fills, closing[0].filledAt)) return null;
       return { price: Math.round((notional / qty) * 10_000) / 10_000, qty, filledAt: f.filledAt, clientOrderIds: ids };
     }
   }
   return null;
+}
+
+/** Whether the row's exact contract was opened again (an order the broker marks
+ *  `_TO_OPEN`, or a buy for a long and a sell for a short) after `after` and
+ *  before the sync booked the exit. */
+function contractOpenedAgain(row: HandOptionWindow, fills: BrokerOptionFill[], after: number): boolean {
+  const openingSide = row.positionSide === 'short' ? 'SELL' : 'BUY';
+  const symbol = row.symbol.toUpperCase();
+  return fills.some((f) => {
+    const intent = (f.positionIntent ?? '').toUpperCase();
+    const opens = intent ? intent.endsWith('_TO_OPEN') : f.side === openingSide;
+    return (
+      opens &&
+      f.underlying === symbol &&
+      f.optionType === row.optionType &&
+      row.strike !== null &&
+      Math.abs(f.strike - row.strike) < 1e-6 &&
+      f.expiration === row.expiration &&
+      f.filledAt > after &&
+      f.filledAt <= row.createdAt + FILL_CLOCK_SLACK_MS
+    );
+  });
 }
 
 /** The note on a corrected row. Like the other corrections' notes, it replaces
