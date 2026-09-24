@@ -1,6 +1,8 @@
 import { listPositions, Position } from '../../db/positions';
 import { initialRiskOf, realizedPnlOf } from '../pnl';
 import { listLiveOptionsPositions, liveOptionsPnl, LiveOptionsPosition } from '../../db/autotradeLiveOptionsPositions';
+import { liveOptionsEntryPlacedAt } from '../../db/autotradeLiveOptionsOrders';
+import { entryIntentIdForPosition, getLiveOrder } from '../../db/autotradeLiveOrders';
 import { listPaperPositions, paperRealizedPnl, PaperPosition } from '../../db/autotradePaperPositions';
 import { listOptionsPaperPositions, OptionsPaperPosition } from '../../db/autotradeOptionsPaperPositions';
 import { optionsPaperRealizedPnl } from './optionsExecute';
@@ -561,6 +563,15 @@ function attributesForLiveBook(
     const entryAt = p.entryTime && p.entryDate ? etDateTimeToMs(p.entryDate, p.entryTime) : p.createdAt;
     const minute = entryAt === null ? null : etMinuteOf(entryAt);
     const etDate = p.entryDate ?? etToday(p.createdAt);
+    // The tape the entry was decided against: the reading in force when its
+    // order went out (2026-09-24, on review). `entryTime` is HH:MM, floored to
+    // the minute, and the tick journals its reading seconds before it places:
+    // on a tick where the reading changed, the floored time came before the
+    // tick's own row, so a long placed at 10:08:20 on a reading that turned red
+    // at 10:08:03 read as mixed, and the day's first entry read no tape at all.
+    // Those are exactly the ticks the gate acts on.
+    const intentId = entryIntentIdForPosition({ id: p.id, sourceIntentId: p.sourceIntentId });
+    const tapeAt = (intentId === null ? undefined : getLiveOrder(intentId)?.createdAt) ?? entryAt;
     const ext = minute === null ? undefined : extensions.get(extensionKey('live', p.symbol, etDate, minute));
     out.set(`pos:${p.id}`, {
       id: `pos:${p.id}`,
@@ -580,7 +591,7 @@ function attributesForLiveBook(
       vwapExtPct: ext?.vwapExtPct ?? null,
       pctOfRange: ext?.pctOfRange ?? null,
       stopWidthUsd: liveStopWidthUsd(p),
-      ...tapeFieldsOf(directions, etDate, entryAt, p.side),
+      ...tapeFieldsOf(directions, etDate, tapeAt, p.side),
     });
   }
   for (const p of liveOptionsClosed) {
@@ -609,7 +620,9 @@ function attributesForLiveBook(
       // An option's stop is on premium; a width in dollars per share means
       // nothing for it.
       stopWidthUsd: null,
-      ...tapeFieldsOf(directions, etDate, p.entryAt, leanOfOption(p.side)),
+      // Placed against the reading in force when the order went out, not when
+      // its fill was booked (which can be ticks later): see the stock twin.
+      ...tapeFieldsOf(directions, etDate, liveOptionsEntryPlacedAt(p.id) ?? p.entryAt, leanOfOption(p.side)),
     });
   }
   return out;
