@@ -2357,6 +2357,9 @@ describe('runLiveExecution — a SHORT entry is buying-power sized', () => {
     // The buying-power arithmetic, not the tape rule: shorts on every tape.
     liveShortsRedTapeOnly: false,
     liveProbationTrades: 0,
+    // Nor the short probation: shorts that are on always carry a stamp, so the
+    // first shorts would be cut. A multiplier of 1 cuts nothing.
+    liveShortProbationSizeMultiplier: 1,
     maxConcurrentPositions: 5,
     maxAggregateOpenRiskPct: 100,
     maxCorrelatedExposurePct: 1000,

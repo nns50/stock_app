@@ -2001,9 +2001,20 @@ export function setAutotradeConfig(patch: Partial<AutotradeConfig>): AutotradeCo
   // whichever writer switches them on. Stamped on the false -> true move only,
   // so a save that leaves shorts on does not restart the window, and switching
   // them off leaves the stamp (the next switch-on restarts it).
+  //
+  // AND SHORTS THAT ARE ON ALWAYS CARRY A STAMP (2026-09-24, on review). A null
+  // stamp reads as "never switched on" to the probation and to the shorts_revert
+  // tripwires, so shorts on with no stamp ran with neither. Two ways there: a
+  // patch spreading the defaults (`liveShortsEnabledAt: null` is an explicit
+  // value, so it used to win), and shorts already on before the stamp existed.
+  // An explicit NUMBER still wins; a null while shorts are on is stamped now.
   const shortsOn = merged.liveAllowNakedShort && !prev.liveAllowNakedShort;
-  const next =
-    shortsOn && patch.liveShortsEnabledAt === undefined ? { ...stamped, liveShortsEnabledAt: Date.now() } : stamped;
+  const needsStamp = merged.liveAllowNakedShort
+    ? shortsOn
+      ? patch.liveShortsEnabledAt == null
+      : merged.liveShortsEnabledAt === null
+    : false;
+  const next = needsStamp ? { ...stamped, liveShortsEnabledAt: Date.now() } : stamped;
   db.prepare(
     `INSERT INTO autotrade_config (id, config, updated_at) VALUES (1, ?, ?)
      ON CONFLICT(id) DO UPDATE SET config = excluded.config, updated_at = excluded.updated_at`,

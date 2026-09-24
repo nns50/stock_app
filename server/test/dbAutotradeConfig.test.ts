@@ -934,10 +934,29 @@ describe('short probation clock (liveShortsEnabledAt)', () => {
       5_000,
     );
     setAutotradeConfig({ liveAllowNakedShort: false });
-    // The reset every test file uses carries an explicit null.
+    // An explicit NULL is not a state to restore while shorts are on (2026-09-24,
+    // on review): the probation and the tripwires read null as "never switched
+    // on", so shorts on with no stamp ran with neither. A patch spreading the
+    // defaults carries exactly that null.
+    const before = Date.now();
     expect(
       setAutotradeConfig({ ...defaultAutotradeConfig(), liveAllowNakedShort: true }).liveShortsEnabledAt,
-    ).toBeNull();
+    ).toBeGreaterThanOrEqual(before);
+  });
+
+  it('stamps shorts that were already on with no stamp, on the next write of any field', () => {
+    // Shorts on before the stamp existed: the next save, whatever it changes,
+    // starts the window, so probation and the tripwires are never both off.
+    db.prepare('INSERT OR REPLACE INTO autotrade_config (id, config, updated_at) VALUES (1, ?, ?)').run(
+      JSON.stringify({ ...defaultAutotradeConfig(), liveAllowNakedShort: true, liveShortsEnabledAt: null }),
+      Date.now(),
+    );
+    expect(getAutotradeConfig().liveShortsEnabledAt).toBeNull();
+    const before = Date.now();
+    expect(setAutotradeConfig({ riskProfile: 'AGGRESSIVE' }).liveShortsEnabledAt).toBeGreaterThanOrEqual(before);
+    // And a stamp already there is kept: a save does not restart the window.
+    const stamp = getAutotradeConfig().liveShortsEnabledAt;
+    expect(setAutotradeConfig({ riskProfile: 'MODERATE' }).liveShortsEnabledAt).toBe(stamp);
   });
 
   it('reads a stored 0 back as never', () => {
