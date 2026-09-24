@@ -14816,3 +14816,99 @@ differ are on that computation's edge day.
 Seven mutations were run, one per mechanism: pre/post back on, no session bound, no day
 filter, a window cut to 120 (in each provider), the edge rule removed, and the edge rule
 applied to daily bars. Each fails at least one test.
+
+## 2026-09-24 (fifth) — a counterfactual exit is replayed past the exit it replaces
+
+**What happened.** Found while re-reading the exit replays for the replay-honesty change.
+`GET /api/journal/exit-replay`, its `c`-prefixed candidate comparison, and
+`GET /api/journal/exit-tune-validation` all walk the same same-session paths
+(`loadSameSessionBars`). Each path stopped at the trade's **actual exit**, the window the
+excursion report uses. That window is right for a factual question ("how far did this
+trade go while held"). It is wrong for a counterfactual one ("what would another
+geometry have done").
+
+A candidate that holds longer than the geometry traded is cut off exactly where the
+traded geometry closed. Take a 2R target on a trade that banked 1R at 10:15: it ends as a
+time exit at 10:15, at about 1R. A 90-minute stagnation scratch on a trade the 60-minute
+one closed ends at minute 60. Every "hold longer" candidate read as no better **by
+construction**. That includes the 2026-09-11 reading, which put three exit shapes
+inside the noise. Its isolation row for the stagnation timer read 0.00R at p 1.00:
+the no-timer arm ran out of bars at the real exit and booked its time exit at the same
+close, which is exactly what the censoring produces.
+
+The regime-tighten ledger had the same flaw. Its "was the full target reached?" read the
+excursion's MFE as held, which stops at the tightened exit. So a trade that banked its
+tightened target could never show the full target was reachable. The ledger's header
+claims both branches of its bound favour the full target. For those trades the bound
+favoured the tighten instead, so "cannot beat realized, keep the tighten" was the only
+reading it could produce. The tighten is on at 15%, but no live tightened stock trade
+had closed, so no decision rested on it yet.
+
+**Fixed:** `counterfactualPathEnd` (`exitReplay.ts`).
+- A counterfactual path runs to the **end of the session**.
+- The one exception is a close no geometry made: by hand (`manual`), or with no reason
+  recorded. Any geometry would have been closed at that same moment, so the path still
+  ends there.
+- `loadSameSessionBars` and both books of the regime-tighten ledger read it.
+- The excursion report stays the trade as held.
+- `time_exit` covers both the stagnation scratch and the end-of-day flatten, and the
+  exit row does not say which. Extending both is right: the flatten ends at the close
+  anyway, and the scratch is part of the geometry being compared.
+- `/exit-tune-validation` still **fits** the tuner on the excursion as held, bounded by
+  the last exit, because that is the input `autoTune.ts` reads. Only its replay walks
+  past the exit. Fitted on the path to the close, it would validate a tuner that does
+  not exist.
+
+**Measured on the production copy from the 09-23 close,** same-session trades since
+07-27. The current live geometry is a 1R target, breakeven at 0.25R, a 0.5R trail from
+0.5R, and a 60-minute scratch below 0.5R. Paired against it, with the 95% bootstrap
+interval:
+
+| Candidate (live, n 104) | Cut at the exit (touch) | To the close (touch) | To the close (honest) |
+|---|---|---|---|
+| Target 1.5R | −0.007R | +0.016R | +0.018R [−0.033, +0.061] |
+| Target 2R | −0.002R | +0.025R | +0.025R [−0.031, +0.074] |
+| Stagnation 90 min | 0.000R | +0.005R | +0.028R [−0.006, +0.063] |
+| No stagnation scratch | −0.001R | +0.039R [+0.005, +0.076] | +0.056R [−0.005, +0.105] |
+
+On paper (n 128) the current geometry reads −0.012R a trade to the close under honest
+fills; a 2R target +0.038R [−0.035, +0.115], no scratch +0.024R.
+
+**What it changes.**
+- **No setting.** Under honest fills no candidate clears its interval, so the exits stay
+  as they are.
+- **Both books lean the same way:** toward holding longer. The comparison tool could
+  not see that direction at all until now.
+- **The pre-committed exit reading** (a shape is adopted only on `better`) applies from
+  the next comparison on. Earlier readings could not have returned `better` for a
+  longer-holding shape.
+
+**Decisions that rested on censored readings.** None is reversed by this reading, and
+none should be changed without the operator's word, but each was argued from a tool that
+could not show the alternative:
+- **The 2026-09-11 exit-shape table**, which kept the stagnation timer and scale-out on
+  readings where a longer-holding arm could not win.
+- **The 2026-09-12 retune** (`docs/TUNE_FROM_TARGET.md`). It moved `targetRMultiple`
+  2 → 1 and `stagnationExitMinutes` 90 → 60, arguing "exit geometry is not the lever
+  (twelve stop/target shapes all replay `inside_noise`)". Uncensored, a 2R target reads
+  +0.025R and no scratch +0.056R: still inside the noise, but leaning the other way.
+- **The 2026-09-17 stop-width reading** (no change to `maxRiskAtrFraction`) is less
+  exposed. It priced TIGHTER stops, which exit sooner, so fewer of its candidate paths
+  ran into the cut.
+
+**Tests (each mutation-checked):**
+- **The helper:** runs past `stop`, `target`, `time_exit` and `partial`; stops at
+  `manual` and at a missing reason.
+- **`/exit-replay`, 24 same-session trades:** each banked a 1R target at 09:37 and ran to
+  2R by 09:40.
+  - A 2R candidate reaches its target on all 24, a paired +1R and `better`.
+  - The same trades closed by hand keep the candidate at the 09:37 cut, and the
+    difference is 0.
+- **`/regime-tighten`:** a live and a paper trade tightened to 0.5, each banking 0.5R
+  at 09:37, read an MFE of 2.5R and `fullReached`. A hand-closed twin keeps the held
+  1.2R.
+- **`/exit-tune-validation`:** the same 24 trades fit a 1R target. That is 0.8 × the
+  1.2R MFE as held, floored at 1R; reading the path past the exit would fit 2R.
+- **Mutations**, each caught: the replay path cut at the exit; the ledger's live side cut
+  at the exit; its paper side cut at the exit; a hand close not respected; the
+  validation's fit reading past the exit.

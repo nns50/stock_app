@@ -8,6 +8,11 @@
 // every closed stock trade's favorable excursion is already measured
 // (services/excursion.ts, mfeR), and a tightened target's untightened twin is
 // arithmetic: the regime_target_factor stamped at entry divides it back out.
+// The route measures that excursion PAST the tightened exit, to the end of the
+// session (exitReplay.ts's counterfactualPathEnd, 2026-09-24). Measured as
+// held, it stopped at the tightened target, so a trade that banked it could
+// never show the full target was reachable, and the bound below leaned
+// against the full target instead of towards it.
 // So per trade the question "would the FULL target have been reached?" has
 // an answer that is recorded rather than argued — mfeR ≥ fullTargetR — and
 // the ledger is a BOUNDED counterfactual:
