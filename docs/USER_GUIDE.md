@@ -3627,7 +3627,27 @@ One home (⚙ or `⌘K → Settings`) for everything:
   previously kept showing a position as open long after it was actually sold. When the exit
   price comes from the close-detection side (no fill to read a price from), it's an
   *estimate* from the latest quote, noted as such on the exit — edit it if you have your
-  broker confirmation. List your account IDs once under **Auto-sync accounts**, flip on
+  broker confirmation.
+
+  **Since 2026-09-24 the app books those closes at your fill itself**, for the account the
+  Auto-Trade page trades live. Each loop cycle it looks in Webull's order history (the last
+  seven days) for what closed the position after the sync imported it, and rewrites the
+  estimate:
+  - a **stock** to your sale, or for a short to your buy to cover, when the fills add up
+    exactly to the quantity closed (orders the app placed itself never count here);
+  - an **option** to the fill that closed that exact contract (underlying, call or put,
+    strike, expiration).
+
+  Recent activity shows **`hand_exit_corrected`** with the price before and after. A close
+  that no set of fills adds up to stays an estimate once its day is over, and
+  **`hand_exit_correction_skipped`** says so once, listing what the history held. This also
+  fixes the Journal's copies of the bot's own option trades. The options sleeve keeps its
+  own table, so the sync imports each of its contracts here too, and until 2026-09-24 it
+  closed that copy at a quote: DELL's 575 call on 2026-09-23 read here as a $330 win while
+  the sleeve's stop lost $165. A short you open by hand in Webull is imported as a short
+  (Webull reports it as a negative quantity) and booked with a short's sign.
+
+  List your account IDs once under **Auto-sync accounts**, flip on
   **Sync automatically in the background**, and pick an interval (1m–30m); it then keeps
   itself current with no further clicking, independent of any open tab. If you trade **more
   than one real account** (e.g. a cash account *and* a margin account), put **all** of them

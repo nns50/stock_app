@@ -726,6 +726,59 @@ export function listSyncEstimatedExits(filter: { since?: string; accountId?: str
   return rows;
 }
 
+/** A sync-estimated exit on a position the app did NOT open (2026-09-24): one
+ *  the sync imported from Webull, with no entry order of the app's behind it.
+ *  The operator's own trades, and the journal's copies of the options sleeve's
+ *  contracts (the sleeve keeps its own table; the sync imports every holding
+ *  the journal does not already have). */
+export interface HandEstimatedExit extends SyncEstimatedExit {
+  assetType: AssetType;
+  optionType: OptionType | null;
+  strike: number | null;
+  expiration: string | null;
+  /** When the sync imported the position. It was held then, so whatever
+   *  closed it filled afterwards: the lower bound a match reads, since an
+   *  imported row has no entry date (the broker reports none). */
+  positionCreatedAt: number;
+}
+
+/** The sync's estimated exits on imported positions with no app entry order:
+ *  listSyncEstimatedExits' complement, which only the app's own positions are
+ *  in. Tagged `webull` and not `live`, so an app position whose entry link was
+ *  lost is not taken for a hand trade. */
+export function listSyncEstimatedHandExits(filter: { since?: string; accountId?: string } = {}): HandEstimatedExit[] {
+  const clauses = [
+    'e.notes LIKE ?',
+    `p.tags LIKE '%"webull"%'`,
+    `p.tags NOT LIKE '%"live"%'`,
+    `p.source_intent_id IS NULL`,
+    `NOT EXISTS (SELECT 1 FROM autotrade_live_orders alo WHERE alo.position_id = p.id AND alo.role = 'entry')`,
+  ];
+  const params: unknown[] = [`${SYNC_ESTIMATE_NOTE_PREFIX}%`];
+  if (filter.since !== undefined) {
+    clauses.push('e.exit_date >= ?');
+    params.push(filter.since);
+  }
+  if (filter.accountId !== undefined) {
+    clauses.push('p.account_id = ?');
+    params.push(filter.accountId);
+  }
+  return db
+    .prepare(
+      `SELECT e.id AS exitId, e.position_id AS positionId, p.symbol, e.quantity,
+              e.exit_price AS exitPrice, e.exit_date AS exitDate, e.exit_reason AS exitReason,
+              p.source_intent_id AS sourceIntentId, p.account_id AS positionAccountId,
+              e.created_at AS createdAt, p.side AS positionSide,
+              p.asset_type AS assetType, p.option_type AS optionType, p.strike, p.expiration,
+              p.created_at AS positionCreatedAt
+         FROM position_exits e
+         JOIN positions p ON p.id = e.position_id
+        WHERE ${clauses.join(' AND ')}
+        ORDER BY e.created_at ASC, e.id ASC`,
+    )
+    .all(...params) as HandEstimatedExit[];
+}
+
 export function deleteExit(exitId: number): boolean {
   const row = db.prepare('SELECT position_id FROM position_exits WHERE id = ?').get(exitId) as
     { position_id: number } | undefined;

@@ -1166,6 +1166,21 @@ export async function listBrokerOptionFills(
 }
 
 /**
+ * Every stock AND options fill in the broker's order history, from ONE paged
+ * read (2026-09-24). READ-ONLY, never throws. For a pass that books both kinds
+ * (handExitCorrection.ts), where two reads would spend twice the history's
+ * 2-requests-per-2-seconds budget for the same pages.
+ */
+export async function listBrokerFills(
+  accountId: string,
+): Promise<{ ok: boolean; equity: BrokerEquityFill[]; option: BrokerOptionFill[]; error?: string }> {
+  if (!webullConfigured()) return { ok: false, equity: [], option: [], error: 'Webull is not configured.' };
+  const r = await fetchFullOrderList(accountId, '/openapi/trade/order/history');
+  if (!r.ok) return { ok: false, equity: [], option: [], error: r.error };
+  return { ok: true, equity: parseBrokerEquityFills(r.envelopes), option: parseBrokerOptionFills(r.envelopes) };
+}
+
+/**
  * Look up the live status of one of OUR orders by its client_order_id, scanning
  * open orders then history (which covers filled/cancelled). READ-ONLY — places
  * nothing, cancels nothing. Never throws.

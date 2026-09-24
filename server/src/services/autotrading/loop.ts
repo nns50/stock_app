@@ -73,6 +73,7 @@ import {
 import { listMacroEvents } from '../../db/macroEvents';
 import { runWebullPositionsSync } from '../../providers/webull/positions';
 import { correctEstimatedStockExits } from './stockExitCorrection';
+import { correctEstimatedHandExits } from './handExitCorrection';
 import { processMoversForPromotion } from './moversPromotion';
 import { checkForRecentSplits } from './splitCheck';
 import { etToday } from '../../util/marketDate';
@@ -409,6 +410,16 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
       if (liveCfg.liveAccountId) await correctEstimatedStockExits(liveCfg.liveAccountId);
     } catch (e) {
       journalStageFailure('live stock exit correction', e);
+    }
+    // The same, for the positions the app did not open (2026-09-24): the
+    // operator's own trades, and the journal's copies of the options sleeve's
+    // contracts. Their closes are matched in the order history directly, since
+    // there is no entry order to start from. See handExitCorrection.ts.
+    try {
+      const liveCfg = getAutotradeConfig();
+      if (liveCfg.liveAccountId) await correctEstimatedHandExits(liveCfg.liveAccountId);
+    } catch (e) {
+      journalStageFailure('hand exit correction', e);
     }
     // Runs right after the sync above so a position it just imported
     // untracked (tagged 'webull' only) gets a chance to be healed the SAME
