@@ -187,7 +187,7 @@ function median(values: number[]): number {
 }
 
 /** The floor observations the journal holds: every row carrying
- *  `liveMinSignalScore`. */
+ *  `liveMinSignalScore`, and before those, the floor's own refusals. */
 function floorObservations(since: number): FloorObservation[] {
   const out: FloorObservation[] = [];
   const { events } = listAutotradeEventsInWindow(
@@ -206,7 +206,19 @@ function floorObservations(since: number): FloorObservation[] {
   for (const e of events) {
     if (!e.detail) continue;
     try {
-      const floor = (JSON.parse(e.detail) as { liveMinSignalScore?: unknown }).liveMinSignalScore;
+      const d = JSON.parse(e.detail) as { liveMinSignalScore?: unknown; bar?: unknown; source?: unknown };
+      // Refusal rows carry the floor as `liveMinSignalScore` from 2026-09-11.
+      // Before that (09-08 to 09-10 on the production record) only the floor's
+      // own refusals recorded it, as the `bar` of a `live_floor` refusal, and
+      // without them those days read as no floor at all (0), so every short
+      // signal on them counted as clearing it (review, 2026-09-24). Another
+      // source's bar (the armed-day or High-Vol bar) is not the everyday floor.
+      const floor =
+        typeof d.liveMinSignalScore === 'number'
+          ? d.liveMinSignalScore
+          : e.action === 'live_score_floor_skipped' && d.source === 'live_floor'
+            ? d.bar
+            : undefined;
       if (typeof floor === 'number' && Number.isFinite(floor)) out.push({ at: e.createdAt, floor });
     } catch {
       // A row that does not parse records no floor.
