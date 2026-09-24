@@ -45,10 +45,11 @@ import { TAPE_BUCKETS, TapeBucket, tapeBucketOf } from './marketDirection';
  *     whether to point real money at a new direction.
  */
 
-/** One declined short, as journaled. */
-/** A row from `live_short_skipped`. It carries no `side`, and should not: the
- *  ACTION is the side. buildShortShadowRecord stamps it on the way into the
- *  shared replay, which is the one place that knows both. */
+/** One declined short, as the loader reads a `live_short_skipped` row. The
+ *  row has carried `side: 'short'` since 2026-09-24, for readers of the raw
+ *  journal; this type leaves it out, because the ACTION is the side.
+ *  buildShortShadowRecord stamps it on the way into the shared replay, which
+ *  is the one place that knows both. */
 export type SkippedShort = Omit<DeclinedEntry, 'side'>;
 
 export type { ShadowSkipReason, ShadowTrade } from './declinedEntryShadow';
