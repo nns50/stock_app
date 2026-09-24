@@ -360,11 +360,15 @@ export default function AboutPage() {
           <strong className="text-slate-200">mixed</strong>, and fewer than <span className="tabular-nums">100</span>{' '}
           names measured, or no SPY move, is <strong className="text-slate-200">unknown</strong>. Both legs must agree,
           so a quiet day that is red across the board counts, while a day where SPY rises on a few large names as most
-          stocks fall does not. With the auto-trade config’s{' '}
-          <strong className="text-slate-200">market-direction gate</strong> on (off by default), the live books refuse
-          an entry that leans against a one-sided market — a stock long or a call on a red reading, a short or a put on
-          a green one — while paper keeps taking every signal as the control. It sizes nothing and never refuses on a
-          mixed or unknown reading.
+          stocks fall does not. Once one-sided, the reading <strong className="text-slate-200">holds</strong>{' '}
+          (2026-09-24): it stays red while SPY is at least the exit band’s index leg down (default{' '}
+          <span className="tabular-nums">0.1%</span>) and at least its breadth leg of names stay red (default{' '}
+          <span className="tabular-nums">60%</span>), never stricter than the bar, and through up to{' '}
+          <span className="tabular-nums">5</span> minutes of ticks it cannot see; entering still needs the full bar.
+          With the auto-trade config’s <strong className="text-slate-200">market-direction gate</strong> on (off by
+          default), the live books refuse an entry that leans against a one-sided market — a stock long or a call on a
+          red reading, a short or a put on a green one — and a scale-in or per-lot second lot the same way, while paper
+          keeps taking every signal as the control. It sizes nothing and never refuses on a mixed or unknown reading.
         </p>
       </Section>
 

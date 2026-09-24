@@ -72,6 +72,7 @@ import {
   checkLiveBracketProtection,
 } from '../src/services/autotrading/liveExecute';
 import { ORDER_DETAIL_LOOKUPS_PER_TICK } from '../src/services/autotrading/orderDetailFallback';
+import { readMarketDirectionForTick } from '../src/services/autotrading/marketDirection';
 
 const mockGetProvider = vi.mocked(getProvider);
 const mockAccountState = vi.mocked(webullAccountState);
@@ -2342,6 +2343,58 @@ describe('checkLivePerLotSecondLots', () => {
       positionId: position.id,
       reason: 'no entry intent id — cannot look up the second lot plan',
     });
+  });
+
+  // The market-direction gate for adds (2026-09-24; liveExecute.ts
+  // addOnDirectionRefusal). The first lot passed the gate at entry; the tape can
+  // turn before the second goes, and a long lot bought into a broad red day is
+  // the bet the gate refuses as a fresh entry.
+  it('holds the second lot while the market reads red against it, says why once, and sends it when the tape turns', async () => {
+    const { position, entryIntentId } = await openAgedLivePosition(0);
+    setAutotradeConfig(
+      liveConfig({ livePerLotBracketsEnabled: true, maxHoldDays: 0, marketDirectionGateEnabled: true }),
+    );
+    planFor(entryIntentId, { quantity: 5, targetR: 2, targetPrice: 110 });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(accountStateWith(0) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-LOT2' });
+    const redTape = {
+      indexSymbol: 'SPY',
+      indexChangePct: -0.35,
+      breadth: { red: 365, green: 135, flat: 0, sample: 500 },
+      indexPct: 0.2,
+      breadthPct: 65,
+      exitIndexPct: 0.1,
+      exitBreadthPct: 60,
+    };
+    readMarketDirectionForTick(redTape, Date.now(), '2026-09-24');
+
+    expect(await checkLivePerLotSecondLots()).toEqual([
+      {
+        symbol: 'AAPL',
+        positionId: position.id,
+        requested: false,
+        reason: expect.stringMatching(/^Market direction: Broad red market .* a long second lot leans against it$/),
+      },
+    ]);
+    await checkLivePerLotSecondLots();
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    const skipped = listAutotradeEvents({ actions: ['per_lot_second_lot_direction_skipped'], limit: 10 });
+    expect(skipped).toHaveLength(1);
+    expect(JSON.parse(skipped[0].detail ?? '{}')).toMatchObject({
+      positionId: position.id,
+      side: 'long',
+      quantity: 5,
+      direction: 'red',
+    });
+    // Not the guardrail's action: the two refusals are counted apart.
+    expect(listAutotradeEvents({ actions: ['per_lot_second_lot_blocked'], limit: 10 })).toHaveLength(0);
+
+    // SPY back over its prior close: the next tick sends the lot.
+    readMarketDirectionForTick({ ...redTape, indexChangePct: 0.1 }, Date.now(), '2026-09-24');
+    expect(await checkLivePerLotSecondLots()).toEqual([
+      { symbol: 'AAPL', positionId: position.id, requested: true, quantity: 5 },
+    ]);
   });
 
   it('leaves a position with no plan alone, rather than inventing a lot', async () => {

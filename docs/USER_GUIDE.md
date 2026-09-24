@@ -1475,18 +1475,38 @@ equally-weighted cards in the order they happened to be built:
   - a stock long or a call on a broad red day;
   - a stock short or a put on a broad green day.
 
-  A mixed or unknown market refuses nothing. The gate reads afresh every tick, so a
-  market that stops being one-sided lets entries through again on the next tick. SPY's
+  A mixed or unknown market refuses nothing. Since 2026-09-24 a one-sided reading
+  **holds** until the market really lets go:
+  - **The exit band.** Once red, the reading stays red while SPY stays at least
+    **`marketDirectionExitIndexPct`** (default 0.1%) down and at least
+    **`marketDirectionExitBreadthPct`** (default 60%) of names stay red. It turns mixed
+    only when either leg leaves that band. Green is the mirror. Entering still needs the
+    full bar, and the band is never applied stricter than the bar.
+  - **The data-gap hold.** A tick the reading cannot see (no SPY move, or fewer than 100
+    names measured) keeps the last one-sided reading for up to 5 minutes after a
+    readable tick last supported it. After that it reads unknown.
+
+  Without the band, a market sitting near the bar crossed it back and forth about ten
+  times a session, and each dip to mixed let that tick's longs through. A held reading
+  says so on the Last cycle line ("Broad red market, held …"). Its journal row carries
+  `heldBy` (`hysteresis` or `data_gap`) and `rawDirection`, the reading the tick made on
+  its own. A refusal made under a hold carries both fields too. SPY's
   move is fetched on its own after the screen. If that fetch fails, the reading uses the
   quote the screen already read for SPY that tick (since 2026-09-23), so one failed
   quote no longer turns a red day into `unknown`. The journal row says which source was
-  used (`indexSource: quote` or `screen`). The gate covers new entries only: a scale-in or
-  a per-lot second lot adds shares without it, though both are off by default. Paper
+  used (`indexSource: quote` or `screen`). Since 2026-09-24 the gate also covers adds. A
+  scale-in or a per-lot second lot that leans against the reading is refused and
+  journaled once per position a day (`live_scale_in_direction_skipped`,
+  `per_lot_second_lot_direction_skipped`). Both run before the tick's screen, so they
+  judge the previous tick's reading, and one older than 10 minutes refuses nothing. A
+  second lot held back this way is sent on the first tick the reading allows it. Both
+  are off by default. Paper
   keeps taking every signal as the control. A refusal is journaled as `live_market_direction_skipped` (stock, with the
   entry, stop and score a replay needs) or `live_options_market_direction_skipped`
-  (options). The reading itself is journaled as `market_direction_read` each time it
-  changes, whether the gate is on or off, and it shows on the Monitoring card's Last
-  cycle. The edge-leak scan cuts both books by it (**Market direction at entry**: with,
+  (options). The reading itself is journaled as `market_direction_read` each time its
+  direction or its hold changes, whether the gate is on or off, and it shows on the
+  Monitoring card's Last cycle. A row is therefore not a flip: count flips as changes of
+  `direction` between consecutive rows. The edge-leak scan cuts both books by it (**Market direction at entry**: with,
   against or mixed). The paper-vs-live attribution files the paper entries the gate
   refused under their own class, so what the gate costs or saves is measured on paper
   rather than assumed. The thresholds and the record they were chosen from are in the
@@ -2809,7 +2829,8 @@ because the loop is the only caller that is always flat by the bell, so it is
   2026-09-23 it also shows the **market direction** the tick read: red, green, mixed or
   unknown, with SPY's move and the share of names red and green. It adds what the gate
   did with that reading ("live longs and calls refused" on a red day with the gate on), or
-  "gate off (reading only)". The same line now
+  "gate off (reading only)". A reading the gate is holding (since 2026-09-24) reads
+  "Broad red market, held" and says whether the exit band or a data gap is holding it. The same line now
   reports **how many of the premarket movers fetched actually became candidates**
   ("Movers discovery contributed 1 of 35 fetched"), or, if the fetch itself failed, says
   so in amber with the reason. Read the pair together: a high fetched count with zero

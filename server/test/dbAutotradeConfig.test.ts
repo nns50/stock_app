@@ -659,6 +659,24 @@ describe('autotrade config persistence', () => {
       expect(setAutotradeConfig({ marketDirectionBreadthPct: 'x' as never }).marketDirectionBreadthPct).toBe(65);
       expect(setAutotradeConfig({ marketDirectionGateEnabled: 'yes' as never }).marketDirectionGateEnabled).toBe(false);
     });
+
+    // The exit band (2026-09-24): a one-sided reading holds while the tape
+    // stays at least this one-sided.
+    it('ships the exit band at SPY 0.1% and 60%, round-trips it, and clamps it like the bar', () => {
+      const d = defaultAutotradeConfig();
+      expect(d.marketDirectionExitIndexPct).toBe(0.1);
+      expect(d.marketDirectionExitBreadthPct).toBe(60);
+      const patch = { marketDirectionExitIndexPct: 0.05, marketDirectionExitBreadthPct: 58 };
+      expect(setAutotradeConfig(patch)).toMatchObject(patch);
+      expect(getAutotradeConfig()).toMatchObject(patch);
+      expect(setAutotradeConfig({ marketDirectionExitIndexPct: 9 }).marketDirectionExitIndexPct).toBe(5);
+      expect(setAutotradeConfig({ marketDirectionExitIndexPct: -1 }).marketDirectionExitIndexPct).toBe(0);
+      expect(setAutotradeConfig({ marketDirectionExitBreadthPct: 40 }).marketDirectionExitBreadthPct).toBe(50);
+      expect(setAutotradeConfig({ marketDirectionExitBreadthPct: 120 }).marketDirectionExitBreadthPct).toBe(100);
+      expect(setAutotradeConfig({ marketDirectionExitBreadthPct: 'x' as never }).marketDirectionExitBreadthPct).toBe(
+        60,
+      );
+    });
   });
 
   describe('the ML regime overlay (2026-09-08)', () => {

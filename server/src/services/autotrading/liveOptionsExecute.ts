@@ -1236,6 +1236,8 @@ export async function runLiveOptionsExecution(
         side: signal.side,
         score: signal.score,
         direction: marketDirection.direction,
+        rawDirection: marketDirection.rawDirection ?? marketDirection.direction,
+        heldBy: marketDirection.heldBy ?? null,
         indexSymbol: marketDirection.indexSymbol,
         indexChangePct: marketDirection.indexChangePct,
         redPct: marketDirection.redPct,

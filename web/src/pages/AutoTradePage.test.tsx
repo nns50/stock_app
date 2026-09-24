@@ -139,6 +139,8 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     marketDirectionGateEnabled: false,
     marketDirectionIndexPct: 0.2,
     marketDirectionBreadthPct: 65,
+    marketDirectionExitIndexPct: 0.1,
+    marketDirectionExitBreadthPct: 60,
     equityCurveDeriskEnabled: false,
     equityCurveLookbackDays: 10,
     equityCurveDeriskCutPct: 50,

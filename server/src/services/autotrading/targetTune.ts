@@ -935,10 +935,12 @@ export const NEVER_TUNED_KEYS = [
   'mlRegimeTargetTightenPct',
   'mlRegimeHighVolMinSignalScore',
   // An entry gate on the market's direction, not a sizing dial: the target
-  // tuner derives size from the goal, and none of these three moves a size.
+  // tuner derives size from the goal, and none of these five moves a size.
   'marketDirectionGateEnabled',
   'marketDirectionIndexPct',
   'marketDirectionBreadthPct',
+  'marketDirectionExitIndexPct',
+  'marketDirectionExitBreadthPct',
   'equityCurveDeriskEnabled',
   'equityCurveLookbackDays',
   'equityCurveDeriskCutPct',

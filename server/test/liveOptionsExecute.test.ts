@@ -1366,6 +1366,9 @@ describe('runLiveOptionsExecution', () => {
         side: 'call',
         score: 70,
         direction: 'red',
+        // Not held (2026-09-24): the bar itself read red.
+        rawDirection: 'red',
+        heldBy: null,
         indexChangePct: -0.35,
         redPct: 73,
         breadthSample: 500,
