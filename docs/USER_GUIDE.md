@@ -2499,12 +2499,15 @@ because the loop is the only caller that is always flat by the bell, so it is
   **The whole order history is read** (since 2026-09-24). Webull lists the last seven days
   of orders in pages. Until 2026-09-24 the app worked out where each page starts wrongly,
   so part of the history was never read at all: 42 of 176 orders on 2026-09-23. Among them
-  were DELL's whole bracket that morning (its stop filled at $552.04 while the ledger kept a
-  $551.88 quote), SHOP's stagnation close on 2026-09-22 (the position that stayed open in
-  the ledger that evening), LITE's stop on 2026-09-21 and about 30 option fills. Which orders
-  were missed changed with every new order, which is why a fill could look "late". Every
-  check that reads Webull's orders now sees all of them: the order checks for stocks and
-  options, the exit corrections, the hand-close matching and the check after a cancel.
+  were DELL's whole bracket that morning (its stop, which you had raised by hand to
+  $552.00, filled at $552.04 while the ledger kept a $551.88 quote), SHOP's stagnation close
+  on 2026-09-22 (the position that stayed open in the ledger that evening), LITE's stop on
+  2026-09-21 and about 30 option fills. Which orders were missed changed with every new
+  order, which is why a fill could look "late". Every check that reads Webull's orders now
+  sees all of them: the order checks for stocks and options, the exit corrections, the
+  hand-close matching and the check after a cancel. Raising a bracket's stop by hand in
+  Webull, as on DELL, keeps the order's own id, so the app still recognizes the bracket
+  and books the stop at its real fill.
   A timed stock close or an options close first seen on a later day than it was placed
   (after an outage, say) is booked on the day its order was placed. Both are day orders, which
   can only fill on the day they were placed.
