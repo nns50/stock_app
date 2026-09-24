@@ -606,4 +606,26 @@ describe('matchHandOptionClose', () => {
   it('cannot match a row missing its contract', () => {
     expect(matchHandOptionClose({ ...row, strike: null }, [fill()])).toBeNull();
   });
+
+  // 2026-09-24, on review. The options sleeve trades the same contracts: the
+  // operator sells a hand DELL call, and the sleeve buys and sells the same
+  // one before the sync books the hand row's exit. Oldest first booked the
+  // first close whichever it was.
+  it('refuses a window holding more than one round trip: a later close, or the contract opened again', () => {
+    const t = (min: number) => entered + min * 60_000;
+    const hand = fill({ clientOrderId: 'hand', filledAt: t(10) });
+    const sleeveIn = fill({ clientOrderId: 'sleeve-in', side: 'BUY', positionIntent: 'BUY_TO_OPEN', filledAt: t(12) });
+    const sleeveOut = fill({ clientOrderId: 'sleeve-out', filledAt: t(22) });
+    expect(matchHandOptionClose(row, [hand, sleeveIn, sleeveOut])).toBeNull();
+    // Either sign alone is enough.
+    expect(matchHandOptionClose(row, [hand, sleeveOut])).toBeNull();
+    expect(matchHandOptionClose(row, [hand, sleeveIn])).toBeNull();
+    // An open with no intent reads by its side: a BUY opens a long again.
+    expect(matchHandOptionClose(row, [hand, fill({ ...sleeveIn, positionIntent: null })])).toBeNull();
+    // An open before the matched close, or after the sync booked it, is no second trip here.
+    expect(matchHandOptionClose(row, [fill({ ...sleeveIn, filledAt: t(5) }), hand])).not.toBeNull();
+    expect(
+      matchHandOptionClose(row, [hand, fill({ ...sleeveIn, filledAt: row.createdAt + 5 * 60_000 })]),
+    ).not.toBeNull();
+  });
 });
