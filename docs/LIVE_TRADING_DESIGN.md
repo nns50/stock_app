@@ -420,7 +420,14 @@ key becomes `client_order_id`.
 
 - **Phase 1 (read-only):** `Account List` (cash account_id `…INDIVIDUAL_CASH`), `Balance`
   (→ `AccountState` mapper / "Pull from Webull"), `Positions`, and the
-  `/openapi/trade/order/{open,history}` probes.
+  `/openapi/trade/order/{open,history}` probes. Since 2026-09-24 the two order-list probes
+  take optional `pageSize` (1–100), `lastClientOrderId` and, on the history, `startDate` /
+  `endDate` (yyyy-mm-dd), passed through as `page_size`, `last_client_order_id`,
+  `start_date`, `end_date`. Without them a probe reads only the broker's default first page
+  (10 orders), so it could not show what the app's own paged read sees one page further on.
+  An `order-detail` probe (`accountId` + `clientOrderId`) reads one order from
+  `/openapi/trade/order/detail`, the only read that tells an order the lists skipped from
+  one that does not exist. All are GETs; `POST /api/webull/probe` is session-gated.
 - **Phase 2 (no broker):** guardrails engine, config + kill-switch persistence, order-intent
   model + lifecycle, dry-run pipeline, the Trade UI.
 - **Phase 3 (LIVE — shipped):** `livePreview` (real account-state → guardrails →

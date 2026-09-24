@@ -1505,6 +1505,29 @@ describe('webull connectivity (integration)', () => {
     expect((await post('/api/webull/probe', { kind: 'place-order' })).status).toBe(400);
   });
 
+  it('validates the order-list paging and the order-detail id', async () => {
+    const bad = [
+      { kind: 'order-history', accountId: 'A', pageSize: 0 },
+      { kind: 'order-history', accountId: 'A', pageSize: 101 },
+      { kind: 'order-history', accountId: 'A', pageSize: 2.5 },
+      { kind: 'order-history', accountId: 'A', startDate: '09/17/2026' },
+      { kind: 'order-history', accountId: 'A', lastClientOrderId: '' },
+      { kind: 'order-detail', accountId: 'A', clientOrderId: 'x'.repeat(65) },
+    ];
+    for (const body of bad) expect((await post('/api/webull/probe', body)).status, JSON.stringify(body)).toBe(400);
+    // A valid body reaches the (unconfigured, so guarded) probe.
+    const ok = await post('/api/webull/probe', {
+      kind: 'order-history',
+      accountId: 'A',
+      pageSize: 100,
+      lastClientOrderId: 'abc',
+      startDate: '2026-09-17',
+      endDate: '2026-09-23',
+    });
+    expect(ok.status).toBe(200);
+    expect(((await ok.json()) as { error?: string }).error).toMatch(/not configured/i);
+  });
+
   it('returns a guarded option-quotes result without credentials', async () => {
     const out = (await getJson('/api/webull/option-quotes?symbols=AAPL260622C00300000')) as {
       ok: boolean;

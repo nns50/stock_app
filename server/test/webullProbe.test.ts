@@ -120,6 +120,65 @@ describe('webull account probe', () => {
     expect(fetchSpy.mock.calls.every((c) => (c[1] as RequestInit | undefined)?.method === 'GET')).toBe(true);
   });
 
+  it('passes the order-list paging through as named, dates on the history only', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue({ ok: true, status: 200, text: async () => '[]' } as Response);
+
+    await webullProbe('order-history', {
+      accountId: 'ACC1',
+      pageSize: 100,
+      lastClientOrderId: 'abc123',
+      startDate: '2026-09-17',
+      endDate: '2026-09-23',
+    });
+    const history = new URL(String(fetchSpy.mock.calls[0][0]));
+    expect(history.pathname).toBe('/openapi/trade/order/history');
+    expect(history.searchParams.get('account_id')).toBe('ACC1');
+    expect(history.searchParams.get('page_size')).toBe('100');
+    expect(history.searchParams.get('last_client_order_id')).toBe('abc123');
+    expect(history.searchParams.get('start_date')).toBe('2026-09-17');
+    expect(history.searchParams.get('end_date')).toBe('2026-09-23');
+
+    // The open list takes the page and the cursor, never a date window.
+    await webullProbe('open-orders', {
+      accountId: 'ACC1',
+      pageSize: 5,
+      lastClientOrderId: 'def456',
+      startDate: '2026-09-17',
+    });
+    const open = new URL(String(fetchSpy.mock.calls[1][0]));
+    expect(open.pathname).toBe('/openapi/trade/order/open');
+    expect(open.searchParams.get('page_size')).toBe('5');
+    expect(open.searchParams.get('last_client_order_id')).toBe('def456');
+    expect(open.searchParams.has('start_date')).toBe(false);
+
+    // Without paging the probe still reads the broker's default first page.
+    await webullProbe('order-history', { accountId: 'ACC1' });
+    const bare = new URL(String(fetchSpy.mock.calls[2][0]));
+    expect([...bare.searchParams.keys()]).toEqual(['account_id']);
+  });
+
+  it('reads one order by its client_order_id, and needs both ids first', async () => {
+    Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue({ ok: true, status: 200, text: async () => '{}' } as Response);
+    // Guarded — no network without either id.
+    expect((await webullProbe('order-detail', { clientOrderId: 'abc' })).error).toMatch(/account/i);
+    expect((await webullProbe('order-detail', { accountId: 'ACC1' })).error).toMatch(/client_order_id/i);
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    const r = await webullProbe('order-detail', { accountId: 'ACC1', clientOrderId: 'abc123' });
+    expect(r.ok).toBe(true);
+    const url = new URL(String(fetchSpy.mock.calls[0][0]));
+    expect(url.pathname).toBe('/openapi/trade/order/detail');
+    expect(url.searchParams.get('account_id')).toBe('ACC1');
+    expect(url.searchParams.get('client_order_id')).toBe('abc123');
+    expect((fetchSpy.mock.calls[0][1] as RequestInit | undefined)?.method).toBe('GET');
+  });
+
   it('lists app quote subscriptions (no account id needed)', async () => {
     Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
     const fetchSpy = vi

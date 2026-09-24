@@ -41,8 +41,41 @@ export type ProbeKind =
   | 'balance'
   | 'open-orders'
   | 'order-history'
+  | 'order-detail'
   | 'subscriptions'
   | 'instrument';
+
+/**
+ * Optional query for the order-list probes (2026-09-24). Without it a probe
+ * reads only the broker's default first page (10 orders), so it could never
+ * show what the app's own paged read (orders.ts, fetchFullOrderList) sees one
+ * page further on. These are passed through exactly as named, so a page can be
+ * walked by hand with whichever cursor is under test.
+ */
+export interface ProbeOrderListQuery {
+  pageSize?: number;
+  lastClientOrderId?: string;
+  /** yyyy-mm-dd; order history only. */
+  startDate?: string;
+  /** yyyy-mm-dd; order history only. */
+  endDate?: string;
+}
+
+export interface ProbeOptions extends ProbeOrderListQuery {
+  symbol?: string;
+  accountId?: string;
+  /** order-detail: the order's own client_order_id. */
+  clientOrderId?: string;
+}
+
+function orderListQuery(accountId: string, q: ProbeOrderListQuery, history: boolean): Record<string, string> {
+  const query: Record<string, string> = { account_id: accountId };
+  if (q.pageSize !== undefined) query.page_size = String(q.pageSize);
+  if (q.lastClientOrderId) query.last_client_order_id = q.lastClientOrderId;
+  if (history && q.startDate) query.start_date = q.startDate;
+  if (history && q.endDate) query.end_date = q.endDate;
+  return query;
+}
 
 export interface ProbeResult {
   ok: boolean;
@@ -54,7 +87,7 @@ export interface ProbeResult {
   error?: string;
 }
 
-function probeCall(kind: ProbeKind, opts: { symbol?: string; accountId?: string }) {
+function probeCall(kind: ProbeKind, opts: ProbeOptions) {
   const c = webullClient();
   switch (kind) {
     case 'snapshot':
@@ -107,12 +140,23 @@ function probeCall(kind: ProbeKind, opts: { symbol?: string; accountId?: string 
       // READ-ONLY (GET). Confirms the live order-object shape from your real
       // open orders before any place/cancel path is built — places nothing.
       // Path confirmed from the Trading API Reference (/openapi/trade/order/*).
-      return c.call('GET', '/openapi/trade/order/open', { query: { account_id: opts.accountId! }, surface: 'trade' });
+      return c.call('GET', '/openapi/trade/order/open', {
+        query: orderListQuery(opts.accountId!, opts, false),
+        surface: 'trade',
+      });
     case 'order-history':
       // READ-ONLY (GET). Same as open-orders but over historical orders (useful
       // when there are no open orders right now). Places nothing.
       return c.call('GET', '/openapi/trade/order/history', {
-        query: { account_id: opts.accountId! },
+        query: orderListQuery(opts.accountId!, opts, true),
+        surface: 'trade',
+      });
+    case 'order-detail':
+      // READ-ONLY (GET). One order by its own client_order_id — the endpoint
+      // Webull says to use when the lists lag, and the only read that can
+      // tell an order the lists skipped from one that does not exist.
+      return c.call('GET', '/openapi/trade/order/detail', {
+        query: { account_id: opts.accountId!, client_order_id: opts.clientOrderId! },
         surface: 'trade',
       });
     case 'subscriptions':
@@ -141,18 +185,22 @@ function probeCall(kind: ProbeKind, opts: { symbol?: string; accountId?: string 
 }
 
 /** Run one whitelisted read-only call and return the raw payload + URL (or a clean error). */
-export async function webullProbe(
-  kind: ProbeKind,
-  opts: { symbol?: string; accountId?: string } = {},
-): Promise<ProbeResult> {
+export async function webullProbe(kind: ProbeKind, opts: ProbeOptions = {}): Promise<ProbeResult> {
   if (!webullConfigured()) {
     return { ok: false, error: 'Webull is not configured — set WEBULL_APP_KEY and WEBULL_APP_SECRET.' };
   }
   if (
-    (kind === 'positions' || kind === 'balance' || kind === 'open-orders' || kind === 'order-history') &&
+    (kind === 'positions' ||
+      kind === 'balance' ||
+      kind === 'open-orders' ||
+      kind === 'order-history' ||
+      kind === 'order-detail') &&
     !opts.accountId
   ) {
     return { ok: false, error: 'Pick an account — copy an account_id from the Account list result.' };
+  }
+  if (kind === 'order-detail' && !opts.clientOrderId) {
+    return { ok: false, error: "Give the order's client_order_id." };
   }
   try {
     const r = await probeCall(kind, opts);
