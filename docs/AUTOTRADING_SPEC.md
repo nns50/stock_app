@@ -15370,6 +15370,14 @@ switched off starts small again. An explicit stamp in the patch wins, which is h
 reset or a restore puts a known state back. The route does not accept the field, and
 `config_changed` does not list it (it travels with the transition that set it).
 
+**Shorts that are on always carry a stamp** (added before merge, on review). The probation
+and the `shorts_revert` tripwires both read a null stamp as "never switched on", so shorts
+on with no stamp ran with neither. Two ways led there: a patch spreading the defaults
+(`liveShortsEnabledAt: null` is an explicit value, and it used to win), and shorts already
+on before the stamp existed. So an explicit null while shorts are on is stamped now, and
+any write that finds shorts on with no stamp stamps it (the equity sync writes every
+minute). An explicit number still wins.
+
 **The cut.** `entryProbation(cfg, side)` returns one multiplier: the book's window, times
 the short window for a short. `attemptLiveEntry` reads it for both places the cut applies:
 - the quantity;
