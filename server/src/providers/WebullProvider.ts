@@ -1,6 +1,7 @@
 import { MarketDataProvider, ProviderCapabilities, ProviderError } from './MarketDataProvider';
-import { Candle, CandleQuery, Fundamentals, OptionsChain, Quote, Timeframe } from './types';
+import { Candle, CandleQuery, Fundamentals, OptionsChain, Quote, Timeframe, isIntradayTimeframe } from './types';
 import { WebullClient } from './webull/client';
+import { etDayAndMinute, REGULAR_SESSION_OPEN_MINUTE } from '../util/marketDate';
 
 // ---------------------------------------------------------------------------
 // Composite Webull provider.
@@ -256,10 +257,32 @@ export class WebullProvider implements MarketDataProvider {
     // return, so the range genuinely cannot be served from here. Hand it to the
     // aux provider (real range support) instead of returning a truncated window
     // the caller would read as complete.
-    if (query.start != null && candles.length > 0 && etDateOf(candles[0].time) > query.start) {
+    if (
+      query.start != null &&
+      candles.length > 0 &&
+      WebullProvider.startDayShort(candles[0].time, query.start, timeframe)
+    ) {
       return this.aux.getCandles(symbol, timeframe, query);
     }
-    return windowed.slice(-limit);
+    // An explicit window comes back whole unless a limit was asked for too.
+    return query.start != null && query.limit == null ? windowed : windowed.slice(-limit);
+  }
+
+  /**
+   * Whether the oldest bar returned leaves the window's first day short:
+   *
+   * - it falls on a LATER day, so the start day is missing outright; or
+   * - on intraday bars, it falls ON the start day but after the 09:30 open, so
+   *   the bar count ran out partway through that session. The reach is 1,200
+   *   bars (~15 sessions of 5-minute bars), and on 2026-09-24 it ended at 13:30
+   *   on 09-01 — 30 of that day's 78 bars, which a replay of a 09:37 signal read
+   *   as the whole session. A session with no print in its first bar lands here
+   *   too, harmlessly: the aux provider serves the same day.
+   */
+  private static startDayShort(oldest: number, start: string, timeframe: Timeframe): boolean {
+    const { day, minute } = etDayAndMinute(oldest);
+    if (day > start) return true;
+    return day === start && isIntradayTimeframe(timeframe) && minute > REGULAR_SESSION_OPEN_MINUTE;
   }
 
   // --- Delegated to the auxiliary provider (Webull can't enumerate chains) ---

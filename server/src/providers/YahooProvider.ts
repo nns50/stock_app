@@ -9,9 +9,11 @@ import {
   OptionsChain,
   Quote,
   Timeframe,
+  isIntradayTimeframe,
 } from './types';
 import { bsGreeks, yearsToExpiration } from '../options/blackScholes';
 import { sleep } from '../util/http';
+import { etDayAndMinute, REGULAR_SESSION_CLOSE_MINUTE, REGULAR_SESSION_OPEN_MINUTE } from '../util/marketDate';
 
 // ---------------------------------------------------------------------------
 // Yahoo Finance provider via `yahoo-finance2`. Free and key-less, and the only
@@ -243,8 +245,19 @@ export class YahooProvider implements MarketDataProvider {
     const end = query?.end ? new Date(`${query.end}T23:59:59Z`) : new Date();
     const start = query?.start ? new Date(`${query.start}T00:00:00Z`) : this.lookbackStart(timeframe, limit, end);
 
+    // Intraday bars are the REGULAR session (types.ts, CandleQuery). yahoo-finance2's
+    // chart() defaults includePrePost to TRUE, so a 5-minute day came back as
+    // 04:00–19:55 ET — 192 bars — and the default cap below kept the newest 120:
+    // 10:00–19:55. Every replay of a day old enough to be served from here
+    // (past Webull's ~15-session reach) lost the open it was meant to measure
+    // and then walked four hours of after-hours prints (found 2026-09-24).
     const res = await this.call('chart', () =>
-      this.yf.chart(toYahoo(symbol), { period1: start, period2: end, interval: INTERVAL[timeframe] as any }),
+      this.yf.chart(toYahoo(symbol), {
+        period1: start,
+        period2: end,
+        interval: INTERVAL[timeframe] as any,
+        ...(isIntradayTimeframe(timeframe) ? { includePrePost: false } : {}),
+      }),
     );
     const quotes: any[] = (res as any)?.quotes ?? [];
     const candles: Candle[] = quotes
@@ -273,7 +286,22 @@ export class YahooProvider implements MarketDataProvider {
         };
       });
     candles.sort((a, b) => a.time - b.time);
-    return candles.slice(-limit);
+    // Intraday: keep only regular-session bars INSIDE the asked-for days. With
+    // includePrePost off, Yahoo appends a zero-volume marker bar at the latest
+    // close — on 2026-09-24 a request for 09-01 ended in a 09-23 16:00 bar at
+    // that day's price, which a replay walking to "the last bar of the session"
+    // would have booked its time exit at. The session bound drops the marker on
+    // its own day too. Daily and weekly bars carry no marker and are left alone.
+    const kept = isIntradayTimeframe(timeframe)
+      ? candles.filter((c) => {
+          const { day, minute } = etDayAndMinute(c.time);
+          if (query?.start != null && day < query.start) return false;
+          if (query?.end != null && day > query.end) return false;
+          return minute >= REGULAR_SESSION_OPEN_MINUTE && minute < REGULAR_SESSION_CLOSE_MINUTE;
+        })
+      : candles;
+    // An explicit window comes back whole unless a limit was asked for too.
+    return query?.start != null && query.limit == null ? kept : kept.slice(-limit);
   }
 
   async getOptionsExpirations(symbol: string): Promise<string[]> {

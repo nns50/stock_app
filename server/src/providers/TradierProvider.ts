@@ -8,6 +8,7 @@ import {
   OptionsChain,
   Quote,
   Timeframe,
+  isIntradayTimeframe,
 } from './types';
 import { getJson } from '../util/http';
 import { bsGreeks, impliedVol, yearsToExpiration } from '../options/blackScholes';
@@ -105,7 +106,7 @@ export class TradierProvider implements MarketDataProvider {
 
   async getCandles(symbol: string, timeframe: Timeframe, query?: CandleQuery): Promise<Candle[]> {
     const limit = query?.limit ?? 120;
-    const intraday = timeframe === '1min' || timeframe === '5min' || timeframe === '15min';
+    const intraday = isIntradayTimeframe(timeframe);
     let candles: Candle[];
 
     if (intraday) {
@@ -147,7 +148,8 @@ export class TradierProvider implements MarketDataProvider {
     }
 
     candles.sort((a, b) => a.time - b.time);
-    return candles.slice(-limit);
+    // An explicit window comes back whole unless a limit was asked for too.
+    return query?.start != null && query.limit == null ? candles : candles.slice(-limit);
   }
 
   async getOptionsExpirations(symbol: string): Promise<string[]> {
