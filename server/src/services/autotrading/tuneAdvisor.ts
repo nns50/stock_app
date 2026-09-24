@@ -2,7 +2,7 @@ import type { AutotradeConfig } from '../../db/autotradeConfig';
 import type { DailyGoalEvidence } from './targetTune';
 import { findingNeedsAction, WATCH_MIN_TRADES } from './edgeLeakScan';
 import type { AttributionReport, EdgeLeakScanResult, UntakenClass } from './edgeLeakScan';
-import { leverInForce } from './gatedSwitches';
+import { leakLeverRefusal, leverInForce } from './gatedSwitches';
 import type { SizingReview } from './gatedSwitches';
 
 // ---------------------------------------------------------------------------
@@ -481,6 +481,16 @@ function humanReason(reason: string): string {
  *  and so the two the extension quality counts apply to. */
 const EXTENSION_DIMENSIONS = new Set(['pctOfRange', 'vwapExtension']);
 
+/** What an actionable leak's lever asks of whom: the gated-switch engine's to
+ *  apply only when `leak_lever` would propose it (leakLeverRefusal, the rule's
+ *  own test), the operator's otherwise, with the reason. */
+function leverReason(leak: EdgeLeakScanResult['leaks'][number], config: AutotradeConfig): string {
+  const why = leakLeverRefusal(leak, config);
+  return why === null
+    ? 'reduces exposure — the gated-switch engine can apply this once its rule graduates'
+    : `yours to apply, not the gated-switch engine's: ${why}`;
+}
+
 function edgeRecommendations(input: TuneAdvisorInput, gap: GoalGap): TuneRecommendation[] {
   const scan = input.scan;
   if (!scan || gap.activeSessions === 0 || gap.tradesPerSession === null) return [];
@@ -541,7 +551,7 @@ function edgeRecommendations(input: TuneAdvisorInput, gap: GoalGap): TuneRecomme
             'is all post-fix rows'
           : leak.verdict === 'unconfirmed'
             ? 'the paper control has too few trades in this bucket to agree or disagree'
-            : 'reduces exposure — the gated-switch engine can apply this once its rule graduates',
+            : leverReason(leak, input.config),
       // Not an occurrence — a distribution has no "last seen".
       lastSeenEtDate: null,
       sessionsSinceLastSeen: null,

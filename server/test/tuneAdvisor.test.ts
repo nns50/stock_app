@@ -601,6 +601,27 @@ describe('the review rule holds the exposure recommendations', () => {
     expect(a.headline).toMatch(/adds about 0\.8 points/);
   });
 
+  it("says whose change it is: the engine's only when leak_lever would propose it (2026-09-25, on review)", () => {
+    // The advisor used to promise "the gated-switch engine can apply this" of
+    // any actionable lever, including a field the engine may not write.
+    const a = advise({
+      config: { ...CONFIG, symbolReentryCooldownMinutes: 120 },
+      scan: scan({
+        leaks: [
+          leverLeak('marketTape', 'against', 5, { field: 'marketDirectionGateEnabled', value: true }),
+          leverLeak('round', '2', 2, { field: 'symbolReentryCooldownMinutes', value: 390 }),
+        ],
+      }),
+    });
+    const gate = a.recommendations.find((r) => r.id === 'edge:marketTape:against');
+    const cooldown = a.recommendations.find((r) => r.id === 'edge:round:2');
+    expect(gate?.status).toBe('actionable');
+    expect(gate?.statusReason).toMatch(
+      /^yours to apply, not the gated-switch engine's: the engine may not write marketDirectionGateEnabled/,
+    );
+    expect(cooldown?.statusReason).toMatch(/the gated-switch engine can apply this/);
+  });
+
   it('keeps two levers on one field apart when they push opposite ways (2026-09-25)', () => {
     // A cooldown raise and a cooldown cut are different changes: both count.
     const a = advise({
