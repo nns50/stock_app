@@ -927,9 +927,11 @@ describe('GET /journal/declined-entry-shadow (integration)', () => {
     row(61, 118);
     row(121, 119);
     // Bars from the moment of each signal: a winner to its 1R target either way.
+    // The replay enters at a bar's open plus at most the whole 0.5% buffer
+    // (119 → 119.60, a 1R target of 122.19), and 124 trades through it.
     const candles = vi.spyOn(getProvider(), 'getCandles').mockImplementation(async () => [
       { time: t0, open: 117, high: 117.5, low: 116.8, close: 117.2, volume: 1000 },
-      { time: t0 + 125 * 60_000, open: 119, high: 121.5, low: 118.9, close: 121, volume: 1000 },
+      { time: t0 + 125 * 60_000, open: 119, high: 124, low: 118.9, close: 121, volume: 1000 },
     ]);
     const before = getAutotradeConfig();
     setAutotradeConfig({
@@ -946,10 +948,13 @@ describe('GET /journal/declined-entry-shadow (integration)', () => {
       )) as {
         n: number;
         minMinutesSinceExit: number;
+        replayVersion: number;
         trades: { at: number; entry: number; minutesSinceExit: number; exitR: number }[];
         excluded: Record<string, number>;
       };
       expect(out.minMinutesSinceExit).toBe(120);
+      // The route replays with the same fill inputs as the stored records.
+      expect(out).toMatchObject({ replayVersion: 2 });
       expect(out.n).toBe(1);
       expect(out.trades[0]).toMatchObject({ at: t0 + 120 * 60_000, entry: 119, minutesSinceExit: 121 });
       expect(out.trades[0].exitR).toBeCloseTo(1, 5);
@@ -1002,9 +1007,13 @@ describe('GET /journal/reentry-shadow-record (integration)', () => {
             unusable_signal: 0,
             before_min_gap: 0,
             no_exit_gap: 0,
+            refused_by_direction: 0,
           },
           minMinutesSinceExit,
           exitRules: liveExitRules(getAutotradeConfig()),
+          replayVersion: 2,
+          entryConcessionPct: 0.04,
+          directionGateReplayed: true,
         })),
       },
       Date.parse('2026-09-18T20:30:00Z'),

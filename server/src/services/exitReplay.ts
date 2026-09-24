@@ -144,6 +144,30 @@ export function counterfactualPathEnd(lastExit: { at: number; reason: string | n
   return lastExit.reason === 'manual' || lastExit.reason == null ? lastExit.at : null;
 }
 
+/**
+ * How a replay fills (2026-09-26).
+ *
+ *   `touch`   the original model, and every caller's default: a stop fills at
+ *             its price even when a bar opens through it, the breakeven move and
+ *             the trail read each bar's EXTREME, and a target fills the moment a
+ *             bar touches it. Each of those favours the trade.
+ *   `honest`  what a live order gets: a stop fills at the bar's open when the
+ *             bar opens through it (a gap is not a fill at the stop); breakeven,
+ *             the trail and the scale-out arm on bar CLOSES, which is what the
+ *             live stop-adjust sees on its once-a-tick quote, not the high it
+ *             never saw; and a target fills only when a bar trades THROUGH it,
+ *             since a resting limit at the level is not filled by a touch.
+ *
+ * The honest model is the declined-entry shadow's (declinedEntryShadow.ts),
+ * whose records feed rules that ADD exposure. The exit-tuning replays still
+ * default to touch, so their stored readings stay comparable. Do not read that
+ * as the optimism cancelling between two geometries: it does not. A closer
+ * target is touched more often than a farther one, and on the live book a
+ * no-scratch candidate read +0.039R under touch against +0.056R honest
+ * (2026-09-24). Moving those comparisons to honest is a change of its own.
+ */
+export type ReplayFillModel = 'touch' | 'honest';
+
 export interface ReplayResult {
   /** R booked under these rules — the position-weighted blend of the scale-out
    *  (when it fired) and the remainder's exit; the remainder's R alone when
@@ -197,11 +221,17 @@ function rAtPrice(input: ReplayInput, price: number): number {
  * rather than 0: a trade that could not be measured must never average in as
  * one that broke even.
  */
-export function replayExit(input: ReplayInput, bars: Candle[], rules: ExitRules): ReplayResult | null {
+export function replayExit(
+  input: ReplayInput,
+  bars: Candle[],
+  rules: ExitRules,
+  fills: ReplayFillModel = 'touch',
+): ReplayResult | null {
   if (!bars.length) return null;
   const oneR = Math.abs(input.entryPrice - input.initialStopPrice);
   if (!(oneR > 0)) return null;
 
+  const honest = fills === 'honest';
   const long = input.side === 'long';
   // Adverse extreme of a bar for this side, and favourable extreme.
   const adverseOf = (c: Candle) => (long ? c.low : c.high);
@@ -209,9 +239,15 @@ export function replayExit(input: ReplayInput, bars: Candle[], rules: ExitRules)
   // Has `price` reached or passed `stop` in the adverse direction?
   const stopHit = (price: number, stop: number) => (long ? price <= stop : price >= stop);
   const targetHit = (price: number, target: number) => (long ? price >= target : price <= target);
+  // Honest: a resting limit at the level fills only when price trades THROUGH it.
+  const tradedThrough = (price: number, level: number) =>
+    honest ? (long ? price > level : price < level) : targetHit(price, level);
 
   let stopR = -1; // the initial stop is exactly 1R adverse, by construction
   let bestR = 0;
+  // What the stop ratchet reads: the bar extremes under `touch`, the bar
+  // closes under `honest` (see ReplayFillModel).
+  let ratchetR = 0;
   let trailing = false;
   const targetPrice = rules.targetR > 0 ? priceAtR(input, rules.targetR) : null;
   const scaleOutR = rules.scaleOutR ?? 0;
@@ -241,23 +277,31 @@ export function replayExit(input: ReplayInput, bars: Candle[], rules: ExitRules)
     const stopPrice = priceAtR(input, stopR);
     if (stopHit(adverseOf(bar), stopPrice)) {
       const reason: ReplayExitReason = !trailing && stopR <= -1 ? 'stop' : trailing ? 'trail' : 'breakeven';
-      return finish(stopR, reason, i, bestR);
+      // A bar that OPENS through the stop fills at its open, not at the stop:
+      // the order triggers on the first print past the level, and the first
+      // print is the open. Honest only; touch books the stop's own price.
+      const filledR = honest ? round2(stopHit(bar.open, stopPrice) ? rAtPrice(input, bar.open) : stopR) : stopR;
+      return finish(filledR, reason, i, bestR);
     }
 
     // ---- then the favourable side: the scale-out level sits below the
     // target, so when both are inside one bar the scale-out fills first and
     // the target takes only the remainder.
     const favourable = favourableOf(bar);
-    if (scaleOutPrice !== null && !scaledOut && targetHit(favourable, scaleOutPrice)) {
+    // The live scale-out fires on a tick's price reaching the level, so the
+    // honest model arms it on the close; touch arms it on the extreme.
+    if (scaleOutPrice !== null && !scaledOut && targetHit(honest ? bar.close : favourable, scaleOutPrice)) {
       scaledOut = true;
       bankedR = fraction * scaleOutR;
     }
-    if (targetPrice !== null && targetHit(favourable, targetPrice)) {
+    if (targetPrice !== null && tradedThrough(favourable, targetPrice)) {
       return finish(rules.targetR, 'target', i, Math.max(bestR, rules.targetR));
     }
 
     const barBestR = rAtPrice(input, favourable);
     if (barBestR > bestR) bestR = barBestR;
+    const barRatchetR = honest ? rAtPrice(input, bar.close) : barBestR;
+    if (barRatchetR > ratchetR) ratchetR = barRatchetR;
 
     // ---- the stagnation timer, read at the close: the live rule is evaluated
     // at a tick's price, and the close is the bar's tick. Held long enough and
@@ -270,7 +314,7 @@ export function replayExit(input: ReplayInput, bars: Candle[], rules: ExitRules)
     // ---- ratchet the stop for the NEXT bar. Never loosens: a stop that could
     // move back down would give back protection already earned, which no live
     // path does and no replay should model.
-    if (rules.trailStartR > 0 && bestR >= rules.trailStartR) trailing = true;
+    if (rules.trailStartR > 0 && ratchetR >= rules.trailStartR) trailing = true;
     // Both rules apply, and the stop takes the BEST of them — never `else if`.
     // A single 5-minute bar can cross the breakeven trigger and the trail start
     // together, and an else-if lets the arming trail skip breakeven entirely:
@@ -278,8 +322,8 @@ export function replayExit(input: ReplayInput, bars: Candle[], rules: ExitRules)
     // stop computes to -0.9R and the trade gives back protection it had already
     // earned. Found by the ratchet test, not by reading this back.
     let next = stopR;
-    if (rules.breakevenTriggerR > 0 && bestR >= rules.breakevenTriggerR) next = Math.max(next, 0);
-    if (trailing) next = Math.max(next, bestR - rules.trailStopR);
+    if (rules.breakevenTriggerR > 0 && ratchetR >= rules.breakevenTriggerR) next = Math.max(next, 0);
+    if (trailing) next = Math.max(next, ratchetR - rules.trailStopR);
     stopR = next;
   }
 
