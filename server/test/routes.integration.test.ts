@@ -4096,6 +4096,25 @@ describe('autotrade monitoring dashboard + kill switch routes (integration)', ()
   }
 });
 
+describe('the candle route returns the window it was asked for (2026-09-24)', () => {
+  // The providers return a whole window when no limit is passed (CandleQuery).
+  // A default limit of 200 on the route cut the head off one a layer up: a
+  // 1-minute session is 390 bars, and it lost 09:30-12:49.
+  it('passes no limit with an explicit window, and the chart default without one', async () => {
+    const spy = vi.spyOn(getProvider(), 'getCandles').mockResolvedValue([]);
+    try {
+      await getJson('/api/candles/AMAT?timeframe=1min&start=2026-09-18&end=2026-09-18');
+      expect(spy.mock.calls[0][2]).toEqual({ limit: undefined, start: '2026-09-18', end: '2026-09-18' });
+      await getJson('/api/candles/AMAT?timeframe=1min&start=2026-09-18&end=2026-09-18&limit=50');
+      expect(spy.mock.calls[1][2]).toMatchObject({ limit: 50 });
+      await getJson('/api/candles/AMAT?timeframe=daily');
+      expect(spy.mock.calls[2][2]).toMatchObject({ limit: 200 });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
 describe('journal analysis routes tell you what they could not cover (integration)', () => {
   it('excursions accounts for every closed stock trade, including the ones it skipped', async () => {
     // An undated trade cannot be measured — an excursion walks candles from the
