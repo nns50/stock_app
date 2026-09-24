@@ -40,10 +40,10 @@ function bar(offsetMin: number, high: number, low: number): Candle {
   return { time: T0 + offsetMin * MIN, open: (high + low) / 2, high, low, close: (high + low) / 2, volume: 1000 };
 }
 /** Flat around each refusal, then a run to 106 at 125 minutes: a 1R winner
- *  whichever refusal the replay enters at. It enters at the refusal's bar
- *  open (100, 101, 102) plus the whole 0.5% buffer here, since no live entry
- *  has been measured — 102 → 102.51, a 1R target of 105.02 — and 106 trades
- *  through every one of them. */
+ *  whichever refusal the replay enters at. It enters at the refusal's own
+ *  entry price (100, 101, 102) plus the whole 0.5% buffer here, since no live
+ *  entry has been measured — 102 → 102.51, a 1R target of 105.02 — and 106
+ *  trades through every one of them. */
 const day = [bar(0, 100.4, 99.8), bar(60, 101.4, 100.6), bar(120, 102.4, 101.6), bar(125, 106, 102)];
 let getCandles = vi.fn(async () => day);
 const armProvider = () => {

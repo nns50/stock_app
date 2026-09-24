@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { initDb, db } from '../src/db';
-import { recordLiveOrder, setLiveOrderPositionId } from '../src/db/autotradeLiveOrders';
+import { recordLiveAddOnOrder, recordLiveOrder, setLiveOrderPositionId } from '../src/db/autotradeLiveOrders';
+import { logAutotradeEvent } from '../src/db/autotradeEvents';
 import { createIntent } from '../src/db/orders';
 import { createPosition } from '../src/db/positions';
-import { liveEntryConcessionPct } from '../src/services/autotrading/declinedEntryShadowData';
+import { liveEntryConcessionPct, shadowFillInputs } from '../src/services/autotrading/declinedEntryShadowData';
 import { MARKETABLE_LIMIT_BUFFER_PCT } from '../src/services/autotrading/marketableLimit';
 
 // ---------------------------------------------------------------------------
@@ -20,7 +21,7 @@ import { MARKETABLE_LIMIT_BUFFER_PCT } from '../src/services/autotrading/marketa
 beforeAll(() => initDb());
 beforeEach(() => {
   db.exec(
-    'DELETE FROM position_exits; DELETE FROM positions; DELETE FROM autotrade_live_orders; DELETE FROM order_intents;',
+    'DELETE FROM position_exits; DELETE FROM positions; DELETE FROM autotrade_live_orders; DELETE FROM order_intents; DELETE FROM autotrade_events;',
   );
 });
 
@@ -80,5 +81,109 @@ describe('liveEntryConcessionPct', () => {
   it('charges the whole buffer when no stock entry has been measured', () => {
     entry('option', 'AAPL', 1.05, 1.0);
     expect(liveEntryConcessionPct()).toBe(MARKETABLE_LIMIT_BUFFER_PCT);
+  });
+
+  it("reads the loop's own first entries only: not a scaled-in position, not a hand order (2026-09-25, on the second review)", () => {
+    // Nine entries that paid 0.1% of the buffer: limit 100.5, filled 100.1.
+    for (let i = 0; i < 9; i += 1) entry('stock', `S${i}`, 100.5, 100.1);
+    expect(liveEntryConcessionPct()).toBeCloseTo(0.1, 2);
+
+    // A scaled-in position: the loop's entry at 100.5, an add-on limited at
+    // 102.51, and the blended entry price the ledger now holds, 100.67. The
+    // entry-order lookup returns the add-on's row, so the pair read -1.8%.
+    const first = createIntent(
+      {
+        symbol: 'KLAC',
+        assetKind: 'stock',
+        side: 'buy',
+        openClose: 'open',
+        quantity: 1,
+        orderType: 'limit',
+        limitPrice: 100.5,
+      },
+      'KLAC-first',
+    );
+    const p = createPosition({
+      assetType: 'stock',
+      symbol: 'KLAC',
+      side: 'long',
+      quantity: 2,
+      entryPrice: 100.67,
+      entryDate: '2026-09-22',
+      entryTime: '10:00',
+      tags: ['live', 'autotrade'],
+    });
+    recordLiveOrder({
+      intentId: first.id,
+      symbol: 'KLAC',
+      stopPrice: 95,
+      targetPrice: 110,
+      riskAmount: 5,
+      riskProfile: 'MODERATE',
+    });
+    setLiveOrderPositionId(first.id, p.id);
+    const add = createIntent(
+      {
+        symbol: 'KLAC',
+        assetKind: 'stock',
+        side: 'buy',
+        openClose: 'open',
+        quantity: 1,
+        orderType: 'limit',
+        limitPrice: 102.51,
+      },
+      'KLAC-add',
+    );
+    recordLiveAddOnOrder({
+      intentId: add.id,
+      symbol: 'KLAC',
+      stopPrice: 97,
+      targetPrice: 110,
+      riskAmount: 5,
+      riskProfile: 'MODERATE',
+      addonOfPositionId: p.id,
+    });
+    setLiveOrderPositionId(add.id, p.id);
+    db.prepare('UPDATE autotrade_live_orders SET created_at = created_at + 1000 WHERE intent_id = ?').run(add.id);
+
+    // A hand order from the Trade page: a limit the user typed, linked by
+    // source_intent_id, never an autotrade order.
+    const hand = createIntent(
+      {
+        symbol: 'SIRI',
+        assetKind: 'stock',
+        side: 'buy',
+        openClose: 'open',
+        quantity: 1,
+        orderType: 'limit',
+        limitPrice: 30,
+      },
+      'SIRI-hand',
+    );
+    createPosition({
+      assetType: 'stock',
+      symbol: 'SIRI',
+      side: 'long',
+      quantity: 1,
+      entryPrice: 28.5,
+      entryDate: '2026-09-22',
+      entryTime: '10:00',
+      tags: ['live'],
+      sourceIntentId: hand.id,
+    });
+
+    expect(liveEntryConcessionPct()).toBeCloseTo(0.1, 2);
+  });
+});
+
+describe('shadowFillInputs', () => {
+  it("reads the market's direction from the ET midnight of the window's first day (2026-09-25, on the second review)", () => {
+    // The window starts at 12:00 ET; the day's red was journaled at 09:35. A
+    // replay of a refusal at 12:30 must see it.
+    const readAt = Date.parse('2026-09-24T13:35:00Z'); // 09:35 ET
+    const since = Date.parse('2026-09-24T16:00:00Z'); // 12:00 ET
+    logAutotradeEvent({ symbol: null, stage: 'screen', action: 'market_direction_read', detail: { direction: 'red' } });
+    db.prepare("UPDATE autotrade_events SET created_at = ? WHERE action = 'market_direction_read'").run(readAt);
+    expect(shadowFillInputs(since).directionAt?.(since + 30 * 60_000)).toBe('red');
   });
 });

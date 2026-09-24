@@ -105,6 +105,21 @@ export function journalDeclinedEntry(
   });
 }
 
+/** Refusal actions whose rows are shorts whatever they carry (2026-09-25, on
+ *  the second review): `live_short_skipped` rows were written with no `side`
+ *  (the action IS the side), so parseDeclinedEntry reads them as longs. The
+ *  short record maps its rows the same way (shortShadowRecord.ts). */
+export const SHORT_SIDE_ACTIONS: ReadonlySet<string> = new Set(['live_short_skipped']);
+
+/** parseDeclinedEntry for a row read under `action`. */
+export function parseDeclinedEntryFor(
+  action: string,
+  row: Parameters<typeof parseDeclinedEntry>[0],
+): DeclinedEntry | null {
+  const parsed = parseDeclinedEntry(row);
+  return parsed !== null && SHORT_SIDE_ACTIONS.has(action) ? { ...parsed, side: 'short' } : parsed;
+}
+
 /**
  * Parse a journaled skip row back into a replayable declined entry, or null.
  *

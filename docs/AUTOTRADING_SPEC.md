@@ -15438,7 +15438,13 @@ stop-adjust never saw. A target filled on a touch. Replay version 2
   1R. Stock only (`isStockEntrySlippage`), because an option's entry limit is a
   different buffer, the ask × 1.05. No option reached these rows on 2026-09-24 (0 of 142
   entry rows), but a hand-placed option from the Trade page would. The leak scan's
-  entry-slippage reading uses the same predicate.
+  entry-slippage reading uses the same predicate. Only the loop's own FIRST entries
+  count (`isLoopFirstEntry`, second review): not a hand order from the Trade page, whose
+  limit the user typed, and not a position with an add-on. Once a scale-in fills, the
+  position's entry price is a blend while the entry-order lookup returns the add-on's
+  row, so the pair read about −1.8%, and one such position among nine that paid 0.1%
+  took the concession to 0. The leak scan's figure reads its session window unclamped
+  and still pools those rows; the two are the same measure, not the same number.
 - **A stop the bar opens through fills at that bar's open**, past 1R, as a live stop
   order fills through a gap. A first bar that opens through the stop is therefore a
   stop-out, not a refusal.
@@ -15456,6 +15462,14 @@ stop-adjust never saw. A target filled on a touch. Replay version 2
   `SCORE_FLOOR_ACTIONS` skips the floor for the floor's own refusals.
 - **A stop on the wrong side of its signal is `unusable_signal`** for either side. It
   used to count only a stop equal to the entry.
+- **A short skip replays as a short** (second review). `live_short_skipped` rows carry no
+  `side` (the action is the side), so the route read them as longs, and the side check
+  made every one unusable: `?action=live_short_skipped` read n 0. The route reads them
+  under their action (`parseDeclinedEntryFor`, `SHORT_SIDE_ACTIONS`), as the short
+  record always has.
+- **The readings start at the ET midnight of the window's first day** (second review).
+  A window is "now minus N days" at the time of day, so a reading journaled earlier on
+  that first day was missing and its rows replayed with no gate.
 
 The exit-tuning replays still default to `touch`, so their stored readings stay
 comparable. Its optimism does not cancel between two geometries. A closer target is
@@ -15543,3 +15557,11 @@ Sixteen mutations were run, and each fails at least one test:
 - **Review fixes:** the gate replayed over its own refusals, the gate dropped for every
   action, the predicate's asset check removed, and each of its two readers filtering on
   the entry kind alone.
+- **Second review (five more, each caught):** the first-entry filter dropped, a hand
+  order counted, the add-on checks dropped, a short skip read as a long, and the
+  readings starting at the window's time of day.
+
+**Not changed here (second review).** `live_short_skipped` is written once per symbol a
+day, so a symbol-day first refused on a green or mixed tape drops out of the direction
+replay even when the tape later turns red. The tape plan's PR 4 keys that row on the
+symbol and the reading, which fixes it for rows written after it ships.

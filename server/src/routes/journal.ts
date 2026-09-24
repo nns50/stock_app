@@ -32,7 +32,7 @@ import {
 } from '../services/autotrading/exitTuneValidation';
 import { computeShortShadowReport, SHORT_SHADOW_SINCE_MS } from '../services/autotrading/shortShadowRecordData';
 import { getLastReentryShadowRecord } from '../db/reentryShadowRecords';
-import { parseDeclinedEntry, type DeclinedEntry } from '../services/autotrading/declinedEntry';
+import { parseDeclinedEntryFor, type DeclinedEntry } from '../services/autotrading/declinedEntry';
 import { readDay } from '../services/autotrading/dayMarks';
 import { listDayMarkDates } from '../db/dayMarks';
 import {
@@ -1070,7 +1070,8 @@ journalRouter.get(
     const rows: DeclinedEntry[] = [];
     let unscorableRows = 0;
     for (const e of journaled) {
-      const parsed = parseDeclinedEntry(e);
+      // A short skip's row carries no side: read under its action, it is a short.
+      const parsed = parseDeclinedEntryFor(action, e);
       if (parsed) rows.push(parsed);
       else unscorableRows += 1;
     }

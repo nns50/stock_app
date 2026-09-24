@@ -862,7 +862,8 @@ trades.
   **Since 2026-09-26 every one of these replays fills the way a live order fills**
   (replay version 2):
   - the entry is the signal's price plus the small share of the buffer live stock
-    entries pay;
+    entries pay (the loop's own first entries only: not your Trade-page orders, and not
+    a position that was added to);
   - a stop the bar opens through fills at that open;
   - breakeven and the trail arm on bar closes;
   - a target fills only when a bar trades through it;
