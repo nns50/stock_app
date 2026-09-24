@@ -121,9 +121,12 @@ marketRouter.get(
   }),
 );
 
+/** Bars returned when the request names no window and no limit: the chart's
+ *  default. A request with a `start` names its own window, and gets all of it. */
+export const DEFAULT_CANDLE_LIMIT = 200;
 const candlesQuery = z.object({
   timeframe: z.enum(TIMEFRAMES).default('daily'),
-  limit: z.coerce.number().int().min(2).max(2000).default(200),
+  limit: z.coerce.number().int().min(2).max(2000).optional(),
   start: z.string().optional(),
   end: z.string().optional(),
 });
@@ -132,7 +135,11 @@ marketRouter.get(
   asyncHandler(async (req, res) => {
     const q = parseQuery(candlesQuery, req);
     const candles = await getProvider().getCandles(param(req, 'symbol'), q.timeframe as Timeframe, {
-      limit: q.limit,
+      // No default cap on an explicit window (2026-09-24, on review). The
+      // providers return a whole window when no limit is passed (CandleQuery),
+      // and a default of 200 here cut the head off one a layer up: a 1-minute
+      // session lost 09:30-12:49.
+      limit: q.limit ?? (q.start ? undefined : DEFAULT_CANDLE_LIMIT),
       start: q.start,
       end: q.end,
     });
