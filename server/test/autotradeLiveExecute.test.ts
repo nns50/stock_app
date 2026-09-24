@@ -90,6 +90,7 @@ import {
   attemptLiveEntry,
   buildLiveTradingConfig,
   getProbationStatus,
+  getShortProbationStatus,
   getLivePortfolioSnapshot,
   listAutotradeLivePositions,
   reconcileLiveOrders,
@@ -420,6 +421,160 @@ describe('getProbationStatus', () => {
     expect(status.tradesPlaced).toBe(0);
     expect(status.active).toBe(true);
     expect(status.tradesRemaining).toBe(5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// THE FIRST LIVE SHORTS ARE SMALL (2026-09-24, the tape plan's PR 9). A window
+// anchored to the moment live shorts were switched on (liveShortsEnabledAt)
+// cuts each short ENTRY on top of the book's own probation. It counts short
+// entries only, so a long neither spends it nor takes it.
+// ---------------------------------------------------------------------------
+describe('short probation', () => {
+  const SHORT = { side: 'sell', stop: 105, target: 90 } as const;
+  const shortResult = () => evaluateRiskCheck(signal(SHORT), baseRiskCtx());
+  const longResult = () => evaluateRiskCheck(signal(), baseRiskCtx());
+  const ENABLED_AT = () => Date.now() - 60_000;
+  /** Shorts on, and the book's own probation off (liveEnabledAt null), so a
+   *  cut below is the short window's alone unless a test turns the book's on. */
+  const cfg = (o: Partial<AutotradeConfig> = {}) =>
+    liveConfig({ liveAllowNakedShort: true, liveEnabledAt: null, liveShortsEnabledAt: ENABLED_AT(), ...o });
+  const armBroker = () => {
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-SP' });
+  };
+  const placedQty = () => mockPlaceOrder.mock.calls.at(-1)![1].quantity as number;
+  /** Each measurement on the same symbol from a clean book, so the in-flight
+   *  guard does not refuse the second and the window counts only seeded rows. */
+  const clearOrders = () => {
+    db.exec(
+      'DELETE FROM autotrade_live_orders; DELETE FROM order_events; DELETE FROM order_intents; DELETE FROM autotrade_events;',
+    );
+    mockPlaceOrder.mockClear();
+  };
+  let seq = 0;
+  /** An entry the window may count: an order intent and its live-order row. */
+  function seedEntry(side: 'buy' | 'sell', createdAt: number, o: { state?: string; addonOf?: number } = {}) {
+    const intent = db
+      .prepare(
+        `INSERT INTO order_intents (idempotency_key, symbol, asset_kind, side, open_close, quantity, order_type,
+           limit_price, is_bracket, state, created_at, updated_at)
+         VALUES (?, ?, 'stock', ?, 'open', 10, 'limit', 100, 1, ?, ?, ?)`,
+      )
+      .run(`seed-${++seq}`, `S${seq}`, side, o.state ?? 'filled', createdAt, createdAt);
+    db.prepare(
+      `INSERT INTO autotrade_live_orders (intent_id, symbol, role, stop_price, target_price, risk_amount, risk_profile,
+         addon_of_position_id, created_at)
+       VALUES (?, ?, 'entry', 105, 90, 50, 'MODERATE', ?, ?)`,
+    ).run(intent.lastInsertRowid, `S${seq}`, o.addonOf ?? null, createdAt);
+  }
+
+  it('is inactive until live shorts have been switched on', () => {
+    expect(getShortProbationStatus(cfg({ liveShortsEnabledAt: null }))).toEqual({
+      active: false,
+      multiplier: 1,
+      tradesPlaced: 0,
+      tradesRemaining: 10,
+    });
+  });
+
+  it('counts short entries since the switch-on, and nothing else', () => {
+    clearOrders();
+    const at = ENABLED_AT();
+    seedEntry('sell', at + 1_000);
+    seedEntry('sell', at + 2_000);
+    seedEntry('sell', at + 3_000);
+    seedEntry('sell', at - 1_000); // before the switch-on
+    seedEntry('buy', at + 1_000); // longs
+    seedEntry('buy', at + 2_000);
+    seedEntry('sell', at + 4_000, { state: 'rejected' }); // never a trade
+    seedEntry('sell', at + 5_000, { addonOf: 7 }); // an add, not a new short
+    expect(getShortProbationStatus(cfg({ liveShortsEnabledAt: at }))).toEqual({
+      active: true,
+      multiplier: 0.5,
+      tradesPlaced: 3,
+      tradesRemaining: 7,
+    });
+    // The longs are the book's: its own window counts all five entries.
+    expect(getProbationStatus(cfg({ liveEnabledAt: at })).tradesPlaced).toBe(5);
+  });
+
+  it('sizes the first short at half, and leaves a long at full size', async () => {
+    armBroker();
+    clearOrders();
+    await attemptLiveEntry(signal(SHORT), shortResult(), 'MODERATE', cfg({ liveShortsEnabledAt: null }));
+    const fullShort = placedQty();
+    clearOrders();
+    await attemptLiveEntry(signal(SHORT), shortResult(), 'MODERATE', cfg());
+    expect(placedQty()).toBe(Math.floor(fullShort * 0.5));
+    expect(fullShort).toBeGreaterThan(1); // a cut that could not show would prove nothing
+    // The placement row says what the order took.
+    const placed = listAutotradeEvents({ actions: ['live_order_placed'] });
+    expect(JSON.parse(placed[0].detail!)).toMatchObject({ side: 'sell', probationMultiplier: 0.5 });
+
+    clearOrders();
+    await attemptLiveEntry(signal(), longResult(), 'MODERATE', cfg({ liveShortsEnabledAt: null }));
+    const fullLong = placedQty();
+    clearOrders();
+    await attemptLiveEntry(signal(), longResult(), 'MODERATE', cfg());
+    expect(placedQty()).toBe(fullLong);
+  });
+
+  it('sizes a short at full size once ten have been placed', async () => {
+    armBroker();
+    clearOrders();
+    await attemptLiveEntry(signal(SHORT), shortResult(), 'MODERATE', cfg({ liveShortsEnabledAt: null }));
+    const fullShort = placedQty();
+    clearOrders();
+    const at = ENABLED_AT();
+    for (let i = 1; i <= 10; i++) seedEntry('sell', at + i * 1_000);
+    expect(getShortProbationStatus(cfg({ liveShortsEnabledAt: at }))).toMatchObject({ active: false, multiplier: 1 });
+    await attemptLiveEntry(signal(SHORT), shortResult(), 'MODERATE', cfg({ liveShortsEnabledAt: at }));
+    expect(placedQty()).toBe(fullShort);
+  });
+
+  it('takes both cuts on a short while the book is in its own probation too', async () => {
+    armBroker();
+    clearOrders();
+    await attemptLiveEntry(signal(SHORT), shortResult(), 'MODERATE', cfg({ liveShortsEnabledAt: null }));
+    const fullShort = placedQty();
+    clearOrders();
+    const both = cfg({ liveEnabledAt: ENABLED_AT(), liveProbationSizeMultiplier: 0.5 });
+    await attemptLiveEntry(signal(SHORT), shortResult(), 'MODERATE', both);
+    expect(placedQty()).toBe(Math.floor(fullShort * 0.25));
+    expect(JSON.parse(listAutotradeEvents({ actions: ['live_order_placed'] })[0].detail!).probationMultiplier).toBe(
+      0.25,
+    );
+  });
+
+  // The quantity tests above cannot see the risk budget: it binds only when
+  // the quote has moved against the entry. So here it has — a short decided at
+  // 100 with its stop at 105, quoted at 96 by placement (9.00/share of risk
+  // instead of 5.00) — and the budget it is resized against must be halved too.
+  it('halves the risk budget as well, so a drifted short is resized against the cut budget', async () => {
+    armBroker();
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 96 }) as ReturnType<typeof getProvider>);
+    clearOrders();
+    const result = shortResult();
+    const outcome = await attemptLiveEntry(signal(SHORT), result, 'MODERATE', cfg());
+    expect(outcome.ok, `expected an entry, got: ${outcome.reason}`).toBe(true);
+    const resized = JSON.parse(listAutotradeEvents({ actions: ['live_entry_risk_resized'] })[0].detail!) as Record<
+      string,
+      number
+    >;
+    expect(resized.approvedRiskUsd).toBeCloseTo(result.approvedRiskAmount * 0.5, 2);
+    // At the consumer: what the order risks against the stop it sends, at the
+    // quote risk is realized at.
+    expect((105 - 96) * placedQty()).toBeLessThanOrEqual(result.approvedRiskAmount * 0.5);
+    expect(placedQty()).toBeLessThan(resized.fromQuantity);
+  });
+
+  it('is off at 0 trades', () => {
+    expect(getShortProbationStatus(cfg({ liveShortProbationTrades: 0 }))).toMatchObject({
+      active: false,
+      multiplier: 1,
+    });
   });
 });
 

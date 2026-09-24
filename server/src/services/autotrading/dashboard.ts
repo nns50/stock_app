@@ -14,7 +14,7 @@ import { OptionsPaperPosition } from '../../db/autotradeOptionsPaperPositions';
 import { Position } from '../../db/positions';
 import { getPaperPortfolioSnapshot } from './execute';
 import { getOptionsPaperPortfolioSnapshot } from './optionsExecute';
-import { getLivePortfolioSnapshot, getProbationStatus, ProbationStatus } from './liveExecute';
+import { getLivePortfolioSnapshot, getProbationStatus, getShortProbationStatus, ProbationStatus } from './liveExecute';
 import { dayLossBudgetUsd, dayStartEquityUsd } from './dayLossBudget';
 import { listLiveOptionsPositions, LiveOptionsPosition } from '../../db/autotradeLiveOptionsPositions';
 import { getLiveOptionsPortfolioSnapshot, getOptionsProbationStatus } from './liveOptionsExecute';
@@ -258,6 +258,9 @@ export interface AutotradeDashboard {
   liveMaxDailyLossUsd: number;
   liveMaxOrdersPerDay: number;
   probation: ProbationStatus;
+  /** The first live stock shorts' own size cut (2026-09-24), on top of
+   *  `probation`: counted from when live shorts were switched on. */
+  shortProbation: ProbationStatus;
 
   // --- Task #70: live options — own pool, nested under the live gate above,
   // shared caps for the CONCURRENT-POSITIONS/aggregate-risk/etc. numbers
@@ -552,6 +555,7 @@ export function getAutotradeDashboard(): AutotradeDashboard {
     liveMaxDailyLossUsd: config.liveMaxDailyLossUsd,
     liveMaxOrdersPerDay: config.liveMaxOrdersPerDay,
     probation: getProbationStatus(config),
+    shortProbation: getShortProbationStatus(config),
 
     liveOptionsEnabled: config.liveOptionsEnabled,
     liveOptionsOpenPositions: liveOptionsSnapshot.openPositions,

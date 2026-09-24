@@ -881,6 +881,9 @@ export const NEVER_TUNED_KEYS = [
   'liveAllowNakedShort',
   // Which tape a live short may go out on: an entry rule, not a size.
   'liveShortsRedTapeOnly',
+  'liveShortsEnabledAt',
+  'liveShortProbationTrades',
+  'liveShortProbationSizeMultiplier',
   'liveFatFingerPct',
   'liveOptionsFatFingerPct',
   'liveProbationTrades',

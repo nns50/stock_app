@@ -894,3 +894,57 @@ describe('exit-geometry clock (autoTuneExitTunedAt)', () => {
     expect(setAutotradeConfig(defaultAutotradeConfig()).autoTuneExitTunedAt).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// The short probation's clock (2026-09-24, the tape plan's PR 9). Stamped
+// where every writer passes, like the exit geometry's above, so the window
+// starts however live shorts were switched on.
+// ---------------------------------------------------------------------------
+describe('short probation clock (liveShortsEnabledAt)', () => {
+  it('is null until live shorts are switched on', () => {
+    expect(getAutotradeConfig().liveShortsEnabledAt).toBeNull();
+    expect(setAutotradeConfig({ riskProfile: 'AGGRESSIVE' }).liveShortsEnabledAt).toBeNull();
+  });
+
+  it('stamps when liveAllowNakedShort goes from off to on', () => {
+    const before = Date.now();
+    expect(setAutotradeConfig({ liveAllowNakedShort: true }).liveShortsEnabledAt).toBeGreaterThanOrEqual(before);
+  });
+
+  it('keeps the stamp through a save that leaves shorts on, and through switching them off', () => {
+    const stamped = setAutotradeConfig({ liveAllowNakedShort: true }).liveShortsEnabledAt;
+    // Otherwise every settings save would restart the window, and it would
+    // never end.
+    expect(setAutotradeConfig({ liveAllowNakedShort: true }).liveShortsEnabledAt).toBe(stamped);
+    expect(setAutotradeConfig({ riskProfile: 'AGGRESSIVE' }).liveShortsEnabledAt).toBe(stamped);
+    expect(setAutotradeConfig({ liveAllowNakedShort: false }).liveShortsEnabledAt).toBe(stamped);
+  });
+
+  it('restarts the window when shorts are switched on again', () => {
+    db.prepare('INSERT INTO autotrade_config (id, config, updated_at) VALUES (1, ?, ?)').run(
+      JSON.stringify({ ...defaultAutotradeConfig(), liveShortsEnabledAt: 1_000 }),
+      Date.now(),
+    );
+    const before = Date.now();
+    expect(setAutotradeConfig({ liveAllowNakedShort: true }).liveShortsEnabledAt).toBeGreaterThanOrEqual(before);
+  });
+
+  it('lets an explicit stamp in the patch win, so a known state can be restored', () => {
+    expect(setAutotradeConfig({ liveAllowNakedShort: true, liveShortsEnabledAt: 5_000 }).liveShortsEnabledAt).toBe(
+      5_000,
+    );
+    setAutotradeConfig({ liveAllowNakedShort: false });
+    // The reset every test file uses carries an explicit null.
+    expect(
+      setAutotradeConfig({ ...defaultAutotradeConfig(), liveAllowNakedShort: true }).liveShortsEnabledAt,
+    ).toBeNull();
+  });
+
+  it('reads a stored 0 back as never', () => {
+    db.prepare('INSERT INTO autotrade_config (id, config, updated_at) VALUES (1, ?, ?)').run(
+      JSON.stringify({ ...defaultAutotradeConfig(), liveShortsEnabledAt: 0 }),
+      Date.now(),
+    );
+    expect(getAutotradeConfig().liveShortsEnabledAt).toBeNull();
+  });
+});
