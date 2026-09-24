@@ -5,6 +5,10 @@ import { logAutotradeEvent } from '../src/db/autotradeEvents';
 import { closePaperPosition, openPaperPosition } from '../src/db/autotradePaperPositions';
 import { closeOptionsPaperPosition, openOptionsPaperPosition } from '../src/db/autotradeOptionsPaperPositions';
 import { closeLiveOptionsPosition, createLiveOptionsPosition } from '../src/db/autotradeLiveOptionsPositions';
+import { recordLiveOptionsEntryOrder, setLiveOptionsOrderPositionId } from '../src/db/autotradeLiveOptionsOrders';
+import { recordLiveOrder, setLiveOrderPositionId } from '../src/db/autotradeLiveOrders';
+import { createIntent } from '../src/db/orders';
+import { listPositions } from '../src/db/positions';
 import {
   concentrationCapFloorPct,
   dailyGainStepPct,
@@ -49,7 +53,8 @@ beforeEach(() => {
     'DELETE FROM positions; DELETE FROM position_exits; DELETE FROM autotrade_paper_positions; ' +
       'DELETE FROM autotrade_options_paper_positions; DELETE FROM autotrade_live_options_positions; ' +
       'DELETE FROM autotrade_config; DELETE FROM autotrade_events; DELETE FROM edge_leak_scans; ' +
-      'DELETE FROM reentry_shadow_records;',
+      'DELETE FROM reentry_shadow_records; DELETE FROM autotrade_live_orders; ' +
+      'DELETE FROM autotrade_live_options_orders; DELETE FROM order_intents;',
   );
 });
 
@@ -302,6 +307,85 @@ describe('the market’s direction at entry — each trade against the reading i
     ]);
     // The 09:35 entry had no reading: unplaced, not guessed.
     expect(dim?.uncovered).toBe(1);
+  });
+
+  // 2026-09-24, on review. The loop journals the tick's reading seconds before
+  // it places, and a live stock entry's `entryTime` is HH:MM, floored: on a
+  // tick where the reading changed, the floored time came before the tick's own
+  // row. A live option's `entry_at` is when its fill was booked, which can be
+  // ticks later. Both are now placed by when their ORDER went out.
+  it('places a live entry by when its order went out, not a minute-floored or fill-booked time', () => {
+    reading('mixed', at('09:40'));
+    reading('red', at('10:08') + 3_000); // the reading turns red at 10:08:03
+    reading('mixed', at('10:12')); // ...and back by 10:12
+    seedClosedAutotradeSessions({
+      sessions: { [DAY]: [{ entryTime: '10:08', exitTime: '10:40', r: -1, symbol: 'SHOP' }] },
+    });
+    const shop = listPositions().find((p) => p.symbol === 'SHOP')!;
+    const stockIntent = createIntent(
+      { symbol: 'SHOP', assetKind: 'stock', side: 'buy', openClose: 'open', quantity: 10, orderType: 'limit' },
+      'shop-entry',
+    );
+    recordLiveOrder({
+      intentId: stockIntent.id,
+      symbol: 'SHOP',
+      stopPrice: 95,
+      targetPrice: 110,
+      riskAmount: 50,
+      riskProfile: 'MODERATE',
+    });
+    setLiveOrderPositionId(stockIntent.id, shop.id);
+    db.prepare('UPDATE autotrade_live_orders SET created_at = ? WHERE intent_id = ?').run(
+      at('10:08') + 20_000,
+      stockIntent.id,
+    );
+    // A live call placed at 10:08:30, its fill booked at 10:14 (after the reading went mixed).
+    const call = createLiveOptionsPosition({
+      symbol: 'TSLA',
+      side: 'call',
+      contractSymbol: 'TSLA-call',
+      strike: 100,
+      expiration: DAY,
+      quantity: 1,
+      entryPrice: 2,
+      riskAmount: 200,
+      riskProfile: 'MODERATE',
+      rationale: 'fixture',
+      accountId: 'acct',
+    });
+    closeLiveOptionsPosition(call.id, { exitPrice: 1.4, exitReason: 'stop_loss' });
+    db.prepare('UPDATE autotrade_live_options_positions SET entry_at = ?, exit_at = ? WHERE id = ?').run(
+      at('10:14'),
+      at('10:40'),
+      call.id,
+    );
+    const optionIntent = createIntent(
+      { symbol: 'TSLA', assetKind: 'option', side: 'buy', openClose: 'open', quantity: 1, orderType: 'limit' },
+      'tsla-entry',
+    );
+    recordLiveOptionsEntryOrder({
+      intentId: optionIntent.id,
+      symbol: 'TSLA',
+      kind: 'single_leg',
+      side: 'call',
+      contractSymbol: 'TSLA-call',
+      strike: 100,
+      expiration: DAY,
+      riskAmount: 200,
+      riskProfile: 'MODERATE',
+    });
+    setLiveOptionsOrderPositionId(optionIntent.id, call.id);
+    db.prepare('UPDATE autotrade_live_options_orders SET created_at = ? WHERE intent_id = ?').run(
+      at('10:08') + 30_000,
+      optionIntent.id,
+    );
+
+    const bySide = runEdgeLeakScanFromDb({ now: NOW }).dimensions.find((d) => d.id === 'marketTapeBySide');
+    // Both met the red tape. By 10:08:00 and 10:14 they read mixed.
+    expect(Object.fromEntries(bySide!.buckets.map((b) => [b.bucket, b.n]))).toEqual({
+      equity_long_red: 1,
+      options_long_red: 1,
+    });
   });
 
   // THE SAME READING BY SIDE (2026-09-25). `against` pools a long on a red day

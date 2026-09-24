@@ -224,6 +224,18 @@ export function getLiveOptionsOrder(intentId: number): LiveOptionsOrderMeta | un
   return row ? mapRow(row) : undefined;
 }
 
+/** When the ENTRY order that opened live options position `positionId` was
+ *  placed (epoch ms), or null when no entry order is linked to it. The position's
+ *  own `entryAt` is stamped when the fill is booked, which can be ticks after
+ *  the order went out; what the order was decided against is the moment it was
+ *  placed (the edge-leak scan's tape lookup, 2026-09-24). */
+export function liveOptionsEntryPlacedAt(positionId: number): number | null {
+  const row = db
+    .prepare(`SELECT MIN(created_at) AS at FROM autotrade_live_options_orders WHERE position_id = ? AND role = 'entry'`)
+    .get(positionId) as { at: number | null } | undefined;
+  return row?.at ?? null;
+}
+
 /** True when `intentId` was placed by autotrade's LIVE OPTIONS execution (vs.
  *  the human Trade page) — mirrors autotradeLiveOrders.ts's own
  *  isAutotradeIntent() for the equity side. Both live paths place orders into

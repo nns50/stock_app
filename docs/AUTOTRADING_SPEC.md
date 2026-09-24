@@ -14586,11 +14586,22 @@ red days now, and red-day-only stock shorts behind the operator's word.
 - **Injectable readings.** `EdgeLeakScanOptions.directions` accepts a rebuilt reading
   index, for the tape plan's backfill against a copy of the database. It defaults to the
   journal's rows.
+- **A live entry is placed by when its order went out** (added before merge, on review).
+  The loop journals the tick's reading seconds before it places. A live stock entry's
+  `entryTime` is HH:MM, floored to the minute, so on a tick where the reading changed the
+  floored time came before the tick's own row: a long placed at 10:08:20 on a reading
+  that turned red at 10:08:03 read as mixed, and the day's first entry read no tape at
+  all. A live option's `entry_at` is when its fill was booked, which can be ticks later.
+  Both now read the tape at their entry order's `created_at` (the stock order through
+  `entryIntentIdForPosition`, the option's through `liveOptionsEntryPlacedAt`), falling
+  back to the old time when no order is linked. Those are exactly the ticks the gate acts
+  on. Paper entries already carry millisecond times.
 
-**What did not change.** Every existing cut, bucket and verdict. Adding a cut draws from
-the scan's shared bootstrap stream, so an interval computed after it (the stop-width cut,
-the attribution) can move by a rounding step, once. Every existing test passed
-unchanged.
+**What did not change.** Every existing bucket and verdict, except that a live entry
+placed seconds after a reading changed now files under the reading it was placed on (in
+`marketTape` too, since both cuts share `tapeFieldsOf`). Adding a cut draws from the
+scan's shared bootstrap stream, so an interval computed after it (the stop-width cut, the
+attribution) can move by a rounding step, once. Every existing test passed unchanged.
 
 **Pre-committed check.** The first scan after the deploy
 (`GET /api/journal/edge-leaks?book=both`) has a `marketTapeBySide` dimension. Its paper
