@@ -14607,9 +14607,14 @@ open kept its quote for good. There are two kinds:
 - The other 10 are the operator's own option trades, whose true fills the database does
   not hold.
 
-**What it touched.** The loop reads its own tables, so none of these rows reached sizing,
-the halts or the daily goal. They reached what the operator reads: the Journal page, its
-analytics, the equity curve and the tax export.
+**What it touched.** The loop reads its own tables, so none of these rows reached its
+sizing, its halts or the daily goal (the loop's halts read `strategyDayFor`, autotrade
+rows only). They reached what the operator reads: the Journal page, its analytics, the
+equity curve and the tax export. They also reach one guardrail: the Trade page's
+daily-loss check for a hand order, which takes the worse of the broker's figure and every
+exit the journal dates today (`realizedTodayFromBook`), hand exits included. There a
+corrected fill is the more accurate input. (Corrected before merge, on review: this
+paragraph used to say no halt read them.)
 
 **Fixed.** A pass in the loop books these closes at the broker's fills
 (`correctEstimatedHandExits` in `handExitCorrection.ts`). It runs right after the stock
@@ -14656,6 +14661,16 @@ correction, for the live account.
   window, and two positions in the same contract at once, which the broker reports as one
   holding. An ambiguous set leaves the estimate rather than guessing, and the skip row
   lists the fills.
+  - **One round trip or none** (added before merge, on review). The sync misses a round
+    trip that finishes between two of its reads, so a window can hold two: the operator
+    covers a short at 2.82, shorts again, and covers at 2.70 before the sync books the
+    exit; or the options sleeve buys and sells the contract a hand row holds. The match
+    stopped at the first close that made up the quantity, so it booked 2.82 and claimed
+    that fill. Now, once the quantity is made up, another closing fill still in the window,
+    or the position opened again after the first matched fill, leaves the estimate. This
+    holds for both matchers (`matchSaleOutsideBracket`, `matchHandOptionClose`), so the
+    app's own stock pass gets it too. The stock fills now keep a short sale (side
+    `SHORT`), so a short opened again is visible; no closing-side filter selects it.
 
 **Pre-committed check (the first session after deploy):**
 - AMC's row (#708) reads 2.82, with one `hand_exit_corrected` row, if the deploy lands

@@ -154,7 +154,9 @@ export interface SaleOutsideBracket {
  * which is how LITE's stop fill on 09-21 went unread. Taken oldest first until
  * they add up to exactly the booked quantity, they book at their
  * quantity-weighted price. Sales that overshoot (the operator traded the symbol
- * again) or fall short (part went some other way) leave the estimate alone.
+ * again) or fall short (part went some other way) leave the estimate alone, and
+ * so does a window that holds more than one round trip: another closing fill
+ * after the match, or the position opened again after its first matched fill.
  */
 export function matchSaleOutsideBracket(
   exit: SaleWindow & { quantity: number },
@@ -170,12 +172,21 @@ export function matchSaleOutsideBracket(
   let qty = 0;
   let notional = 0;
   const used: BrokerEquityFill[] = [];
-  for (const f of mine) {
+  for (const [i, f] of mine.entries()) {
     if (qty + f.filledQty > exit.quantity + 1e-9) return null;
     qty += f.filledQty;
     notional += f.filledQty * f.filledPrice;
     used.push(f);
     if (Math.abs(qty - exit.quantity) < 1e-9) {
+      // ONE ROUND TRIP OR NONE (2026-09-24, on review). The sync misses a round
+      // trip that finishes between two of its reads, so a window can hold more
+      // than one: the operator covers a short at 2.82, shorts again, and covers
+      // at 2.70 before the sync books the exit. Oldest first used to book 2.82
+      // and claim it. A later closing fill still in the window, or the position
+      // opened again after the first fill matched, means the history cannot say
+      // which close was this exit's, so the estimate stays and the skip row
+      // lists the fills.
+      if (i < mine.length - 1 || openedAgainInWindow(exit, fills, used[0].filledAt)) return null;
       const kinds = used.map((u) =>
         legExitReason({ comboType: u.comboType ?? undefined, orderType: u.orderType ?? undefined }),
       );
@@ -195,6 +206,20 @@ export function matchSaleOutsideBracket(
     }
   }
   return null;
+}
+
+/** Whether the position was opened again after `after` and before the sync
+ *  booked the exit: a BUY for a long, a short sale (or a SELL) for a short. Any
+ *  order counts, the app's own included: either way the window holds more than
+ *  one position's worth of trading. */
+function openedAgainInWindow(exit: SaleWindow, fills: BrokerEquityFill[], after: number): boolean {
+  const symbol = exit.symbol.toUpperCase();
+  const opens = (side: BrokerEquityFill['side']) =>
+    exit.positionSide === 'short' ? side === 'SHORT' || side === 'SELL' : side === 'BUY';
+  return fills.some(
+    (f) =>
+      f.symbol === symbol && opens(f.side) && f.filledAt > after && f.filledAt <= exit.createdAt + FILL_CLOCK_SLACK_MS,
+  );
 }
 
 /**

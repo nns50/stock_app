@@ -1080,7 +1080,10 @@ export interface BrokerEquityFill {
    *  told from a take-profit by it when the combo label does not say, as in a
    *  bracket the operator placed by hand. */
   orderType: string | null;
-  side: 'BUY' | 'SELL';
+  /** SHORT is a short sale (2026-09-24): the side the app sends and the history
+   *  reports for one. Kept so a matcher can see a short opened again inside the
+   *  window it is reading; no closing-side filter ever selects it. */
+  side: 'BUY' | 'SELL' | 'SHORT';
   symbol: string;
   filledQty: number;
   /** Per share, as the broker reports it. */
@@ -1105,7 +1108,7 @@ export function parseBrokerEquityFills(envelopes: unknown[]): BrokerEquityFill[]
       const filledPrice = num(o.filled_price);
       const filledAtMs =
         num(o.filled_time) ?? (typeof o.filled_time_at === 'string' ? Date.parse(o.filled_time_at) : NaN);
-      const side = o.side === 'SELL' || o.side === 'BUY' ? o.side : null;
+      const side = o.side === 'SELL' || o.side === 'BUY' || o.side === 'SHORT' ? o.side : null;
       const clientOrderId = typeof o.client_order_id === 'string' ? o.client_order_id : (env.client_order_id ?? '');
       if (
         !symbol ||

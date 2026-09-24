@@ -33,6 +33,7 @@ import {
   AMC_COVER_ID,
   AMC_COVER_STOP_ENVELOPE,
   AMC_SHORT_ENTRY_ENVELOPE,
+  AMC_SHORT_ENTRY_ID,
   DELL_SLEEVE_CLOSE_ENVELOPE,
   DELL_SLEEVE_CLOSE_ID,
 } from './handTradeFixtures';
@@ -1878,11 +1879,22 @@ describe('parseBrokerEquityFills', () => {
   });
 
   // The operator's AMC test short (2026-09-24), as the history returned it.
-  // The entry's side is SHORT, which is neither a buy nor a sell to anything
-  // that books a close; the cover is the BUY take-profit leg of an OCO; its
-  // stop sibling was cancelled unfilled.
-  it("reads the real short's cover and nothing else", () => {
+  // The entry's side is SHORT: kept since 2026-09-24 so a matcher can see a
+  // short opened again inside its window, and never a close to anything that
+  // books one (those select BUY or SELL). The cover is the BUY take-profit leg
+  // of an OCO; its stop sibling was cancelled unfilled.
+  it("reads the real short's entry and its cover, and nothing else", () => {
     expect(parseBrokerEquityFills([AMC_SHORT_ENTRY_ENVELOPE, AMC_COVER_ENVELOPE, AMC_COVER_STOP_ENVELOPE])).toEqual([
+      {
+        clientOrderId: AMC_SHORT_ENTRY_ID,
+        comboType: 'NORMAL',
+        orderType: 'LIMIT',
+        side: 'SHORT',
+        symbol: 'AMC',
+        filledQty: 1,
+        filledPrice: 2.83,
+        filledAt: 1790257530583,
+      },
       {
         clientOrderId: AMC_COVER_ID,
         comboType: 'STOP_PROFIT',
@@ -1919,7 +1931,8 @@ describe('listBrokerFills', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(String(fetchSpy.mock.calls[0][0])).toContain('/openapi/trade/order/history');
     expect(r.ok).toBe(true);
-    expect(r.equity.map((f) => f.clientOrderId)).toEqual([AMC_COVER_ID]);
+    // The short sale that opened it too (side SHORT), and the cover.
+    expect(r.equity.map((f) => f.clientOrderId)).toEqual([AMC_SHORT_ENTRY_ID, AMC_COVER_ID]);
     expect(r.option).toEqual([
       expect.objectContaining({
         clientOrderId: DELL_SLEEVE_CLOSE_ID,
