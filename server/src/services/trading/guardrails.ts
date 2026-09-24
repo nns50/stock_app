@@ -227,6 +227,16 @@ export function wouldOpenShort(intent: OrderIntent, account: AccountState): bool
  * report lists each rule (passed or not) so the UI can show the full breakdown;
  * `ok` is false if any BLOCKING rule failed.
  */
+/**
+ * May one more opening order go out today? The `max_orders_per_day` rule
+ * below, and the live entry paths' early skip once a sleeve's budget is spent
+ * (2026-09-24): one predicate, so the skip can never refuse an order the
+ * guardrail would pass, or pass one it would refuse.
+ */
+export function withinDailyOrderCap(ordersToday: number, maxOrdersPerDay: number): boolean {
+  return ordersToday < maxOrdersPerDay;
+}
+
 export function evaluateGuardrails(
   intent: OrderIntent,
   account: AccountState,
@@ -525,7 +535,7 @@ export function evaluateGuardrails(
   if (intent.openClose === 'open') {
     block(
       'max_orders_per_day',
-      account.ordersToday < config.maxOrdersPerDay,
+      withinDailyOrderCap(account.ordersToday, config.maxOrdersPerDay),
       `${account.ordersToday} placed vs ${config.maxOrdersPerDay}/day`,
     );
   }
