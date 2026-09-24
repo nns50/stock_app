@@ -63,6 +63,19 @@ describe('databaseCopyPath — a copy, never the database an app runs on', () =>
     expect(databaseCopyPath('copy.db', {}, dir, path.join(dir, 'absent.env'))).toMatchObject({ ok: true });
   });
 
+  it('refuses a hard link to the live file: the same file under another name (2026-09-25, on the second review)', () => {
+    const link = path.join(dir, 'looks-like-a-copy.db');
+    fs.linkSync(live, link);
+    try {
+      expect(databaseCopyPath('looks-like-a-copy.db', { DATABASE_PATH: live }, dir)).toMatchObject({
+        ok: false,
+        reason: expect.stringMatching(/a database the app itself runs on/),
+      });
+    } finally {
+      fs.rmSync(link, { force: true });
+    }
+  });
+
   it('accepts a copy, resolved against the directory the command was typed in', () => {
     expect(databaseCopyPath('copy.db', { DATABASE_PATH: live }, dir)).toEqual({
       ok: true,
@@ -75,8 +88,11 @@ describe('scripts/tapeBackfill.ts — the refusal runs before the database opens
   const tsx = path.resolve(__dirname, '../node_modules/.bin/tsx');
   const script = path.resolve(__dirname, '../src/scripts/tapeBackfill.ts');
   const runScript = (args: string[]) => {
-    const env: NodeJS.ProcessEnv = { ...process.env, INIT_CWD: dir };
-    delete env.POLYGON_API_KEY;
+    // Set empty, not deleted (2026-09-25, on the second review): config.ts
+    // loads server/.env, which fills in a variable that is absent, so on a
+    // machine with a key there the script ran a real backfill. dotenv never
+    // overrides a variable that is already set.
+    const env: NodeJS.ProcessEnv = { ...process.env, INIT_CWD: dir, POLYGON_API_KEY: '' };
     return spawnSync(tsx, [script, ...args], { env, encoding: 'utf8', timeout: 60_000 });
   };
 

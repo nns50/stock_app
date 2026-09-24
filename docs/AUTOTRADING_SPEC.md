@@ -15699,10 +15699,14 @@ copy that includes live journal days for parity.
     removing the one wide stop.
 - **The guard** (`dbCopy.test.ts`): a missing path, and `DATABASE_PATH`'s file however it
   is reached, are refused, including a path set only in `server/.env`, which the guard
-  reads itself because it runs before config loads that file. The script, spawned,
-  reaches its key check only with config pointing at the copy.
+  reads itself because it runs before config loads that file. Since the second review
+  (2026-09-25) it also compares the file itself (device and inode), so a hard link to the
+  live file, which has a path of its own, is refused too. The script, spawned, reaches
+  its key check only with config pointing at the copy; its test sets the key empty
+  rather than deleting it, since config would fill a deleted key back in from
+  `server/.env` and the test would run a real backfill.
 
-Nineteen mutations were run, and each fails at least one test:
+Twenty mutations were run, and each fails at least one test:
 - **The rebuild:**
   - a reading stamped at the bar's start;
   - the day's open as the prior close;
@@ -15724,4 +15728,5 @@ Nineteen mutations were run, and each fails at least one test:
   - one replay for all tapes.
 - **The guard:**
   - `DATABASE_PATH`'s file not refused;
-  - the script's imports reordered.
+  - the script's imports reordered;
+  - the file's identity not compared (second review).

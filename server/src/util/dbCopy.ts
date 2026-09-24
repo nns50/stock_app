@@ -25,6 +25,18 @@ function canonical(p: string): string {
   return fs.existsSync(abs) ? fs.realpathSync(abs) : abs;
 }
 
+/** The file's identity on disk (device and inode), or null when it is not
+ *  there. Two spellings of one file — a hard link, a case variant on a
+ *  case-insensitive disk, a mount seen from two paths — share it. */
+function identity(p: string): string | null {
+  try {
+    const st = fs.statSync(p);
+    return `${st.dev}:${st.ino}`;
+  } catch {
+    return null;
+  }
+}
+
 export type DatabaseCopyCheck = { ok: true; path: string } | { ok: false; reason: string };
 
 /**
@@ -65,7 +77,12 @@ export function databaseCopyPath(
     ...(env.DATABASE_PATH ? [env.DATABASE_PATH] : []),
     ...(fromEnvFile ? [fromEnvFile] : []),
   ].map((p) => canonical(resolveFromRoot(p)));
-  if (own.includes(real)) {
+  // By path, and by the file itself (2026-09-25, on the second review): a
+  // hard link to the live file has its own path and passed as a copy, and the
+  // script would then have migrated and written the live database, with two
+  // WAL files for one database besides.
+  const realId = identity(real);
+  if (own.includes(real) || (realId !== null && own.some((p) => identity(p) === realId))) {
     return { ok: false, reason: `${abs} is a database the app itself runs on: point --db at a copy of it` };
   }
   return { ok: true, path: real };
