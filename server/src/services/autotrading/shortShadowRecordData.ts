@@ -121,9 +121,20 @@ export function loadLiveShortEntries(since: number): DeclinedEntry[] {
   for (const e of events) {
     if (!e.symbol || !e.detail) continue;
     try {
-      const d = JSON.parse(e.detail) as { side?: unknown; signalEntry?: unknown; stop?: unknown };
+      const d = JSON.parse(e.detail) as { side?: unknown; signalEntry?: unknown; stop?: unknown; target?: unknown };
       if (d.side !== 'sell' || typeof d.signalEntry !== 'number' || typeof d.stop !== 'number') continue;
-      out.push({ symbol: e.symbol, at: e.createdAt, score: 0, entry: d.signalEntry, stop: d.stop, side: 'short' });
+      out.push({
+        symbol: e.symbol,
+        at: e.createdAt,
+        score: 0,
+        entry: d.signalEntry,
+        stop: d.stop,
+        side: 'short',
+        // The bracket's own target (2026-09-24, on review): the live target can
+        // be tightened by the regime overlay or capped by a level, and a replay
+        // at the config's target would call that difference an execution gap.
+        ...(typeof d.target === 'number' ? { target: d.target } : {}),
+      });
     } catch {
       continue;
     }

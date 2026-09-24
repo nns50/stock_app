@@ -357,6 +357,12 @@ export interface LiveShortsEvidence {
    *  leaks; null when it cannot say (no scan, no live book in it, or no live
    *  short in the bucket). */
   equityShortRedLeak: boolean | null;
+  /** When `shorts_revert` last turned this window's shorts off (its
+   *  `config_auto_applied` row, at or after `since`), or null. The window stays
+   *  tripped from then until the operator switches shorts on again, which
+   *  moves `since`: the trips themselves can drift back under their bars as
+   *  the replay, a superseded skip row or the scan moves (2026-09-24, review). */
+  revertedAt: number | null;
 }
 
 /** The tape plan's rule C, as numbers: any one trips `shorts_revert`. */
@@ -944,7 +950,7 @@ export const GATED_SWITCH_RULES: SwitchRule[] = [
       // The last live window tripped the revert (shorts_revert): the app does
       // not ask to turn shorts back on after turning them off. Only the
       // operator's own switch-on starts a new window.
-      if (s.liveShorts && shortsRevertTrips(s.liveShorts).length > 0) return null;
+      if (s.liveShorts && (s.liveShorts.revertedAt !== null || shortsRevertTrips(s.liveShorts).length > 0)) return null;
       // The evidence covers red tapes only; with the red-tape rule switched
       // off, turning shorts on would reach tapes it says nothing about.
       if (!s.config.liveShortsRedTapeOnly) return null;
@@ -952,7 +958,7 @@ export const GATED_SWITCH_RULES: SwitchRule[] = [
     },
     reading: (s) => {
       if (!s.shortShadow) return null;
-      const held = s.liveShorts && shortsRevertTrips(s.liveShorts).length > 0;
+      const held = s.liveShorts && (s.liveShorts.revertedAt !== null || shortsRevertTrips(s.liveShorts).length > 0);
       return (
         shortsSwitchReading(s.shortShadow, paperShortRedOf(s.leakScan)) +
         (held ? '; held: the last live short window tripped the revert — only your own switch-on starts a new one' : '')

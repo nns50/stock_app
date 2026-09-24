@@ -61,6 +61,14 @@ export interface DeclinedEntry {
    *  is the old behaviour and the best available. */
   floorAtSkip?: number;
   /**
+   * The bracket's own take-profit price, for an entry that was TAKEN (the live
+   * shorts' replay, 2026-09-24): a live bracket's target can differ from the
+   * config's `targetRMultiple` (the regime tighten, a level cap, a per-lot
+   * split), and that comparison is of live against the same trade. Undefined on
+   * a declined row, which the replay gives the config's target.
+   */
+  target?: number;
+  /**
    * A re-entry cooldown refusal only (2026-09-19): minutes between the
    * symbol's last closed live exit and this refusal, as the gate itself
    * measured it (`minutesSince` on the row). That gate journals EVERY tick, so

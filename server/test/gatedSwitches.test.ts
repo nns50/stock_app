@@ -939,6 +939,7 @@ describe('shorts_revert — a losing short book turns itself off', () => {
     defects: [],
     replay: null,
     equityShortRedLeak: null,
+    revertedAt: null,
     ...over,
   });
   const trades = (...rs: number[]) => rs.map((r, i) => ({ symbol: `S${i}`, etDate: '2026-10-08', r }));
@@ -1079,5 +1080,11 @@ describe('shorts_revert — a losing short book turns itself off', () => {
     expect(shorts.reading!(s(book({ trades: trades(-1.7) })))).toMatch(
       /; held: the last live short window tripped the revert — only your own switch-on starts a new one$/,
     );
+    // 2026-09-24, on review: once reverted, the window stays tripped although
+    // its evidence no longer trips (the replay moved, a skip was superseded).
+    const revertedClean = book({ trades: trades(-0.3), revertedAt: 5_000 });
+    expect(shortsRevertTrips(revertedClean)).toEqual([]);
+    expect(shorts.evaluate(s(revertedClean))).toBeNull();
+    expect(shorts.reading!(s(revertedClean))).toMatch(/; held: the last live short window tripped the revert/);
   });
 });

@@ -15448,25 +15448,42 @@ trips on any of (`SHORTS_REVERT`):
 
 The evidence is one line on the card every session while shorts are on, tripped or not.
 While the current window stands tripped, the `shorts` exposure rule stays quiet: its
-reading says why, and only the operator's own switch-on starts a new window.
+reading says why, and only the operator's own switch-on starts a new window. **A window
+that reverted stays tripped** (corrected before merge, on review): the evidence keeps
+moving after a revert (the nightly replay, a skip row a later correction supersedes, the
+last scan), so a trip could drift back under its bar and the `shorts` rule would propose
+again. The evidence now carries `revertedAt`, the `shorts_revert` `config_auto_applied`
+row at or after `since`, and the `shorts` rule stays quiet while it is set.
 
 **The evidence** (`liveShortsEvidence.ts`) derives nothing of its own:
 - **The trades** are the closed live stock shorts tagged `autotrade`, with the R the goal
   sweep and the scan read (`collectBook`). A hand-traded short is not the app's, and is
-  not counted.
+  not counted. A short is in the window by when its **entry order** was placed
+  (corrected before merge, on review). The collector's entry time is HH:MM, floored, and
+  the stamp is milliseconds, so a short placed in the same minute shorts were switched on
+  read as entered before the window and tripped nothing. The probation counts the same
+  order rows (`countLiveOrdersSince`), so the two now agree about the window.
 - **A defect** is a row the scan's execution catalog counts as a `defect`. The per-row
   classification is now one function, `classifyExecutionRows`, which the scan's counts
   read too, so a row is a defect to both or to neither. Superseded rows, `countsIf`
   exclusions, `operator` and `control` rows, and options rows are out. A row belongs to a
-  short by the `positionId` it names, or else by its symbol inside the short's life: from
-  5 minutes before its entry to 8 days after its close, the reach of an exit correction.
-  The entry moment is the collector's own (`liveEntryAt`, factored out of
-  `collectLiveTrades`).
+  short only by what it **names**: the position (`positionId`), or, for a row written
+  before the fill, the short's entry order (`intentId`, `clientOrderId`). Corrected before
+  merge, on review: a symbol-and-time fallback picked up rows that were not the short's
+  (the paper book's `correlation_data_unavailable` for the same name, a long's unknown
+  outcome, a re-arm of another position), and any one of them turned shorts off for "a
+  short-side execution defect".
 - **The replay gap.** The declined-short shadow has no row for a symbol-day the live book
   took, so "below the shadow on the same symbol-days" is read as each live short against
   its own signal:
   - the after-close refresh (`computeShortShadowReport`) loads each short's
-    `live_order_placed` row (side `sell`: the signal's price, its stop, the moment);
+    `live_order_placed` row (side `sell`: the signal's price, its stop, its bracket
+    target, the moment);
+  - each is replayed at **its own bracket target** (corrected before merge, on review:
+    `DeclinedEntry.target`, `rulesWithOwnTarget`). The live target can be tightened by
+    the regime overlay or capped by a level, and replayed at the config's target the
+    difference read as an execution gap: with the overlay on, a book of shorts banking
+    tightened winners would have been reverted at +0.68R a trade;
   - it replays them with `buildDeclinedEntryShadow` (no score floor; no direction or ATR
     gate, since each was taken; the measured entry concession);
   - it pairs each with the realized R on the same symbol-day (`pairLiveWithReplay`);
@@ -15494,9 +15511,16 @@ It is not built here: rule C was written for the evening engine.
 - **The evidence, over real rows.**
   - Only the app's own shorts since the stamp count: not a long, not a hand short, not a
     short from the day before.
-  - A defect counts when it is the catalog's, on a short, inside its life, or named by
-    position id days later. Not a long's row, the operator's, an options row, one from
-    before the entry, or a superseded skip.
+  - A defect counts when it is the catalog's and names a short: its position id (days
+    later too), or its entry order's intent or client order id. Not a long's row, the
+    operator's, an options row, a superseded skip, or a row on the short's symbol that
+    names no short (a paper correlation miss, another order's unknown outcome).
+  - A short placed in the same minute shorts were switched on is in the window, by its
+    entry order's time; one placed before the stamp is not.
+  - A short is replayed at its own bracket target from the placement row; a target on
+    the wrong side of the entry falls back to the config's.
+  - A window that reverted stays tripped after its evidence stops tripping, until a new
+    switch-on.
   - The replay pairs a short that lost 1.6R with its own signal's −1R, and counts a short
     with no placement row as unpaired.
   - The refresh persists the comparison, and the switch evidence carries it.

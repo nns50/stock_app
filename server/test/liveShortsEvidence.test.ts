@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, onTestFinished, vi } from 'vitest';
 
 // The revert sends a push when it applies; captured, not sent.
 vi.mock('../src/services/notifier', () => ({
@@ -10,6 +10,8 @@ import { initDb, db } from '../src/db';
 import { defaultAutotradeConfig, getAutotradeConfig, setAutotradeConfig } from '../src/db/autotradeConfig';
 import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { listPositions } from '../src/db/positions';
+import { recordLiveOrder, setLiveOrderPositionId } from '../src/db/autotradeLiveOrders';
+import { createIntent } from '../src/db/orders';
 import { etDateTimeToMs } from '../src/util/marketDate';
 import type { Candle } from '../src/providers/types';
 import type { CandleSource } from '../src/services/excursion';
@@ -20,6 +22,7 @@ import {
   liveEquityShortRedLeak,
   liveShortTradesSince,
   shortSideDefectsSince,
+  shortsRevertedAt,
 } from '../src/services/autotrading/liveShortsEvidence';
 import { replayLiveShorts } from '../src/services/autotrading/shortShadowRecordData';
 import { runGatedSwitches } from '../src/services/autotrading/gatedSwitchesData';
@@ -42,7 +45,8 @@ beforeAll(() => initDb());
 beforeEach(() => {
   db.exec(
     'DELETE FROM position_exits; DELETE FROM positions; DELETE FROM autotrade_events; DELETE FROM autotrade_config; ' +
-      'DELETE FROM gated_switch_state; DELETE FROM edge_leak_scans; DELETE FROM short_shadow_records;',
+      'DELETE FROM gated_switch_state; DELETE FROM edge_leak_scans; DELETE FROM short_shadow_records; ' +
+      'DELETE FROM autotrade_live_orders; DELETE FROM order_intents;',
   );
   vi.mocked(dispatchNotifications).mockClear();
 });
@@ -72,6 +76,27 @@ function seedBook(): void {
 
 const positionId = (symbol: string): number => listPositions().find((p) => p.symbol === symbol)!.id;
 
+/** Give `symbol`'s position the entry order the live path would have written,
+ *  placed at `placedAt`. Returns the order's intent id and client order id. */
+function entryOrder(symbol: string, placedAt: number): { intentId: number; clientOrderId: string } {
+  const clientOrderId = `${symbol.toLowerCase()}-entry`;
+  const intent = createIntent(
+    { symbol, assetKind: 'stock', side: 'sell', openClose: 'open', quantity: 10, orderType: 'limit' },
+    clientOrderId,
+  );
+  recordLiveOrder({
+    intentId: intent.id,
+    symbol,
+    stopPrice: 105,
+    targetPrice: 90,
+    riskAmount: 50,
+    riskProfile: 'MODERATE',
+  });
+  setLiveOrderPositionId(intent.id, positionId(symbol));
+  db.prepare('UPDATE autotrade_live_orders SET created_at = ? WHERE intent_id = ?').run(placedAt, intent.id);
+  return { intentId: intent.id, clientOrderId };
+}
+
 describe('the live shorts the tripwires count', () => {
   it("are the app's own stock shorts entered since shorts were switched on, with the collector's R", () => {
     seedBook();
@@ -85,26 +110,55 @@ describe('the live shorts the tripwires count', () => {
       },
     ]);
   });
+
+  // 2026-09-24, on review. The collector's entry time is HH:MM, floored, and
+  // the stamp is milliseconds: shorts switched on at 10:00:20 and a short
+  // placed at 10:00:40 read as entered at 10:00:00, BEFORE the window, and a
+  // losing short tripped nothing. The probation counts the same short by its
+  // order's millisecond time, so the two disagreed about the window.
+  it('count a short placed in the same minute shorts were switched on, by its entry order', () => {
+    seedBook();
+    entryOrder('TSLA', at('10:00') + 40_000);
+    const since = at('10:00') + 20_000;
+    expect(liveShortTradesSince(since, AFTER_CLOSE).map((t) => t.symbol)).toEqual(['TSLA']);
+    // An order placed before the stamp is the previous window's.
+    expect(liveShortTradesSince(at('10:00') + 50_000, AFTER_CLOSE)).toEqual([]);
+  });
 });
 
 describe('a short-side execution defect', () => {
-  it("is a row the scan's catalog calls a defect, on a live short, during its life", () => {
+  it("is a row the scan's catalog calls a defect that NAMES a live short: its position, or its entry order", () => {
     seedBook();
     const tsla = positionId('TSLA');
-    journal('TSLA', 'live_time_exit_failed', {}, at('10:30')); // counts
-    journal('AAPL', 'live_time_exit_failed', {}, at('10:30')); // a long's
-    journal('HAND', 'live_time_exit_failed', {}, at('10:30')); // a hand short's
-    journal('TSLA', 'live_position_unprotected', { state: 'kill_switch' }, at('10:31')); // the operator's
-    journal('TSLA', 'live_options_exit_failed', {}, at('10:32')); // an options row
-    journal('TSLA', 'live_time_exit_failed', {}, at('09:30')); // before the short
-    // Named by its position id, long after the symbol window has closed.
+    const order = entryOrder('TSLA', at('10:00'));
+    journal('TSLA', 'live_time_exit_failed', { positionId: tsla }, at('10:30')); // counts
+    // Written before the fill, naming the entry order: counts.
+    journal('TSLA', 'live_order_outcome_unknown', { clientOrderId: order.clientOrderId }, at('10:00'));
+    journal('TSLA', 'live_order_status_unresolved', { intentId: order.intentId }, at('10:01'));
+    journal('AAPL', 'live_time_exit_failed', { positionId: positionId('AAPL') }, at('10:30')); // a long's
+    journal('HAND', 'live_time_exit_failed', { positionId: positionId('HAND') }, at('10:30')); // a hand short's
+    journal('TSLA', 'live_position_unprotected', { state: 'kill_switch', positionId: tsla }, at('10:31')); // the operator's
+    journal('TSLA', 'live_options_exit_failed', { positionId: tsla }, at('10:32')); // an options row
+    // Named by its position id, long after the short closed.
     journal('TSLA', 'live_stop_adjust_blocked', { positionId: tsla }, at('10:00', '2026-10-20'));
     // A skip a later correction superseded, and that correction the operator's
     // own hand sale: neither is open.
-    journal('TSLA', 'live_exit_correction_skipped', { exitId: 7, cause: 'no_matching_sale' }, at('10:45'));
-    journal('TSLA', 'live_exit_corrected', { exitId: 7, source: 'broker_history' }, at('11:00'));
+    journal(
+      'TSLA',
+      'live_exit_correction_skipped',
+      { exitId: 7, positionId: tsla, cause: 'no_matching_sale' },
+      at('10:45'),
+    );
+    journal('TSLA', 'live_exit_corrected', { exitId: 7, positionId: tsla, source: 'broker_history' }, at('11:00'));
+    // 2026-09-24, on review: a row that names no short is not the short's, even
+    // on its symbol inside its life. The paper book's correlation miss, a
+    // long's unknown outcome: each turned shorts off before.
+    journal('TSLA', 'correlation_data_unavailable', {}, at('10:20'));
+    journal('TSLA', 'live_order_outcome_unknown', { clientOrderId: 'someone-elses' }, at('10:21'));
 
-    expect(shortSideDefectsSince(ENABLED_AT, Date.parse('2026-10-21T20:00:00Z'))).toEqual([
+    expect(shortSideDefectsSince(ENABLED_AT)).toEqual([
+      { label: 'A stock order ended with an unknown outcome', symbol: 'TSLA', etDate: DAY },
+      { label: 'A stock order the broker accepted could not be found by any read', symbol: 'TSLA', etDate: DAY },
       { label: 'A timed stock exit failed', symbol: 'TSLA', etDate: DAY },
       { label: 'A stop ratchet could not find its resting leg', symbol: 'TSLA', etDate: '2026-10-20' },
     ]);
@@ -145,6 +199,23 @@ describe('the live shorts against the replay of their own signals', () => {
       meanGapR: expect.closeTo(-0.6, 9),
       unpaired: 1,
     });
+  });
+
+  // 2026-09-24, on review. The live bracket's target can differ from the
+  // config's (the regime tighten, a level cap): replayed at the config's 2R,
+  // a short that banked its own small target reads as live far below its model,
+  // which is an execution gap that never happened.
+  it('replays each short at its OWN bracket target, from the placement row', async () => {
+    seedBook();
+    // Target 99.75: 0.05R against the 105 stop. The 10:00 bar trades through it
+    // to 99.5 (the honest fill needs a trade through, not a touch).
+    journal('TSLA', 'live_order_placed', { side: 'sell', signalEntry: 100, stop: 105, target: 99.75 }, at('10:00'));
+    const replay = await replayLiveShorts(source, cfg, ENABLED_AT, 0);
+    expect(replay).toMatchObject({ n: 1, meanReplayR: expect.closeTo(0.05, 9), meanGapR: expect.closeTo(-1.65, 9) });
+    // A target on the wrong side of the entry is not a target: the config's stands.
+    db.exec("DELETE FROM autotrade_events WHERE action = 'live_order_placed'");
+    journal('TSLA', 'live_order_placed', { side: 'sell', signalEntry: 100, stop: 105, target: 101 }, at('10:00'));
+    expect((await replayLiveShorts(source, cfg, ENABLED_AT, 0)).meanReplayR).toBeCloseTo(-1, 9);
   });
 });
 
@@ -207,6 +278,33 @@ describe('shorts_revert, over real rows', () => {
       .mocked(dispatchNotifications)
       .mock.calls.filter(([events]) => events[0]?.title.includes('shorts_revert'));
     expect(pushes).toHaveLength(1);
+  });
+
+  // 2026-09-24, on review. The trips read evidence that keeps moving after a
+  // revert (the nightly replay, a skip row a later correction supersedes, the
+  // last scan), so a trip could drift back under its bar and the `shorts` rule
+  // propose again. The revert row itself now holds the window tripped.
+  it('holds the window tripped once it has reverted, whatever the evidence reads later', () => {
+    // The revert row is stamped with the clock, and this file's session is in
+    // the future: run the evening as it would happen.
+    vi.useFakeTimers({ now: AFTER_CLOSE, toFake: ['Date'] });
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+    shortsOn();
+    seedBook();
+    runGatedSwitches(AFTER_CLOSE);
+    const reverted = shortsRevertedAt(ENABLED_AT);
+    expect(reverted).not.toBeNull();
+
+    // The losing short's rows are gone: the evidence no longer trips.
+    db.exec('DELETE FROM position_exits; DELETE FROM positions;');
+    const later = buildLiveShortsEvidence(getAutotradeConfig(), AFTER_CLOSE + 86_400_000, null, null);
+    expect(later).toMatchObject({ trades: [], defects: [], revertedAt: reverted });
+
+    // Switched on again: a new window, with nothing reverted in it.
+    setAutotradeConfig({ liveAllowNakedShort: true, liveShortsEnabledAt: reverted! + 60_000 });
+    expect(buildLiveShortsEvidence(getAutotradeConfig(), AFTER_CLOSE, null, null)?.revertedAt).toBeNull();
   });
 
   it('leaves them on when the losing short came before shorts were last switched on', () => {
