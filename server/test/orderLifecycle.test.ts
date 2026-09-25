@@ -8,6 +8,7 @@ import {
   INITIAL_STATE,
   IllegalTransitionError,
   type OrderState,
+  positionsWithWorkingClose,
 } from '../src/services/trading/orderLifecycle';
 
 describe('order lifecycle', () => {
@@ -66,5 +67,38 @@ describe('order lifecycle', () => {
     expect(err).toBeInstanceOf(IllegalTransitionError);
     expect((err as IllegalTransitionError).from).toBe('draft');
     expect((err as IllegalTransitionError).to).toBe('filled');
+  });
+});
+
+// One definition of "a close is working" for the positions sync and the
+// bracket-leg read (#147, on review 2026-09-25): a role='exit' row whose intent
+// is not terminal. A filled scale-out's row stays in the reconcile's pending
+// list while its position is open; it is not a working close.
+describe('positionsWithWorkingClose', () => {
+  const states: Record<number, OrderState | undefined> = {
+    1: 'acknowledged',
+    2: 'filled',
+    3: 'partially_filled',
+    4: 'cancelled',
+  };
+  const stateOf = (id: number) => states[id];
+
+  it('counts an exit whose intent is still live, and not one that is done', () => {
+    const rows = [
+      { role: 'exit', positionId: 10, intentId: 1 },
+      { role: 'exit', positionId: 20, intentId: 2 },
+      { role: 'exit', positionId: 30, intentId: 3 },
+      { role: 'exit', positionId: 40, intentId: 4 },
+    ];
+    expect([...positionsWithWorkingClose(rows, stateOf)].sort()).toEqual([10, 30]);
+  });
+
+  it('ignores entry rows and rows without a position, and counts an unknown intent as working', () => {
+    const rows = [
+      { role: 'entry', positionId: 50, intentId: 1 },
+      { role: 'exit', positionId: null, intentId: 1 },
+      { role: 'exit', positionId: 60, intentId: 99 },
+    ];
+    expect([...positionsWithWorkingClose(rows, stateOf)]).toEqual([60]);
   });
 });

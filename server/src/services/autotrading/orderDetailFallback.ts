@@ -1,6 +1,6 @@
 import { logAutotradeEvent } from '../../db/autotradeEvents';
 import { OrderIntentRecord } from '../../db/orders';
-import { webullOrderDetail, WebullOrderStatus } from '../../providers/webull/orders';
+import { isExitLeg, webullOrderDetail, WebullOrderLeg, WebullOrderStatus } from '../../providers/webull/orders';
 import { claimOncePerDay } from './oncePerDayEvents';
 
 // ---------------------------------------------------------------------------
@@ -137,6 +137,175 @@ export async function resolveUnlistedFromOrderDetail(
         },
         riskProfile,
       });
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// A FILLED LEG, ASKED FOR BY ITS OWN ID (2026-09-24, #147).
+//
+// A filled bracket entry stays pending while its position is open, and the
+// reconcile books the exit from the combo's legs as the ORDER LISTS report
+// them. The lists show a filled leg late: 4m43s to 5m02s after the sync first
+// found the shares gone (SMCI 2026-09-23, GRML 09-24). The sync's bracket
+// grace is four minutes, so it booked a quote first, and the correction found
+// the fill 30 to 50 seconds later. In that window the day's P&L, the halts and
+// the step-down all read the quote, and the tune advisor counted each one as
+// an execution defect. Order Detail by the LEG's own client_order_id answered
+// within seconds (GRML's stop: FILLED at 15.39). Asked with the entry's id, it
+// returns the MASTER alone, which is why the legs' ids are now stored at
+// placement.
+//
+// So once the sync has found the shares missing, the stored legs are asked
+// directly, and a FILLED answer is folded into the entry's `legs` in
+// `statuses`. The reconcile then books it exactly as it books a listed leg:
+// the same price, the same stop/target reason, one booking path. Only FILLED
+// counts; a leg read as working, cancelled or partial changes nothing, and the
+// sync's grace and the correction stay as they were for everything this does
+// not resolve.
+//
+// Gated on the sync's miss, because a position whose shares are still held
+// has no filled leg to find: without the gate this would spend a call per open
+// position per tick against a 2-per-2-seconds budget.
+// ---------------------------------------------------------------------------
+
+/** Exit legs looked up by Order Detail per reconcile tick. Two per position,
+ *  so two positions a tick; the stop is asked first. */
+export const LEG_DETAIL_LOOKUPS_PER_TICK = 4;
+
+export interface FilledBracketLegCandidate {
+  intent: OrderIntentRecord;
+  symbol: string;
+  positionId: number;
+  riskProfile: string | null;
+  takeProfitClientOrderId: string | null;
+  stopLossClientOrderId: string | null;
+  /** The sync's consecutive misses for these shares, for the journal. */
+  missStreak: number;
+  /** What the ledger still holds of the position. A leg fill is booked from
+   *  here only when it covers all of it (resolveFilledLegsFromOrderDetail). */
+  remainingQuantity: number;
+}
+
+/**
+ * Ask each candidate's stored exit legs by Order Detail, and fold a FILLED
+ * leg into its entry's status in `statuses`, where the reconcile books it.
+ * Read-only toward the broker. A candidate whose listed legs already show a
+ * FILLED exit is skipped: the lists answered.
+ *
+ * ONLY A WHOLE, PRICED FILL IS FOLDED (2026-09-25, on review). Nothing records
+ * that a leg read here was booked, and the booking takes min(filled, left), so
+ * a leg that fills less than the ledger still holds (a scale-out remainder's
+ * bracket while the sale itself is unbooked, an add-on's own bracket) would be
+ * booked again on the next tick while the gap stays open. And a FILLED reply
+ * with no price, or a price of 0, would book the position at 0 or at the
+ * entry row's original stop. Either is left to the listed legs, the sync and
+ * the correction pass, and journaled once a day, as is a lookup that fails.
+ */
+export async function resolveFilledLegsFromOrderDetail(
+  accountId: string,
+  candidates: FilledBracketLegCandidate[],
+  statuses: Map<string, WebullOrderStatus>,
+): Promise<void> {
+  let budget = LEG_DETAIL_LOOKUPS_PER_TICK;
+  for (const c of candidates) {
+    const listed = statuses.get(c.intent.idempotencyKey);
+    if (!listed || !listed.ok || !listed.found) continue;
+    if ((listed.legs ?? []).some((l) => isExitLeg(l) && l.status === 'FILLED')) continue;
+    const legs: { comboType: 'STOP_LOSS' | 'STOP_PROFIT'; clientOrderId: string }[] = [];
+    if (c.stopLossClientOrderId) legs.push({ comboType: 'STOP_LOSS', clientOrderId: c.stopLossClientOrderId });
+    if (c.takeProfitClientOrderId) legs.push({ comboType: 'STOP_PROFIT', clientOrderId: c.takeProfitClientOrderId });
+    for (const leg of legs) {
+      if (budget <= 0) return;
+      budget -= 1;
+      const detail = await webullOrderDetail(accountId, leg.clientOrderId);
+      // A failed read, or an id the broker does not know, is said once a day:
+      // either spends a lookup every tick, and neither should do so unseen.
+      if (!detail.ok || !detail.found) {
+        if (claimOncePerDay('live_bracket_leg_detail_unresolved', `${c.intent.id}:${leg.clientOrderId}`)) {
+          logAutotradeEvent({
+            symbol: c.symbol,
+            stage: 'execution',
+            action: 'live_bracket_leg_detail_unresolved',
+            detail: {
+              intentId: c.intent.id,
+              positionId: c.positionId,
+              leg: leg.comboType === 'STOP_LOSS' ? 'stop' : 'target',
+              clientOrderId: leg.clientOrderId,
+              error: !detail.ok ? (detail.error ?? 'unreadable') : 'not found: the broker does not know this leg id',
+            },
+            riskProfile: c.riskProfile,
+          });
+        }
+        continue;
+      }
+      if (detail.status !== 'FILLED') continue;
+      const price = detail.filledPrice;
+      const qty = detail.filledQty;
+      const whole = typeof qty === 'number' && qty >= c.remainingQuantity - 1e-9;
+      const priced = typeof price === 'number' && Number.isFinite(price) && price > 0;
+      if (!whole || !priced) {
+        if (claimOncePerDay('live_bracket_leg_detail_skipped', `${c.intent.id}:${leg.clientOrderId}`)) {
+          logAutotradeEvent({
+            symbol: c.symbol,
+            stage: 'execution',
+            action: 'live_bracket_leg_detail_skipped',
+            detail: {
+              intentId: c.intent.id,
+              positionId: c.positionId,
+              leg: leg.comboType === 'STOP_LOSS' ? 'stop' : 'target',
+              clientOrderId: leg.clientOrderId,
+              filledPrice: price ?? null,
+              filledQty: qty ?? null,
+              remainingQuantity: c.remainingQuantity,
+              reason: !priced
+                ? 'the broker reported the leg filled with no usable price'
+                : typeof qty !== 'number'
+                  ? 'the broker reported the leg filled with no filled quantity'
+                  : 'the leg filled fewer shares than the ledger still holds',
+            },
+            riskProfile: c.riskProfile,
+          });
+        }
+        // Filled is filled: the other leg of an OCO cannot fill as well.
+        break;
+      }
+      // Which leg filled is known from which of OUR ids answered, not from a
+      // label in the broker's reply, so the exit reason is positive.
+      const filled: WebullOrderLeg = {
+        comboType: leg.comboType,
+        status: 'FILLED',
+        filledQty: detail.filledQty,
+        filledPrice: detail.filledPrice,
+        brokerOrderId: detail.brokerOrderId,
+        clientOrderId: leg.clientOrderId,
+      };
+      statuses.set(c.intent.idempotencyKey, {
+        ...listed,
+        legs: [...(listed.legs ?? []).filter((l) => l.clientOrderId !== leg.clientOrderId), filled],
+      });
+      if (claimOncePerDay('live_bracket_leg_from_detail', String(c.intent.id))) {
+        logAutotradeEvent({
+          symbol: c.symbol,
+          stage: 'execution',
+          action: 'live_bracket_leg_from_detail',
+          detail: {
+            intentId: c.intent.id,
+            positionId: c.positionId,
+            leg: leg.comboType === 'STOP_LOSS' ? 'stop' : 'target',
+            clientOrderId: leg.clientOrderId,
+            filledPrice: detail.filledPrice ?? null,
+            filledQty: detail.filledQty ?? null,
+            missStreak: c.missStreak,
+            // What the lists still said about the legs when the detail
+            // answered: the lag this read exists to beat.
+            listedLegs: (listed.legs ?? []).filter(isExitLeg).map((l) => `${l.comboType ?? '?'}:${l.status ?? '?'}`),
+          },
+          riskProfile: c.riskProfile,
+        });
+      }
+      // One filled exit leg is the exit; an OCO does not fill both.
+      break;
     }
   }
 }
