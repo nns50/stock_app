@@ -2528,6 +2528,25 @@ Three checks are worth making when the rule proposes:
   Live trading card), on top of the book's own probation if that is still running. It
   is counted in shorts, not sessions, so a quiet red week does not use it up.
 
+**And a losing short book turns itself off** (2026-09-24). The tripwires were written down
+before any live short traded (the tape plan's rule C), and the app applies them itself:
+after the close, "Turn live shorts off" switches shorts off the first time any of these
+holds over the shorts since you last switched them on:
+- one closed at −1.5R or worse;
+- a short-side execution defect;
+- from 10 shorts, an average below −0.20R, or more than 0.40R below the replay of the
+  same shorts' own signals;
+- from 20 shorts, a leak on live `equity_short_red`.
+
+It is the one rule that acts without a shadow, because its only possible change is shorts
+off. When it trips, read why before switching shorts back on:
+- a stop that did not hold, or a defect: that is the short path, not the edge;
+- an average or a replay gap: that is the edge, or the execution of it;
+- a leak: that is red-tape shorts not paying on the live book.
+
+Switching them back on starts a new count and a new small-size window. The app never
+proposes that; it waits for you.
+
 Since 2026-09-12 that is enforced by **arithmetic, not by a label**. One rule (`leak_lever`)
 takes its field and its number from the leak scan's output rather than from literal code,
 and the scan's own score-band lever would have proposed lowering the live score floor while

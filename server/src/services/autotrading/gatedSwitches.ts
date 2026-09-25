@@ -1,7 +1,8 @@
+import { etToday } from '../../util/marketDate';
 import { AutotradeConfig, sanitizeAutotradeConfig } from '../../db/autotradeConfig';
 import type { MlRegimeReadiness } from '../mlRegimeReadiness';
 import type { EdgeLeakScanResult, LeakReport } from './edgeLeakScan';
-import type { ShortRedTapeGate, ShortShadowRecord } from './shortShadowRecord';
+import type { LiveShortReplay, ShortRedTapeGate, ShortShadowRecord } from './shortShadowRecord';
 import type { DollarCapKey } from './targetTune';
 
 // ---------------------------------------------------------------------------
@@ -87,6 +88,23 @@ export type SwitchProposalOnlyKey = 'liveAllowNakedShort';
 
 export const SWITCH_PROPOSAL_ONLY_KEYS: readonly SwitchProposalOnlyKey[] = ['liveAllowNakedShort'] as const;
 
+/** Keys the app may write in ONE direction only: off (2026-09-24, the tape
+ *  plan's PR 10). `liveAllowNakedShort` is an exposure key only the operator
+ *  turns on; the app may turn it off when the live short book trips a
+ *  pre-committed tripwire, and nothing may turn it on. `assertWritable`
+ *  accepts `false` for these and throws on any other value. */
+export const SWITCH_OFF_ONLY_KEYS: readonly SwitchProposalOnlyKey[] = ['liveAllowNakedShort'] as const;
+
+/** A patch that only switches off-only keys off: the one shape a tripwire may
+ *  write without a shadow (SwitchRule.tripwire). */
+export function isSwitchOff(patch: SwitchPatch): boolean {
+  const entries = Object.entries(patch);
+  return (
+    entries.length > 0 &&
+    entries.every(([k, v]) => (SWITCH_OFF_ONLY_KEYS as readonly string[]).includes(k) && v === false)
+  );
+}
+
 export type SwitchPatch = Partial<Pick<AutotradeConfig, SwitchWritableKey | SwitchProposalOnlyKey>>;
 
 /**
@@ -132,10 +150,15 @@ export function patchSettled(patch: SwitchPatch, config: AutotradeConfig, fromDa
  *  scan's levers are data read out of a scan result, so "the rule only writes
  *  what its literal says" is not something the type system can promise here. */
 export function assertWritable(patch: SwitchPatch): void {
-  for (const key of Object.keys(patch)) {
-    if (!(SWITCH_WRITABLE_KEYS as readonly string[]).includes(key)) {
-      throw new Error(`gated switches may not write ${key}`);
+  for (const [key, value] of Object.entries(patch)) {
+    if ((SWITCH_WRITABLE_KEYS as readonly string[]).includes(key)) continue;
+    // An off-only key is writable as false and as nothing else: the shorts
+    // switch can be turned off by a tripwire, never on by the app.
+    if ((SWITCH_OFF_ONLY_KEYS as readonly string[]).includes(key)) {
+      if (value === false) continue;
+      throw new Error(`gated switches may only switch ${key} off`);
     }
+    throw new Error(`gated switches may not write ${key}`);
   }
 }
 
@@ -190,6 +213,17 @@ export interface SwitchRule {
    * half. A rule left at the default is trusted with its own literals.
    */
   patchFromData?: boolean;
+  /**
+   * A TRIPWIRE acts on its first firing (2026-09-24, the tape plan's PR 10):
+   * no shadow. The shadow watches a rule behave before trusting it with a
+   * config write, and it asks for a shadow FIRING, so a revert whose trigger
+   * is rare would only ever propose on the one occasion it exists for. A
+   * tripwire may therefore write only a switch-off (`isSwitchOff`), the most
+   * conservative change there is, on a switch only the operator turns on;
+   * anything else it fires is refused at the write. The master flag and the
+   * kill switch still hold it, like any rule.
+   */
+  tripwire?: boolean;
 }
 
 /**
@@ -367,6 +401,111 @@ export interface GatedSwitchSnapshot {
   /** The last persisted short shadow record, or null if none has been
    *  computed (shortShadowRecordData.ts, once per session after the close). */
   shortShadow: ShortShadowEvidence | null;
+  /** The live short book since shorts were last switched on, or null while
+   *  they never have been (liveShortsEvidence.ts). */
+  liveShorts: LiveShortsEvidence | null;
+}
+
+/**
+ * The live short book since live shorts were last switched on (2026-09-24,
+ * the tape plan's PR 10): what the `shorts_revert` tripwires read. Everything
+ * counts from `liveShortsEnabledAt`, so switching shorts back on starts clean.
+ */
+export interface LiveShortsEvidence {
+  since: number;
+  sinceEtDate: string;
+  /** Closed live stock shorts entered since, with the R the goal sweep and the
+   *  scan read (collectBook), oldest first. */
+  trades: { symbol: string; etDate: string; r: number }[];
+  /** Execution defects on a live short position since (the scan's own per-row
+   *  classification of its execution catalog). */
+  defects: { label: string; symbol: string; etDate: string }[];
+  /** Each short's own signal replayed and paired with its realized R on the
+   *  same symbol-day (the after-close refresh), or null when no replay of this
+   *  window is persisted. `meanGapR` is live less replay. */
+  replay: { n: number; meanGapR: number | null } | null;
+  /** Whether the last scan lists the live `equity_short_red` bucket among its
+   *  leaks; null when it cannot say (no scan, no live book in it, or no live
+   *  short in the bucket). */
+  equityShortRedLeak: boolean | null;
+  /** When `shorts_revert` last turned this window's shorts off (its
+   *  `config_auto_applied` row, at or after `since`), or null. The window stays
+   *  tripped from then until the operator switches shorts on again, which
+   *  moves `since`: the trips themselves can drift back under their bars as
+   *  the replay, a superseded skip row or the scan moves (2026-09-24, review). */
+  revertedAt: number | null;
+}
+
+/** The tape plan's rule C, as numbers: any one trips `shorts_revert`. */
+export const SHORTS_REVERT = {
+  /** Any live short closed at or below this. */
+  worstR: -1.5,
+  /** From this many shorts, an average below `minMeanR`. */
+  meanFromTrades: 10,
+  minMeanR: -0.2,
+  /** From this many PAIRED shorts, live more than this below their replay. */
+  gapFromTrades: 10,
+  maxGapBelowReplayR: 0.4,
+  /** From this many shorts, a leak on live `equity_short_red`. */
+  leakFromTrades: 20,
+} as const;
+
+/** Float slack on the thresholds: an R of exactly −1.5 can arrive as
+ *  −1.4999…, and it is the trade the tripwire names. */
+const TRIP_EPS = 1e-9;
+
+/** Every tripwire the live short book has crossed, in words; empty when none. */
+export function shortsRevertTrips(e: LiveShortsEvidence): string[] {
+  const t = SHORTS_REVERT;
+  const trips: string[] = [];
+  // A trip stands for the rest of its window (2026-09-25, second review): one
+  // only PROPOSED (kill switch engaged, or the switches engine off) left shorts
+  // on, and once the evidence drifted back under the bars the rule went quiet
+  // with shorts still on. The operator's own switch-on starts a new window,
+  // and with it a clean record.
+  if (e.revertedAt !== null) {
+    trips.push(`the revert already tripped on ${etToday(e.revertedAt)} in this window and shorts are still on`);
+  }
+  for (const x of e.trades) {
+    if (x.r <= t.worstR + TRIP_EPS)
+      trips.push(`${x.symbol} (${x.etDate}) closed at ${signedR(x.r)} (trips at ${t.worstR}R)`);
+  }
+  for (const d of e.defects) trips.push(`a short-side execution defect: ${d.label} (${d.symbol}, ${d.etDate})`);
+  const n = e.trades.length;
+  const mean = n ? e.trades.reduce((sum, x) => sum + x.r, 0) / n : null;
+  if (n >= t.meanFromTrades && mean !== null && mean < t.minMeanR - TRIP_EPS) {
+    trips.push(`${n} live shorts average ${signedR(mean)} (trips below ${t.minMeanR}R from ${t.meanFromTrades})`);
+  }
+  if (e.replay && e.replay.n >= t.gapFromTrades && e.replay.meanGapR !== null) {
+    if (e.replay.meanGapR < -t.maxGapBelowReplayR - TRIP_EPS) {
+      trips.push(
+        `live shorts ran ${signedR(e.replay.meanGapR)} against their replay over ${e.replay.n} ` +
+          `(trips below -${t.maxGapBelowReplayR}R from ${t.gapFromTrades})`,
+      );
+    }
+  }
+  if (n >= t.leakFromTrades && e.equityShortRedLeak === true) {
+    trips.push(`the edge-leak scan lists live equity_short_red as a leak after ${n} shorts`);
+  }
+  return trips;
+}
+
+/** The live short book against every tripwire, in one line, tripped or not. */
+export function liveShortsReading(e: LiveShortsEvidence): string {
+  const t = SHORTS_REVERT;
+  const n = e.trades.length;
+  const mean = n ? e.trades.reduce((sum, x) => sum + x.r, 0) / n : null;
+  const worst = n ? Math.min(...e.trades.map((x) => x.r)) : null;
+  const gap = e.replay
+    ? `${signedR(e.replay.meanGapR)} against the replay over ${e.replay.n}`
+    : 'no replay of this window yet';
+  const leak = e.equityShortRedLeak === null ? 'unread' : e.equityShortRedLeak ? 'a leak' : 'no leak';
+  return (
+    `${n} live short${n === 1 ? '' : 's'} since ${e.sinceEtDate}: avg ${signedR(mean)} (trips below ${t.minMeanR}R ` +
+    `from ${t.meanFromTrades}), worst ${signedR(worst)} (trips at ${t.worstR}R); ${e.defects.length} short-side ` +
+    `defect${e.defects.length === 1 ? '' : 's'}; ${gap} (trips below -${t.maxGapBelowReplayR}R from ` +
+    `${t.gapFromTrades}); equity_short_red ${leak} (trips from ${t.leakFromTrades})`
+  );
 }
 
 /** The short shadow record as the `shorts` rule reads it: the three numbers
@@ -383,6 +522,10 @@ export interface ShortShadowEvidence {
   /** The red-tape bar (2026-09-24) against the shorts declined on red tapes;
    *  null on a record persisted before the split existed. */
   redTapeGate: ShortRedTapeGate | null;
+  /** The live shorts against the replay of their own signals (2026-09-24,
+   *  the tape plan's PR 10); null when shorts were never switched on, or on a
+   *  record persisted before the comparison existed. */
+  liveReplay: LiveShortReplay | null;
 }
 
 /** The paper book's stock shorts taken on a red tape, as the last persisted
@@ -536,6 +679,11 @@ export const freshSwitchState = (ruleId: string): SwitchState => ({
 
 export type GraduationVerdict = { graduated: true } | { graduated: false; blockers: string[] };
 
+/** Why a tripwire's firing is not applied when it is anything but a
+ *  switch-off: only that earns the skipped shadow. */
+export const TRIPWIRE_REFUSAL =
+  'a tripwire may only switch a key off without a shadow; this patch waits for the operator';
+
 /**
  * May this rule act yet?
  *
@@ -565,6 +713,9 @@ export function graduationVerdict(rule: SwitchRule, state: SwitchState): Graduat
     // read as graduated.
     return { graduated: false, blockers: ['adds exposure — only the operator applies this, by standing decision'] };
   }
+  // A tripwire acts on its first firing; the engine refuses anything but a
+  // switch-off from one (TRIPWIRE_REFUSAL).
+  if (rule.tripwire) return { graduated: true };
   if (state.graduatedAt !== null) return { graduated: true };
   const blockers: string[] = [];
   if (state.evaluations < SHADOW_MIN_EVALUATIONS) {
@@ -693,7 +844,13 @@ export function evaluateGatedSwitches(input: EvaluateInput): GatedSwitchResult {
     // calling itself safe. Refusals do not make the rule unmet — the proposal
     // still reaches the operator, carrying exactly why the app would not do it
     // itself.
-    const exposureRefusals = firing ? applyRefusals(firing.patch, snapshot.config, rule.patchFromData === true) : [];
+    const exposureRefusals = firing
+      ? [
+          ...applyRefusals(firing.patch, snapshot.config, rule.patchFromData === true),
+          // Skipping the shadow is earned only by a switch-off.
+          ...(rule.tripwire && !isSwitchOff(firing.patch) ? [TRIPWIRE_REFUSAL] : []),
+        ]
+      : [];
     const graduation = graduationVerdict(rule, state);
     const canApply =
       met && graduation.graduated && enabled && !snapshot.config.killSwitch && exposureRefusals.length === 0;
@@ -904,11 +1061,44 @@ export const GATED_SWITCH_RULES: SwitchRule[] = [
       if (!paperShortRedPasses(paper)) return null;
       // Already on: nothing to propose, or the rule would ask every session.
       if (s.config.liveAllowNakedShort) return null;
+      // The last live window tripped the revert (shorts_revert): the app does
+      // not ask to turn shorts back on after turning them off. Only the
+      // operator's own switch-on starts a new window.
+      if (s.liveShorts && (s.liveShorts.revertedAt !== null || shortsRevertTrips(s.liveShorts).length > 0)) return null;
       // The evidence covers red tapes only; with the red-tape rule switched
       // off, turning shorts on would reach tapes it says nothing about.
       if (!s.config.liveShortsRedTapeOnly) return null;
       return { patch: { liveAllowNakedShort: true }, evidence: shortsSwitchReading(r, paper) };
     },
-    reading: (s) => (s.shortShadow ? shortsSwitchReading(s.shortShadow, paperShortRedOf(s.leakScan)) : null),
+    reading: (s) => {
+      if (!s.shortShadow) return null;
+      const held = s.liveShorts && (s.liveShorts.revertedAt !== null || shortsRevertTrips(s.liveShorts).length > 0);
+      return (
+        shortsSwitchReading(s.shortShadow, paperShortRedOf(s.leakScan)) +
+        (held ? '; held: the last live short window tripped the revert — only your own switch-on starts a new one' : '')
+      );
+    },
+  },
+  {
+    id: 'shorts_revert',
+    label: 'Turn live shorts off (a losing short book)',
+    direction: 'safe',
+    // Acts on its first firing (SwitchRule.tripwire): a shadow would make the
+    // first trip, the one this rule exists for, a proposal.
+    tripwire: true,
+    criterion:
+      'live shorts are on AND, over the shorts since they were switched on, any of: one closed at -1.5R or worse; ' +
+      'a short-side execution defect; from 10 shorts, an average below -0.20R, or live more than 0.40R below ' +
+      'the replay of the same shorts; from 20, a leak on live equity_short_red',
+    // The tape plan's rule C (2026-09-23), pre-committed before any live
+    // short traded. Evaluated after the close, like every rule: the day's
+    // other shorts keep their own stops, and the daily drawdown halt covers
+    // the book intraday.
+    evaluate: (s) => {
+      if (!s.config.liveAllowNakedShort || !s.liveShorts) return null;
+      const trips = shortsRevertTrips(s.liveShorts);
+      return trips.length ? { patch: { liveAllowNakedShort: false }, evidence: trips.join('; ') } : null;
+    },
+    reading: (s) => (s.config.liveAllowNakedShort && s.liveShorts ? liveShortsReading(s.liveShorts) : null),
   },
 ];

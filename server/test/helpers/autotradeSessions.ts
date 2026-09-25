@@ -19,6 +19,9 @@ export interface SeededTrade {
   r: number;
   symbol?: string;
   tags?: string[];
+  /** Default long. A short enters at 100 with its stop at 105, so its exit is
+   *  100 − 5 × r (2026-09-24, for the short tripwires). */
+  side?: 'long' | 'short';
 }
 
 export interface SeedSessionsInput {
@@ -41,16 +44,17 @@ export function seedClosedAutotradeSessions(input: SeedSessionsInput): number {
     trades.forEach((t, i) => {
       const exitTime = t.exitTime ?? '15:30';
       const exitDate = t.exitDate ?? date;
+      const short = t.side === 'short';
       rows.push({
         assetType: 'stock',
         symbol: t.symbol ?? `SYM${n % 7}`,
-        side: 'long',
+        side: short ? 'short' : 'long',
         quantity: 10,
         entryPrice: 100,
         entryDate: date,
         entryTime: t.entryTime,
-        stopPrice: 95,
-        targetPrice: 110,
+        stopPrice: short ? 105 : 95,
+        targetPrice: short ? 90 : 110,
         status: 'closed',
         tags: t.tags ?? ['live', 'autotrade'],
         createdAt: at(date, t.entryTime),
@@ -58,7 +62,7 @@ export function seedClosedAutotradeSessions(input: SeedSessionsInput): number {
         exits: [
           {
             quantity: 10,
-            exitPrice: Math.round((100 + 5 * t.r) * 100) / 100,
+            exitPrice: Math.round((short ? 100 - 5 * t.r : 100 + 5 * t.r) * 100) / 100,
             exitDate,
             createdAt: at(exitDate, exitTime) + i, // strictly increasing inside a session
           },

@@ -7,6 +7,7 @@ import { initDb, db } from '../src/db';
 import { defaultAutotradeConfig, setAutotradeConfig } from '../src/db/autotradeConfig';
 import { getLastShortShadowRecord } from '../src/db/shortShadowRecords';
 import { Candle } from '../src/providers/types';
+import { seedClosedAutotradeSessions } from './helpers/autotradeSessions';
 import {
   computeShortShadowReport,
   loadSkippedShorts,
@@ -150,8 +151,41 @@ describe('refreshShortShadowRecordAfterClose', () => {
       winRatePct: 100,
       gate: row!.report.gate,
       redTapeGate: row!.report.redTapeGate,
+      // Shorts were never switched on, so there is no live window to replay.
+      liveReplay: null,
     });
     expect(shortShadowEvidenceOf(null)).toBeNull();
+  });
+
+  // 2026-09-24 (the tape plan's PR 10): once live shorts are on, the same
+  // refresh replays each live short's own signal and sets it against what the
+  // short realized, and the switch's evidence carries the comparison.
+  it('persists the live shorts against the replay of their own signals once shorts are on', async () => {
+    db.exec('DELETE FROM position_exits; DELETE FROM positions;');
+    const enabledAt = T0 - 60 * 60_000;
+    setAutotradeConfig({ liveAllowNakedShort: true, liveShortsEnabledAt: enabledAt });
+    // NVDA's live short lost 1.6R; its own signal replays to the 2R target.
+    seedClosedAutotradeSessions({
+      sessions: { '2026-09-10': [{ entryTime: '09:35', exitTime: '10:30', r: -1.6, symbol: 'NVDA', side: 'short' }] },
+    });
+    db.prepare(
+      "INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) VALUES ('NVDA','execution','live_order_placed',?,NULL,?)",
+    ).run(JSON.stringify({ side: 'sell', signalEntry: 100, stop: 102, quantity: 10 }), T0);
+
+    const row = await refreshShortShadowRecordAfterClose(AFTER_CLOSE);
+    const expected = {
+      since: enabledAt,
+      n: 1,
+      meanLiveR: expect.closeTo(-1.6, 9),
+      meanReplayR: expect.closeTo(2, 5),
+      meanGapR: expect.closeTo(-3.6, 5),
+      unpaired: 0,
+    };
+    expect(row?.report.liveReplay).toEqual(expected);
+    expect(shortShadowEvidenceOf(row)?.liveReplay).toEqual(expected);
+    // One provider for the whole refresh.
+    expect(mockGetProvider).toHaveBeenCalledTimes(1);
+    db.exec('DELETE FROM position_exits; DELETE FROM positions;');
   });
 
   // 2026-09-24: the split the red-tape bar reads, asserted on the record the
