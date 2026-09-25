@@ -22,11 +22,21 @@ import {
   parseBrokerEquityFills,
   isOptionOrder,
   listBrokerEquityFills,
+  listBrokerFills,
   nextPageCursor,
 } from '../src/providers/webull/orders';
 import type { WebullOpenOrder } from '../src/providers/webull/orders';
 import { decideExitCorrection } from '../src/services/exitPriceBackfill';
 import type { OrderIntent } from '../src/services/trading/guardrails';
+import {
+  AMC_COVER_ENVELOPE,
+  AMC_COVER_ID,
+  AMC_COVER_STOP_ENVELOPE,
+  AMC_SHORT_ENTRY_ENVELOPE,
+  AMC_SHORT_ENTRY_ID,
+  DELL_SLEEVE_CLOSE_ENVELOPE,
+  DELL_SLEEVE_CLOSE_ID,
+} from './handTradeFixtures';
 
 const orig = { ...config.webull };
 afterEach(() => {
@@ -1866,5 +1876,85 @@ describe('parseBrokerEquityFills', () => {
         filledAt: Date.parse('2026-09-21T13:41:48.045Z'),
       },
     ]);
+  });
+
+  // The operator's AMC test short (2026-09-24), as the history returned it.
+  // The entry's side is SHORT: kept since 2026-09-24 so a matcher can see a
+  // short opened again inside its window, and never a close to anything that
+  // books one (those select BUY or SELL). The cover is the BUY take-profit leg
+  // of an OCO; its stop sibling was cancelled unfilled.
+  it("reads the real short's entry and its cover, and nothing else", () => {
+    expect(parseBrokerEquityFills([AMC_SHORT_ENTRY_ENVELOPE, AMC_COVER_ENVELOPE, AMC_COVER_STOP_ENVELOPE])).toEqual([
+      {
+        clientOrderId: AMC_SHORT_ENTRY_ID,
+        comboType: 'NORMAL',
+        orderType: 'LIMIT',
+        side: 'SHORT',
+        symbol: 'AMC',
+        filledQty: 1,
+        filledPrice: 2.83,
+        filledAt: 1790257530583,
+      },
+      {
+        clientOrderId: AMC_COVER_ID,
+        comboType: 'STOP_PROFIT',
+        orderType: 'LIMIT',
+        side: 'BUY',
+        symbol: 'AMC',
+        filledQty: 1,
+        filledPrice: 2.82,
+        filledAt: Date.parse('2026-09-24T13:52:53.566Z'),
+      },
+    ]);
+  });
+});
+
+describe('listBrokerFills', () => {
+  const cfg = () => Object.assign(config.webull, { appKey: 'k', appSecret: 's', region: 'us' });
+
+  it('reads the stock and the options fills from ONE paged history read', async () => {
+    cfg();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify([
+          AMC_SHORT_ENTRY_ENVELOPE,
+          AMC_COVER_ENVELOPE,
+          AMC_COVER_STOP_ENVELOPE,
+          DELL_SLEEVE_CLOSE_ENVELOPE,
+        ]),
+    } as Response);
+
+    const r = await listBrokerFills('ACC1');
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/openapi/trade/order/history');
+    expect(r.ok).toBe(true);
+    // The short sale that opened it too (side SHORT), and the cover.
+    expect(r.equity.map((f) => f.clientOrderId)).toEqual([AMC_SHORT_ENTRY_ID, AMC_COVER_ID]);
+    expect(r.option).toEqual([
+      expect.objectContaining({
+        clientOrderId: DELL_SLEEVE_CLOSE_ID,
+        side: 'SELL',
+        positionIntent: 'SELL_TO_CLOSE',
+        underlying: 'DELL',
+        optionType: 'call',
+        strike: 575,
+        expiration: '2026-09-25',
+        filledPrice: 4.95,
+      }),
+    ]);
+  });
+
+  it('reads nothing and says why when Webull is not configured, or the read fails', async () => {
+    Object.assign(config.webull, { appKey: '', appSecret: '' });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    expect(await listBrokerFills('ACC1')).toMatchObject({ ok: false, equity: [], option: [] });
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    cfg();
+    fetchSpy.mockResolvedValue({ ok: false, status: 500, text: async () => 'boom' } as Response);
+    expect(await listBrokerFills('ACC1')).toMatchObject({ ok: false, equity: [], option: [] });
   });
 });

@@ -89,6 +89,11 @@ export const LIVE_ACTIONS = new Set([
   'position_quantity_drift',
   'position_reconcile_skipped',
   'position_reconciled_from_broker',
+  // handExitCorrection.ts: the broker's own fill for a position the app did
+  // not open (the operator's own trades, and the journal's copies of the
+  // options sleeve's contracts).
+  'hand_exit_corrected',
+  'hand_exit_correction_skipped',
   'webull_sync_failed',
   'webull_sync_recovered',
   'split_detected',

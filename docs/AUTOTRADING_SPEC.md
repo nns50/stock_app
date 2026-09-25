@@ -14258,7 +14258,8 @@ action is in the attribution's once-a-day skip classes.
   extremes, counts a target touch as a fill, and skips several live gates. Changing it
   moves those records too, so it waits for the operator.
 - How Webull reports a stock short in its positions has never been captured. A one-share
-  test short and `npm run capture:broker` would settle it.
+  test short and `npm run capture:broker` would settle it. (Settled on 2026-09-24 by the
+  operator's 1-share AMC short: see "2026-09-24 (sixth)".)
 - The close's check reads the holding before the bracket's legs are cancelled, so a leg
   that part-fills between the two is not in it. The broker's reversal refusal is the
   backstop, and the next tick re-reads the holding. This predates the change: `naked_short`
@@ -15069,3 +15070,141 @@ short buckets are dated from 2026-09-24, the first day of live-labeled rows.
   - a paper-only bucket is reported unjudged.
 - **Mutations that fail:** inverting the option lean, filing a paper short as a long,
   dropping the paper-only buckets, and giving every one-sided bucket the lever.
+
+## 2026-09-24 (sixth) — a trade the app did not open is booked at its fill too
+
+**What the 1-share test short showed (task #126).** The operator shorted 1 AMC at 09:45 ET
+and covered it by hand at 09:52. Read through the deployed app's read-only probes, the audit
+in "2026-09-23 (twenty-eighth)" read the broker correctly:
+- **The position.** Webull reports a short as `quantity: "-1"`: a negative number in a
+  string, with no side field. `cost_price` stays positive (2.83) while `cost` and
+  `market_value` go negative. The mapper reads side `short`, quantity 1, entry 2.83. It
+  reads `cost_price` before `cost`, so the negative `cost` never becomes the entry. The
+  sync imported the row as a short, tagged `webull`.
+- **The orders.** The entry's side is `SHORT`, the vocabulary the app sends and parses.
+  The cover was a BUY one-cancels-other: the take-profit leg (`combo_type` STOP_PROFIT, a
+  limit) filled at 2.82 at 09:52:53 and cancelled its STOP_LOSS sibling.
+- **The close.** The sync closed the row as a short 21 seconds after the cover, with a
+  short's sign (entry minus exit).
+
+That settles the open question in the twenty-eighth section's "Not fixed here". The test
+also found the one thing that was wrong. **The close was booked at a $2.805 quote, not the
+$2.82 fill, and nothing would ever correct it.** The journal read +$0.025 where the trade
+made +$0.01.
+
+**Why.** The stock exit correction (`stockExitCorrection.ts`) starts from the position's
+entry order, and a position the sync imported has none. So every trade the app did not
+open kept its quote for good. There are two kinds:
+- **The operator's own trades.**
+- **The journal's copies of the options sleeve's contracts.** The sleeve keeps its own
+  table, so the sync imports each of its contracts into the journal as well, and closes
+  that copy at a quote too. The sleeve's own table is booked at its fills; the copy is
+  not.
+
+**How much, on the 2026-09-23 copy.**
+- 137 exits carry the sync's estimate note: 78 on imported option rows, 22 on imported
+  stock rows, and the rest on the app's own positions.
+- Inside the broker's seven-day history, 25 of them are on imported rows: 24 options and 1
+  stock.
+- 14 of the 24 are copies of sleeve contracts (same contract, quantity and entry price as
+  a sleeve position). Booked at their quotes they sum to +$146. At the sleeve's own fills
+  they sum to +$1,162. The errors run both ways. DELL's 575 call on 09-23 read +$330 in
+  the journal for a stop that lost $165. INTC's 119 call on 09-21 read +$225 for a +$1,355
+  close.
+- The other 10 are the operator's own option trades, whose true fills the database does
+  not hold.
+
+**What it touched.** The loop reads its own tables, so none of these rows reached its
+sizing, its halts or the daily goal (the loop's halts read `strategyDayFor`, autotrade
+rows only). They reached what the operator reads: the Journal page, its analytics, the
+equity curve and the tax export. They also reach one guardrail: the Trade page's
+daily-loss check for a hand order, which takes the worse of the broker's figure and every
+exit the journal dates today (`realizedTodayFromBook`), hand exits included. There a
+corrected fill is the more accurate input. (Corrected before merge, on review: this
+paragraph used to say no halt read them.)
+
+**Fixed.** A pass in the loop books these closes at the broker's fills
+(`correctEstimatedHandExits` in `handExitCorrection.ts`). It runs right after the stock
+correction, for the live account.
+- **Which rows.** A sync estimate on a position tagged `webull` and not `live`, with no
+  `source_intent_id` and no entry order in `autotrade_live_orders`
+  (`listSyncEstimatedHandExits`, the complement of the stock pass's query).
+- **Stocks** are matched by `matchSaleOutsideBracket`, the function the stock pass uses
+  for a hand sale: closing-side fills (a BUY for a short), oldest first, adding up exactly
+  to the booked quantity. The app's own orders never count, since the app's positions
+  share this table and book those.
+- **Options** are matched by exact contract (underlying, call or put, strike,
+  expiration) on the closing side. An order the broker marks as opening (`…_TO_OPEN`)
+  never counts. The app's own orders DO count: the sleeve's close is what closed the
+  contract the copy records (`matchHandOptionClose`).
+- **The window.** An imported row has no entry date, so its lower bound is the import,
+  less the 60-second clock slack: the sync saw the position held then, so whatever closed
+  it filled later. The upper bound is when the sync booked the close, plus the same slack.
+  A later exit of the same position reads only fills after the previous exit was booked.
+- **One history read** (`listBrokerFills`) returns the stock and the options fills
+  together, so a pass reads the pages once.
+- **The outcome.**
+  - A match rewrites the price, and for a stock the reason the fill proves (a stop, a
+    target, or `manual`). It notes the correction and writes `hand_exit_corrected` with
+    the fills and the P&L before and after.
+  - A fill that matches the quote to the cent is noted as confirmed.
+  - No match by the end of the close's day leaves the estimate, and says so once
+    (`hand_exit_correction_skipped`, with the fills the history held).
+  - Corrected fills are claimed in both passes: the stock pass's claimed set
+    (`fillsClaimedByCorrections`) now also reads `hand_exit_corrected`.
+- **Cadence.** Like the stock pass: a new estimate on the next tick, the rest at most every
+  15 minutes, and no history read while no such estimate exists. The Webull client paces
+  the history endpoint and backs off on 429, so the second read in a tick costs seconds,
+  not refusals.
+- Both actions are filed under the live book on Recent activity.
+
+**Not covered.**
+- **Accounts other than the live account.** The background sync can watch several; this
+  pass reads `liveAccountId` only.
+- **Anything older than the broker's seven-day history.** On the 09-23 copy that is 75 of
+  the 100 imported estimates, which stay estimates.
+- **Spreads.** Their per-leg fills are not reported.
+- **Closes that do not add up.** That includes a position traded again in the same
+  window, and two positions in the same contract at once, which the broker reports as one
+  holding. An ambiguous set leaves the estimate rather than guessing, and the skip row
+  lists the fills.
+  - **One round trip or none** (added before merge, on review). The sync misses a round
+    trip that finishes between two of its reads, so a window can hold two: the operator
+    covers a short at 2.82, shorts again, and covers at 2.70 before the sync books the
+    exit; or the options sleeve buys and sells the contract a hand row holds. The match
+    stopped at the first close that made up the quantity, so it booked 2.82 and claimed
+    that fill. Now, once the quantity is made up, another closing fill still in the window,
+    or the position opened again after the first matched fill, leaves the estimate. This
+    holds for both matchers (`matchSaleOutsideBracket`, `matchHandOptionClose`), so the
+    app's own stock pass gets it too. The stock fills now keep a short sale (side
+    `SHORT`), so a short opened again is visible; no closing-side filter selects it.
+
+**Pre-committed check (the first session after deploy):**
+- AMC's row (#708) reads 2.82, with one `hand_exit_corrected` row, if the deploy lands
+  while the 2026-09-24 close is still inside the seven-day history.
+- The DELL copy (#691) reads 4.95, if the deploy lands while 2026-09-23 is still inside the
+  history.
+- Every imported estimate inside the window ends corrected, confirmed, or with one skip
+  row once its day is over.
+
+**Tests (each mutation-checked; 20 mutations, all caught):**
+- **AMC end to end.** The real position row goes through the real import and the real
+  close sync, which closes it at a 2.805 quote. Then the pass books the cover, parsed from
+  the broker's own envelopes, at 2.82 as a `target`. P&L is +$0.01 and `pnlDelta` −$0.01.
+  The row leaves the candidates and is filed under the live book.
+- **DELL.** The copy is booked at the sleeve's own close (an app order): $4.95, −$165, not
+  +$330.
+- **The app's own positions.** A `live`-tagged row, an adopted row, a materialized row and
+  a hand-logged row are never read, and no history read happens for them.
+- **The app's own stock orders** are never booked to a hand row. The row is said once, the
+  day after, and not again after a restart.
+- **The window and claims.** A fill before the import is not taken. A position closed in
+  two pieces books each piece at its own fill. A fill the stock pass booked is not reused,
+  and one this pass books is claimed for the stock pass.
+- **The rest.** Confirmation to the cent; the throttle and a failed read; account and
+  seven-day scope; the pure option matcher (exact contract, closing side, `_TO_OPEN`,
+  overshoot and shortfall, the window, claims).
+- **The loop** calls the pass after the sync, only with a live account, and a throw is
+  journaled without stopping the tick.
+- **The parsers.** The real rows parse: the short's `SHORT` entry is no fill, and the
+  cover is. `listBrokerFills` returns both kinds from one read.
