@@ -2603,6 +2603,18 @@ because the loop is the only caller that is always flat by the bell, so it is
   final say on any order placed. For stocks, the nightly scan counts these refusals
   as their own untaken class, with `liveMaxOrdersPerDay` as the setting that would
   admit them.
+  **How many short-dated options it holds at once** (since 2026-09-25): with
+  short-dated options on, up to the sleeve's own slot cap
+  (`optionsMaxConcurrentPositions`, 2 in production). The count includes open
+  positions, entry orders still working at the broker, and this tick's placements.
+  It is checked before every candidate, so one tick cannot open past the cap and a
+  second position can open beside a first. Until then the rule was one at a time,
+  checked once per tick against open positions only: on 2026-09-23 two opened in the
+  same tick three times, and a second could never open beside a first. With no sleeve
+  cap set (0, sharing the book's slots) it stays one at a time. A refusal is
+  journaled `short_dated_position_already_open`, once per tick, with how many
+  candidates it refused and what holds the slots. The paper options book follows the
+  same rule, so its record from this date on is a two-slot record.
   The options sleeve's **exposure ceiling** is the same `liveMaxExposurePct` × equity
   the equity sleeve uses; it had stayed pinned at 100% of equity while the equity
   sleeve's moved to 190%, which shut the options sleeve whenever the stock book held
