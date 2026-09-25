@@ -1,6 +1,8 @@
 import { listPositions, Position } from '../../db/positions';
 import { initialRiskOf, realizedPnlOf } from '../pnl';
 import { listLiveOptionsPositions, liveOptionsPnl, LiveOptionsPosition } from '../../db/autotradeLiveOptionsPositions';
+import { liveOptionsEntryPlacedAt } from '../../db/autotradeLiveOptionsOrders';
+import { entryIntentIdForPosition, getLiveOrder } from '../../db/autotradeLiveOrders';
 import { listPaperPositions, paperRealizedPnl, PaperPosition } from '../../db/autotradePaperPositions';
 import { listOptionsPaperPositions, OptionsPaperPosition } from '../../db/autotradeOptionsPaperPositions';
 import { optionsPaperRealizedPnl } from './optionsExecute';
@@ -561,6 +563,15 @@ function attributesForLiveBook(
     const entryAt = p.entryTime && p.entryDate ? etDateTimeToMs(p.entryDate, p.entryTime) : p.createdAt;
     const minute = entryAt === null ? null : etMinuteOf(entryAt);
     const etDate = p.entryDate ?? etToday(p.createdAt);
+    // The tape the entry was decided against: the reading in force when its
+    // order went out (2026-09-24, on review). `entryTime` is HH:MM, floored to
+    // the minute, and the tick journals its reading seconds before it places:
+    // on a tick where the reading changed, the floored time came before the
+    // tick's own row, so a long placed at 10:08:20 on a reading that turned red
+    // at 10:08:03 read as mixed, and the day's first entry read no tape at all.
+    // Those are exactly the ticks the gate acts on.
+    const intentId = entryIntentIdForPosition({ id: p.id, sourceIntentId: p.sourceIntentId });
+    const tapeAt = (intentId === null ? undefined : getLiveOrder(intentId)?.createdAt) ?? entryAt;
     const ext = minute === null ? undefined : extensions.get(extensionKey('live', p.symbol, etDate, minute));
     out.set(`pos:${p.id}`, {
       id: `pos:${p.id}`,
@@ -580,7 +591,7 @@ function attributesForLiveBook(
       vwapExtPct: ext?.vwapExtPct ?? null,
       pctOfRange: ext?.pctOfRange ?? null,
       stopWidthUsd: liveStopWidthUsd(p),
-      marketTape: tapeAlignment(directionAt(directions, etDate, entryAt), p.side),
+      ...tapeFieldsOf(directions, etDate, tapeAt, p.side),
     });
   }
   for (const p of liveOptionsClosed) {
@@ -609,7 +620,9 @@ function attributesForLiveBook(
       // An option's stop is on premium; a width in dollars per share means
       // nothing for it.
       stopWidthUsd: null,
-      marketTape: tapeAlignment(directionAt(directions, etDate, p.entryAt), leanOfOption(p.side)),
+      // Placed against the reading in force when the order went out, not when
+      // its fill was booked (which can be ticks later): see the stock twin.
+      ...tapeFieldsOf(directions, etDate, liveOptionsEntryPlacedAt(p.id) ?? p.entryAt, leanOfOption(p.side)),
     });
   }
   return out;
@@ -651,7 +664,7 @@ function attributesForPaperBook(
       vwapExtPct: ext?.vwapExtPct ?? null,
       pctOfRange: ext?.pctOfRange ?? null,
       stopWidthUsd: paperStopWidthUsd(p),
-      marketTape: tapeAlignment(directionAt(directions, etDate, p.entryAt), p.side === 'sell' ? 'short' : 'long'),
+      ...tapeFieldsOf(directions, etDate, p.entryAt, p.side === 'sell' ? 'short' : 'long'),
     });
   }
   for (const p of optionsPaper) {
@@ -675,7 +688,7 @@ function attributesForPaperBook(
       vwapExtPct: null,
       pctOfRange: null,
       stopWidthUsd: null,
-      marketTape: tapeAlignment(directionAt(directions, etDate, p.entryAt), leanOfOption(p.side)),
+      ...tapeFieldsOf(directions, etDate, p.entryAt, leanOfOption(p.side)),
     });
   }
   return out;
@@ -684,6 +697,20 @@ function attributesForPaperBook(
 /** A call leans long the underlying and a put short it. */
 function leanOfOption(side: 'call' | 'put'): Lean {
   return side === 'call' ? 'long' : 'short';
+}
+
+/** One entry's tape fields, derived once for every collector: the reading in
+ *  force at the entry, the side it leaned, and the alignment read from both
+ *  (tapeAlignment), so the `marketTape` and `marketTapeBySide` cuts cannot
+ *  disagree about a trade. */
+function tapeFieldsOf(
+  directions: DirectionIndex,
+  etDate: string,
+  at: number | null,
+  lean: Lean,
+): Pick<LeakTrade, 'lean' | 'tapeDirection' | 'marketTape'> {
+  const tapeDirection = directionAt(directions, etDate, at);
+  return { lean, tapeDirection, marketTape: tapeAlignment(tapeDirection, lean) };
 }
 
 /**
@@ -1522,6 +1549,11 @@ export interface EdgeLeakScanOptions {
   lookbackSessions?: number;
   books?: LeakBook[];
   now?: number;
+  /** The market-direction readings to place each entry against. Defaults to the
+   *  journal's `market_direction_read` rows over the window; a caller that has
+   *  rebuilt the readings for sessions before those rows existed hands its own
+   *  (the tape plan's backfill, run against a copy of the database). */
+  directions?: DirectionIndex;
 }
 
 /** The one call a route or the routine makes. */
@@ -1541,7 +1573,7 @@ export function runEdgeLeakScanFromDb(opts: EdgeLeakScanOptions = {}): EdgeLeakS
   // One scan of the journal, read by both books — the index is keyed by book,
   // so each takes its own rows out of it.
   const { rows: extensions, quality: extensionQuality } = extensionIndex(windowStart);
-  const directions = directionIndex(windowStart);
+  const directions = opts.directions ?? directionIndex(windowStart);
   const live = joinLeakTrades(
     liveCollected,
     attributesForLiveBook(

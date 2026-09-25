@@ -1519,8 +1519,16 @@ equally-weighted cards in the order they happened to be built:
   (options). The reading itself is journaled as `market_direction_read` each time its
   direction or its hold changes, whether the gate is on or off, and it shows on the
   Monitoring card's Last cycle. A row is therefore not a flip: count flips as changes of
-  `direction` between consecutive rows. The edge-leak scan cuts both books by it (**Market direction at entry**: with,
-  against or mixed). The paper-vs-live attribution files the paper entries the gate
+  `direction` between consecutive rows. The edge-leak scan cuts both books by it in two
+  ways:
+  - **Market direction at entry**: with, against or mixed.
+  - **Side and market direction at entry** (since 2026-09-25): the same reading split
+    by what the entry was and which way it leaned, for example `equity_short_red` (a
+    stock short on a broad red day) or `options_long_red` (a call on one). The live
+    book takes no stock shorts, so the short buckets are paper's alone. They are
+    reported with live n = 0 and never judged.
+
+  The paper-vs-live attribution files the paper entries the gate
   refused under their own class, so what the gate costs or saves is measured on paper
   rather than assumed. The thresholds and the record they were chosen from are in the
   [Strategy Playbook](STRATEGY_PLAYBOOK.md).

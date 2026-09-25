@@ -15013,3 +15013,59 @@ trades show the exits work).
   - dropping the risk check's seed;
   - dropping the one-slot fallback;
   - loosening `>=` to `>`.
+
+## 2026-09-25 (second) — the edge-leak scan reads the tape by side
+
+**Why.** The scan's market-direction cut files each entry `with`, `against` or `mixed`.
+`with` pools a short on a red day with a long on a green one, so the cut cannot say
+whether shorts pay on red days. That is the question the tape plan turns on: puts on
+red days now, and red-day-only stock shorts behind the operator's word.
+
+**What changed.**
+- **Two new fields on each trade.** `LeakTrade` gains `lean` and `tapeDirection`. One
+  helper (`tapeFieldsOf`) derives both, plus `marketTape` from them through
+  `tapeAlignment`, for all four collectors: live stock, live options, paper stock and
+  paper options. So the two tape cuts cannot disagree about a trade.
+- **A new dimension, `marketTapeBySide`**, bucketed `${asset}_${long|short}_${red|mixed|green}`.
+  A missing or unknown reading files nothing, as before.
+  - **Both books, one bar.** Buckets only the paper book has are reported with live n = 0
+    and the paper figures as the control, and they are never judged
+    (`Dimension.controlOnlyBuckets`). The live book takes no stock shorts, so without this
+    every short bucket would be invisible.
+  - **Levers.** Buckets that lean against the tape reuse the gate's lever. The others
+    have none.
+- **Injectable readings.** `EdgeLeakScanOptions.directions` accepts a rebuilt reading
+  index, for the tape plan's backfill against a copy of the database. It defaults to the
+  journal's rows.
+- **A live entry is placed by when its order went out** (added before merge, on review).
+  The loop journals the tick's reading seconds before it places. A live stock entry's
+  `entryTime` is HH:MM, floored to the minute, so on a tick where the reading changed the
+  floored time came before the tick's own row: a long placed at 10:08:20 on a reading
+  that turned red at 10:08:03 read as mixed, and the day's first entry read no tape at
+  all. A live option's `entry_at` is when its fill was booked, which can be ticks later.
+  Both now read the tape at their entry order's `created_at` (the stock order through
+  `entryIntentIdForPosition`, the option's through `liveOptionsEntryPlacedAt`), falling
+  back to the old time when no order is linked. Those are exactly the ticks the gate acts
+  on. Paper entries already carry millisecond times.
+
+**What did not change.** Every existing bucket and verdict, except that a live entry
+placed seconds after a reading changed now files under the reading it was placed on (in
+`marketTape` too, since both cuts share `tapeFieldsOf`). Adding a cut draws from the
+scan's shared bootstrap stream, so an interval computed after it (the stop-width cut, the
+attribution) can move by a rounding step, once. Every existing test passed unchanged.
+
+**Pre-committed check.** The first scan after the deploy
+(`GET /api/journal/edge-leaks?book=both`) has a `marketTapeBySide` dimension. Its paper
+short buckets are dated from 2026-09-24, the first day of live-labeled rows.
+
+**Tests (each mutation-checked):**
+- **Consumer, through `runEdgeLeakScanFromDb`:** a red reading files a live stock long, a
+  live call, a paper long, a paper short and a paper put into `equity_long_red`,
+  `options_long_red`, `equity_short_red` (live 0 / paper 1) and `options_short_red`
+  (live 0 / paper 1), and the combined cut reads as before.
+- **Pure:**
+  - bucket names, with nothing filed on an unknown or missing reading;
+  - the gate lever on against-tape buckets only;
+  - a paper-only bucket is reported unjudged.
+- **Mutations that fail:** inverting the option lean, filing a paper short as a long,
+  dropping the paper-only buckets, and giving every one-sided bucket the lever.
