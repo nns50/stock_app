@@ -1110,6 +1110,7 @@ CREATE TABLE IF NOT EXISTS webull_miss_streak (
   streak          INTEGER NOT NULL DEFAULT 0,
   updated_at      INTEGER NOT NULL,
   first_missed_at INTEGER,
+  broker_qty      REAL,
   PRIMARY KEY (account_id, contract_key)
 );
 
@@ -1365,6 +1366,17 @@ function migrate(): void {
     db.exec('ALTER TABLE autotrade_live_orders ADD COLUMN client_combo_order_id TEXT');
   }
 
+  // 2026-09-24 (#147): each exit leg's own client_order_id. Order Detail
+  // answers for a leg only by the leg's id, and the order lists show a filled
+  // leg minutes late, so without these the reconcile could not ask in time and
+  // the sync booked a quote instead of the fill.
+  if (!aloComboCols.some((c) => c.name === 'tp_client_order_id')) {
+    db.exec('ALTER TABLE autotrade_live_orders ADD COLUMN tp_client_order_id TEXT');
+  }
+  if (!aloComboCols.some((c) => c.name === 'sl_client_order_id')) {
+    db.exec('ALTER TABLE autotrade_live_orders ADD COLUMN sl_client_order_id TEXT');
+  }
+
   const aloEqCols = db.prepare('PRAGMA table_info(autotrade_live_orders)').all() as { name: string }[];
   if (!aloEqCols.some((c) => c.name === 'account_id')) {
     db.exec('ALTER TABLE autotrade_live_orders ADD COLUMN account_id TEXT');
@@ -1397,6 +1409,13 @@ function migrate(): void {
   const missCols = db.prepare('PRAGMA table_info(webull_miss_streak)').all() as { name: string }[];
   if (!missCols.some((c) => c.name === 'first_missed_at')) {
     db.exec('ALTER TABLE webull_miss_streak ADD COLUMN first_missed_at INTEGER');
+  }
+  // 2026-09-25 (#147, on review): how many shares the broker still showed on
+  // the latest miss. A miss is any gap, and "the shares are gone" is only a
+  // gap to zero. NULL on older rows, and on the options sleeve's own bumps,
+  // reads as not known to be gone.
+  if (!missCols.some((c) => c.name === 'broker_qty')) {
+    db.exec('ALTER TABLE webull_miss_streak ADD COLUMN broker_qty REAL');
   }
 
   // position_exits gained the same provenance link, for exit-side slippage.
