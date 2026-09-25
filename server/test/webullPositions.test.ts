@@ -20,6 +20,7 @@ import { createIntent, transitionIntent } from '../src/db/orders';
 import { recordLiveExitOrder, recordLiveOrder, setLiveOrderPositionId } from '../src/db/autotradeLiveOrders';
 import { etToday } from '../src/util/marketDate';
 import { bumpMissStreak, missStreakStartedAt } from '../src/db/webullMissStreak';
+import { AMC_SHORT_POSITION_ROW } from './handTradeFixtures';
 
 vi.mock('../src/services/quotes', () => ({ priceMap: vi.fn() }));
 
@@ -113,6 +114,22 @@ describe('webull positions mapping', () => {
     expect(
       mapWebullPosition({ symbol: 'Y', instrument_type: 'OPTION', quantity: '1', cost_price: '1' }, 'ACC1'),
     ).toBeNull(); // option missing legs
+  });
+
+  // The first short this account ever held (the operator's 1-share test,
+  // 2026-09-24), exactly as GET positions returned it: no side field, a
+  // negative quantity string, cost_price positive while cost and market_value
+  // go negative. Reading `cost` for the entry would have booked -2.83.
+  it("maps Webull's real short row: side from the negative quantity, entry from cost_price", () => {
+    expect(mapWebullPosition(AMC_SHORT_POSITION_ROW, 'ACC1')).toMatchObject({
+      assetType: 'stock',
+      symbol: 'AMC',
+      side: 'short',
+      quantity: 1,
+      entryPrice: 2.83,
+      entryDate: null,
+      tags: ['webull'],
+    });
   });
 
   it('parses camelCase / synonym option field names (strikePrice, expirationDate, right)', () => {
@@ -316,6 +333,18 @@ describe('importWebullPositions', () => {
     const r = await importWebullPositions('CASH');
     expect(r).toMatchObject({ imported: 0, skipped: 1 }); // matched, not duplicated
     expect(getPosition(p.id)!.accountId).toBe('CASH'); // backfilled
+  });
+
+  it('imports the real short row as a short, and a later sync reads it as still held', async () => {
+    mockPositions([AMC_SHORT_POSITION_ROW]);
+    expect(await importWebullPositions('ACC1')).toMatchObject({ ok: true, imported: 1 });
+    const [amc] = listPositions({ status: 'open', symbol: 'AMC' });
+    expect(amc).toMatchObject({ side: 'short', quantity: 1, entryPrice: 2.83, accountId: 'ACC1' });
+    // The same row on the next pass is the same holding: not imported twice,
+    // and not a miss toward a close.
+    expect(await importWebullPositions('ACC1')).toMatchObject({ ok: true, imported: 0, skipped: 1 });
+    expect(await syncClosedWebullPositions('ACC1')).toMatchObject({ ok: true, closed: 0 });
+    expect(getPosition(amc.id)!.status).toBe('open');
   });
 
   it('surfaces a Webull error without writing', async () => {

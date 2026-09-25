@@ -1080,7 +1080,10 @@ export interface BrokerEquityFill {
    *  told from a take-profit by it when the combo label does not say, as in a
    *  bracket the operator placed by hand. */
   orderType: string | null;
-  side: 'BUY' | 'SELL';
+  /** SHORT is a short sale (2026-09-24): the side the app sends and the history
+   *  reports for one. Kept so a matcher can see a short opened again inside the
+   *  window it is reading; no closing-side filter ever selects it. */
+  side: 'BUY' | 'SELL' | 'SHORT';
   symbol: string;
   filledQty: number;
   /** Per share, as the broker reports it. */
@@ -1105,7 +1108,7 @@ export function parseBrokerEquityFills(envelopes: unknown[]): BrokerEquityFill[]
       const filledPrice = num(o.filled_price);
       const filledAtMs =
         num(o.filled_time) ?? (typeof o.filled_time_at === 'string' ? Date.parse(o.filled_time_at) : NaN);
-      const side = o.side === 'SELL' || o.side === 'BUY' ? o.side : null;
+      const side = o.side === 'SELL' || o.side === 'BUY' || o.side === 'SHORT' ? o.side : null;
       const clientOrderId = typeof o.client_order_id === 'string' ? o.client_order_id : (env.client_order_id ?? '');
       if (
         !symbol ||
@@ -1163,6 +1166,21 @@ export async function listBrokerOptionFills(
   const r = await fetchFullOrderList(accountId, '/openapi/trade/order/history');
   if (!r.ok) return { ok: false, fills: [], error: r.error };
   return { ok: true, fills: parseBrokerOptionFills(r.envelopes) };
+}
+
+/**
+ * Every stock AND options fill in the broker's order history, from ONE paged
+ * read (2026-09-24). READ-ONLY, never throws. For a pass that books both kinds
+ * (handExitCorrection.ts), where two reads would spend twice the history's
+ * 2-requests-per-2-seconds budget for the same pages.
+ */
+export async function listBrokerFills(
+  accountId: string,
+): Promise<{ ok: boolean; equity: BrokerEquityFill[]; option: BrokerOptionFill[]; error?: string }> {
+  if (!webullConfigured()) return { ok: false, equity: [], option: [], error: 'Webull is not configured.' };
+  const r = await fetchFullOrderList(accountId, '/openapi/trade/order/history');
+  if (!r.ok) return { ok: false, equity: [], option: [], error: r.error };
+  return { ok: true, equity: parseBrokerEquityFills(r.envelopes), option: parseBrokerOptionFills(r.envelopes) };
 }
 
 /**

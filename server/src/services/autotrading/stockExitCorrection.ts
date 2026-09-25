@@ -154,7 +154,9 @@ export interface SaleOutsideBracket {
  * which is how LITE's stop fill on 09-21 went unread. Taken oldest first until
  * they add up to exactly the booked quantity, they book at their
  * quantity-weighted price. Sales that overshoot (the operator traded the symbol
- * again) or fall short (part went some other way) leave the estimate alone.
+ * again) or fall short (part went some other way) leave the estimate alone, and
+ * so does a window that holds more than one round trip: another closing fill
+ * after the match, or the position opened again after its first matched fill.
  */
 export function matchSaleOutsideBracket(
   exit: SaleWindow & { quantity: number },
@@ -170,12 +172,21 @@ export function matchSaleOutsideBracket(
   let qty = 0;
   let notional = 0;
   const used: BrokerEquityFill[] = [];
-  for (const f of mine) {
+  for (const [i, f] of mine.entries()) {
     if (qty + f.filledQty > exit.quantity + 1e-9) return null;
     qty += f.filledQty;
     notional += f.filledQty * f.filledPrice;
     used.push(f);
     if (Math.abs(qty - exit.quantity) < 1e-9) {
+      // ONE ROUND TRIP OR NONE (2026-09-24, on review). The sync misses a round
+      // trip that finishes between two of its reads, so a window can hold more
+      // than one: the operator covers a short at 2.82, shorts again, and covers
+      // at 2.70 before the sync books the exit. Oldest first used to book 2.82
+      // and claim it. A later closing fill still in the window, or the position
+      // opened again after the first fill matched, means the history cannot say
+      // which close was this exit's, so the estimate stays and the skip row
+      // lists the fills.
+      if (i < mine.length - 1 || openedAgainInWindow(exit, fills, used[0].filledAt)) return null;
       const kinds = used.map((u) =>
         legExitReason({ comboType: u.comboType ?? undefined, orderType: u.orderType ?? undefined }),
       );
@@ -195,6 +206,20 @@ export function matchSaleOutsideBracket(
     }
   }
   return null;
+}
+
+/** Whether the position was opened again after `after` and before the sync
+ *  booked the exit: a BUY for a long, a short sale (or a SELL) for a short. Any
+ *  order counts, the app's own included: either way the window holds more than
+ *  one position's worth of trading. */
+function openedAgainInWindow(exit: SaleWindow, fills: BrokerEquityFill[], after: number): boolean {
+  const symbol = exit.symbol.toUpperCase();
+  const opens = (side: BrokerEquityFill['side']) =>
+    exit.positionSide === 'short' ? side === 'SHORT' || side === 'SELL' : side === 'BUY';
+  return fills.some(
+    (f) =>
+      f.symbol === symbol && opens(f.side) && f.filledAt > after && f.filledAt <= exit.createdAt + FILL_CLOCK_SLACK_MS,
+  );
 }
 
 /**
@@ -249,7 +274,7 @@ function closingFills(exit: SaleWindow, enteredAt: number, fills: BrokerEquityFi
 /** When this position's exit before `row` was booked, or null for its first.
  *  Read from the ledger, so an exit the reconcile booked or one already
  *  corrected bounds the next as surely as an estimate does. */
-function previousExitBookedAt(row: SyncEstimatedExit): number | null {
+export function previousExitBookedAt(row: SyncEstimatedExit): number | null {
   const earlier = (getPosition(row.positionId)?.exits ?? [])
     .filter(
       (e) =>
@@ -260,12 +285,17 @@ function previousExitBookedAt(row: SyncEstimatedExit): number | null {
 }
 
 /** Fills a correction in the lookback already booked to an exit, from the
- *  journal (`live_exit_corrected.fillClientOrderIds`), so a later pass or a
- *  restart cannot book one of them to a second exit. */
-function fillsClaimedByCorrections(now: number): Set<string> {
+ *  journal (`fillClientOrderIds` on `live_exit_corrected`, and on
+ *  `hand_exit_corrected`, handExitCorrection.ts's row for positions the app did
+ *  not open), so a later pass or a restart cannot book one of them to a second
+ *  exit, in either pass. The second name is spelled out rather than imported,
+ *  since that module imports this one; journalActionsReachability.test.ts
+ *  fails if it stops matching what the writer writes. */
+export function fillsClaimedByCorrections(now: number): Set<string> {
   const since = now - (STOCK_EXIT_CORRECTION_LOOKBACK_DAYS + 1) * 24 * 60 * 60 * 1000;
   const claimed = new Set<string>();
-  for (const e of listAutotradeEventsInWindow({ actions: ['live_exit_corrected'], since }).events) {
+  for (const e of listAutotradeEventsInWindow({ actions: ['live_exit_corrected', 'hand_exit_corrected'], since })
+    .events) {
     try {
       const ids = (JSON.parse(e.detail ?? 'null') as { fillClientOrderIds?: unknown } | null)?.fillClientOrderIds;
       if (Array.isArray(ids)) for (const id of ids) if (typeof id === 'string') claimed.add(id);
