@@ -111,7 +111,9 @@ Guidelines:
   3. `configReachability.test.ts` — scans the source for what actually reads each field,
      and holds an explicit allowlist of paper-only settings. Catches a field that lands
      in the database and goes nowhere, and a paper-only field that was never a written-
-     down decision.
+     down decision. Comments AND prose strings are blanked before the scan (2026-09-24):
+     a field named in an advice message passed as "read" after its only real read was
+     deleted.
   Passing (1) tells you nothing about (2) or (3) — that gap is how each of the four got
   through.
 

@@ -120,14 +120,111 @@ const codeOnly = (src: string): string =>
     })
     .join('\n');
 
+/**
+ * PROSE STRINGS blanked too (2026-09-24, on review). A field NAMED inside a
+ * message is a sentence about the field, not a read of it: the tune advisor's
+ * advice text names `marketDirectionExitBreadthPct`, so deleting the loop's one
+ * real read of it left this test green, the comment problem above one layer
+ * over. A quoted string that contains whitespace reads as prose and is emptied;
+ * one without (a key, an action name) is kept, since code does index by those.
+ * A template literal keeps only its `${...}` expressions, which are code.
+ *
+ * Per FILE, and all-or-nothing: a file whose scan does not end cleanly is
+ * left exactly as it was (null here). Run over the whole tree at once, one such
+ * file swallowed the start of the next, and a field read there
+ * (mlRegimeSwitchThreshold, in mlRegime.ts) read as unread. Trailing comments
+ * and regex literals are skipped rather than read as strings. On 2026-09-24
+ * two files of 260 still fall back: a non-null assertion before a division
+ * (`x! / 100`) reads as a regex, and the exporter's CSV quoting. Like stripping
+ * comments, this can only remove false passes.
+ */
+function proseBlankedOrNull(src: string): string | null {
+  let out = '';
+  let i = 0;
+  // The last character that was code, for telling a regex literal from a
+  // division: after one of these, a slash opens a regex.
+  let prev = '\n';
+  while (i < src.length) {
+    const c = src[i];
+    const next = src[i + 1];
+    if (c === '/' && next === '/') {
+      // A comment after code on the same line.
+      while (i < src.length && src[i] !== '\n') i += 1;
+      continue;
+    }
+    if (c === '/' && next === '*') {
+      const close = src.indexOf('*/', i + 2);
+      if (close < 0) return null;
+      i = close + 2;
+      continue;
+    }
+    if (c === '/' && '(,=:[!&|?{};+-*%<>~^\n'.includes(prev)) {
+      // A regex literal: copied as it is, never read as a string.
+      let j = i + 1;
+      let inClass = false;
+      while (j < src.length && src[j] !== '\n' && (inClass || src[j] !== '/')) {
+        if (src[j] === '\\') j += 1;
+        else if (src[j] === '[') inClass = true;
+        else if (src[j] === ']') inClass = false;
+        j += 1;
+      }
+      if (src[j] !== '/') return null;
+      out += src.slice(i, j + 1);
+      prev = '/';
+      i = j + 1;
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      let j = i + 1;
+      while (j < src.length && src[j] !== c && src[j] !== '\n') j += src[j] === '\\' ? 2 : 1;
+      if (src[j] !== c) return null; // unterminated on its line: not a string we understand
+      const body = src.slice(i + 1, j);
+      out += /\s/.test(body) ? c + c : src.slice(i, j + 1);
+      prev = c;
+      i = j + 1;
+      continue;
+    }
+    if (c === '`') {
+      let j = i + 1;
+      out += '`';
+      while (j < src.length && src[j] !== '`') {
+        if (src[j] === '\\') {
+          j += 2;
+          continue;
+        }
+        if (src[j] === '$' && src[j + 1] === '{') {
+          let depth = 1;
+          let k = j + 2;
+          while (k < src.length && depth > 0) {
+            if (src[k] === '{') depth += 1;
+            else if (src[k] === '}') depth -= 1;
+            k += 1;
+          }
+          out += src.slice(j, k);
+          j = k;
+          continue;
+        }
+        j += 1;
+      }
+      if (j >= src.length) return null; // an unterminated template
+      out += '`';
+      prev = '`';
+      i = j + 1;
+      continue;
+    }
+    out += c;
+    if (!/\s/.test(c) || c === '\n') prev = c;
+    i += 1;
+  }
+  return out;
+}
+
+const proseBlanked = (src: string): string => proseBlankedOrNull(src) ?? src;
+
 const files = walk(SRC);
-const liveSrc = codeOnly(
-  files
-    .filter((f) => !PLUMBING.has(f) && !PAPER_PATHS.has(f))
-    .map((f) => fs.readFileSync(f, 'utf8'))
-    .join('\n'),
-);
-const paperSrc = codeOnly([...PAPER_PATHS].map((f) => fs.readFileSync(f, 'utf8')).join('\n'));
+const scanned = (paths: string[]) => paths.map((f) => proseBlanked(codeOnly(fs.readFileSync(f, 'utf8')))).join('\n');
+const liveSrc = scanned(files.filter((f) => !PLUMBING.has(f) && !PAPER_PATHS.has(f)));
+const paperSrc = scanned([...PAPER_PATHS]);
 const fields = configFieldNames();
 
 const readBy = (haystack: string, field: string) => new RegExp(`\\b${field}\\b`).test(haystack);
@@ -157,6 +254,31 @@ describe('every autotrade config field is actually read by something', () => {
     //    list cannot quietly describe a gap that no longer exists.
     const paperOnly = fields.filter((f) => readBy(paperSrc, f) && !readBy(liveSrc, f)).sort();
     expect(paperOnly).toEqual(Object.keys(KNOWN_PAPER_ONLY).sort());
+  });
+
+  it('a field named only in a message does not count as read (2026-09-24)', () => {
+    const blanked = proseBlanked(
+      "advise('raise marketDirectionExitBreadthPct toward it'); const x = cfg.marketDirectionExitIndexPct;",
+    );
+    expect(readBy(blanked, 'marketDirectionExitBreadthPct')).toBe(false);
+    expect(readBy(blanked, 'marketDirectionExitIndexPct')).toBe(true);
+    // A key is kept, since code indexes by those, and so is a template's code.
+    expect(readBy(proseBlanked("pick(cfg, 'riskPerTradePct')"), 'riskPerTradePct')).toBe(true);
+    expect(readBy(proseBlanked('`${cfg.maxHoldDays} days held`'), 'maxHoldDays')).toBe(true);
+    // A trailing comment and a regex are not strings, and do not swallow code.
+    expect(readBy(proseBlanked("const a = 1; // it's\nconst b = cfg.maxHoldDays;"), 'maxHoldDays')).toBe(true);
+    expect(readBy(proseBlanked('const r = /[\'"]/;\nconst b = cfg.maxHoldDays;'), 'maxHoldDays')).toBe(true);
+  });
+
+  it('the scan falls back on no more files than it did when written', () => {
+    // A file the scanner cannot read cleanly is scanned unblanked, which lets
+    // prose count as a read again. Two did on 2026-09-24; many more would mean
+    // the scanner had quietly stopped doing its job.
+    const fallbacks = files.filter((f) => proseBlankedOrNull(codeOnly(fs.readFileSync(f, 'utf8'))) === null);
+    expect(fallbacks.map((f) => path.relative(SERVER_ROOT, f)).sort()).toEqual([
+      'src/services/autotrading/optionsAffordability.ts',
+      'src/services/exporter.ts',
+    ]);
   });
 
   it('the settings fixed in August stay fixed', () => {
