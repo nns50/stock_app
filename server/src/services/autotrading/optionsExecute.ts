@@ -48,6 +48,7 @@ import {
 import { etToday } from '../../util/marketDate';
 import { mapPool } from '../../util/async';
 import { haltMarkerExists } from './dailyHaltMarker';
+import { SHORT_DATED_SLOTS_FULL_ACTION, shortDatedSlotsFull, shortDatedSlotsFullDetail } from './shortDatedSlot';
 
 // ---------------------------------------------------------------------------
 // The options counterpart to execute.ts (docs/AUTOTRADING_SPEC.md, phase 12)
@@ -578,6 +579,9 @@ export async function runOptionsPaperExecution(
   let runningCount = ownSlots
     ? optSnapshot.openPositionsCount
     : optSnapshot.openPositionsCount + eqSnapshot.openPositionsCount;
+  // Paper fills at once, so no entry is ever working: the short-dated slots
+  // count open positions and this batch's placements only.
+  let placedThisBatch = 0;
   // Options positions are always 'long' (this app only ever buys premium —
   // see riskCheck.ts's correlatedNotional() doc comment); equity positions
   // folded in here carry their REAL side so an options candidate (always
@@ -607,9 +611,8 @@ export async function runOptionsPaperExecution(
   const sectorOf = buildSectorOf();
 
   // --- Short-dated entry gates (docs/SHORT_DATED_OPTIONS_SPEC.md) ----------
-  // The paper twin of runLiveOptionsExecution()'s pair. Both are batch-level:
-  // neither depends on which candidate is being looked at, so evaluating them
-  // per-candidate would just repeat the same answer.
+  // The paper twin of runLiveOptionsExecution()'s pair. The entry window is
+  // batch-level; the slot rule is asked per candidate in the loop below.
   if (config.shortDatedOptionsEnabled && config.optionsNoEntryMinutesBeforeClose > 0) {
     const left = minutesUntilClose(Date.now());
     if (left !== null && left <= config.optionsNoEntryMinutesBeforeClose) {
@@ -626,30 +629,21 @@ export async function runOptionsPaperExecution(
       return candidates.map(({ signal }) => ({ symbol: signal.symbol.toUpperCase(), ok: false, reason }));
     }
   }
-  // One short-dated position at a time. Tighter than the shared concurrent cap
-  // on purpose: two 0DTE positions can both go to zero inside the same half
-  // hour on a single adverse market move — a correlation stock positions do
-  // not have. Counted against THIS book's own open positions, matching how
-  // paper and live each risk-check their own pool.
-  if (config.shortDatedOptionsEnabled && optSnapshot.openPositionsCount >= 1) {
-    const reason = 'a short-dated options position is already open (max 1 at a time)';
-    // Journaled because a pre-committed tuning rule COUNTS these: the plan's F7
-    // fires when this gate refuses >=5 candidates in a week. Returning silently
-    // made that rule unmeasurable -- there was no event to count, so a gate that
-    // was throttling the book would have looked identical to one that never
-    // fired (found 2026-08-27). `refused` is per-candidate, matching how F7 is
-    // phrased; one event per tick keeps the feed honest without a row each.
-    logAutotradeEvent({
-      stage: 'execution',
-      action: 'short_dated_position_already_open',
-      detail: { book: 'paper', reason, refused: candidates.length, openPositions: optSnapshot.openPositionsCount },
-    });
-    return candidates.map(({ signal }) => ({ symbol: signal.symbol.toUpperCase(), ok: false, reason }));
-  }
-
   const outcomes: OptionsExecutionOutcome[] = [];
-  for (const { signal } of candidates) {
+  for (const [index, { signal }] of candidates.entries()) {
     const symbol = signal.symbol.toUpperCase();
+    // The short-dated slots (2026-09-24; shortDatedSlot.ts), the live rule on
+    // this book's own positions, so the control keeps the rule the live
+    // sleeve trades under. One row per batch once full, as live writes.
+    const slots = { open: optSnapshot.openPositionsCount, pendingEntries: 0, placedThisBatch };
+    if (shortDatedSlotsFull(config, slots)) {
+      const rest = candidates.slice(index);
+      const { reason, detail } = shortDatedSlotsFullDetail('paper', config, slots, rest.length);
+      logAutotradeEvent({ stage: 'execution', action: SHORT_DATED_SLOTS_FULL_ACTION, detail });
+      for (const { signal: refused } of rest)
+        outcomes.push({ symbol: refused.symbol.toUpperCase(), ok: false, reason });
+      break;
+    }
     if (skipSymbols.has(symbol)) {
       outcomes.push({ symbol, ok: false, reason: 'Already has an open options paper position' });
       continue;
@@ -744,6 +738,7 @@ export async function runOptionsPaperExecution(
     if (outcome.ok && outcome.position) {
       runningRisk += result.approvedRiskAmount;
       runningCount += 1;
+      placedThisBatch += 1;
       runningPositions.push({ symbol, notional: result.approvedNotional, side: 'long' });
       skipSymbols.add(symbol);
     }

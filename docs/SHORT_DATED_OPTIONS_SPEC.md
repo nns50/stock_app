@@ -189,12 +189,26 @@ Mostly already present; listed so the whole surface is visible in one place.
 | `liveOptionsMaxDailyLossUsd` | 141 (~3 full losses) | exists |
 | `liveOptionsMaxOrdersPerDay` | 4 → 6 (2026-09-12); counts options orders only (2026-09-18) | exists |
 | Shared concurrent-position cap | 2, with equity | exists |
-| **Max 1 concurrent short-dated position** | new | **to build** |
+| **Concurrent short-dated positions** | 1 → the sleeve's own cap, 2 (2026-09-25), counting working entries | exists |
 | `liveOptionsProbationTrades` | 0 → set to 10 at 0.5× | **to change** |
 
 The concurrency cap matters more here than for stock: two 0DTE positions can
 both go to zero in the same 30 minutes on one adverse market move, which is a
 correlation stock positions do not have.
+
+**Two slots, by the operator's decision (2026-09-24).** The operator set the
+sleeve's own cap (`optionsMaxConcurrentPositions`) to 2 on 2026-09-12. The
+one-at-a-time rule did not follow it, and did not hold as written either,
+because it was asked once per tick against open positions only:
+- two opened in the same tick three times on 2026-09-23;
+- a second could never open beside a first;
+- an entry still working at the broker counted as nothing.
+
+The rule now allows up to the sleeve's own cap. It counts open positions,
+working entries and the tick's own placements, and it is asked before every
+candidate in both books (`shortDatedSlot.ts`). With no sleeve cap set, it is
+still one at a time. The correlation risk above is why the cap stays at 2 (the
+tuning plan's F7).
 
 Two of the sleeve's guardrails are judged against the sleeve's **own** figures
 since 2026-09-18. The orders/day cap read the account-wide opening-order count
