@@ -550,6 +550,96 @@ describe('the review rule holds the exposure recommendations', () => {
     expect(a.recommendations[0].status).toBe('actionable');
   });
 
+  const leverLeak = (dimension: string, bucket: string, severityR: number, lever: Record<string, unknown>) => ({
+    dimension,
+    dimensionLabel: dimension,
+    bucket,
+    n: 20,
+    meanR: -0.25,
+    ciLow: -0.45,
+    ciHigh: -0.05,
+    totalPnlUsd: -100,
+    severityR,
+    verdict: 'leak',
+    lever: { kind: 'config', direction: 'safe', detail: '', ...lever },
+  });
+
+  it('reads a lever the book already carries as history, not advice (2026-09-25)', () => {
+    // The floor is 72 here; the band's lever is a floor of 70. Before this date
+    // the advice read "liveMinSignalScore 72 → 70", safe: a LOWERING, with its
+    // estimate counted in the headline as a gain still to come.
+    const a = advise({
+      scan: scan({ leaks: [leverLeak('scoreBand', '60-69', 5, { field: 'liveMinSignalScore', value: 70 })] }),
+    });
+    const rec = a.recommendations.find((r) => r.id === 'edge:scoreBand:60-69');
+    expect(rec?.status).toBe('in_force');
+    expect(rec?.expectedDayPctDelta).toBeNull();
+    expect(rec?.statusReason).toMatch(/liveMinSignalScore is already 72, at or past this lever's 70/);
+    expect(rec?.action.kind).toBe('research');
+    expect(rec?.action).not.toHaveProperty('to');
+    expect(a.headline).toMatch(/adds about 0 points/);
+  });
+
+  it('counts one lever once in the headline, however many dimensions name it (2026-09-25)', () => {
+    // The tape at entry and the tape by side file the same red-day longs. One
+    // setting cannot remove them twice: within a dimension the buckets are
+    // different trades and add (0.4 + 0.2), across dimensions the larger stands
+    // for the gate (0.6 against 0.5), and a different lever still adds (0.2).
+    const gate = { field: 'marketDirectionGateEnabled', value: true };
+    const a = advise({
+      scan: scan({
+        leaks: [
+          leverLeak('marketTape', 'against', 5, gate),
+          leverLeak('marketTapeBySide', 'equity_long_red', 4, gate),
+          leverLeak('marketTapeBySide', 'options_long_red', 2, gate),
+          leverLeak('round', '2', 2, { field: 'symbolReentryCooldownMinutes', value: 390 }),
+        ],
+      }),
+    });
+    // 5R over 100 live trades x 4 trades/session x 2.5% = 0.5 points; 4R 0.4;
+    // 2R 0.2; 2R 0.2. Summed naively the headline said 1.3.
+    expect(a.headline).toMatch(/adds about 0\.8 points/);
+  });
+
+  it("says whose change it is: the engine's only when leak_lever would propose it (2026-09-25, on review)", () => {
+    // The advisor used to promise "the gated-switch engine can apply this" of
+    // any actionable lever, including a field the engine may not write.
+    const a = advise({
+      config: { ...CONFIG, symbolReentryCooldownMinutes: 120 },
+      scan: scan({
+        leaks: [
+          leverLeak('marketTape', 'against', 5, { field: 'marketDirectionGateEnabled', value: true }),
+          leverLeak('round', '2', 2, { field: 'symbolReentryCooldownMinutes', value: 390 }),
+        ],
+      }),
+    });
+    const gate = a.recommendations.find((r) => r.id === 'edge:marketTape:against');
+    const cooldown = a.recommendations.find((r) => r.id === 'edge:round:2');
+    expect(gate?.status).toBe('actionable');
+    expect(gate?.statusReason).toMatch(
+      /^yours to apply, not the gated-switch engine's: the engine may not write marketDirectionGateEnabled/,
+    );
+    expect(cooldown?.statusReason).toMatch(/the gated-switch engine can apply this/);
+  });
+
+  it('keeps two levers on one field apart when they push opposite ways (2026-09-25)', () => {
+    // A cooldown raise and a cooldown cut are different changes: both count.
+    const a = advise({
+      config: { ...CONFIG, symbolReentryCooldownMinutes: 120 },
+      scan: scan({
+        leaks: [
+          leverLeak('round', '2', 2, { field: 'symbolReentryCooldownMinutes', value: 390 }),
+          leverLeak('reentryGap', '60', 3, {
+            field: 'symbolReentryCooldownMinutes',
+            value: 60,
+            direction: 'exposure',
+          }),
+        ],
+      }),
+    });
+    expect(a.headline).toMatch(/adds about 0\.5 points/);
+  });
+
   it('marks an unconfirmed leak as needing data rather than as a change', () => {
     const a = advise({
       scan: scan({

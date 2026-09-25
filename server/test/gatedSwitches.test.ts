@@ -13,12 +13,15 @@ import {
   patchInForce,
   coherenceGuard,
   exposureGuard,
+  leverInForce,
   PRE_TRIAL_SIZING,
   SAFE_DIRECTION,
   SHADOW_MIN_EVALUATIONS,
   ShortShadowEvidence,
   SwitchRule,
   SwitchState,
+  leakLeverPatch,
+  leakLeverRefusal,
 } from '../src/services/autotrading/gatedSwitches';
 import { SHORT_ENABLE_GATE } from '../src/services/autotrading/shortShadowRecord';
 
@@ -190,6 +193,72 @@ describe('the shadow record', () => {
   });
 });
 
+describe('leverInForce (2026-09-25)', () => {
+  const config = { ...defaultAutotradeConfig(), liveMinSignalScore: 81, symbolReentryCooldownMinutes: 390 };
+  const lever = (field: string, value: number | boolean, direction: 'safe' | 'exposure' = 'safe') => ({
+    field,
+    value,
+    direction,
+  });
+
+  it('is in force at the lever’s value, and past it in the direction the lever pushes', () => {
+    expect(leverInForce(lever('symbolReentryCooldownMinutes', 390), config)).toBe(true);
+    // The score-band lever is a floor to raise TO: 81 is already past 70.
+    expect(leverInForce(lever('liveMinSignalScore', 70), config)).toBe(true);
+    expect(leverInForce(lever('liveMinSignalScore', 85), config)).toBe(false);
+    // An exposure lever pushes the other way: a cooldown of 390 is not yet 120.
+    expect(leverInForce(lever('symbolReentryCooldownMinutes', 120, 'exposure'), config)).toBe(false);
+    expect(leverInForce(lever('symbolReentryCooldownMinutes', 400, 'exposure'), config)).toBe(true);
+  });
+
+  it('reads a flag, and a number with no written direction, by equality only', () => {
+    expect(leverInForce(lever('marketDirectionGateEnabled', true), config)).toBe(false);
+    expect(
+      leverInForce(lever('marketDirectionGateEnabled', true), { ...config, marketDirectionGateEnabled: true }),
+    ).toBe(true);
+  });
+
+  it('is never past anything for a research lever, an unclassified or two-way number, or a null', () => {
+    // Research names a measurement, not a setting to be at.
+    expect(leverInForce({ field: 'symbolReentryCooldownMinutes', value: 120, direction: 'research' }, config)).toBe(
+      false,
+    );
+    // No written direction: at the exact value only, never "past" it.
+    const cfg = { ...config, maxConcurrentPositions: 3 };
+    expect(leverInForce(lever('maxConcurrentPositions', 5), cfg)).toBe(false);
+    expect(leverInForce(lever('maxConcurrentPositions', 3), cfg)).toBe(true);
+    // The scratch is two-way (it also sets the end-of-day entry runway).
+    expect(leverInForce(lever('stagnationExitMinutes', 45), { ...config, stagnationExitMinutes: 30 })).toBe(false);
+    // A null value names no setting to be at, even against a null field.
+    expect(
+      leverInForce(
+        { field: 'liveCapsAnchorEquityUsd', value: null, direction: 'safe' },
+        {
+          ...config,
+          liveCapsAnchorEquityUsd: null,
+        },
+      ),
+    ).toBe(false);
+  });
+});
+
+describe('the exposure check on a data-sourced patch (2026-09-25)', () => {
+  const cfg = { ...defaultAutotradeConfig(), liveMinSignalScore: 81, riskPerTradePct: 2.5, stagnationExitMinutes: 60 };
+
+  it('refuses the scratch outright: shorter also lets entries open later, and 0 is off', () => {
+    expect(exposureGuard({ stagnationExitMinutes: 45 }, cfg)[0]).toMatch(/not an exposure knob on its own/);
+    expect(exposureGuard({ stagnationExitMinutes: 0 }, cfg)[0]).toMatch(/not an exposure knob on its own/);
+  });
+
+  it('refuses a key with no written direction, a number that is not finite, and a value the config would not keep', () => {
+    expect(exposureGuard({ maxConcurrentPositions: 2 } as never, cfg)[0]).toMatch(/no written safe direction/);
+    expect(exposureGuard({ liveMinSignalScore: Number.NaN }, cfg)[0]).toMatch(/not a finite number/);
+    // The floor is clamped to 100 at the write: 150 is not what would be stored.
+    expect(exposureGuard({ liveMinSignalScore: 150 }, cfg)[0]).toMatch(/would be stored as 100/);
+    expect(exposureGuard({ riskPerTradePct: 2 }, cfg)).toEqual([]);
+  });
+});
+
 describe('patchInForce', () => {
   const cfg = { ...defaultAutotradeConfig(), mlRegimeEnabled: false, riskPerTradePct: 1.25 };
 
@@ -213,6 +282,54 @@ describe('patchInForce', () => {
 });
 
 describe('evaluateGatedSwitches', () => {
+  it('reads a stricter value set by hand as the lever acted on, never as a contradiction (2026-09-25)', () => {
+    // The rule proposes a cooldown of 390; the operator sets 400. The next
+    // session leak_lever reads the lever as carried and goes quiet, and a quiet
+    // session after a proposal is a contradiction unless the patch was acted
+    // on. Asked for an exact match, 400 was not "390" and the rule was barred
+    // from graduating for good.
+    const rule = GATED_SWITCH_RULES.find((r) => r.id === 'leak_lever')!;
+    const leakScan = {
+      leaks: [
+        {
+          dimension: 'round',
+          dimensionLabel: 'Round',
+          bucket: '2',
+          n: 23,
+          meanR: -0.24,
+          severityR: 3,
+          verdict: 'leak',
+          lever: { kind: 'config', field: 'symbolReentryCooldownMinutes', value: 390, direction: 'safe', detail: '' },
+        },
+      ],
+    } as unknown as NonNullable<GatedSwitchSnapshot['leakScan']>;
+    const first = evaluateGatedSwitches({
+      snapshot: snapshot({
+        etDate: '2026-09-24',
+        leakScan,
+        config: { ...defaultAutotradeConfig(), symbolReentryCooldownMinutes: 120 },
+      }),
+      states: new Map(),
+      enabled: true,
+      now: 1,
+      rules: [rule],
+    });
+    expect(first.decisions[0].met).toBe(true);
+    const second = evaluateGatedSwitches({
+      snapshot: snapshot({
+        etDate: '2026-09-25',
+        leakScan,
+        config: { ...defaultAutotradeConfig(), symbolReentryCooldownMinutes: 400 },
+      }),
+      states: new Map([['leak_lever', first.decisions[0].nextState]]),
+      enabled: true,
+      now: 2,
+      rules: [rule],
+    });
+    expect(second.decisions[0].met).toBe(false);
+    expect(second.decisions[0].nextState.contradictions).toBe(0);
+  });
+
   const run = (over: Partial<Parameters<typeof evaluateGatedSwitches>[0]> = {}) =>
     evaluateGatedSwitches({
       snapshot: snapshot(),
@@ -700,6 +817,86 @@ describe('the shipped rules', () => {
           }),
         ),
       ).toBeNull();
+    });
+
+    it('says why it would not apply a lever, in the words the tune advisor shows (2026-09-25, on review)', () => {
+      const cfg = defaultAutotradeConfig();
+      const leakOf = (over: Record<string, unknown>) =>
+        scanWith(over).leaks[0] as unknown as Parameters<typeof leakLeverRefusal>[0];
+      expect(leakLeverRefusal(leakOf({}), { ...cfg, symbolReentryCooldownMinutes: 120 })).toBeNull();
+      expect(leakLeverRefusal(leakOf({ verdict: 'unconfirmed' }), cfg)).toMatch(/not confirmed/);
+      expect(
+        leakLeverRefusal(
+          leakOf({ lever: { kind: 'code', field: null, value: null, direction: 'safe', detail: '' } }),
+          cfg,
+        ),
+      ).toMatch(/code change/);
+      expect(
+        leakLeverRefusal(
+          leakOf({ lever: { kind: 'config', field: 'riskPerTradePct', value: 5, direction: 'exposure', detail: '' } }),
+          cfg,
+        ),
+      ).toMatch(/adds exposure/);
+      expect(
+        leakLeverRefusal(
+          leakOf({
+            lever: { kind: 'config', field: 'liveTradingEnabled', value: true, direction: 'safe', detail: '' },
+          }),
+          cfg,
+        ),
+      ).toMatch(/may not write liveTradingEnabled/);
+      expect(leakLeverRefusal(leakOf({}), { ...cfg, symbolReentryCooldownMinutes: 390 })).toMatch(
+        /already at or past 390/,
+      );
+      // The rule proposes exactly the levers this clears, so the two cannot disagree.
+      expect(leakLeverPatch(leakOf({}), { ...cfg, symbolReentryCooldownMinutes: 120 })).toEqual({
+        symbolReentryCooldownMinutes: 390,
+      });
+      expect(leakLeverPatch(leakOf({}), { ...cfg, symbolReentryCooldownMinutes: 390 })).toBeNull();
+    });
+
+    it('reads past a spent lever to the next open one (2026-09-25)', () => {
+      // Each of the first six used to return null, or stand as a patch the
+      // write refuses, and hide every leak below: a cooldown already at its
+      // lever, a floor already above the band's, a flag and a number the app
+      // may not write, a flag whose direction the arithmetic cannot judge, and
+      // the two-way scratch.
+      const leak = (dimension: string, field: string, value: number | boolean) => ({
+        dimension,
+        dimensionLabel: dimension,
+        bucket: 'b',
+        n: 20,
+        meanR: -0.3,
+        severityR: 4,
+        verdict: 'leak',
+        lever: { kind: 'config', field, value, direction: 'safe', detail: '' },
+      });
+      const s = snapshot({
+        config: {
+          ...defaultAutotradeConfig(),
+          symbolReentryCooldownMinutes: 390,
+          liveMinSignalScore: 81,
+          stagnationExitMinutes: 60,
+          riskPerTradePct: 2.5,
+        },
+        leakScan: {
+          leaks: [
+            leak('round', 'symbolReentryCooldownMinutes', 390),
+            leak('scoreBand', 'liveMinSignalScore', 70),
+            leak('marketTape', 'marketDirectionGateEnabled', true),
+            // A number the app may not write: past the writable check it would
+            // reach assertProposable, which throws and stops every rule.
+            leak('slots', 'maxConcurrentPositions', 2),
+            // Writable, but a flag the write refuses from data ('either').
+            leak('exitShape', 'liveScaleOutEnabled', true),
+            leak('holdTime', 'stagnationExitMinutes', 45),
+            leak('sizing', 'riskPerTradePct', 2),
+          ],
+        } as unknown as NonNullable<GatedSwitchSnapshot['leakScan']>,
+      });
+      const f = fire('leak_lever', s);
+      expect(f?.patch).toEqual({ riskPerTradePct: 2 });
+      expect(f?.evidence).toMatch(/^sizing=b:/);
     });
 
     it('is silent once the config already carries the lever’s value', () => {

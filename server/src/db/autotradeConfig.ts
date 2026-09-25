@@ -1510,7 +1510,13 @@ export function defaultAutotradeConfig(): AutotradeConfig {
   };
 }
 
-/** Coerce a stored/patched config into a safe, complete AutotradeConfig. */
+/** Coerce a stored/patched config into a safe, complete AutotradeConfig.
+ *  Pure. Exported (2026-09-25) so a check on a patch can judge the value the
+ *  write would actually STORE — see gatedSwitches.ts's exposureGuard. */
+export function sanitizeAutotradeConfig(input: Partial<AutotradeConfig>): AutotradeConfig {
+  return sanitize(input);
+}
+
 function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
   const d = defaultAutotradeConfig();
   const equity =
