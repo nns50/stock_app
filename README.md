@@ -253,6 +253,7 @@ npm run format         # Prettier --write
 npm run check:provider # verify the configured market-data provider
 npm run capture:broker # dump raw Webull field shapes (read-only; see below)
 npm run backfill:exits # correct estimated exit prices from real fills (dry run; see below)
+npm run backfill:tape  # rebuild the market-direction tape for past sessions, on a database COPY (see below)
 npm run check:journal  # audit the trade journal for rows that are already wrong (report only)
 npm run research       # scripted walk-forward sweep over the backtest API (needs a running server; see below)
 npm run regime:train   # retrain the market-regime HMM → server/data/regimeModel.json (Python; see below)
@@ -482,6 +483,55 @@ realized P&L and the tax export.
 never be corrected from the broker — re-running won't help, and those rows say
 so explicitly rather than reporting a generic "no record". Anything older is
 permanently an estimate.
+
+### `backfill:tape` — rebuilding the market-direction tape for past sessions
+
+The loop has journaled the market-direction reading (`market_direction_read`, one row
+per change) since 2026-09-24. Nothing earlier carries a tape label, so the edge-leak
+scan cannot place older trades against the tape, and "do shorts pay on red days" had
+no history to answer from. This rebuilds the reading for past sessions from Polygon
+bars with the same functions the loop calls (breadth, then the hold), and reads the
+record against it with the app's own readers: the edge-leak scan, the declined-short
+replay, and a replay of every short signal the decision step produced.
+
+**It runs against a copy of the database, never the live one.** Download the copy
+first (the **Backup .db** button under Settings → Data, or `GET /api/export/backup.db`), then:
+
+```bash
+npm run backfill:tape -- --db ./stock-app-backup-2026-09-26.db
+npm run backfill:tape -- --db ./copy.db --sessions 60 --out tape.json
+```
+
+`--db` is required and is resolved from the directory you typed the command in. The
+script refuses a path that does not exist and any path the app itself opens (the
+default `server/data/stock_app.db`, the container's `/app/data/stock_app.db`, or
+whatever `DATABASE_PATH` is set to, in the environment or in `server/.env`), by name
+and by the file itself, so a hard link to one of them is refused too. `--sessions`
+sets how many completed sessions to rebuild (default 40, the scan's own window). Breadth
+reads the whole universe, as the loop does; `--sample N` reads a seeded N-name sample
+instead (`--seed`, default 20260926) for a key that is rate-limited, at a measured cost
+in accuracy (below). `--out` also writes the whole result as JSON. It needs
+`POLYGON_API_KEY`: about 1,100 calls on a first run
+(5-minute and daily bars for every universe name, SPY, and the few names a short replay
+needs beyond them), cached in the copy's `backtest_bars`, so a re-run fetches only what is
+new. Polygon's free tier allows 5 calls a minute; with a key not held to that, a first run
+took about 20 minutes. The
+Markdown report goes to stdout and progress to stderr.
+
+What differs from the live reading, and is stated in the report:
+
+- **One reading per 5-minute bar, stamped at the bar's end** (the loop reads every ~2
+  minutes).
+- **Breadth from Polygon's bars of the whole universe**, where the loop reads each name's
+  live quote. A 120-name sample agreed with the whole universe at 92% of slots, and read
+  red more often (25% of slots against 21%).
+- **Regular-session bars only.** Polygon's minute bars include pre- and post-market.
+- **Where the loop already journaled a day, that day is taken from the journal**, and
+  the rebuild is measured against it (the report's parity line).
+
+Rebuilt readings **never count toward any switch**: the gated switches read the live
+journal only. What the report means, and how it was read, is recorded in
+[`docs/AUTOTRADING_SPEC.md`](docs/AUTOTRADING_SPEC.md).
 
 ### `capture:broker` — confirming broker field semantics
 

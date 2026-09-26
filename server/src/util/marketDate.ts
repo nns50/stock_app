@@ -103,3 +103,10 @@ export function etDayAndMinute(ms: number): { day: string; minute: number } {
  *  at 16:00 is not a regular-session bar. */
 export const REGULAR_SESSION_OPEN_MINUTE = 9 * 60 + 30;
 export const REGULAR_SESSION_CLOSE_MINUTE = 16 * 60;
+
+/** Whether a bar starting at this minute of the ET day (etDayAndMinute) is a
+ *  regular-session bar. The one test every reader of intraday bars applies:
+ *  Yahoo's candles and the tape rebuild's Polygon bars (historicalTape.ts). */
+export function isRegularSessionMinute(minute: number): boolean {
+  return minute >= REGULAR_SESSION_OPEN_MINUTE && minute < REGULAR_SESSION_CLOSE_MINUTE;
+}
