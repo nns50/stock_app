@@ -848,6 +848,21 @@ The tune advisor ranks the same class with `marketDirectionBreadthPct` as its le
 scan's **Market direction at entry** cut shows the live book's with and mixed buckets with
 paper beside them. An `against` bucket appears on live only while the gate is off.
 
+**A refused call has a twin (2026-09-26).** The gate's options refusals
+(`live_options_market_direction_skipped`) name the contract they refused. Paper is handed the
+same signal in the same tick and is not gated, so the paper position on that contract, opened
+that day, is what the refused call would have done. Read the options half of the gate from
+those pairs rather than from every paper call on a red day: the pairs are the calls live
+actually wanted. Three cautions:
+
+- A refusal with no paper position on its contract is unmeasured, not a loss avoided. Paper
+  has its own slots, risk check and cooldowns.
+- The row is written once per name a day, so it names the first contract refused.
+- Rows before 2026-09-26 name no contract; pairing them by symbol and day can be ambiguous.
+
+The order-budget refusal (`live_options_order_cap_skipped`) carries the same fields, so what
+the budget costs the options sleeve is read the same way.
+
 **Reading the tape by side (2026-09-25).** `with` pools a short on a red day with a long on a
 green one, so it cannot answer the question that decides the next step: do **shorts** pay on
 red days? The scan's **Side and market direction at entry** cut files every entry by what it

@@ -25,9 +25,21 @@ import {
 } from '../src/services/autotrading/optionsExecute';
 import { evaluateOptionsRiskCheck, OptionsRiskCheckResult } from '../src/services/autotrading/optionsRiskCheck';
 import { sellableExitLimit } from '../src/services/autotrading/optionsExitPricing';
-import { DebitSpreadOptionsSignal, SingleLegOptionsSignal } from '../src/services/autotrading/optionsDecide';
+import {
+  DebitSpreadOptionsSignal,
+  SingleLegOptionsSignal,
+  optionsSignalReplayFields,
+} from '../src/services/autotrading/optionsDecide';
 
 const mockGetProvider = vi.mocked(getProvider);
+
+/** The paper row's values under the keys a live refusal row names the same
+ *  signal's contract with. Each key must be on the refusal row, or two missing
+ *  values would read as a match. */
+function joinKeys(paperDetail: Record<string, unknown>, refused: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) expect(refused[key], key).toBeDefined();
+  return Object.fromEntries(keys.map((key) => [key, paperDetail[key]]));
+}
 
 function optionSignal(overrides: Partial<SingleLegOptionsSignal> = {}): SingleLegOptionsSignal {
   return {
@@ -237,6 +249,19 @@ describe('attemptOptionsPaperEntry', () => {
     expect(events[0].riskProfile).toBe('MODERATE');
   });
 
+  // THE JOIN KEY (2026-09-26). A live refusal row names the refused contract
+  // with optionsSignalReplayFields; this book's row for the same signal has to
+  // carry the same values under the same names, or the pair cannot be made.
+  it('names the contract the way a live refusal row does, so the two join', async () => {
+    mockGetProvider.mockReturnValue(chainsFor({ AAPL: { side: 'call', strike: 100, mark: 4.25 } }) as never);
+    const signal = optionSignal();
+    await attemptOptionsPaperEntry(signal, okResult, 'MODERATE');
+    const paper = JSON.parse(listAutotradeEvents({ stage: 'execution', symbol: 'AAPL' })[0].detail!);
+    const refused = optionsSignalReplayFields(signal);
+    const keys = ['contractSymbol', 'strike', 'expiration'];
+    expect(joinKeys(paper, refused, keys)).toEqual(Object.fromEntries(keys.map((k) => [k, refused[k]])));
+  });
+
   // THE PAPER BOOK BUYS AT THE ASK (2026-09-18) — the price a buyer pays,
   // through the same helper the live entry is priced with, so the control arm
   // no longer fills at a midpoint nobody is offering. The mark stays the
@@ -318,6 +343,23 @@ describe('attemptOptionsPaperEntry', () => {
       const events = listAutotradeEvents({ stage: 'execution', symbol: 'AAPL' });
       expect(events[0]).toMatchObject({ action: 'options_paper_order_placed' });
       expect(JSON.parse(events[0].detail!)).toMatchObject({ kind: 'debit_spread', netDebit: 2.25, fillBasis: 'mark' });
+    });
+
+    it('names both legs the way a live refusal row does, so the two join (2026-09-26)', async () => {
+      mockGetProvider.mockReturnValue(
+        chainsFor({
+          AAPL: [
+            { side: 'call', strike: 100, mark: 3.5 },
+            { side: 'call', strike: 110, mark: 1.25 },
+          ],
+        }) as never,
+      );
+      const signal = spreadSignal();
+      await attemptOptionsPaperEntry(signal, spreadOkResult, 'MODERATE');
+      const paper = JSON.parse(listAutotradeEvents({ stage: 'execution', symbol: 'AAPL' })[0].detail!);
+      const refused = optionsSignalReplayFields(signal);
+      const keys = ['longContractSymbol', 'longStrike', 'shortContractSymbol', 'shortStrike', 'expiration'];
+      expect(joinKeys(paper, refused, keys)).toEqual(Object.fromEntries(keys.map((k) => [k, refused[k]])));
     });
 
     it('opens the long leg at its ask and the short leg at its bid when the chain quotes them (2026-09-18)', async () => {

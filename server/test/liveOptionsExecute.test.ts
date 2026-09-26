@@ -1324,7 +1324,22 @@ describe('runLiveOptionsExecution', () => {
       expect(listIntents()).toHaveLength(before);
       expect(listAutotradeEvents({ actions: ['live_options_entry_blocked'] })).toHaveLength(0);
       expect(rows()).toHaveLength(1);
-      expect(JSON.parse(rows()[0].detail!)).toMatchObject({ side: 'call', ordersToday: 2, maxOrdersPerDay: 2 });
+      expect(JSON.parse(rows()[0].detail!)).toMatchObject({
+        side: 'call',
+        ordersToday: 2,
+        maxOrdersPerDay: 2,
+        // The refused contract (2026-09-26), under the names the paper book's
+        // `options_paper_order_placed` row uses for the same signal.
+        kind: 'single_leg',
+        contractSymbol: 'AAPL-fixture',
+        strike: 100,
+        expiration: '2024-06-21',
+        dte: 21,
+        premium: 3,
+        delta: 0.45,
+        underlyingPrice: 100,
+        ivRank: 50,
+      });
     });
 
     it('one under the cap, the entry still goes out', async () => {
@@ -1379,7 +1394,39 @@ describe('runLiveOptionsExecution', () => {
         breadthSample: 500,
         indexPct: 0.2,
         breadthPct: 65,
+        // The contract it refused (2026-09-26): the join key to the paper twin.
+        kind: 'single_leg',
+        contractSymbol: 'AAPL-fixture',
+        strike: 100,
+        expiration: '2024-06-21',
+        dte: 21,
+        premium: 3,
+        delta: 0.45,
+        underlyingPrice: 100,
+        ivRank: 50,
       });
+    });
+
+    it('names both legs of a refused spread, and prices it at the net debit', async () => {
+      arm('call');
+      const outcomes = await runLiveOptionsExecution([{ signal: spreadSignal() }], null, null, undefined, RED);
+      expect(outcomes[0]).toMatchObject({ ok: false, reason: expect.stringMatching(/^Market direction:/) });
+      const detail = JSON.parse(rows()[0].detail!) as Record<string, unknown>;
+      expect(detail).toMatchObject({
+        kind: 'debit_spread',
+        longContractSymbol: 'AAPL-long',
+        longStrike: 100,
+        longPremium: 3,
+        longDelta: 0.45,
+        shortContractSymbol: 'AAPL-short',
+        shortStrike: 110,
+        shortPremium: 1,
+        shortDelta: 0.2,
+        premium: 2,
+        expiration: '2024-06-21',
+      });
+      // A spread has no single contract; the paper row names its legs instead.
+      expect(detail).not.toHaveProperty('contractSymbol');
     });
 
     it('refuses a put on a broad green day', async () => {

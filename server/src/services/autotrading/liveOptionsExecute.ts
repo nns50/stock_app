@@ -87,7 +87,7 @@ import {
 import { computeStreaksAndDrawdown } from '../pnl';
 import { defaultExitConfig, evaluateExit } from '../../options/exitRules';
 import { convictionGrade } from './decide';
-import { OptionsTradeSignal } from './optionsDecide';
+import { OptionsTradeSignal, optionsSignalReplayFields } from './optionsDecide';
 import { evaluateOptionsRiskCheck, OptionsRiskCheckResult, optionsPositionNotionalUsd } from './optionsRiskCheck';
 import { journalMethodMultipliers, methodOfOptionsSignal } from './methodSizing';
 import { activeSymbolCooldowns, journalEntrySkipOncePerDay } from './symbolCooldown';
@@ -1236,13 +1236,16 @@ export async function runLiveOptionsExecution(
     // The market-direction gate (2026-09-23; marketDirection.ts), the options
     // twin of the stock path's: a call leans long the underlying and a put
     // short it, so a call on a broad red day and a put on a broad green one
-    // are refused. Live-only; the paper options book is the control.
+    // are refused. Live-only; the paper options book is the control. The row
+    // names the refused contract (2026-09-26), so it pairs with the paper twin
+    // that took the same signal.
     const lean = signal.side === 'call' ? 'long' : 'short';
     if (cfg.marketDirectionGateEnabled && marketDirection && directionRefuses(marketDirection, lean)) {
       const reason = `${marketDirection.detail} — a ${signal.side} leans against it`;
       journalEntrySkipOncePerDay(symbol, 'live_options_market_direction_skipped', {
         side: signal.side,
         score: signal.score,
+        ...optionsSignalReplayFields(signal),
         direction: marketDirection.direction,
         rawDirection: marketDirection.rawDirection ?? marketDirection.direction,
         heldBy: marketDirection.heldBy ?? null,
@@ -1269,6 +1272,8 @@ export async function runLiveOptionsExecution(
       journalEntrySkipOncePerDay(symbol, 'live_options_order_cap_skipped', {
         side: signal.side,
         score: signal.score,
+        // The refused contract, as on the direction row above.
+        ...optionsSignalReplayFields(signal),
         ordersToday,
         maxOrdersPerDay: orderCap,
       });
