@@ -792,6 +792,12 @@ morning let that tick's longs through. So once the reading is one-sided it holds
   on it.
 - **The data-gap hold.** It stays through up to 5 minutes of ticks it cannot see.
 
+Since 2026-09-26 the hold also survives a restart of the app: every tick is saved with its
+reading, and a restarted app takes the hold from the last one, within the same bounds.
+Adds (a scale-in, a per-lot second lot) are held to the gate too. With no reading from the
+last 10 minutes an add is refused, since it is placed before the tick reads the tape. A
+macro-event blackout holds adds as it holds entries.
+
 Entering still needs the full bar. The same 22 sessions, read every minute, with each trade
 placed against the held reading at its entry minute:
 

@@ -122,10 +122,10 @@ import {
   getMarketChangePct,
   getMarketRangePct,
 } from '../src/services/autotrading/executionGuards';
-import { EMPTY_BREADTH } from '../src/services/autotrading/marketDirection';
+import { EMPTY_BREADTH, resetMarketDirectionState } from '../src/services/autotrading/marketDirection';
 import { logAutotradeEvent } from '../src/db/autotradeEvents';
 import { runAutotradeLoopTick, startAutotradeLoop, stopAutotradeLoop } from '../src/services/autotrading/loop';
-import { getLastTick } from '../src/db/autotradeLastTick';
+import { getLastTick, saveLastTick } from '../src/db/autotradeLastTick';
 import { getMarketRegime, MlRegimeReading } from '../src/services/mlRegime';
 import { ScreenCandidate } from '../src/services/autotrading/screen';
 import { TradeSignal } from '../src/services/autotrading/decide';
@@ -1921,6 +1921,34 @@ describe('runAutotradeLoopTick', () => {
       }
     });
 
+    // A MACRO BLACKOUT HOLDS ADDS AS IT HOLDS ENTRIES (2026-09-26, #148). The
+    // blackout used to be asked only after the add stages, before the screen,
+    // so a scale-in or a second lot could go out in the window that refuses
+    // every fresh entry. One reading of it now serves both.
+    it('sends no scale-in and no second lot inside a macro-event blackout, and both outside it', async () => {
+      setAutotradeConfig({
+        enabled: false,
+        liveTradingEnabled: true,
+        liveAccountId: 'ACC1',
+        macroEventBlackoutHours: 2,
+      });
+      setTradingConfig({ enabled: true, killSwitch: false });
+      armScreenAndDecide();
+      mockLiveExecute.mockResolvedValue([]);
+      addMacroEvent('FOMC decision', Date.now() + 30 * 60 * 1000); // inside the 2h window
+
+      const summary = await runAutotradeLoopTick();
+      expect(summary.skippedReason).toMatch(/FOMC decision/);
+      expect(mockCheckLiveScaleIns).not.toHaveBeenCalled();
+      expect(mockCheckPerLotSecondLots).not.toHaveBeenCalled();
+
+      // The same tick outside the window reaches both.
+      setAutotradeConfig({ macroEventBlackoutHours: 0 });
+      await runAutotradeLoopTick();
+      expect(mockCheckLiveScaleIns).toHaveBeenCalledTimes(1);
+      expect(mockCheckPerLotSecondLots).toHaveBeenCalledTimes(1);
+    });
+
     it('runs live entries when paper is disabled but live is active', async () => {
       setAutotradeConfig({ enabled: false, liveTradingEnabled: true, liveAccountId: 'ACC1' });
       setTradingConfig({ enabled: true, killSwitch: false });
@@ -2260,6 +2288,82 @@ describe('runAutotradeLoopTick', () => {
       await runAutotradeLoopTick();
       expect(mockLiveExecute.mock.calls[2][5]).toEqual(expect.objectContaining({ direction: 'mixed' }));
       expect(directionRows()[2][0]).toMatchObject({ detail: { direction: 'mixed' } });
+    });
+
+    // AFTER A RESTART (2026-09-26, #148). The hold lives in module state, so a
+    // restarted process read its first tick with no hold: this tape, inside
+    // the exit band, read mixed and let that tick's longs through. The loop now
+    // seeds the hold from the tick it saved last, which the database keeps.
+    it('takes the hold from the tick it saved last when the process restarts', async () => {
+      armLive();
+      setAutotradeConfig({ liveOptionsEnabled: true, marketDirectionGateEnabled: true });
+      armScreenAndDecide();
+      const screenWith = (redNames: number) => ({
+        generatedAt: Date.now(),
+        candidates: [candidate('AAPL', 2)],
+        excluded: [],
+        skipped: [],
+        errors: [],
+        rejected: [],
+        relVolMedian: null,
+        breadth: { red: redNames, green: 500 - redNames, flat: 0, sample: 500 },
+        indexChangePct: null,
+        discovery: { universeCount: 500, moversCount: 0, scannedCount: 500, moversError: null },
+      });
+      mockLiveExecute.mockResolvedValue([]);
+      mockLiveOptionsExecute.mockResolvedValue([]);
+
+      // Red on the bar; the tick is saved with the reading and its time.
+      mockScreen.mockResolvedValue(screenWith(365));
+      mockMarketChange.mockResolvedValue(-0.35);
+      const before = Date.now();
+      const first = await runAutotradeLoopTick();
+      expect(first.marketDirection).toEqual(expect.objectContaining({ direction: 'red' }));
+      expect(first.marketDirectionAt).toBeGreaterThanOrEqual(before);
+
+      // The process restarts: its in-memory hold is gone.
+      resetMarketDirectionState();
+
+      // Under the bar, inside the band: held red, as it would have been without
+      // the restart, and that is what both live books are handed.
+      mockScreen.mockResolvedValue(screenWith(310));
+      mockMarketChange.mockResolvedValue(-0.15);
+      await runAutotradeLoopTick();
+      const held = expect.objectContaining({ direction: 'red', rawDirection: 'mixed', heldBy: 'hysteresis' });
+      expect(mockLiveExecute.mock.calls[1][5]).toEqual(held);
+      expect(mockLiveOptionsExecute.mock.calls[1][4]).toBe(mockLiveExecute.mock.calls[1][5]);
+    });
+
+    it('does not seed from a reading saved on an earlier day', async () => {
+      armLive();
+      setAutotradeConfig({ liveOptionsEnabled: true, marketDirectionGateEnabled: true });
+      armScreenAndDecide();
+      const screenWith = (redNames: number) => ({
+        generatedAt: Date.now(),
+        candidates: [candidate('AAPL', 2)],
+        excluded: [],
+        skipped: [],
+        errors: [],
+        rejected: [],
+        relVolMedian: null,
+        breadth: { red: redNames, green: 500 - redNames, flat: 0, sample: 500 },
+        indexChangePct: null,
+        discovery: { universeCount: 500, moversCount: 0, scannedCount: 500, moversError: null },
+      });
+      mockLiveExecute.mockResolvedValue([]);
+      mockLiveOptionsExecute.mockResolvedValue([]);
+      mockScreen.mockResolvedValue(screenWith(365));
+      mockMarketChange.mockResolvedValue(-0.35);
+      const first = await runAutotradeLoopTick();
+      // The same red reading, saved as a day old: the index leg is measured
+      // against a prior close that has moved since, so it is not held over.
+      saveLastTick({ ...first, marketDirectionAt: first.marketDirectionAt! - 24 * 60 * 60 * 1000 });
+      resetMarketDirectionState();
+
+      mockScreen.mockResolvedValue(screenWith(310));
+      mockMarketChange.mockResolvedValue(-0.15);
+      await runAutotradeLoopTick();
+      expect(mockLiveExecute.mock.calls[1][5]).toEqual(expect.objectContaining({ direction: 'mixed' }));
     });
 
     // The gate's pre-open review (2026-09-23): the index is fetched fresh after

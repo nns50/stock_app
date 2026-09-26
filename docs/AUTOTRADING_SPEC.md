@@ -16375,3 +16375,58 @@ does not shrink the leg that sells the rest; a single bracket's leg with no quan
 closes the position at its price; a leg filled at $0 books the order's stop price. Four
 mutations, all caught: the old clamp, the zero price passed through, the no-quantity read
 closing the remainder again, and counting every exit rather than this order's.
+
+## 2026-09-26 (seventh) — the market reading survives a restart, and adds are not sent blind
+
+Three follow-ups from H's review (2026-09-24). Each is narrow or latent in production.
+
+- **A restart kept no hold.** The hold and the latest reading live in
+  `marketDirection.ts`'s module state, so a restarted process started with neither. Its
+  first tick read the tape with no hold: a red kept inside the exit band read `mixed`, and
+  that tick's longs went through. The add gates, which run before that tick's screen, had
+  no reading at all. The loop saves its summary every tick (`autotrade_last_tick`), and
+  the summary now records when the reading was taken (`marketDirectionAt`). At the start
+  of a restarted process's first tick, the loop takes both from it
+  (`seedMarketDirectionState`), once:
+  - only a reading from today's ET date;
+  - the hold only for a one-sided reading a readable tape confirmed. A reading held
+    through a data gap is not carried: the summary does not say when a tape last
+    confirmed it, and a gap never extends itself;
+  - never over a reading the process took itself.
+
+  The hold then applies its own 5-minute bound from the reading's time, and the add gates
+  their 10-minute one. The restarts in the record (2026-09-11 to 09-18) were mid-session
+  deploys, which the no-merge-in-session rule now prevents; a crash or a machine restart
+  is what this still covers.
+- **Adds went out blind.** A scale-in or a second lot with no reading from the last
+  `LATEST_DIRECTION_MAX_AGE_MS` (10 minutes) was refused by nothing. A fresh entry is
+  never judged blind, since it is placed after the tick's own screen. With the gate on,
+  such an add is now refused: `live_scale_in_direction_skipped` or
+  `per_lot_second_lot_direction_skipped`, with `direction: null` and
+  `noRecentReading: true`. A scale-in is asked again next tick; a second lot is dropped,
+  as for any gate refusal. An `unknown` reading still refuses nothing: the loop looked
+  and could not see, which is what a fresh entry is judged on too.
+- **Adds ignored a macro blackout.** The blackout was asked after the add stages, just
+  before the screen, so a scale-in or a second lot could go out inside the window that
+  refuses every fresh entry. The loop now reads the blackout once, before the adds, and
+  both add stages and the entries use that one answer. The session window's reason still
+  wins on the Last cycle line.
+
+**Not changed.** A second lot held back by a halt, the kill switch or a blackout is still
+sent when the gate lifts, at the entry's plan. H's review drops a lot the direction gate
+refuses for that reason; the other gates only skip the stage. Per-lot entries are off in
+production, so this is recorded as a known gap rather than fixed here.
+
+**Tests.**
+- `marketDirection.test.ts`: the seed carries a red across a restart and it is held
+  inside the band; it lets go past the 5-minute bound; another day seeds nothing; a
+  data-gap reading seeds the latest reading but not the hold; the seed is asked once, and
+  never over the process's own reading.
+- `autotradeLoop.test.ts`: a restart between two ticks hands both live books the held red;
+  a reading saved on an earlier day does not; no scale-in and no second lot inside a
+  blackout, and both outside it.
+- `autotradeLiveExecute.test.ts` and `liveEquityTimeExit.test.ts`: a stale or missing
+  reading refuses a scale-in (deferred, then placed once a mixed reading arrives) and
+  drops a second lot; with the gate off, an add needs no reading.
+
+Eight mutations, all caught.

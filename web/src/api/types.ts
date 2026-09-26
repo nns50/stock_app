@@ -2671,6 +2671,10 @@ export interface LoopTickSummary {
    *  services/autotrading/marketDirection.ts), or null when the screen did not
    *  run. Ticks persisted before 2026-09-23 lack the field entirely. */
   marketDirection?: MarketDirectionReading | null;
+  /** When that reading was taken (epoch ms), or null with it. A restarted
+   *  server seeds its market-direction hold from it. Ticks persisted before
+   *  2026-09-26 lack the field. */
+  marketDirectionAt?: number | null;
 }
 
 /** The market-direction reading: SPY's move and the universe's breadth, and the

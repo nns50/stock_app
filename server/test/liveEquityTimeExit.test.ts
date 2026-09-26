@@ -2584,6 +2584,38 @@ describe('checkLivePerLotSecondLots', () => {
     expect(mockPlaceOrder).not.toHaveBeenCalled();
   });
 
+  // No recent reading (2026-09-26, #148): the lot is not sent blind, and since a
+  // refused second lot is dropped, not deferred, it is dropped.
+  it('drops the second lot when the loop has no recent market reading, and says so', async () => {
+    const { position, entryIntentId } = await openAgedLivePosition(0);
+    setAutotradeConfig(
+      liveConfig({ livePerLotBracketsEnabled: true, maxHoldDays: 0, marketDirectionGateEnabled: true }),
+    );
+    planFor(entryIntentId, { quantity: 5, targetR: 2, targetPrice: 110 });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(accountStateWith(0) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-LOT2' });
+
+    expect(await checkLivePerLotSecondLots()).toEqual([
+      {
+        symbol: 'AAPL',
+        positionId: position.id,
+        requested: false,
+        reason: expect.stringMatching(
+          /^Market direction: no market-direction reading in the last 10 minutes, so a long second lot is not sent blind; dropped, not deferred/,
+        ),
+      },
+    ]);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    const [row] = listAutotradeEvents({ actions: ['per_lot_second_lot_direction_skipped'], limit: 10 });
+    expect(JSON.parse(row.detail ?? '{}')).toMatchObject({
+      positionId: position.id,
+      direction: null,
+      noRecentReading: true,
+      dropped: true,
+    });
+  });
+
   it("drops only the refused position's second lot, not another position's", async () => {
     // Another position's refusal row is not this one's: the marker is read by
     // positionId, so a lot refused on one name never ends a lot on another.

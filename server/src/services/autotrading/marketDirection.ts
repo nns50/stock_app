@@ -505,7 +505,8 @@ let latest: { reading: MarketDirectionReading; at: number } | null = null;
 
 /** The loop's reading for this tick: holdMarketDirection applied to the
  *  previous tick's hold, remembered for the next tick and for the add-on gates
- *  (latestMarketDirection). The only writer of this module's hold state. */
+ *  (latestMarketDirection). The only writer of this module's hold state, apart
+ *  from the one seed a restarted process takes (seedMarketDirectionState). */
 export function readMarketDirectionForTick(
   input: MarketDirectionInput & DirectionExitBand,
   now: number,
@@ -519,8 +520,9 @@ export function readMarketDirectionForTick(
 
 /** How old the loop's last reading may be and still gate an add-on: a few
  *  ticks. Older than this and the loop has not read the market lately (the
- *  screen failed, or the loop stalled), which is a market the add-on gate
- *  cannot see — it refuses nothing, the same as an `unknown` reading. */
+ *  screen failed, or the loop stalled). The add-on gate then refuses the add
+ *  (2026-09-26, #148): an add is sent before the tick's screen, so without a
+ *  recent reading it would go out blind, where a fresh entry never can. */
 export const LATEST_DIRECTION_MAX_AGE_MS = 10 * 60_000;
 
 /** The reading the loop's last screen produced, with its age, when it is
@@ -537,9 +539,56 @@ export function latestMarketDirection(
   return { reading: latest.reading, ageMs };
 }
 
+let seedAsked = false;
+
+/** The reading a saved tick carries, for seedMarketDirectionState: the held
+ *  reading, when it was taken, and that moment's ET day. */
+export interface MarketDirectionSeed {
+  reading: MarketDirectionReading;
+  at: number;
+  day: string;
+}
+
+/**
+ * AFTER A RESTART (2026-09-26, #148). The hold and the latest reading live in
+ * this module, so a restarted process began with neither. Its first tick read
+ * the tape with no hold, so a red kept inside the exit band read `mixed` and
+ * let that tick's longs through. And the add gates, which run before that
+ * tick's screen, had no reading at all. The loop saves every tick to the
+ * database, reading and all, so before anything reads this state it asks once
+ * to seed both from the tick it saved last.
+ *
+ * Only a process that has not read the tape yet is seeded, and only from a
+ * reading taken on `today`. The hold then carries it exactly as it carries the
+ * previous tick's reading (holdMarketDirection's DIRECTION_DATA_GAP_HOLD_MS
+ * bound), and the add gates read it exactly as they read the last tick's
+ * (LATEST_DIRECTION_MAX_AGE_MS). A reading held through a data gap is not held
+ * over: the saved tick does not say when a readable tape last confirmed it, and
+ * a gap never extends itself.
+ *
+ * `wantsSeed` is true until the first ask, so the loop reads the saved tick at
+ * most once per process. Returns whether it seeded.
+ */
+export function marketDirectionWantsSeed(): boolean {
+  return !seedAsked && held === null && latest === null;
+}
+
+export function seedMarketDirectionState(seed: MarketDirectionSeed | null, today: string): boolean {
+  if (!marketDirectionWantsSeed()) return false;
+  seedAsked = true;
+  if (seed === null || seed.day !== today) return false;
+  latest = { reading: seed.reading, at: seed.at };
+  const d = seed.reading.direction;
+  if ((d === 'red' || d === 'green') && seed.reading.heldBy !== 'data_gap') {
+    held = { direction: d, day: seed.day, confirmedAt: seed.at };
+  }
+  return true;
+}
+
 /** For tests (setupProcessState.ts). */
 export function resetMarketDirectionState(): void {
   lastJournaled = null;
   held = null;
   latest = null;
+  seedAsked = false;
 }

@@ -6597,18 +6597,54 @@ describe('checkLiveScaleIns', () => {
       expect(addRows()).toHaveLength(1);
     });
 
-    it('places the add when the last reading is too old to stand for now', async () => {
+    // NO RECENT READING REFUSES THE ADD (2026-09-26, #148). It refused nothing
+    // until this date, so on the first tick after the loop stopped reading
+    // the tape, an add went out blind; a fresh entry never can.
+    it('refuses the add when the last reading is too old to stand for now, and says so', async () => {
+      const { pos } = await openLivePosition(GATE_ON);
+      mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 105 }) as ReturnType<typeof getProvider>);
+      mockPlaceOrder.mockClear();
+
+      readMarketDirectionForTick(RED_TAPE, Date.now() - LATEST_DIRECTION_MAX_AGE_MS - 60_000, etToday());
+      const [out] = await checkLiveScaleIns(NO_OPTIONS_DAY);
+      expect(out).toMatchObject({
+        requested: false,
+        reason: expect.stringMatching(/^Market direction: no market-direction reading in the last 10 minutes/),
+      });
+      expect(mockPlaceOrder).not.toHaveBeenCalled();
+      expect(countLiveAddOns(pos.id)).toBe(0);
+      expect(addRows()).toHaveLength(1);
+      expect(JSON.parse(addRows()[0].detail!)).toMatchObject({
+        positionId: pos.id,
+        direction: null,
+        noRecentReading: true,
+        readingAgeSec: null,
+      });
+    });
+
+    it('refuses the add with no reading at all, then places it once a reading shows a mixed market', async () => {
       const { pos } = await openLivePosition(GATE_ON);
       mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 105 }) as ReturnType<typeof getProvider>);
       mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-ADD' });
 
-      // A reading the loop took longer ago than LATEST_DIRECTION_MAX_AGE_MS is
-      // a market it has not seen lately: it refuses nothing.
-      readMarketDirectionForTick(RED_TAPE, Date.now() - LATEST_DIRECTION_MAX_AGE_MS - 60_000, etToday());
+      expect((await checkLiveScaleIns(NO_OPTIONS_DAY))[0].requested).toBe(false);
+      expect(countLiveAddOns(pos.id)).toBe(0);
+
+      // A scale-in is deferred, not dropped: the next tick with a reading sends it.
+      readMarketDirectionForTick({ ...RED_TAPE, indexChangePct: 0.1 }, Date.now(), etToday());
       expect(await checkLiveScaleIns(NO_OPTIONS_DAY)).toEqual([
         { symbol: 'AAPL', positionId: pos.id, requested: true },
       ]);
       expect(countLiveAddOns(pos.id)).toBe(1);
+    });
+
+    it('with the gate off, an add needs no reading', async () => {
+      const { pos } = await openLivePosition(SCALE_ON);
+      mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 105 }) as ReturnType<typeof getProvider>);
+      mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-ADD' });
+      expect(await checkLiveScaleIns(NO_OPTIONS_DAY)).toEqual([
+        { symbol: 'AAPL', positionId: pos.id, requested: true },
+      ]);
       expect(addRows()).toHaveLength(0);
     });
 
