@@ -2605,6 +2605,47 @@ describe('checkLivePerLotSecondLots', () => {
     ]);
   });
 
+  // A short's second lot is more short (2026-09-24; liveShortPermitted): with
+  // shorts held to a red tape, it waits out a mixed one, and says so once in
+  // its own action. The side is set on the row: the refusal reads only it, and
+  // it is asked before any quote or order.
+  it("holds a short position's second lot on a mixed tape while shorts are held to a red one", async () => {
+    const { position, entryIntentId } = await openAgedLivePosition(0);
+    db.prepare("UPDATE positions SET side = 'short' WHERE id = ?").run(position.id);
+    setAutotradeConfig(liveConfig({ livePerLotBracketsEnabled: true, maxHoldDays: 0, liveAllowNakedShort: true }));
+    planFor(entryIntentId, { quantity: 5, targetR: 2, targetPrice: 90 });
+    const mixedTape = {
+      indexSymbol: 'SPY',
+      indexChangePct: 0.1,
+      breadth: { red: 365, green: 135, flat: 0, sample: 500 },
+      indexPct: 0.2,
+      breadthPct: 65,
+      exitIndexPct: 0.1,
+      exitBreadthPct: 60,
+    };
+    readMarketDirectionForTick(mixedTape, Date.now(), '2026-09-24');
+
+    expect(await checkLivePerLotSecondLots()).toEqual([
+      {
+        symbol: 'AAPL',
+        positionId: position.id,
+        requested: false,
+        reason: 'Short second lot refused: red-tape only: the tape is mixed',
+      },
+    ]);
+    await checkLivePerLotSecondLots();
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    const skipped = listAutotradeEvents({ actions: ['per_lot_second_lot_short_skipped'], limit: 10 });
+    expect(skipped).toHaveLength(1);
+    expect(JSON.parse(skipped[0].detail ?? '{}')).toMatchObject({
+      positionId: position.id,
+      side: 'short',
+      quantity: 5,
+      cause: 'red_tape_only',
+      direction: 'mixed',
+    });
+  });
+
   it('leaves a position with no plan alone, rather than inventing a lot', async () => {
     await openAgedLivePosition(0);
     setAutotradeConfig(liveConfig({ livePerLotBracketsEnabled: true, maxHoldDays: 0 }));

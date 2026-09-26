@@ -15859,3 +15859,102 @@ setting, nothing is replayed and `atrReach` is null.
 - **The bar.** It passes only when all four legs pass; it fails on each leg alone and without
   an other-tape trade; it holds on float sums that land one bit under.
 - **The reading.** The switch's reading carries the red-tape clause.
+
+## 2026-09-24 (eighth) — live stock shorts are held to a red tape
+
+The tape plan's PR 8. It ships switched off: `liveAllowNakedShort` stays false, and while it
+is false nothing a live order does changes. The operator's decision (2026-09-23): stock
+shorts are enabled, if ever, as a red-tape trade, and only on the operator's word.
+
+**The rule.** A new setting, `liveShortsRedTapeOnly` (default true). With
+`liveAllowNakedShort` on, a live stock short goes out only while the market-direction reading
+is `red`. One predicate, `liveShortPermitted(cfg, reading)` in `marketDirection.ts`, rules on
+every way the live book adds short exposure:
+- **the entry**, in place of the shorts-off skip and at the same place in the gate order
+  (before the ATR reach and direction gates);
+- **a short's scale-in** (`checkLiveScaleIns`), asked before the add's direction gate;
+- **a short's per-lot second lot** (`checkLivePerLotSecondLots`), likewise.
+
+Only `red` admits. Mixed, green, `unknown` and no reading at all refuse. Asking "not green"
+would admit a mixed tape, the one the rule exists to keep shorts out of. The reading is the
+held one (the hysteresis in "2026-09-24 (third)"). The entry path is handed the tick's reading
+by the loop; an add reads `latestMarketDirection`, which is null once the reading is older
+than its maximum age, and null refuses. The loop reads the market every tick whether or not
+`marketDirectionGateEnabled` is on, so the rule does not depend on the gate. After a restart
+an add is refused until the new process has read the market once. Paper is untouched: it
+keeps taking shorts on every tape as the control.
+
+**The journal.** A refused entry writes `live_short_skipped` as before, once per symbol per
+tape per day (the "(seventh)" key). It now also carries:
+- `cause`: `shorts_off` or `red_tape_only`;
+- `reason`: "liveAllowNakedShort is off", or "red-tape only: the tape is mixed".
+
+Both causes are a declined short, and the shadow record replays both. So once shorts are on,
+a short refused on a mixed tape still counts toward the mixed tape's record, the comparison
+the red-tape bar needs. A refused add writes `live_scale_in_short_skipped` or
+`per_lot_second_lot_short_skipped`, once per position per cause per tape per day, with the
+cause, the tape and the reason. Neither is an entry refusal:
+`journalActionsReachability.test.ts` lists both in its non-entry set, and `eventBook.ts` books
+them as live.
+
+**The switch.** `shorts` is now "Enable live shorts (red tape only)". It proposes only when
+all of these hold:
+1. **the red-tape bar**: `redTapeGate.passes` on the persisted short shadow record
+   ("(seventh)");
+2. **the paper control**: the last persisted edge-leak scan's `marketTapeBySide` cut has
+   the paper book's `equity_short_red` trades (the bucket's control) at n ≥ 10 with a mean
+   above zero (`paperShortRedOf`, `PAPER_SHORT_RED_MIN_TRADES`);
+3. `liveAllowNakedShort` is off;
+4. `liveShortsRedTapeOnly` is on. The evidence covers red tapes only, so with the rule off,
+   turning shorts on would reach tapes it says nothing about.
+
+The patch is still `{ liveAllowNakedShort: true }`: an exposure key, proposal-only,
+refused at the write. Task #21's bar (30 / +0.1R / 50% on every tape) no longer decides
+anything. The record still computes it, and the route still serves it.
+
+**The paper control can be unread, and says so.** The route persists every scan it runs,
+including `?book=live`, whose result has no paper figures. Read naively, such a scan says
+"0 paper shorts" when paper was never read. `paperShortRedOf` returns unread, with the
+reason, in three cases: no scan saved, a scan whose `books` leave out paper, and a scan
+without the `marketTapeBySide` cut (saved before "2026-09-25 (second)"). A scan that read
+paper and filed no such short reads n = 0, which is an answer. Unread never passes.
+
+The reading leads with what the rule proposes on, then the old numbers for context:
+"red tape: 3 of 20 shorts, avg −0.03R (bar +0.15R), …; paper red-tape stock shorts: 4 of 10,
+mean +0.31R (bar above 0); all tapes: 27 shadow shorts, avg +0.14R, win 48.1%, as of
+2026-09-23".
+
+**Guards.** The new field has all three: a `NEVER_TUNED_KEYS` entry in `targetTune.ts`; the
+zod field and patch line in the config route, covered by the boolean `PUT` sweep in
+`routes.integration.test.ts` (it enumerates the booleans from the defaults); and
+`configReachability.test.ts`, which finds it read by `marketDirection.ts` and
+`gatedSwitches.ts`. The web adds a toggle nested under "Allow naked short" on the Live
+trading card.
+
+**Tests.** Each mechanism is mutation-checked: 18 mutations, all caught.
+- **Entry.** A short on a red tape reaches the broker. One on a mixed or green tape, or with
+  no reading, writes a skip row with cause `red_tape_only` and places nothing. With the rule
+  off, a mixed-tape short is placed (the behavior before). With shorts off, the cause is
+  `shorts_off`. The order-mechanics tests set `liveShortsRedTapeOnly: false`: they test the
+  order, not the tape. One of them had passed without placing anything, and now asserts the
+  broker call.
+- **Adds.** A short's scale-in is refused on a mixed tape with one row, goes out on a red
+  one, is refused on any tape once shorts are off, and a long add is untouched. A short's
+  second lot is refused on a mixed tape.
+- **The predicate.** Its whole table: every tape with shorts off, then on with the rule on,
+  then off.
+- **The switch, pure.** It proposes only with both bars met, the rule on and shorts off. It
+  stays quiet on each leg alone, and on the old bar met with the red-tape bar short. Each
+  unread paper control reads unread, with its reason.
+- **The switch, over real rows.** Twelve paper shorts on a red tape, filed by a real scan
+  and persisted, meet the control and the rule proposes. A live-only scan of the same rows
+  reads unread and stays quiet. The config is never written.
+- **Web.** The live card saves the setting.
+
+The mutations: the predicate asking "not green"; the setting never read; the entry not
+asking the predicate; the scale-in and the second lot not asking it; the predicate asked for
+the wrong side; the route and the sanitizer dropping the field; the switch ignoring the paper
+control, ignoring the setting, or keeping the old bar; the paper bar at 9; a zero mean
+passing; the wrong bucket; and in the paper reader, the `books` check dropped, the live
+figures read as the control, a missing cut read as zero, and unread passing (caught at the
+typecheck).

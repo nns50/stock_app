@@ -118,6 +118,7 @@ import {
   LATEST_DIRECTION_MAX_AGE_MS,
   type MarketDirectionReading,
 } from '../src/services/autotrading/marketDirection';
+import { resetOncePerDayEvents } from '../src/services/autotrading/oncePerDayEvents';
 
 const mockGetProvider = vi.mocked(getProvider);
 const mockAccountState = vi.mocked(webullAccountState);
@@ -1251,7 +1252,8 @@ describe('runLiveExecution — funding capacity and unplaceable shorts', () => {
   });
 
   it('journals nothing for a short that is actually allowed', async () => {
-    setAutotradeConfig({ ...cfgFields, liveAllowNakedShort: true });
+    // The tape rule is its own case below; this one is the switch alone.
+    setAutotradeConfig({ ...cfgFields, liveAllowNakedShort: true, liveShortsRedTapeOnly: false });
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }));
     mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
     mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-SHORT' });
@@ -1263,8 +1265,10 @@ describe('runLiveExecution — funding capacity and unplaceable shorts', () => {
 
   it('lets the same short through to the broker once naked shorts are on', async () => {
     // The skip must be a consequence of the flag, not a new hard block —
-    // otherwise turning shorts on would silently do nothing.
-    setAutotradeConfig({ ...cfgFields, liveAllowNakedShort: true });
+    // otherwise turning shorts on would silently do nothing. Asserted at the
+    // broker: until 2026-09-24 this only checked the reason was not the
+    // shorts-off one, which a refusal for any other reason also passes.
+    setAutotradeConfig({ ...cfgFields, liveAllowNakedShort: true, liveShortsRedTapeOnly: false });
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }));
     mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
     mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-SHORT-OK' });
@@ -1272,6 +1276,7 @@ describe('runLiveExecution — funding capacity and unplaceable shorts', () => {
     const outcomes = await runLiveExecution([{ signal: signal({ side: 'sell', entry: 100, stop: 105, target: 90 }) }]);
 
     expect(outcomes[0].reason ?? '').not.toMatch(/liveAllowNakedShort is off/);
+    expect(mockPlaceOrder).toHaveBeenCalled();
   });
 
   it('does not skip a LONG entry on the same flag', async () => {
@@ -2160,7 +2165,12 @@ describe('runLiveExecution — level-aware exits', () => {
 // sizer exists to end.
 describe('runLiveExecution — a SHORT entry is buying-power sized', () => {
   it('fetches buying power for a short once shorts are enabled', async () => {
-    setAutotradeConfig({ ...liveConfig(), levelExitsEnabled: false, liveAllowNakedShort: true });
+    setAutotradeConfig({
+      ...liveConfig(),
+      levelExitsEnabled: false,
+      liveAllowNakedShort: true,
+      liveShortsRedTapeOnly: false,
+    });
     mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
     mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
     mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-SHORT' });
@@ -2198,6 +2208,8 @@ describe('runLiveExecution — a SHORT entry is buying-power sized', () => {
     ...liveConfig(),
     levelExitsEnabled: false,
     liveAllowNakedShort: true,
+    // The buying-power arithmetic, not the tape rule: shorts on every tape.
+    liveShortsRedTapeOnly: false,
     liveProbationTrades: 0,
     maxConcurrentPositions: 5,
     maxAggregateOpenRiskPct: 100,
@@ -2406,15 +2418,75 @@ describe('runLiveExecution — the market-direction gate (2026-09-23)', () => {
 
   it('refuses a short on a broad green day, and leaves a short on a red day to the other gates', async () => {
     const short = signal({ side: 'sell', stop: 105, target: 90 });
-    arm({ liveAllowNakedShort: true });
+    // The direction gate's own refusal: with the red-tape rule on, the short
+    // would be refused earlier, as a short (its case below).
+    arm({ liveAllowNakedShort: true, liveShortsRedTapeOnly: false });
     const green = await run(short, GREEN);
     expect(green[0].reason).toMatch(/^Market direction: Broad green market/);
     expect(JSON.parse(skipRows()[0].detail!)).toMatchObject({ direction: 'green', side: 'short' });
 
     db.exec('DELETE FROM order_intents; DELETE FROM autotrade_live_orders; DELETE FROM autotrade_events;');
-    arm({ liveAllowNakedShort: true });
+    arm({ liveAllowNakedShort: true, liveShortsRedTapeOnly: false });
     await run(short, RED);
     expect(skipRows()).toHaveLength(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // SHORTS HELD TO A RED TAPE (2026-09-24, the tape plan's PR 8). With naked
+  // shorts on, liveShortsRedTapeOnly (default on) lets a short go out only on
+  // a red reading. One predicate (liveShortPermitted) for the entry and both
+  // add paths.
+  // -------------------------------------------------------------------------
+  const shortSkipRows = () => listAutotradeEvents({ actions: ['live_short_skipped'] });
+
+  it('takes a short on a red tape: it reaches the broker', async () => {
+    arm({ liveAllowNakedShort: true });
+    const outcomes = await run(signal({ side: 'sell', stop: 105, target: 90 }), RED);
+    expect(outcomes[0]).toMatchObject({ ok: true });
+    expect(mockPlaceOrder).toHaveBeenCalled();
+    expect(shortSkipRows()).toHaveLength(0);
+  });
+
+  it('refuses a short on a mixed or green tape, or with no reading, before anything costs a call', async () => {
+    for (const [reading, label] of [
+      [MIXED, 'mixed'],
+      [GREEN, 'green'],
+      [null, 'unread'],
+    ] as const) {
+      db.exec('DELETE FROM order_intents; DELETE FROM autotrade_live_orders; DELETE FROM autotrade_events;');
+      resetOncePerDayEvents();
+      mockPlaceOrder.mockClear();
+      mockAccountState.mockClear();
+      arm({ liveAllowNakedShort: true });
+      const outcomes = await run(signal({ side: 'sell', stop: 105, target: 90 }), reading);
+      expect(outcomes[0], label).toMatchObject({ ok: false });
+      expect(outcomes[0].reason).toBe(`short entry skipped — red-tape only: the tape is ${label}`);
+      expect(mockPlaceOrder).not.toHaveBeenCalled();
+      expect(mockAccountState).not.toHaveBeenCalled();
+      const rows = shortSkipRows();
+      expect(rows, label).toHaveLength(1);
+      // A declined short like the shorts-off one, so the shadow record replays it.
+      expect(JSON.parse(rows[0].detail!)).toMatchObject({
+        side: 'short',
+        cause: 'red_tape_only',
+        reason: `red-tape only: the tape is ${label}`,
+        direction: reading?.direction ?? null,
+      });
+    }
+  });
+
+  it('takes a short on any tape with the red-tape rule off: the behaviour before it', async () => {
+    arm({ liveAllowNakedShort: true, liveShortsRedTapeOnly: false });
+    const outcomes = await run(signal({ side: 'sell', stop: 105, target: 90 }), MIXED);
+    expect(outcomes[0]).toMatchObject({ ok: true });
+    expect(mockPlaceOrder).toHaveBeenCalled();
+  });
+
+  it('says shorts are off, not the tape, while the switch is off', async () => {
+    arm({ liveAllowNakedShort: false });
+    const outcomes = await run(signal({ side: 'sell', stop: 105, target: 90 }), MIXED);
+    expect(outcomes[0].reason).toBe('short entry skipped — liveAllowNakedShort is off');
+    expect(JSON.parse(shortSkipRows()[0].detail!)).toMatchObject({ cause: 'shorts_off' });
   });
 });
 
@@ -6158,6 +6230,116 @@ describe('checkLiveScaleIns', () => {
       mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 105 }) as ReturnType<typeof getProvider>);
       mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-ADD' });
 
+      expect(await checkLiveScaleIns(NO_OPTIONS_DAY)).toEqual([
+        { symbol: 'AAPL', positionId: pos.id, requested: true },
+      ]);
+    });
+  });
+
+  // A SHORT ADD IS HELD TO THE RULE A SHORT ENTRY IS (2026-09-24, the tape
+  // plan's PR 8; liveShortPermitted). A scale-in on a short is more short: it
+  // goes out only while a fresh short could, on the reading the loop left.
+  describe('a short add-on', () => {
+    async function openLiveShort(overrides: Partial<AutotradeConfig> = {}) {
+      const short = signal({ side: 'sell', entry: 100, stop: 105, target: 90 });
+      mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+      mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+      mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-SHORT-ENTRY' });
+      const cfg = liveConfig({ liveAllowNakedShort: true, ...overrides });
+      setAutotradeConfig(cfg);
+      await attemptLiveEntry(short, evaluateRiskCheck(short, riskCtx), 'MODERATE', cfg);
+      const orderedQty = listIntents()[0].quantity;
+      mockOrderStatus.mockResolvedValue({
+        ok: true,
+        found: true,
+        status: 'FILLED',
+        filledQty: orderedQty,
+        filledPrice: 100,
+        legs: [{ comboType: 'MASTER', status: 'FILLED' }],
+      } as WebullOrderStatus);
+      await reconcileLiveOrders();
+      return { pos: listPositions({ status: 'open' })[0] };
+    }
+    const RED = {
+      indexSymbol: 'SPY',
+      indexChangePct: -0.35,
+      breadth: { red: 365, green: 135, flat: 0, sample: 500 },
+      indexPct: 0.2,
+      breadthPct: 65,
+      exitIndexPct: 0.1,
+      exitBreadthPct: 60,
+    };
+    const MIXED = { ...RED, indexChangePct: 0.1 };
+    const shortAddRows = () =>
+      listAutotradeEvents({ symbol: 'AAPL', stage: 'execution' }).filter(
+        (e) => e.action === 'live_scale_in_short_skipped',
+      );
+    /** 95 is +1R for a short entered at 100 with its stop at 105. */
+    const atTrigger = () =>
+      mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 95 }) as ReturnType<typeof getProvider>);
+
+    it('is refused on a mixed tape while shorts are held to a red one, and said once', async () => {
+      const { pos } = await openLiveShort(SCALE_ON);
+      expect(pos.side).toBe('short');
+      readMarketDirectionForTick(MIXED, Date.now(), etToday());
+      atTrigger();
+      mockPlaceOrder.mockClear();
+
+      expect(await checkLiveScaleIns(NO_OPTIONS_DAY)).toEqual([
+        {
+          symbol: 'AAPL',
+          positionId: pos.id,
+          requested: false,
+          reason: 'Short add-on refused: red-tape only: the tape is mixed',
+        },
+      ]);
+      await checkLiveScaleIns(NO_OPTIONS_DAY);
+      expect(mockPlaceOrder).not.toHaveBeenCalled();
+      expect(countLiveAddOns(pos.id)).toBe(0);
+      expect(shortAddRows()).toHaveLength(1);
+      expect(JSON.parse(shortAddRows()[0].detail!)).toMatchObject({
+        positionId: pos.id,
+        side: 'short',
+        cause: 'red_tape_only',
+        direction: 'mixed',
+      });
+    });
+
+    it('goes out on a red tape', async () => {
+      const { pos } = await openLiveShort(SCALE_ON);
+      readMarketDirectionForTick(RED, Date.now(), etToday());
+      atTrigger();
+      mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-SHORT-ADD' });
+
+      expect(await checkLiveScaleIns(NO_OPTIONS_DAY)).toEqual([
+        { symbol: 'AAPL', positionId: pos.id, requested: true },
+      ]);
+      expect(countLiveAddOns(pos.id)).toBe(1);
+      expect(shortAddRows()).toHaveLength(0);
+    });
+
+    it('is refused once shorts are switched off, on any tape', async () => {
+      const { pos } = await openLiveShort(SCALE_ON);
+      setAutotradeConfig({ liveAllowNakedShort: false });
+      readMarketDirectionForTick(RED, Date.now(), etToday());
+      atTrigger();
+      mockPlaceOrder.mockClear();
+
+      const outcomes = await checkLiveScaleIns(NO_OPTIONS_DAY);
+      expect(outcomes[0]).toMatchObject({
+        positionId: pos.id,
+        requested: false,
+        reason: 'Short add-on refused: liveAllowNakedShort is off',
+      });
+      expect(mockPlaceOrder).not.toHaveBeenCalled();
+      expect(JSON.parse(shortAddRows()[0].detail!)).toMatchObject({ cause: 'shorts_off', direction: 'red' });
+    });
+
+    it('leaves a long add alone: the rule is about shorts', async () => {
+      const { pos } = await openLivePosition(SCALE_ON);
+      readMarketDirectionForTick(MIXED, Date.now(), etToday());
+      mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 105 }) as ReturnType<typeof getProvider>);
+      mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-ADD' });
       expect(await checkLiveScaleIns(NO_OPTIONS_DAY)).toEqual([
         { symbol: 'AAPL', positionId: pos.id, requested: true },
       ]);

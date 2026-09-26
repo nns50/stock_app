@@ -385,38 +385,67 @@ export interface ShortShadowEvidence {
   redTapeGate: ShortRedTapeGate | null;
 }
 
-/** The record's three numbers against their bar, in one line, met or not. The
- *  `shorts` rule's evidence when it fires and its reading when it does not. */
-export function shortShadowReading(r: ShortShadowEvidence): string {
-  const g = r.gate;
-  const avg = r.avgR === null ? 'n/a' : `${r.avgR >= 0 ? '+' : ''}${r.avgR.toFixed(2)}R`;
-  const win = r.winRatePct === null ? 'n/a' : `${r.winRatePct.toFixed(1)}%`;
-  const short: string[] = [];
-  if (!g.passesN) short.push('trades');
-  if (!g.passesAvgR) short.push('avg R');
-  if (!g.passesWinRate) short.push('win rate');
-  return (
-    `${r.n} of ${g.minTrades} shadow shorts, avg ${avg} (bar +${g.minAvgR}R), win ${win} (bar ${g.minWinRatePct}%)` +
-    ` as of ${r.etDate}` +
-    (short.length ? ` — short on ${short.join(', ')}` : ' — bar met') +
-    (r.redTapeGate ? `; ${redTapeReading(r.redTapeGate)}` : '')
-  );
+/** The paper book's stock shorts taken on a red tape, as the last persisted
+ *  edge-leak scan filed them: the control the shorts switch reads beside the
+ *  shadow record. Unread, with the reason, when that scan cannot answer: none
+ *  saved yet, one that did not read the paper book (`?book=live` persists
+ *  too), or one saved before the scan cut by side and tape. A scan that did
+ *  read paper and filed no such trade reads 0, which is an answer. */
+export type PaperShortRed = { read: true; n: number; meanR: number | null } | { read: false; why: string };
+
+export function paperShortRedOf(scan: EdgeLeakScanResult | null): PaperShortRed {
+  if (scan === null) return { read: false, why: 'no edge-leak scan saved yet' };
+  if (!scan.books.includes('paper')) return { read: false, why: 'the last scan did not read the paper book' };
+  const cut = scan.dimensions.find((d) => d.id === 'marketTapeBySide');
+  if (!cut) return { read: false, why: 'the last scan has no side-and-tape cut' };
+  // The paper figures are the bucket's CONTROL: the cut reports a bucket only
+  // paper has (no live stock shorts) with live n = 0 and paper as its control.
+  const control = cut.buckets.find((b) => b.bucket === 'equity_short_red')?.control ?? null;
+  return { read: true, n: control?.n ?? 0, meanR: control?.meanR ?? null };
 }
+
+/** The paper control's bar: at least this many red-tape stock shorts, with a
+ *  mean above zero (the tape plan's rule B). */
+export const PAPER_SHORT_RED_MIN_TRADES = 10;
+
+/** Whether the paper control clears its bar. */
+export function paperShortRedPasses(p: PaperShortRed): boolean {
+  return p.read && p.n >= PAPER_SHORT_RED_MIN_TRADES && p.meanR !== null && p.meanR > 0;
+}
+
+const signedR = (v: number | null) => (v === null ? 'n/a' : `${v >= 0 ? '+' : ''}${v.toFixed(2)}R`);
 
 /** The red-tape bar's distance, in one clause: each number against its bar. */
 export function redTapeReading(t: ShortRedTapeGate): string {
-  const signed = (v: number | null) => (v === null ? 'n/a' : `${v >= 0 ? '+' : ''}${v.toFixed(2)}R`);
   const short: string[] = [];
   if (!t.passesN) short.push('trades');
   if (!t.passesAvgR) short.push('avg R');
   if (!t.passesWinRate) short.push('win rate');
   if (!t.passesEdge) short.push('edge over other tapes');
   return (
-    `red tape: ${t.n} of ${t.minTrades} shorts, avg ${signed(t.avgR)} (bar +${t.minAvgR}R), ` +
+    `red tape: ${t.n} of ${t.minTrades} shorts, avg ${signedR(t.avgR)} (bar +${t.minAvgR}R), ` +
     `win ${t.winRatePct === null ? 'n/a' : `${t.winRatePct.toFixed(1)}%`} (bar ${t.minWinRatePct}%), ` +
-    `${signed(t.edgeR)} over the other tapes' ${t.otherTapesN} (bar +${t.minEdgeOverOtherTapesR}R)` +
+    `${signedR(t.edgeR)} over the other tapes' ${t.otherTapesN} (bar +${t.minEdgeOverOtherTapesR}R)` +
     (short.length ? ` — short on ${short.join(', ')}` : ' — bar met')
   );
+}
+
+/**
+ * The `shorts` switch's reading (2026-09-24, the tape plan's PR 8), and its
+ * evidence when it fires: the two things it proposes on, each against its bar,
+ * then the record on every tape for context. Shorts are enabled as a red-tape
+ * trade, so the red-tape bar leads.
+ */
+export function shortsSwitchReading(r: ShortShadowEvidence, paper: PaperShortRed): string {
+  const redTape = r.redTapeGate
+    ? redTapeReading(r.redTapeGate)
+    : 'red tape: not split in this record (persisted before 2026-09-24)';
+  const paperClause = !paper.read
+    ? `paper red-tape stock shorts: unread (${paper.why})`
+    : `paper red-tape stock shorts: ${paper.n} of ${PAPER_SHORT_RED_MIN_TRADES}, mean ${signedR(paper.meanR)} ` +
+      `(bar above 0)${paperShortRedPasses(paper) ? ' — met' : ''}`;
+  const win = r.winRatePct === null ? 'n/a' : `${r.winRatePct.toFixed(1)}%`;
+  return `${redTape}; ${paperClause}; all tapes: ${r.n} shadow shorts, avg ${signedR(r.avgR)}, win ${win}, as of ${r.etDate}`;
 }
 
 /** The pre-committed review's inputs (Decision 7), counted since the sizing
@@ -852,28 +881,34 @@ export const GATED_SWITCH_RULES: SwitchRule[] = [
   },
   {
     id: 'shorts',
-    label: 'Enable live shorts',
+    label: 'Enable live shorts (red tape only)',
     direction: 'exposure',
-    criterion: '30 shadow short trades with average R ≥ +0.1 and a win rate ≥ 50%',
+    criterion:
+      'the red-tape bar (20 shorts declined on a red tape, average R ≥ +0.15, win rate ≥ 50%, ≥ +0.10R over the ' +
+      'other tapes) and at least 10 paper red-tape stock shorts with a mean above zero',
     // Reported, never applied: `graduationVerdict` refuses every exposure rule
     // before it reads the state, and `liveAllowNakedShort` is a proposal-only
     // key `assertWritable` refuses at the write. So a firing here reaches the
     // operator as a config_change_proposed row and a push, and nothing else.
     //
-    // It reads the record's OWN gate (SHORT_ENABLE_GATE, replayed after each
-    // close by shortShadowRecordData.ts) rather than restating the three
-    // numbers, so the rule and GET /api/journal/short-shadow-record cannot
-    // disagree about the bar. Until 2026-09-19 it evaluated to null: the
-    // record was computed by a route and read by nobody in the app, while the
-    // comment here said it was waiting for the numbers to be "in one place".
-    // They were; nothing looked.
+    // From 2026-09-24 (the tape plan's PR 8) it reads the RED-TAPE bar, not
+    // task #21's bar on every tape: shorts are enabled as a red-tape trade
+    // (liveShortsRedTapeOnly), so the evidence is the shorts declined on a red
+    // tape, and the paper book's red-tape stock shorts as the control. Both
+    // are read from what the app persists (the record's own verdict, the last
+    // scan's bucket), so the rule and the route cannot disagree about the bar.
     evaluate: (s) => {
       const r = s.shortShadow;
-      if (!r || !r.gate.passes) return null;
+      if (!r || !r.redTapeGate?.passes) return null;
+      const paper = paperShortRedOf(s.leakScan);
+      if (!paperShortRedPasses(paper)) return null;
       // Already on: nothing to propose, or the rule would ask every session.
       if (s.config.liveAllowNakedShort) return null;
-      return { patch: { liveAllowNakedShort: true }, evidence: shortShadowReading(r) };
+      // The evidence covers red tapes only; with the red-tape rule switched
+      // off, turning shorts on would reach tapes it says nothing about.
+      if (!s.config.liveShortsRedTapeOnly) return null;
+      return { patch: { liveAllowNakedShort: true }, evidence: shortsSwitchReading(r, paper) };
     },
-    reading: (s) => (s.shortShadow ? shortShadowReading(s.shortShadow) : null),
+    reading: (s) => (s.shortShadow ? shortsSwitchReading(s.shortShadow, paperShortRedOf(s.leakScan)) : null),
   },
 ];

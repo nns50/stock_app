@@ -2484,11 +2484,13 @@ and wait. Nothing the app does on its own can widen your risk.
 
 The one exposure rule in the table, **enable live shorts**, reads the short shadow record
 (below) since 2026-09-19 — the loop replays the declined shorts itself after each close
-and the rule reads the record's own verdict against the 30 / +0.1R / 50% bar. Until then
-the rule evaluated to nothing at all while the record sat one route away, computed and
-unread. It proposes `liveAllowNakedShort` and pushes once when the bar is first met, shows
-its reading on the Automatic switches card every session ("19 of 30 shadow shorts…"), and
-cannot write the field: it is a proposal-only key the engine refuses at the write.
+and the rule reads the record's own verdict. Until then the rule evaluated to nothing at
+all while the record sat one route away, computed and unread. Since 2026-09-26 the verdict
+it reads is the red-market bar plus the paper control, not the 30 / +0.1R / 50% bar on
+every market (see "The switch reads the red-market line" below). It proposes
+`liveAllowNakedShort` and pushes once when its bar is first met, shows its reading on the
+Automatic switches card every session ("red tape: 3 of 20 shorts…"), and cannot write the
+field: it is a proposal-only key the engine refuses at the write.
 
 **Before you say yes to it** (2026-09-23). The code a live short runs was audited and its
 gaps fixed (protection, closes, adoption, the exit correction and the entry guards; the
@@ -2501,16 +2503,29 @@ User Guide lists them). The evidence is thinner than the rule's count suggests:
   as short of the count. Compare readings only within a version; each record carries its
   `replayVersion`.
 
-**Read the red-market line, not only the total** (2026-09-26). Shorts are meant to trade
-only when the whole market leans red (the tape plan's rule B), so the question is not
+**The switch reads the red-market line, not the total** (2026-09-26). Shorts are meant to
+trade only when the whole market leans red (the tape plan's rule B), so the question is not
 whether shorts pay, but whether shorts declined on a red market pay, and pay more than the
-rest. The switch's reading now says both: the old bar on every declined short, then the
-red-market bar on the ones declined on a red market (20 trades, +0.15R, 50% winners, and
-+0.10R above the shorts declined on mixed or green markets). A red-market record that only
-matches the other markets is not a red-market edge: the market's direction would not be
-what pays. Both readings also leave out a short whose stop is too far for its daily range,
-as the live path would. Until the loop had read the market for a while, most of the record
-is unlabeled, and that is the honest answer.
+rest. The switch proposes only when two reads of that trade agree:
+- **the red-market bar** on the live book's declined shorts, replayed: 20 trades, +0.15R,
+  50% winners, and +0.10R above the shorts declined on mixed or green markets;
+- **the paper control**: the paper book's own stock shorts taken on a red market (the
+  edge-leak scan's `equity_short_red` bucket), at least 10 with a mean above zero. Paper
+  takes shorts on every market and fills them itself, so it answers from trades that were
+  held, not replayed.
+
+The total on every market stays on the card for context and decides nothing. A red-market
+record that only matches the other markets is not a red-market edge: the market's
+direction would not be what pays. Both shadow readings also leave out a short whose stop is
+too far for its daily range, as the live path would. Until the loop had read the market for
+a while, most of the record is unlabeled, and that is the honest answer.
+
+**Once shorts are on, they trade the tape the evidence measured.** **Short only on a
+broadly red market** (the Live trading card, on by default) lets a live stock short, and
+any scale-in or second lot on one, go out only on a red market-direction reading; mixed,
+green and unread markets refuse it with cause `red_tape_only`. Leave it on. Unchecking it
+also silences the switch: its evidence covers red markets only, so it has nothing to say
+about shorts on the others.
 
 Three checks are worth making when the rule proposes:
 - it still clears with its best day taken out;
