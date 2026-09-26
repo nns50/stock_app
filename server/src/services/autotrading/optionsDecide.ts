@@ -190,6 +190,52 @@ export interface DebitSpreadOptionsSignal extends OptionsSignalBase {
 
 export type OptionsTradeSignal = SingleLegOptionsSignal | DebitSpreadOptionsSignal;
 
+/**
+ * The contract a live options signal would have opened, for a row that
+ * REFUSES it (2026-09-26). Both books are handed the same signals in the same
+ * tick (loop.ts), and the paper book is never refused by the live-only gates,
+ * so its twin of a refused call is the paper position on this contract. Before
+ * this, a refusal row carried only the underlying and the side, and the twin
+ * could be found only by symbol and day, which is ambiguous once the sleeve
+ * holds two slots.
+ *
+ * The contract fields use the names `options_paper_order_placed` uses
+ * (`contractSymbol`/`strike`, or the `long…`/`short…` pair for a spread), so
+ * one join key serves both rows. `premium` is the price the signal was built
+ * on (the contract's mark at selection), not a fill: a refusal never priced an
+ * order.
+ */
+export function optionsSignalReplayFields(signal: OptionsTradeSignal): Record<string, string | number | null> {
+  const common = {
+    kind: signal.kind,
+    expiration: signal.expiration,
+    dte: signal.dte,
+    underlyingPrice: signal.underlyingPrice,
+    ivRank: signal.ivRank,
+  };
+  if (signal.kind === 'debit_spread') {
+    return {
+      ...common,
+      longContractSymbol: signal.longContractSymbol,
+      longStrike: signal.longStrike,
+      longPremium: signal.longPremium,
+      longDelta: signal.longDelta,
+      shortContractSymbol: signal.shortContractSymbol,
+      shortStrike: signal.shortStrike,
+      shortPremium: signal.shortPremium,
+      shortDelta: signal.shortDelta,
+      premium: signal.netDebit,
+    };
+  }
+  return {
+    ...common,
+    contractSymbol: signal.contractSymbol,
+    strike: signal.strike,
+    premium: signal.premium,
+    delta: signal.delta,
+  };
+}
+
 export type OptionsSignalResult =
   | { ok: true; signal: OptionsTradeSignal }
   /** `selection` is present on a skip decided AFTER the chain was overlaid

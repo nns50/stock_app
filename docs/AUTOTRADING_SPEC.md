@@ -16298,3 +16298,45 @@ clock is 5-minute bars, and its parity was measured on one session.
 
 **Reproduce.** `npm run backfill:tape -- --db <copy>` on a copy taken after 2026-09-25's
 close; the whole-universe run took about 20 minutes cold.
+
+## 2026-09-26 (fifth) — a refused live option names its contract
+
+**Why.** Two live-only refusals stop an options candidate before anything is priced: the
+market-direction gate (a call on a red reading, a put on a green one) and the sleeve's spent
+order budget (`liveOptionsMaxOrdersPerDay`). Their rows, `live_options_market_direction_skipped`
+and `live_options_order_cap_skipped`, named only the underlying and the side. The paper book
+is handed the same signals in the same tick (`loop.ts`), and neither refusal applies to it,
+so its trade on the refused contract is the refusal's counterfactual. By symbol and day
+alone that pair is ambiguous: the sleeve holds two slots since 2026-09-25, and a later tick
+can select a different strike on the same name.
+
+**What changed.** `optionsSignalReplayFields(signal)` (`optionsDecide.ts`) adds the refused
+contract to both rows:
+- `kind`, `expiration`, `dte`, `underlyingPrice` and `ivRank`;
+- a single leg: `contractSymbol`, `strike`, `premium` and `delta`;
+- a debit spread: `longContractSymbol`, `longStrike`, `longPremium`, `longDelta`,
+  `shortContractSymbol`, `shortStrike`, `shortPremium`, `shortDelta`, and `premium` (the
+  net debit).
+
+The contract keys are the ones `options_paper_order_placed` uses, so one join serves both
+rows: the contract (or the leg pair) and the ET day. `premium` is the mark the contract was
+selected on. A refusal never priced an order, so there is no fill to record.
+
+**Limits.**
+- Each row is written once per name per ET day, so it names the first contract refused.
+- The paper book has its own slots, risk check and cooldowns. A refusal with no paper
+  position on its contract is unmeasured, not a zero.
+- There is still no options replay (the tape plan's "not building" list). The paper twin is
+  the measurement.
+- Rows before 2026-09-26 name no contract.
+
+Nothing reads the new fields in code yet. They are for the gate's options review and the
+evening review, which pair by hand; the stock half of the gate is already an attribution
+class.
+
+**Tests.** `liveOptionsExecute.test.ts` reads both rows as the live batch writes them, for a
+single leg and a spread. `autotradeOptionsExecute.test.ts` joins the paper book's
+`options_paper_order_placed` row for the same signal on the refusal's keys, for both kinds;
+the join fails if a key is missing from the refusal row, so two absent values cannot read as
+a match. Six mutations, all caught: either row dropping the fields, a spread's long leg named
+from the short, a spread priced at its long leg, and a renamed single-leg or spread key.

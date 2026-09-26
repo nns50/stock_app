@@ -1548,7 +1548,9 @@ equally-weighted cards in the order they happened to be built:
   are off by default. Paper
   keeps taking every signal as the control. A refusal is journaled as `live_market_direction_skipped` (stock, with the
   entry, stop and score a replay needs) or `live_options_market_direction_skipped`
-  (options). The reading itself is journaled as `market_direction_read` each time its
+  (options; since 2026-09-26 it also names the contract it refused, under the same
+  `contractSymbol` the paper book's trade on that signal carries). The reading itself is
+  journaled as `market_direction_read` each time its
   direction or its hold changes, whether the gate is on or off, and it shows on the
   Monitoring card's Last cycle. A row is therefore not a flip: count flips as changes of
   `direction` between consecutive rows. The edge-leak scan cuts both books by it in two
@@ -2686,7 +2688,8 @@ because the loop is the only caller that is always flat by the bell, so it is
   meets the cap before anything is built or sent: no risk check, no quote, no account
   read, no order row. Recent activity shows `live_order_cap_skipped` (stocks) or
   `live_options_order_cap_skipped` (options) once per name per day, with the count and
-  the cap. Until then the sleeve built every candidate as an order and the guardrail
+  the cap; since 2026-09-26 the options row also names the contract it refused. Until
+  then the sleeve built every candidate as an order and the guardrail
   refused it at the last step: on 2026-09-23 the options sleeve did that 50 times in
   32 minutes, and those refused orders pushed the day's real ones out of the Trade
   page's recent list. What gets refused is unchanged; the guardrail still has the
