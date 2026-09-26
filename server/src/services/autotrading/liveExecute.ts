@@ -2967,11 +2967,19 @@ function reconcileOneLiveOrder(
       // unlabelled leg that is not a stop order stays a target, as before.
       const legReason = legExitReason(exitLeg) ?? 'target';
       const fallbackPrice = legReason === 'stop' ? stopPrice : targetPrice;
+      // A reported price of 0 is "not reported", as for the entry above: `??`
+      // does not fire on 0, so a leg answering filled_price 0 used to book the
+      // shares as sold at $0 (#151, 2026-09-26). The leg's own price stands in,
+      // and the exit correction replaces it with the fill later.
+      const legPrice =
+        exitLeg.filledPrice !== undefined && exitLeg.filledPrice !== null && exitLeg.filledPrice > 0
+          ? exitLeg.filledPrice
+          : fallbackPrice;
       try {
         const recorded = materializeExitFill(
           intent,
           meta.positionId,
-          exitLeg.filledPrice ?? fallbackPrice,
+          legPrice,
           riskProfile,
           exitLeg.filledQty,
           legReason,
@@ -3254,7 +3262,21 @@ function materializeExitFill(
   // remainder out of the ledger — out of getLivePortfolioSnapshot's risk/P&L,
   // out of checkLiveEquityTimeExits, and out of the scale-in loop — leaving
   // untracked live exposure. Mirrors materializeTimeExitFill's own clamp.
-  const closeQty = Math.min(filledQty ?? position.remainingQuantity, position.remainingQuantity);
+  //
+  // And book it ONCE (#151, 2026-09-26). The entry order stays listed while
+  // its position is open, so a leg that filled only PART of the position (a
+  // per-lot lot, or a scale-in add-on, each under its own bracket) reports
+  // FILLED again on every tick. Each tick used to book min(filledQty,
+  // remaining) again, so lot 1's target went on to sell lot 2's shares in the
+  // ledger. Only this function books an exit under an entry order's intent id,
+  // so the position's own exit rows say how much of this order's legs is
+  // already booked, and a restart cannot forget it. A leg that reports no
+  // quantity closes the remainder once, as before, and never again.
+  const alreadyBooked = position.exits
+    .filter((e) => e.sourceIntentId === intent.id)
+    .reduce((sum, e) => sum + e.quantity, 0);
+  const unbooked = filledQty !== undefined ? filledQty - alreadyBooked : alreadyBooked > 0 ? 0 : Infinity;
+  const closeQty = Math.min(unbooked, position.remainingQuantity);
   if (closeQty <= 0) return false;
   const closed = addExit(position.id, {
     quantity: closeQty,

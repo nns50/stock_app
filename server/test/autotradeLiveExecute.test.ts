@@ -5488,6 +5488,196 @@ describe('reconcileLiveOrders', () => {
     const stillOpen = listPositions({ status: 'open' });
     expect(stillOpen).toHaveLength(1);
     expect(stillOpen[0].remainingQuantity).toBe(opened.quantity - 1);
+
+    // #151 (2026-09-26): the entry order stays listed while the position is
+    // open, so the same FILLED leg comes back on the next tick. It was booked
+    // again every tick (min(filledQty, remaining)), selling shares no leg sold.
+    await reconcileLiveOrders();
+    await reconcileLiveOrders();
+    const after = listPositions({ status: 'open' });
+    expect(after).toHaveLength(1);
+    expect(after[0].remainingQuantity).toBe(opened.quantity - 1);
+    expect(after[0].exits).toHaveLength(1);
+
+    // A leg whose running total grows books only the new part.
+    mockOrderStatus.mockResolvedValue({
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      filledQty: opened.quantity,
+      filledPrice: 100,
+      legs: [
+        { comboType: 'MASTER', status: 'FILLED' },
+        { comboType: 'STOP_LOSS', status: 'FILLED', filledPrice: 95, filledQty: 3 },
+      ],
+    } as WebullOrderStatus);
+    await reconcileLiveOrders();
+    await reconcileLiveOrders();
+    const grown = listPositions({ status: 'open' })[0];
+    expect(grown.remainingQuantity).toBe(opened.quantity - 3);
+    expect(grown.exits.map((e) => e.quantity)).toEqual([1, 2]);
+  });
+
+  // #151 (2026-09-26): the vendor docs say filled_price "may be zero or null"
+  // before execution completes, and `??` does not fire on 0.
+  it('never books a filled exit leg at $0: a zero price is read as not reported', async () => {
+    setAutotradeConfig({ liveAccountId: 'ACC1' });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-ZERO-EXIT' });
+    const res = evaluateRiskCheck(signal(), baseRiskCtx());
+    await attemptLiveEntry(signal(), res, 'MODERATE', liveConfig());
+    const intentId = listIntents()[0].id;
+    const entryFill = {
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      filledQty: res.sizing.suggestedQuantity,
+      filledPrice: 100,
+    } as const;
+    mockOrderStatus.mockResolvedValue({
+      ...entryFill,
+      legs: [{ comboType: 'MASTER', status: 'FILLED' }],
+    } as WebullOrderStatus);
+    await reconcileLiveOrders();
+    const opened = listPositions({ status: 'open' })[0];
+
+    mockOrderStatus.mockResolvedValue({
+      ...entryFill,
+      legs: [
+        { comboType: 'MASTER', status: 'FILLED' },
+        { comboType: 'STOP_LOSS', status: 'FILLED', filledPrice: 0, filledQty: opened.quantity },
+      ],
+    } as WebullOrderStatus);
+    await reconcileLiveOrders();
+
+    const closed = listPositions({ status: 'closed' })[0];
+    expect(closed.id).toBe(opened.id);
+    // The leg's own stop price, as for a leg that reports no price at all.
+    expect(closed.exits[0].exitPrice).toBe(getLiveOrder(intentId)!.stopPrice);
+    expect(closed.exits[0].exitPrice).toBeGreaterThan(0);
+  });
+
+  it('a leg already booked in part is not booked again when a later read omits its quantity (#151)', async () => {
+    setAutotradeConfig({ liveAccountId: 'ACC1' });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-NOQTY-EXIT' });
+    const res = evaluateRiskCheck(signal(), baseRiskCtx());
+    await attemptLiveEntry(signal(), res, 'MODERATE', liveConfig());
+    const entryFill = {
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      filledQty: res.sizing.suggestedQuantity,
+      filledPrice: 100,
+    } as const;
+    mockOrderStatus.mockResolvedValue({
+      ...entryFill,
+      legs: [{ comboType: 'MASTER', status: 'FILLED' }],
+    } as WebullOrderStatus);
+    await reconcileLiveOrders();
+    const opened = listPositions({ status: 'open' })[0];
+    expect(opened.quantity).toBeGreaterThan(2);
+
+    const leg = (filledQty?: number) =>
+      mockOrderStatus.mockResolvedValue({
+        ...entryFill,
+        legs: [
+          { comboType: 'MASTER', status: 'FILLED' },
+          { comboType: 'STOP_PROFIT', status: 'FILLED', filledPrice: 110, ...(filledQty ? { filledQty } : {}) },
+        ],
+      } as WebullOrderStatus);
+    leg(2);
+    await reconcileLiveOrders();
+    // The same leg, read again without its quantity. Closing the remainder on
+    // it would sell shares this leg never reported.
+    leg();
+    await reconcileLiveOrders();
+    await reconcileLiveOrders();
+
+    const still = listPositions({ status: 'open' })[0];
+    expect(still.remainingQuantity).toBe(opened.quantity - 2);
+    expect(still.exits.map((e) => e.quantity)).toEqual([2]);
+  });
+
+  it("counts only this order's own exits: a scale-out booked under another order does not shrink the leg (#151)", async () => {
+    setAutotradeConfig({ liveAccountId: 'ACC1' });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-AFTER-SCALEOUT' });
+    const res = evaluateRiskCheck(signal(), baseRiskCtx());
+    await attemptLiveEntry(signal(), res, 'MODERATE', liveConfig());
+    const entryFill = {
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      filledQty: res.sizing.suggestedQuantity,
+      filledPrice: 100,
+    } as const;
+    mockOrderStatus.mockResolvedValue({
+      ...entryFill,
+      legs: [{ comboType: 'MASTER', status: 'FILLED' }],
+    } as WebullOrderStatus);
+    await reconcileLiveOrders();
+    const opened = listPositions({ status: 'open' })[0];
+    expect(opened.quantity).toBeGreaterThan(2);
+    // A scale-out's own closing order sold 2 shares (its own intent id).
+    addExit(opened.id, {
+      quantity: 2,
+      exitPrice: 105,
+      exitDate: '2026-09-25',
+      sourceIntentId: 987654,
+      exitReason: 'partial',
+    });
+
+    // Then the bracket's stop leg sells the rest.
+    mockOrderStatus.mockResolvedValue({
+      ...entryFill,
+      legs: [
+        { comboType: 'MASTER', status: 'FILLED' },
+        { comboType: 'STOP_LOSS', status: 'FILLED', filledPrice: 99, filledQty: opened.quantity - 2 },
+      ],
+    } as WebullOrderStatus);
+    await reconcileLiveOrders();
+
+    expect(listPositions({ status: 'open' })).toHaveLength(0);
+    const [closed] = listPositions({ status: 'closed' });
+    expect(closed.exits.map((e) => e.quantity)).toEqual([2, opened.quantity - 2]);
+  });
+
+  it('a leg that reports no quantity on its first read still closes the position, as before (#151)', async () => {
+    setAutotradeConfig({ liveAccountId: 'ACC1' });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(okAccountState as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-NOQTY-FIRST' });
+    const res = evaluateRiskCheck(signal(), baseRiskCtx());
+    await attemptLiveEntry(signal(), res, 'MODERATE', liveConfig());
+    const entryFill = {
+      ok: true,
+      found: true,
+      status: 'FILLED',
+      filledQty: res.sizing.suggestedQuantity,
+      filledPrice: 100,
+    } as const;
+    mockOrderStatus.mockResolvedValue({
+      ...entryFill,
+      legs: [{ comboType: 'MASTER', status: 'FILLED' }],
+    } as WebullOrderStatus);
+    await reconcileLiveOrders();
+    mockOrderStatus.mockResolvedValue({
+      ...entryFill,
+      legs: [
+        { comboType: 'MASTER', status: 'FILLED' },
+        { comboType: 'STOP_PROFIT', status: 'FILLED', filledPrice: 110 },
+      ],
+    } as WebullOrderStatus);
+    await reconcileLiveOrders();
+
+    expect(listPositions({ status: 'open' })).toHaveLength(0);
+    const [closed] = listPositions({ status: 'closed' });
+    expect(closed.exits).toHaveLength(1);
+    expect(closed.exits[0]).toMatchObject({ exitPrice: 110, exitReason: 'target' });
   });
 
   it('fails closed: an ambiguous leg response (no comboType at all) leaves the position open rather than guessing', async () => {

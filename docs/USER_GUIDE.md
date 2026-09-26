@@ -2579,6 +2579,16 @@ because the loop is the only caller that is always flat by the bell, so it is
   already sold does not count as that. The four-minute wait and the correction stay for
   anything this does not settle: a position the app did not place, a bracket placed before
   that date, or a close made by hand.
+  **A leg that sells part of a position is booked once** (since 2026-09-26). With per-lot
+  entries or scale-ins on (both off by default), one position can rest under more than one
+  bracket, and a leg can fill for only its own bracket's shares. The entry order stays on
+  the order check's list while the position is open, so that filled leg came back every
+  cycle and was booked again each time: the first lot's target went on to sell the second
+  lot's shares in the ledger. The app now books only what that order's legs have not
+  already booked, read from the position's own exits, so a restart cannot repeat it. A leg
+  Webull reports filled at a price of $0 (its docs say the price may be zero before the
+  fill completes) is booked at the leg's own stop or target price, as a leg with no price
+  already was, and the correction replaces it with the fill.
   The count of missed checks belongs to the position it was counted for. Since 2026-09-23 it
   ends once that position is closed, whoever closed it. Before, a bracket fill booked by the
   order check left its count behind, and the next position on the same stock started with the
