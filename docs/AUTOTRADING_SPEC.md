@@ -15475,7 +15475,7 @@ The exit-tuning replays still default to `touch`, so their stored readings stay
 comparable. Its optimism does not cancel between two geometries. A closer target is
 touched more often than a farther one. On the live book, a no-scratch candidate read
 +0.039R a trade under `touch` against +0.056R under `honest` (2026-09-24 (fifth)).
-Moving those comparisons to `honest` is a change of its own.
+Moving those comparisons to `honest` is a change of its own: 2026-09-26 (eighth).
 
 **The entry is not the one the plan named.** The plan said "fill at the next bar plus the
 live buffer". Before building it, both proxies were checked against 109 live stock fills
@@ -16430,3 +16430,68 @@ production, so this is recorded as a known gap rather than fixed here.
   drops a second lot; with the gate off, an add needs no reading.
 
 Eight mutations, all caught.
+
+## 2026-09-26 (eighth) — the exit comparisons read honest fills
+
+**What happened.** The replay-honesty change (2026-09-26) moved the declined-entry shadow
+to the `honest` fill model. It left the exit-tuning comparisons on `touch`, so their
+stored readings would stay comparable. But `touch`'s optimism does not cancel between two
+geometries. A closer target is touched more often than a farther one, and a breakeven or
+trail that arms on a bar's extreme exits sooner than one that arms on its close. On the
+live book (2026-09-24 (fifth)), no stagnation scratch read +0.039R a trade under `touch`
+against +0.056R under `honest`, and a 90-minute scratch +0.005R against +0.028R.
+Exit-shape decisions are read from these comparisons, so they have to price the fills a
+live order gets.
+
+**Changed.**
+- `GET /api/journal/exit-replay` replays under `honest` fills: its own replay of the
+  current rules, and both arms of the `c`-prefixed comparison (`compareExitRules`).
+- `GET /api/journal/exit-tune-validation` prices all four of its comparisons, holdout and
+  in-sample, under `honest` fills. Its fit is unchanged: it still reads the excursion as
+  held, the input `autoTune.ts` reads.
+- Both responses carry `fills`, and so does the exit replay's `comparison`, so a reading
+  says which model produced it.
+- `?fills=touch` on either route replays the old model. Any other value, a typo included,
+  reads `honest`.
+- `compareExitRules` and `validateExitTuneRules` default to `honest`, and the two arms of
+  a comparison always share one model. `replayExit`'s own default stays `touch`, so each
+  caller names the model it reads. Every caller in the app now does.
+
+**Series boundary.** Every comparison read through either route before 2026-09-26 was
+`touch`. That includes the 2026-09-11 exit-shape table and the shapes behind the
+2026-09-12 retune. The `honest` column of the 2026-09-24 (fifth) table was computed under
+the honest model outside the routes, so it is already on this side of the boundary. To set
+a new reading beside an old one, add `?fills=touch`. Otherwise compare only readings that
+carry `fills: 'honest'`.
+
+**What it changes.**
+- **No setting, and nothing automatic.** No gated switch, tune-advisor number or stored
+  table reads these routes (the consumer audit in 2026-09-24 (fifth)). Only the numbers a
+  person reads move.
+- **The pre-committed exit reading is unchanged.** A shape is adopted only on `better`,
+  `worse` rules it out, and `inside_noise` keeps the current settings. The 10-session
+  review's re-read of the exit shapes (`docs/TUNE_FROM_TARGET.md`, the 2026-09-24 row) is
+  the first on paths that run to the close under honest fills.
+- **The regime-tighten ledger has no fill model to change.** It replays no path. It reads
+  the untightened twin's MFE and counts the full target reached on a touch on purpose:
+  its bound is built to favour the full target.
+
+**Tests (each mutation-checked).**
+- `compareExitRules`: the same 25 trades and the same two shapes read +0.2R apart under
+  `touch`, where the scale-out arms on a 103 high. They read 0 apart under the default,
+  where no bar closes past 0.5R.
+- `replayUnderGeometry`: a bar that touches the 2R target without trading through it is
+  a target under `touch`, and a time exit at +1R under the default.
+- `validateExitTuneRules`: the same six trades price the current arm at 1R honestly and
+  2R under `touch`, and the result says which.
+- The routes, through `GET`:
+  - 24 trades whose first bar touches 103 and closes at 101 read a trail exit at +0.1R
+    under `?fills=touch`, and +0.04R held to the close by default.
+  - `?fills=optimistic` reads `honest`.
+  - `/exit-tune-validation` carries `fills` under either model.
+  - The two existing route tests whose numbers are `touch`'s now name `?fills=touch`.
+
+Six mutations, all caught: the route's own replay ignoring the model; `compareExitRules`
+defaulting to `touch`; the route never honouring `touch`; the route defaulting to
+`touch`; the validation's replays ignoring the model; the validation defaulting to
+`touch`.

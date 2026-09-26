@@ -252,17 +252,34 @@ describe('compareExitRules — two shapes over the SAME trades', () => {
     expect(c.unpaired).toBe(0);
   });
 
+  // Under the touch model: the trail and the scale-out arm on this path's 103
+  // high. The pairing and the verdict are what is under test here.
   it('pairs the arms and calls a uniform gain better and a uniform loss worse', () => {
     const half = rules({ scaleOutR: 0.5, scaleOutFraction: 0.5 });
-    const better = compareExitRules(trades(25), rules(), half, { resamples: 300 });
+    const better = compareExitRules(trades(25), rules(), half, { resamples: 300, fills: 'touch' });
     expect(better.meanDiffR).toBeCloseTo(0.2, 2);
     expect(better.current.replay.scaleOuts).toBe(0);
     expect(better.candidate.replay.scaleOuts).toBe(25);
     expect(better.significance.reliable).toBe(true);
     expect(better.verdict).toBe('better');
-    const worse = compareExitRules(trades(25), half, rules(), { resamples: 300 });
+    const worse = compareExitRules(trades(25), half, rules(), { resamples: 300, fills: 'touch' });
     expect(worse.meanDiffR).toBeCloseTo(-0.2, 2);
     expect(worse.verdict).toBe('worse');
+  });
+
+  // HONEST UNLESS NAMED (2026-09-26). Both arms replay under one fill model,
+  // and a comparison defaults to the honest one: on closes, this path never
+  // reaches the 0.5R the scale-out needs (bar closes 101, 100.75), so the same
+  // two shapes that read +0.2R apart under touch are the same trade honestly.
+  it('replays both arms under one fill model: honest unless the caller names touch', () => {
+    const half = rules({ scaleOutR: 0.5, scaleOutFraction: 0.5 });
+    const honest = compareExitRules(trades(25), rules(), half, { resamples: 300 });
+    expect(honest.fills).toBe('honest');
+    expect(honest.candidate.replay.scaleOuts).toBe(0);
+    expect(honest.meanDiffR).toBe(0);
+    const touch = compareExitRules(trades(25), rules(), half, { resamples: 300, fills: 'touch' });
+    expect(touch.fills).toBe('touch');
+    expect(touch.meanDiffR).toBeCloseTo(0.2, 2);
   });
 
   it('is insufficient under 20 paired trades, and a trade either arm cannot replay is unpaired, never a zero', () => {

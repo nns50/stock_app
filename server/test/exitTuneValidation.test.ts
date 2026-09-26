@@ -103,6 +103,27 @@ describe('replayUnderGeometry — a candidate stop is a SCALED stop, in its own 
   it('returns null for a trade with no bars rather than a zero', () => {
     expect(replayUnderGeometry(trade([]), CURRENT, CURRENT, NO_TRAIL)).toBeNull();
   });
+
+  // HONEST UNLESS NAMED (2026-09-26). The first bar touches the 2R target (110)
+  // without trading through it. A resting limit is not filled by a touch.
+  it('replays honest fills unless touch is named', () => {
+    const t = trade([bar(110, 100, 105), bar(106, 104, 105)]);
+    expect(replayUnderGeometry(t, CURRENT, CURRENT, NO_TRAIL)).toMatchObject({ reason: 'time_exit', exitR: 1 });
+    expect(replayUnderGeometry(t, CURRENT, CURRENT, NO_TRAIL, 'touch')).toMatchObject({ reason: 'target', exitR: 2 });
+  });
+});
+
+describe('validateExitTuneRules — the fill model every arm is priced under (2026-09-26)', () => {
+  it('prices the arms honestly unless touch is named, and says which', () => {
+    const touching = () => [bar(110, 100, 105), bar(106, 104, 105)];
+    const trades = Array.from({ length: 6 }, (_, i) => trade(touching(), `2026-08-0${i + 1}`));
+    const honest = validateExitTuneRules(trades, CURRENT, NO_TRAIL, BOUNDS, OPTS);
+    const touch = validateExitTuneRules(trades, CURRENT, NO_TRAIL, BOUNDS, { ...OPTS, fills: 'touch' });
+    expect(honest.fills).toBe('honest');
+    expect(touch.fills).toBe('touch');
+    expect(honest.inSample.oneStep.comparison.current.replay.meanR).toBe(1);
+    expect(touch.inSample.oneStep.comparison.current.replay.meanR).toBe(2);
+  });
 });
 
 describe('fitToFixedPoint — where the rule comes to REST, not where one step lands', () => {
