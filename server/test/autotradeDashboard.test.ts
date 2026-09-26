@@ -403,6 +403,23 @@ describe('getAutotradeDashboard', () => {
       expect(enabled.probation.active).toBe(true);
       expect(enabled.probation.tradesRemaining).toBe(20);
     });
+
+    it('surfaces the short probation, which starts when live shorts are switched on', () => {
+      expect(getAutotradeDashboard().shortProbation).toEqual({
+        active: false,
+        multiplier: 1,
+        tradesPlaced: 0,
+        tradesRemaining: 10,
+      });
+      // Switched on the way any writer switches it on: the stamp is the store's.
+      setAutotradeConfig({ liveAllowNakedShort: true });
+      expect(getAutotradeDashboard().shortProbation).toEqual({
+        active: true,
+        multiplier: 0.5,
+        tradesPlaced: 0,
+        tradesRemaining: 10,
+      });
+    });
   });
 
   describe('lastCorrelatedExposureCheck — the one cap with no live "used" figure', () => {

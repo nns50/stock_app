@@ -80,6 +80,7 @@ import {
   directionRefuses,
   latestMarketDirection,
   liveShortPermitted,
+  liveShortsArmed,
   ShortRefusalCause,
 } from './marketDirection';
 import { isUnparseableSymbolError, markUnplaceableSymbol, unplaceableReason } from './unplaceableSymbols';
@@ -308,7 +309,9 @@ export function buildLiveTradingConfig(autotradeCfg: AutotradeConfig): TradingCo
     // riskCheck reads the same budget and blocks first.
     maxDailyLossUsd: dayLossBudgetUsd(autotradeCfg.maxDailyDrawdownPct, dayStart),
     fatFingerPct: autotradeCfg.liveFatFingerPct,
-    allowNakedShort: autotradeCfg.liveAllowNakedShort,
+    // Armed, not merely on (2026-09-25): a short with no probation stamp is
+    // refused here too, by the same test the entry path's predicate uses.
+    allowNakedShort: liveShortsArmed(autotradeCfg),
   };
 }
 
@@ -337,6 +340,37 @@ export function getProbationStatus(cfg: AutotradeConfig): ProbationStatus {
     tradesPlaced,
     tradesRemaining: Math.max(0, cfg.liveProbationTrades - tradesPlaced),
   };
+}
+
+/** The SHORT probation (2026-09-24, the tape plan's PR 9): whether the first
+ *  live stock shorts after shorts were switched on are still being sized
+ *  down, and by how much. The same derivation as getProbationStatus, over the
+ *  short ENTRIES placed since liveShortsEnabledAt (countLiveOrdersSince with
+ *  side 'sell'), so a long never spends a short's window, nor the reverse. */
+export function getShortProbationStatus(cfg: AutotradeConfig): ProbationStatus {
+  if (!cfg.liveShortsEnabledAt)
+    return { active: false, multiplier: 1, tradesPlaced: 0, tradesRemaining: cfg.liveShortProbationTrades };
+  const tradesPlaced = countLiveOrdersSince(cfg.liveShortsEnabledAt, 'sell');
+  const active = tradesPlaced < cfg.liveShortProbationTrades;
+  return {
+    active,
+    multiplier: active ? cfg.liveShortProbationSizeMultiplier : 1,
+    tradesPlaced,
+    tradesRemaining: Math.max(0, cfg.liveShortProbationTrades - tradesPlaced),
+  };
+}
+
+/** The probation cut a live ENTRY takes: the book's window, times the short
+ *  window for a short. One number, read by both the quantity and the risk
+ *  budget in attemptLiveEntry, so the two cannot size the same order
+ *  differently. `short` is null for a long. */
+export function entryProbation(
+  cfg: AutotradeConfig,
+  side: 'buy' | 'sell',
+): { multiplier: number; book: ProbationStatus; short: ProbationStatus | null } {
+  const book = getProbationStatus(cfg);
+  const short = side === 'sell' ? getShortProbationStatus(cfg) : null;
+  return { multiplier: book.multiplier * (short?.multiplier ?? 1), book, short };
 }
 
 /** Today's date (YYYY-MM-DD) in US/Eastern — same convention as execute.ts's
@@ -1020,13 +1054,17 @@ export async function attemptLiveEntry(
     return { symbol, ok: false, reason: 'A live order or open position for this symbol is already in flight' };
   }
 
-  const probation = getProbationStatus(autotradeCfg);
+  // The book's probation, and a short's own on top (entryProbation): one
+  // multiplier, which the risk budget below reads too.
+  const probation = entryProbation(autotradeCfg, signal.side);
   let quantity = Math.floor(riskResult.sizing.suggestedQuantity * probation.multiplier);
   if (quantity <= 0) {
     return {
       symbol,
       ok: false,
-      reason: `Probation-adjusted quantity rounded to 0 (multiplier ${probation.multiplier})`,
+      reason:
+        `Probation-adjusted quantity rounded to 0 (multiplier ${probation.multiplier}` +
+        `${probation.short?.active ? `, short probation ${probation.short.multiplier}` : ''})`,
     };
   }
 
@@ -1498,6 +1536,9 @@ export async function attemptLiveEntry(
     detail: {
       side: signal.side,
       quantity: quantityToOrder,
+      // The probation cut this order took (entryProbation): the book's window
+      // times, for a short, the short window. 1 when neither is active.
+      probationMultiplier: probation.multiplier,
       limitPrice,
       // The price the SIZER used, beside the price the order was sent at. The
       // gap between them is what the risk budget never saw (entryRisk.ts), and
