@@ -98,7 +98,7 @@ import {
   resolveUnlistedFromOrderDetail,
 } from './orderDetailFallback';
 import { evaluateEndOfDayFlatten, evaluateEntryCutoff } from './endOfDayFlatten';
-import { evaluateStopAdjust } from './stopAdjust';
+import { dayProtectiveVerdictFor, evaluateStopAdjust } from './stopAdjust';
 import { evaluateScaleOut } from './scaleOut';
 import { cancelOrderForLegs, stopWasCancelled, verifyLegsGone, verifyLegsResized } from './cancelReplace';
 import { attributeByEntryOrder, groupExitLegsByCombo, isSingleBracket, summarizeGroups } from './bracketGroups';
@@ -114,7 +114,7 @@ import { evaluateAbsorbedPrice } from './absorbedPrice';
 import { evaluateEntryExtension, REFERENCE_MAX_PCT_OF_RANGE, REFERENCE_MAX_VWAP_EXT_PCT } from './entryExtension';
 import { detectLevels } from '../../indicators/levels';
 import { reentryCooldownFor, sameDaySymbolExits } from './reentryCooldown';
-import { etToday } from '../../util/marketDate';
+import { etDateTimeToMs, etToday } from '../../util/marketDate';
 import { atr } from '../../indicators/indicators';
 import { planAroundLevels } from './levelPlan';
 import { MARKETABLE_LIMIT_BUFFER_PCT } from './marketableLimit';
@@ -5854,6 +5854,78 @@ function restingStopLeg(
   };
 }
 
+/** Written the first time in an ET day the ratchet sweep sees the day's loop
+ *  P&L above the day-protective floor (2026-09-26). */
+export const DAY_PROTECTIVE_ARMED_ACTION = 'day_protective_armed';
+
+/**
+ * The day-protective stop writes nothing until it moves a stop, so a session
+ * whose day never reached the floor and a session in which the rule never ran
+ * read the same in the journal: the watch opened on 2026-09-15 could not tell
+ * them apart after six scorable sessions. This is the rule's own mark. One row
+ * the first tick of an ET day this sweep sees the day above its floor, with
+ * what the rule made of every open position at that moment, read through the
+ * decision's own function (dayProtectiveVerdictFor), so the row cannot
+ * describe a rule the decision does not run.
+ *
+ * Restart-safe: the journal is the claim, so a deploy mid-session does not
+ * write a second row. The in-memory claim only spares the lookup on later
+ * ticks of the same day.
+ */
+function journalDayProtectiveArmed(
+  cfg: AutotradeConfig,
+  dailyTarget: ReturnType<typeof evaluateDailyTarget>,
+  open: Position[],
+  closingPositionIds: ReadonlySet<number>,
+  killSwitch: boolean,
+  now: number = Date.now(),
+): void {
+  // The status carries the protective headroom only while the rule is on with
+  // a floor (dailyTarget.ts's dayProtectiveFloor), so it answers "is the rule
+  // on" too: the same source the rule reads, not a second check of the flag.
+  if (!dailyTarget.active) return;
+  const headroomUsd = dailyTarget.dayProtectiveHeadroomUsd;
+  if (headroomUsd === undefined || !(headroomUsd > 0)) return;
+  if (!claimOncePerDay(DAY_PROTECTIVE_ARMED_ACTION, 'day', now)) return;
+  const since = etDateTimeToMs(etToday(now), '00:00');
+  if (since !== null && listAutotradeEvents({ actions: [DAY_PROTECTIVE_ARMED_ACTION], since, limit: 1 }).length > 0) {
+    return;
+  }
+  logAutotradeEvent({
+    stage: 'execution',
+    action: DAY_PROTECTIVE_ARMED_ACTION,
+    detail: {
+      // The loop's realized P&L as a % of the day's opening equity: the
+      // quantity the floor is measured on (dailyTarget.ts), not the account's.
+      dayGainPct: dailyTarget.gainPct,
+      floorPct: dailyTarget.dayProtectiveFloorPct,
+      configuredFloorPct: cfg.dayProtectiveStopFloorPct,
+      goalScale: dailyTarget.goalScale,
+      headroomUsd,
+      strategyPnlUsd: dailyTarget.strategyPnlUsd,
+      baselineEquityUsd: dailyTarget.baselineEquityUsd,
+      trailingEnabled: cfg.liveTrailingEnabled,
+      killSwitch,
+      positions: open.map((pos) => {
+        const v = dayProtectiveVerdictFor(pos, cfg, dailyTarget);
+        return {
+          positionId: pos.id,
+          symbol: pos.symbol,
+          side: pos.side,
+          quantity: pos.remainingQuantity,
+          entryPrice: pos.entryPrice,
+          stopPrice: pos.stopPrice,
+          requiredStop: v.required === null ? null : Math.round(v.required * 100) / 100,
+          verdict: v.verdict,
+          // The sweep skips a position whose own close is working.
+          closeWorking: closingPositionIds.has(pos.id),
+        };
+      }),
+    },
+    riskProfile: cfg.riskProfile,
+  });
+}
+
 /**
  * Ratchet the stop on every open live equity position whose breakeven or
  * trailing trigger has been reached.
@@ -5873,7 +5945,6 @@ export async function checkLiveEquityStopAdjusts(): Promise<LiveStopAdjustOutcom
   if (!checkSessionWindow(0).ok) return [];
 
   const open = listAutotradeLivePositions({ status: 'open' });
-  if (open.length === 0) return [];
   const pendingExitPositionIds = new Set(
     listPendingLiveOrders()
       .filter((o) => o.role === 'exit' && o.positionId !== null)
@@ -5882,6 +5953,8 @@ export async function checkLiveEquityStopAdjusts(): Promise<LiveStopAdjustOutcom
 
   // One read for the sweep: the day does not move between positions, and
   // this is the same persisted baseline the entry path measures against.
+  // Read before the no-position return below (2026-09-26), so the armed row
+  // is written on a day that reaches the floor with nothing open.
   const dailyTarget = evaluateDailyTarget(cfg, getDailyBaseline(), strategyDayFor(etToday()).pnlUsd);
   // A kill switch holds every broker call below (2026-09-23). The ratchet
   // replaces the stop leg directly rather than through the guardrails, so the
@@ -5893,6 +5966,9 @@ export async function checkLiveEquityStopAdjusts(): Promise<LiveStopAdjustOutcom
   // hands off. The water mark below is still kept, because it is bookkeeping,
   // not an order, and the trail hangs off it once the switch is released.
   const halted = buildLiveTradingConfig(cfg).killSwitch;
+
+  journalDayProtectiveArmed(cfg, dailyTarget, open, pendingExitPositionIds, halted);
+  if (open.length === 0) return [];
 
   const accountId = cfg.liveAccountId;
   const outcomes: LiveStopAdjustOutcome[] = [];

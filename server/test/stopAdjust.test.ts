@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { evaluateStopAdjust, StopAdjustPosition } from '../src/services/autotrading/stopAdjust';
+import {
+  dayProtectiveCandidate,
+  dayProtectiveVerdictFor,
+  evaluateStopAdjust,
+  StopAdjustPosition,
+} from '../src/services/autotrading/stopAdjust';
 import { initDb } from '../src/db';
 import { createPosition, updatePosition, ratchetPositionStop } from '../src/db/positions';
 import { evaluateDailyTarget, type DailyTargetStatus } from '../src/services/autotrading/dailyTarget';
@@ -480,5 +485,63 @@ describe('day-protective stop', () => {
     expect(d.kind).toBe('day_protective');
     expect(d.newStop!).toBeGreaterThan(145.11); // above entry for a short
     expect(d.newStop!).toBeLessThan(148.89); // tighter than the original
+  });
+
+  // -------------------------------------------------------------------------
+  // What the rule makes of a position, as ONE verdict (2026-09-26). The stop
+  // decision and the once-a-day `day_protective_armed` row both read it, so
+  // the row can never describe a rule the decision does not run.
+  // -------------------------------------------------------------------------
+  describe('its verdict on a position (2026-09-26)', () => {
+    const R = 145.11 - 141.33; // ANF's original stop distance
+
+    it('names each reason it leaves a stop alone, and moves only on would_move', () => {
+      expect(dayProtectiveCandidate(anf(), { ...dpCfg, dayProtectiveStopEnabled: false }, day(1.6), R).verdict).toBe(
+        'off',
+      );
+      expect(dayProtectiveCandidate(anf(), dpCfg, undefined, R).verdict).toBe('off');
+      // At the floor exactly the day has nothing to protect.
+      expect(dayProtectiveCandidate(anf(), dpCfg, day(1), R)).toEqual({ verdict: 'not_armed', required: null });
+      expect(dayProtectiveCandidate(anf({ remainingQuantity: 0 }), dpCfg, day(1.6), R).verdict).toBe('no_size');
+      // A stop already above the required price.
+      const safe = dayProtectiveCandidate(anf({ stopPrice: 144.5 }), dpCfg, day(1.6), R);
+      expect(safe.verdict).toBe('already_safe');
+      expect(safe.required!).toBeGreaterThan(143);
+      // +1.001%: $0.02 of headroom over 9 shares puts the required stop a
+      // fraction of a cent under entry, inside the quarter-R minimum room.
+      expect(dayProtectiveCandidate(anf(), dpCfg, day(1.001), R).verdict).toBe('too_tight');
+      const move = dayProtectiveCandidate(anf(), dpCfg, day(1.6), R);
+      expect(move.verdict).toBe('would_move');
+      // The stop the decision places is this verdict's required price, rounded
+      // the safe way.
+      expect(evaluateStopAdjust(anf(), 146.5, dpCfg, day(1.6)).newStop).toBe(Math.ceil(move.required! * 100) / 100);
+    });
+
+    it('reads a position the decision cannot measure as not_measurable, never as a verdict it could not reach', () => {
+      expect(dayProtectiveVerdictFor(anf({ stopPrice: null }), dpCfg, day(1.6)).verdict).toBe('not_measurable');
+      expect(dayProtectiveVerdictFor(anf({ initialStopPrice: null }), dpCfg, day(1.6)).verdict).toBe('not_measurable');
+      expect(dayProtectiveVerdictFor(anf(), dpCfg, day(1.6)).verdict).toBe('would_move');
+    });
+  });
+
+  describe('runs without the trailing flag (2026-09-26)', () => {
+    // The sweep has always let itself run with only the day-protective stop
+    // on, and evaluateStopAdjust used to return "live trailing off" before
+    // this rule was asked: its flag read as on and could not move a stop.
+    const dpOnly = { ...dpCfg, liveTrailingEnabled: false };
+
+    it('moves the stop to the floor with trailing off', () => {
+      const d = evaluateStopAdjust(anf(), 146.5, dpOnly, day(1.6));
+      expect(d.adjust).toBe(true);
+      expect(d.kind).toBe('day_protective');
+    });
+
+    it('proposes no breakeven or trail with trailing off, however far past the triggers', () => {
+      // 175 is ~7.9R: both triggers long passed. The day is not armed, so
+      // nothing may move.
+      const d = evaluateStopAdjust(anf(), 175, dpOnly, day(0.5));
+      expect(d.adjust).toBe(false);
+      expect(d.kind).toBe(null);
+    });
   });
 });

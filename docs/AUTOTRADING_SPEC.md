@@ -15419,3 +15419,53 @@ redundant by construction: a spent lever carries no estimate.
 **Pre-committed check.** After deploy, while the 60-69 band is in the scan's window,
 `GET /api/journal/tune-advice` shows `edge:scoreBand:60-69` with status `in_force` and a
 status reason naming `liveMinSignalScore` 81.
+
+## 2026-09-26 (third) — the day-protective stop marks the day it arms
+
+**Why.** The day-protective stop (2026-08-26, its own floor since 2026-09-15) journals
+nothing until it moves a stop. On the operator's watch it moved none in six scorable
+sessions (09-15, 09-18, 09-21 to 09-24; the best close was +1.27% on 09-18), and the
+record could not say which of two things that meant: the day's realized P&L never
+reached the 1.5% floor, or the rule never ran. Only the last tick is persisted, so the
+day's peak is not recoverable either. The watch's verdict is due 2026-09-30.
+
+**What changed.**
+
+- **`day_protective_armed`, once an ET day.** The ratchet sweep
+  (`checkLiveEquityStopAdjusts`) writes it the first tick it sees the day's status carry
+  positive `dayProtectiveHeadroomUsd`: the loop's realized P&L above the floor. The row
+  carries the day's gain, the effective and configured floor, the goal scale, the
+  headroom, the realized P&L and baseline, the trailing flag and the kill switch.
+- **Its verdict on each open position**, read through the decision's own function
+  (`dayProtectiveVerdictFor` → `dayProtectiveCandidate`, the same derivation
+  `dayProtectiveStop` now delegates to): `already_safe`, `would_move`, `too_tight`,
+  `no_size` or `not_measurable`, with the required stop and whether the position's own
+  close is working. The row cannot describe a rule the decision does not run.
+- **Restart-safe.** The journal is the claim: before writing, the sweep looks for
+  today's row, so a deploy mid-session does not write a second one. The in-memory claim
+  only spares the lookup on later ticks.
+- **Written with nothing open.** The day's status is read before the sweep's
+  no-position return, so a day that reaches the floor with nothing to protect still
+  has its row, with `positions: []`.
+
+**Found while building it: the rule could not run with live trailing off.** The sweep has
+always run when either flag is on, but `evaluateStopAdjust` returned "live trailing off"
+before the day-protective candidate was asked. With trailing off, the rule's own toggle
+read as on and it could not move a stop at any setting. Each rule now asks its own
+flag: breakeven and the trail need `liveTrailingEnabled`, the day-protective stop needs
+`dayProtectiveStopEnabled`. Both are on in production, so no live behaviour changed.
+
+**Tests.** Pure (`stopAdjust.test.ts`): each verdict, `not_measurable` for a position
+the decision cannot measure, the decision's stop equal to the verdict's required price
+rounded the safe way, and trailing off (the rule moves, breakeven and the trail do not).
+Through the sweep (`liveEquityTimeExit.test.ts`), the first consumer test of this rule
+that runs the real sweep: one row with the verdict and required stop, and the same tick
+the stop moved to that price with kind `day_protective`; no second row on a later tick
+or after a simulated restart; a row with nothing open; none at the floor exactly or with
+the rule off; the stop moved with trailing off. Nine mutations: eight caught. The
+survivor removed the row's own check of the flag, which the day's status already makes,
+so the check was deleted.
+
+**Pre-committed check.** On the first session whose realized loop P&L passes 1.5% of the
+opening equity, `GET /api/autotrade/events?actions=day_protective_armed` returns one row
+for that day. A session with such a close and no row means the sweep did not run.

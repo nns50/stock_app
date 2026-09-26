@@ -1452,6 +1452,24 @@ equally-weighted cards in the order they happened to be built:
   > since it has to sit below the arm. Like the goal and the guard's levels, it is
   > scaled by the regime overlay's cut, so a 35% cut day protects 0.65% where a full
   > day protects 1% and the day keeps its shape in R.
+  >
+  > **It marks the day it arms, and it no longer needs live trailing (since 2026-09-26).**
+  > The rule writes nothing until it moves a stop, so a day that never reached the floor
+  > and a day it never ran read the same. Now the first time in a day the loop's realized
+  > P&L passes the floor it journals one **`day_protective_armed`** row: the day's gain,
+  > the floor, the dollars above it, and its verdict on each open position.
+  >
+  > - `already_safe`: the stop already keeps the day above the floor. This is the usual
+  >   case, and it moves nothing.
+  > - `would_move`: it tightens the stop, which shows as a `live_stop_ratcheted` row of
+  >   kind `day_protective`.
+  > - `too_tight`: the stop it needs sits inside a quarter of the trade's original risk,
+  >   so it leaves the trade alone.
+  > - `not_measurable`: the position has no stop, or no original stop on record.
+  >
+  > One row a day, even across a restart. It also runs with live trailing off now: until
+  > 2026-09-26 turning trailing off switched this rule off too, while its own toggle still
+  > read on. Both are on in production, so nothing there changed.
 
   An **armed-day min signal score** holds
   new live entries to a higher conviction bar while the guard is armed (0 = off).
