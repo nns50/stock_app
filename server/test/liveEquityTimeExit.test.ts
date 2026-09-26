@@ -76,7 +76,7 @@ import {
   DAY_PROTECTIVE_ARMED_ACTION,
 } from '../src/services/autotrading/liveExecute';
 import { ORDER_DETAIL_LOOKUPS_PER_TICK } from '../src/services/autotrading/orderDetailFallback';
-import { bumpMissStreak } from '../src/db/webullMissStreak';
+import { bumpMissStreak, forgetMissStreakBrokerQty } from '../src/db/webullMissStreak';
 import { contractKey } from '../src/providers/webull/positions';
 import { readMarketDirectionForTick } from '../src/services/autotrading/marketDirection';
 import { eventBook } from '../src/services/autotrading/eventBook';
@@ -2099,6 +2099,25 @@ describe('checkLiveEquityStopAdjusts', () => {
     // With the shares still showing, a missing stop is the defect it always was.
     db.exec('DELETE FROM webull_miss_streak;');
     await checkLiveEquityStopAdjusts();
+    expect(listAutotradeEvents({ limit: 50 }).some((e) => e.action === 'live_stop_adjust_blocked')).toBe(true);
+  });
+
+  it('reads a frozen miss, whose shares the sync could not read, as not gone (2026-09-26)', async () => {
+    // What a frozen sync leaves (forgetMissStreakBrokerQty): the miss counted,
+    // the shares unknown. Read as gone, the ratchet would skip a position the
+    // broker may still hold, with its stop missing.
+    db.exec('DELETE FROM webull_miss_streak;');
+    onTestFinished(() => {
+      db.exec('DELETE FROM webull_miss_streak;');
+    });
+    const { position } = await armed(200);
+    mockOpenOrders.mockResolvedValue({ ok: true, orders: [] });
+    bumpMissStreak('ACC1', contractKey(position), 0);
+    forgetMissStreakBrokerQty('ACC1', contractKey(position));
+
+    const out = await checkLiveEquityStopAdjusts();
+
+    expect(out[0].reason).not.toBe('shares gone at the broker');
     expect(listAutotradeEvents({ limit: 50 }).some((e) => e.action === 'live_stop_adjust_blocked')).toBe(true);
   });
 

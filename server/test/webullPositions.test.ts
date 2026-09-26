@@ -20,7 +20,7 @@ import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { createIntent, transitionIntent } from '../src/db/orders';
 import { recordLiveExitOrder, recordLiveOrder, setLiveOrderPositionId } from '../src/db/autotradeLiveOrders';
 import { etToday } from '../src/util/marketDate';
-import { bumpMissStreak, missStreakBrokerQty, missStreakStartedAt } from '../src/db/webullMissStreak';
+import { bumpMissStreak, missStreakBrokerQty, missStreakOf, missStreakStartedAt } from '../src/db/webullMissStreak';
 import { AMC_SHORT_POSITION_ROW } from './handTradeFixtures';
 
 vi.mock('../src/services/quotes', () => ({ priceMap: vi.fn() }));
@@ -716,6 +716,32 @@ describe('miss-streak debounce (flapping-close bug fix)', () => {
     await syncClosedWebullPositions('ACC1');
     expect(missStreakBrokerQty('ACC1', contractKey(gone))).toBe(0);
     expect(missStreakBrokerQty('ACC1', contractKey(trimmed))).toBe(4);
+  });
+
+  it('forgets the shares a miss recorded once a frozen sync cannot read the row (2026-09-26)', async () => {
+    // A frozen streak (the broker's row for the name did not map) keeps its
+    // count, but the 0 from the miss before it is no longer known. Carried, it
+    // read as "the shares are gone" while the broker held something.
+    const p = createPosition({
+      assetType: 'stock',
+      symbol: 'IOTR',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 3.79,
+      entryDate: '2026-07-09',
+      tags: ['webull'],
+      accountId: 'ACC1',
+    });
+    mockPositions([]);
+    await syncClosedWebullPositions('ACC1');
+    expect(missStreakOf('ACC1', contractKey(p))).toBe(1);
+    expect(missStreakBrokerQty('ACC1', contractKey(p))).toBe(0);
+
+    mockPositions([{ symbol: 'IOTR', asset_type: 'STOCK', quantity: 'n/a' }]);
+    await syncClosedWebullPositions('ACC1');
+    expect(missStreakOf('ACC1', contractKey(p))).toBe(1);
+    expect(missStreakBrokerQty('ACC1', contractKey(p))).toBeNull();
+    expect(getPosition(p.id)!.status).toBe('open');
   });
 
   it('does NOT close on a single missing observation', async () => {

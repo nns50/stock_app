@@ -16865,3 +16865,42 @@ production. It closes the gap before the flag is ever switched on.
 Six mutations, all caught: the deadline never checked; the plan dated now instead of when
 it was journaled; the deadline made inclusive; an undatable plan let through; the deadline
 at 5 minutes; the expiry journaled on every tick.
+
+## 2026-09-26 (fourteenth) — a frozen miss forgets its shares
+
+**Why.** Since 2026-09-25 (#147) a position's shares count as gone at the broker only on
+a miss with the broker at 0 (`sharesGoneAtBroker`). Two readers act on it: the Order
+Detail lookups for a filled bracket leg, and the stop ratchet, which then writes a
+once-a-day skip instead of a "blocked" defect. The broker sync writes that 0 on the miss
+row (`broker_qty`).
+
+The sync also FREEZES a streak: when the broker's row for the name fails to map, a gap
+against the mapped rows is not evidence of a sale, so the streak is neither bumped nor
+cleared. The second-round review of #147 found that the freeze left the row's
+`broker_qty` as it was. A 0 from the miss before the freeze kept reading as "the shares
+are gone" while the broker held something the sync could not parse. The ratchet then
+skipped a position whose shares may still have been there, and a missing stop over them
+went unreported as a defect.
+
+**The fix.** On a freeze the sync calls `forgetMissStreakBrokerQty`, which sets the
+row's `broker_qty` to NULL (unknown) and leaves the count alone. Unknown is not 0, so
+`sharesGoneAtBroker` reads not-gone until a sync reads the row again, bumping the streak
+with a fresh figure or clearing it.
+
+**What it changes.** Nothing seen so far. The only freeze on record is an option leg
+turned into a multi-leg container, and both readers above ask about stock positions only.
+A stock row the mapper refuses has not been seen; this makes the stop ratchet safe for the
+day one is.
+
+**Tests.**
+- `webullPositions.test.ts`, through `syncClosedWebullPositions`: a first miss records 0
+  held; the next sync, which cannot map the broker's row, keeps the streak at 1 and
+  leaves the quantity unknown, and the position stays open.
+- `liveEquityTimeExit.test.ts`, at the consumer: a miss at 0 followed by the freeze's
+  forget is not "shares gone at the broker", and the missing stop is reported blocked.
+
+Four mutations, all caught: the freeze keeping the last quantity; the forget writing 0
+instead of unknown; an unknown quantity read as gone; the freeze clearing the streak.
+
+Also moved `missStreakStartedAt`'s doc comment back onto its own function; it had drifted
+above `missStreakOf`.
