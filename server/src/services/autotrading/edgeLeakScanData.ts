@@ -7,7 +7,7 @@ import { listPaperPositions, paperRealizedPnl, PaperPosition } from '../../db/au
 import { listOptionsPaperPositions, OptionsPaperPosition } from '../../db/autotradeOptionsPaperPositions';
 import { optionsPaperRealizedPnl } from './optionsExecute';
 import { getAutotradeConfig, AutotradeConfig } from '../../db/autotradeConfig';
-import { listAutotradeEvents, listAutotradeEventsInWindow } from '../../db/autotradeEvents';
+import { AutotradeEventRecord, listAutotradeEvents, listAutotradeEventsInWindow } from '../../db/autotradeEvents';
 import { etDateTimeToMs, etToday } from '../../util/marketDate';
 import { previousTradingSession } from '../trading/marketCalendar';
 import { buildSectorOf } from './riskCheck';
@@ -714,6 +714,67 @@ export function joinLeakTrades(collected: CollectedBook, attributes: Map<string,
   };
 }
 
+/** One journal row the execution catalog counts, with the finding it counts
+ *  under and that finding's nature. */
+export interface ClassifiedExecutionRow {
+  event: AutotradeEventRecord;
+  /** The action, or `action|variant` for a split action. */
+  key: string;
+  label: string;
+  nature: ExecutionNature;
+}
+
+/**
+ * The catalog's rows as it COUNTS them (2026-09-24, factored out of
+ * collectExecutionFindings): a row a later row superseded, or one its
+ * `countsIf` rules out, is dropped, and each survivor is filed under its
+ * finding with that finding's nature. The scan's counts and the short-side
+ * tripwire (liveShortsEvidence.ts) both read this, so a row is a defect to
+ * one exactly when it is a defect to the other.
+ */
+export function classifyExecutionRows(events: AutotradeEventRecord[]): ClassifiedExecutionRow[] {
+  // The latest row of each superseding action, by the value of its key.
+  const supersededAt = new Map<string, number>();
+  for (const spec of EXECUTION_ACTIONS) {
+    if (spec.supersededBy === undefined) continue;
+    const { action, key } = spec.supersededBy;
+    for (const e of events) {
+      if (e.action !== action) continue;
+      const v = detailKey(e.detail, key);
+      if (v === null) continue;
+      const k = `${action}|${v}`;
+      supersededAt.set(k, Math.max(supersededAt.get(k) ?? 0, e.createdAt));
+    }
+  }
+  const out: ClassifiedExecutionRow[] = [];
+  for (const e of events) {
+    const spec = EXECUTION_ACTIONS.find((a) => a.action === e.action);
+    if (spec === undefined) continue;
+    if (spec.supersededBy !== undefined) {
+      const v = detailKey(e.detail, spec.supersededBy.key);
+      const later = v === null ? undefined : supersededAt.get(`${spec.supersededBy.action}|${v}`);
+      if (later !== undefined && later >= e.createdAt) continue;
+    }
+    if (spec.countsIf !== undefined && !spec.countsIf(e.detail)) continue;
+    let key = e.action;
+    let label = spec.label;
+    let nature: ExecutionNature = spec.nature ?? 'defect';
+    if (spec.splitOn !== undefined) {
+      // An unparseable or absent detail falls back to the unsplit action
+      // rather than being dropped: an occurrence we cannot classify is still
+      // an occurrence, and silently losing it is the worse failure.
+      const variant = detailValue(e.detail, spec.splitOn);
+      if (variant !== null && spec.labelFor?.[variant] !== undefined) {
+        key = `${e.action}|${variant}`;
+        label = spec.labelFor[variant];
+        nature = spec.natureFor?.[variant] ?? nature;
+      }
+    }
+    out.push({ event: e, key, label, nature });
+  }
+  return out;
+}
+
 /** Execution occurrences over the last EXECUTION_LOOKBACK_SESSIONS sessions. */
 export function collectExecutionFindings(now: number): ExecutionOccurrence[] {
   let date = etToday(now);
@@ -736,35 +797,7 @@ export function collectExecutionFindings(now: number): ExecutionOccurrence[] {
     actions: EXECUTION_ACTIONS.map((a) => a.action),
     since,
   });
-  // The latest row of each superseding action, by the value of its key.
-  const supersededAt = new Map<string, number>();
-  for (const spec of EXECUTION_ACTIONS) {
-    if (spec.supersededBy === undefined) continue;
-    const { action, key } = spec.supersededBy;
-    for (const e of events) {
-      if (e.action !== action) continue;
-      const v = detailKey(e.detail, key);
-      if (v === null) continue;
-      const k = `${action}|${v}`;
-      supersededAt.set(k, Math.max(supersededAt.get(k) ?? 0, e.createdAt));
-    }
-  }
-  for (const e of events) {
-    const spec = EXECUTION_ACTIONS.find((a) => a.action === e.action);
-    if (spec?.supersededBy !== undefined) {
-      const v = detailKey(e.detail, spec.supersededBy.key);
-      const later = v === null ? undefined : supersededAt.get(`${spec.supersededBy.action}|${v}`);
-      if (later !== undefined && later >= e.createdAt) continue;
-    }
-    if (spec?.countsIf !== undefined && !spec.countsIf(e.detail)) continue;
-    let key = e.action;
-    if (spec?.splitOn !== undefined) {
-      // An unparseable or absent detail falls back to the unsplit action
-      // rather than being dropped: an occurrence we cannot classify is still
-      // an occurrence, and silently losing it is the worse failure.
-      const variant = detailValue(e.detail, spec.splitOn);
-      if (variant !== null && spec.labelFor?.[variant] !== undefined) key = `${e.action}|${variant}`;
-    }
+  for (const { event: e, key } of classifyExecutionRows(events)) {
     counts.set(key, (counts.get(key) ?? 0) + 1);
     const etDate = etToday(e.createdAt);
     const seen = lastSeen.get(key);

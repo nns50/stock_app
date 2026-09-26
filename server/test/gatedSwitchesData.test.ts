@@ -113,7 +113,7 @@ async function shortReport(n: number, losersOnOtherTapes = 0): Promise<ShortShad
     trailStopRMultiple: 0,
     liveScaleOutEnabled: false,
   });
-  return { since: SHORT_SHADOW_SINCE_MS, journaledRows: n, journalTruncated: false, ...record };
+  return { since: SHORT_SHADOW_SINCE_MS, journaledRows: n, journalTruncated: false, ...record, liveReplay: null };
 }
 
 /** Thursday 2026-09-10, 17:30 ET — after the close, on a session. */

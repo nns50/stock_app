@@ -122,6 +122,7 @@ import { evaluateEntryExtension, REFERENCE_MAX_PCT_OF_RANGE, REFERENCE_MAX_VWAP_
 import { detectLevels } from '../../indicators/levels';
 import { reentryCooldownFor, sameDaySymbolExits } from './reentryCooldown';
 import { etDateTimeToMs, etToday } from '../../util/marketDate';
+import { liveExitRules } from '../exitReplay';
 import { atr } from '../../indicators/indicators';
 import { planAroundLevels } from './levelPlan';
 import { MARKETABLE_LIMIT_BUFFER_PCT } from './marketableLimit';
@@ -1549,6 +1550,10 @@ export async function attemptLiveEntry(
       riskBasisPrice: riskBasis,
       stop: signal.stop,
       target: targetToBracket,
+      // The exit rules this trade was placed under (2026-09-25, second review):
+      // a replay of it re-run later reads these, not whatever the config says
+      // by then (shortShadowRecordData.ts, loadLiveShortEntries).
+      exitRules: liveExitRules(autotradeCfg),
       ...(bpBasis ? { buyingPower: bpBasis } : {}),
       orderId: broker.orderId,
       entryVwap,
