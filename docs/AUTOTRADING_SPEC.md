@@ -16819,3 +16819,49 @@ Thirteen mutations, all caught:
 - the legs' P90 of signed values;
 - the parity counting every slot as the same band;
 - the shared momentum tolerance made strict.
+
+## 2026-09-26 (thirteenth) — a second lot has a deadline
+
+**Why.** The per-lot second lot (`checkLivePerLotSecondLots`) is part of the entry's plan.
+Its quantity and target were sized at the entry's price against the entry's stop, and it
+is meant to follow the first lot within a tick or two. Since 2026-09-24 a lot the
+market-direction gate refuses is dropped for good ("2026-09-24 (third)": dropped, not
+deferred). Every other hold only deferred it:
+- a daily halt or missing buying power refuses it at the guardrails, and it was asked
+  again on every tick;
+- the kill switch, a macro blackout or a banked day keep the loop from calling the check
+  at all.
+
+Whichever it was, the lot went in when the hold lifted, at that moment's price against
+the entry's stop, with none of the entry's other checks run again. The review's example
+stands: long 34 @ 100 with a 98 stop, a 17-share lot sent at 103.5 risks $93.50 where
+the sizer budgeted $34.
+
+**The rule** (`perLotBrackets.ts`, `secondLotExpired`). A second lot not sent within
+`SECOND_LOT_MAX_DELAY_MS` (10 minutes) of its plan is dropped. The plan's time is its
+`per_lot_entry_planned` row's, written when the first lot was placed. Ten minutes is
+about four ticks: booking the first lot's fill takes one or two, and the rest is room
+for a failed quote or an order still merging. A plan that cannot be dated counts as past
+the deadline.
+- The check runs right after the plan is found, before the short, direction and
+  guardrail checks, so an expired lot asks for no quote and places nothing.
+- One `per_lot_second_lot_expired` row per position a day (`dropped: true`, `ageMinutes`,
+  `deadlineMinutes`, `plannedAt`). A later tick writes nothing more.
+- The position keeps the first lot's size and target, the same outcome as a second lot
+  that never fills.
+
+**What it changes.** Nothing that trades today: `livePerLotBracketsEnabled` is off in
+production. It closes the gap before the flag is ever switched on.
+
+**Tests.**
+- `perLotBrackets.test.ts`: the deadline at 10 minutes exactly (inside), one millisecond
+  past (dropped), an hour past, and an undatable plan.
+- `liveEquityTimeExit.test.ts`, through `checkLivePerLotSecondLots`:
+  - a lot the guardrails refuse (no buying power) is asked again, and 11 minutes later,
+    with the hold lifted and every check passing, it is dropped and never sent; the row
+    is written once;
+  - a lot 9 minutes late is still sent.
+
+Six mutations, all caught: the deadline never checked; the plan dated now instead of when
+it was journaled; the deadline made inclusive; an undatable plan let through; the deadline
+at 5 minutes; the expiry journaled on every tick.

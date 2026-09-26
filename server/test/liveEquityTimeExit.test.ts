@@ -2685,4 +2685,81 @@ describe('checkLivePerLotSecondLots', () => {
     expect(await checkLivePerLotSecondLots()).toEqual([]);
     expect(mockPlaceOrder).not.toHaveBeenCalled();
   });
+
+  // A late second lot is dropped, whatever held it (2026-09-26; perLotBrackets.ts,
+  // SECOND_LOT_MAX_DELAY_MS). Before this only the direction gate ended a lot. A
+  // lot the guardrails refused (a daily halt, no buying power) was tried again on
+  // every tick, and one held by the kill switch, a blackout or a banked day never
+  // reached this function at all; either way it went in when the hold lifted, at
+  // that moment's price against the entry's stop.
+  const agePlan = (minutes: number) =>
+    db
+      .prepare("UPDATE autotrade_events SET created_at = created_at - ? WHERE action = 'per_lot_entry_planned'")
+      .run(minutes * 60_000);
+
+  it('drops a second lot held past its deadline, and never sends it when the hold lifts', async () => {
+    const { position, entryIntentId } = await openAgedLivePosition(0);
+    setAutotradeConfig(liveConfig({ livePerLotBracketsEnabled: true, maxHoldDays: 0 }));
+    planFor(entryIntentId, { quantity: 5, targetR: 2, targetPrice: 110 });
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-LOT2' });
+
+    // Held: the guardrails refuse it for want of buying power, so it waits.
+    const broke = accountStateWith(0);
+    mockAccountState.mockResolvedValue({
+      ...broke,
+      state: { ...broke.state, buyingPowerUsd: 0 },
+    } as Awaited<ReturnType<typeof webullAccountState>>);
+    expect(await checkLivePerLotSecondLots()).toEqual([
+      {
+        symbol: 'AAPL',
+        positionId: position.id,
+        requested: false,
+        reason: expect.stringMatching(/^Guardrails blocked/),
+      },
+    ]);
+
+    // Eleven minutes on, the hold has lifted and the lot would pass every check.
+    // It is past its deadline, so it is dropped rather than sent.
+    agePlan(11);
+    mockAccountState.mockResolvedValue(accountStateWith(0) as Awaited<ReturnType<typeof webullAccountState>>);
+    expect(await checkLivePerLotSecondLots()).toEqual([
+      {
+        symbol: 'AAPL',
+        positionId: position.id,
+        requested: false,
+        reason: expect.stringMatching(
+          /^Second lot expired: planned 11 min ago, past its 10-minute deadline; dropped, not deferred/,
+        ),
+      },
+    ]);
+    // Said once: a later tick writes nothing and sends nothing.
+    expect(await checkLivePerLotSecondLots()).toEqual([]);
+    expect(mockPlaceOrder).not.toHaveBeenCalled();
+    const expired = listAutotradeEvents({ actions: ['per_lot_second_lot_expired'], limit: 10 });
+    expect(expired).toHaveLength(1);
+    expect(JSON.parse(expired[0].detail ?? '{}')).toMatchObject({
+      positionId: position.id,
+      side: 'long',
+      quantity: 5,
+      ageMinutes: 11,
+      deadlineMinutes: 10,
+      dropped: true,
+    });
+  });
+
+  it('still sends a second lot that is late but inside its deadline', async () => {
+    const { position, entryIntentId } = await openAgedLivePosition(0);
+    setAutotradeConfig(liveConfig({ livePerLotBracketsEnabled: true, maxHoldDays: 0 }));
+    planFor(entryIntentId, { quantity: 5, targetR: 2, targetPrice: 110 });
+    agePlan(9);
+    mockGetProvider.mockReturnValue(quoteReturning({ AAPL: 100 }) as ReturnType<typeof getProvider>);
+    mockAccountState.mockResolvedValue(accountStateWith(0) as Awaited<ReturnType<typeof webullAccountState>>);
+    mockPlaceOrder.mockResolvedValue({ ok: true, orderId: 'WB-LOT2' });
+
+    expect(await checkLivePerLotSecondLots()).toEqual([
+      { symbol: 'AAPL', positionId: position.id, requested: true, quantity: 5 },
+    ]);
+    expect(listAutotradeEvents({ actions: ['per_lot_second_lot_expired'], limit: 10 })).toHaveLength(0);
+  });
 });

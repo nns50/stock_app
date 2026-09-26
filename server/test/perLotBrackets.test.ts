@@ -5,6 +5,8 @@ import {
   planLotBrackets,
   planRollbackToSingle,
   REVERSE_POSITION_CODE,
+  SECOND_LOT_MAX_DELAY_MS,
+  secondLotExpired,
   type BracketLot,
   splitEntryForPerLot,
   lotTargetPrice,
@@ -276,5 +278,22 @@ describe('lotTargetPrice', () => {
 
   it('returns null on a zero-width risk rather than a target equal to entry', () => {
     expect(lotTargetPrice(100, 100, 'buy', 2)).toBeNull();
+  });
+});
+
+describe('secondLotExpired — the second lot has a deadline', () => {
+  const planned = Date.parse('2026-09-28T14:00:00Z');
+
+  it('lets a lot go until its deadline, and never after', () => {
+    expect(SECOND_LOT_MAX_DELAY_MS).toBe(10 * 60_000);
+    expect(secondLotExpired(planned, planned)).toBe(false);
+    expect(secondLotExpired(planned, planned + SECOND_LOT_MAX_DELAY_MS)).toBe(false);
+    expect(secondLotExpired(planned, planned + SECOND_LOT_MAX_DELAY_MS + 1)).toBe(true);
+    // After a kill switch or a halt that held it for an hour.
+    expect(secondLotExpired(planned, planned + 60 * 60_000)).toBe(true);
+  });
+
+  it('treats a plan it cannot date as past the deadline', () => {
+    expect(secondLotExpired(Number.NaN, planned)).toBe(true);
   });
 });
