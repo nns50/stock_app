@@ -418,12 +418,7 @@ export function scoreSignals(
   return out;
 }
 
-/** The tape a trade met, as a report groups it: a direction the loop read, or
- *  `unlabeled` — no reading yet that day, or one the loop could not see. */
-export type TapeBucket = 'red' | 'mixed' | 'green' | 'unlabeled';
-
-export const TAPE_BUCKETS: readonly TapeBucket[] = ['red', 'mixed', 'green', 'unlabeled'];
-
-export function tapeBucketOf(direction: MarketDirection | null): TapeBucket {
-  return direction === null || direction === 'unknown' ? 'unlabeled' : direction;
-}
+// The tape buckets live in marketDirection.ts (2026-09-24), where the short
+// shadow record reads them too; re-exported for this module's readers.
+export { TAPE_BUCKETS, tapeBucketOf } from './marketDirection';
+export type { TapeBucket } from './marketDirection';

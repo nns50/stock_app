@@ -43,6 +43,18 @@
  *  see (no index quote, or too few names measured). */
 export type MarketDirection = 'red' | 'green' | 'mixed' | 'unknown';
 
+/** The tape a trade met, as a report groups it: a direction the loop read, or
+ *  `unlabeled` — no reading yet that day, one the loop could not see, or a row
+ *  from before the readings began. The tape backfill (historicalTape.ts) and
+ *  the short shadow record (shortShadowRecord.ts) both group by it. */
+export type TapeBucket = 'red' | 'mixed' | 'green' | 'unlabeled';
+
+export const TAPE_BUCKETS: readonly TapeBucket[] = ['red', 'mixed', 'green', 'unlabeled'];
+
+export function tapeBucketOf(direction: MarketDirection | null | undefined): TapeBucket {
+  return direction === null || direction === undefined || direction === 'unknown' ? 'unlabeled' : direction;
+}
+
 /** Counts over the scored universe this tick: names below, above and exactly
  *  at their own prior close. */
 export interface MarketBreadth {
