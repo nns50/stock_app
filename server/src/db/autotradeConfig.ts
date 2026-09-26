@@ -802,6 +802,15 @@ export interface AutotradeConfig {
   /** Defaults false, matching guardrails.ts's own default and this project's
    *  defined-risk-by-default posture. */
   liveAllowNakedShort: boolean;
+  /** With liveAllowNakedShort on, a live stock short (an entry, a scale-in or
+   *  a second lot) goes out only while the market reads broadly RED
+   *  (marketDirection.ts, the reading the gate acts on, held). A mixed, green
+   *  or unread market refuses it (`live_short_skipped`, cause
+   *  `red_tape_only`). The tape plan's rule B (2026-09-23, the operator's
+   *  call): shorts are measured as a red-tape trade and enabled as one. Default
+   *  true; no effect while liveAllowNakedShort is off. LIVE only: paper keeps
+   *  taking shorts on every tape as the control. */
+  liveShortsRedTapeOnly: boolean;
   /** Gross-exposure cap as a % of accountEquityUsd (default 100).
    *
    *  This was hardcoded to exactly 100% on the reasoning that "a cash account
@@ -1436,6 +1445,7 @@ export function defaultAutotradeConfig(): AutotradeConfig {
     liveMaxOrdersPerDay: DEFAULT_LIVE_MAX_ORDERS_PER_DAY,
     liveFatFingerPct: 10,
     liveAllowNakedShort: false,
+    liveShortsRedTapeOnly: true,
     liveProbationTrades: 20,
     liveProbationSizeMultiplier: 0.5,
     liveScaleInEnabled: false,
@@ -1788,6 +1798,8 @@ function sanitize(input: Partial<AutotradeConfig>): AutotradeConfig {
     liveFatFingerPct: pct(input.liveFatFingerPct, d.liveFatFingerPct),
     liveAllowNakedShort:
       typeof input.liveAllowNakedShort === 'boolean' ? input.liveAllowNakedShort : d.liveAllowNakedShort,
+    liveShortsRedTapeOnly:
+      typeof input.liveShortsRedTapeOnly === 'boolean' ? input.liveShortsRedTapeOnly : d.liveShortsRedTapeOnly,
     liveProbationTrades: posInt(input.liveProbationTrades, d.liveProbationTrades),
     liveProbationSizeMultiplier: (() => {
       const n = Number(input.liveProbationSizeMultiplier);

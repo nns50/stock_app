@@ -76,6 +76,9 @@ export const LIVE_ACTIONS = new Set([
   'per_lot_second_lot_direction_skipped',
   'per_lot_second_lot_failed',
   'per_lot_second_lot_placed',
+  // 2026-09-24: a short's second lot refused by the shorts switch or the
+  // red-tape rule (liveShortPermitted).
+  'per_lot_second_lot_short_skipped',
   'risk_atr_unreachable_skipped',
   'stagnation_exit_held_slot_free',
   'symbol_reentry_cooldown_skipped',

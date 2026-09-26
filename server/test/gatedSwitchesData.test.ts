@@ -14,6 +14,11 @@ import { listAutotradeEvents } from '../src/db/autotradeEvents';
 import { DailyResult, saveDailyResult } from '../src/db/dailyResults';
 import { listSwitchStates } from '../src/db/gatedSwitchState';
 import { saveShortShadowRecord } from '../src/db/shortShadowRecords';
+import { saveEdgeLeakScan } from '../src/db/edgeLeakScans';
+import { closePaperPosition, openPaperPosition } from '../src/db/autotradePaperPositions';
+import { runEdgeLeakScanFromDb } from '../src/services/autotrading/edgeLeakScanData';
+import { etDateTimeToMs } from '../src/util/marketDate';
+import type { EdgeLeakScanResult } from '../src/services/autotrading/edgeLeakScan';
 import { Candle } from '../src/providers/types';
 import { deriveDollarCaps } from '../src/services/autotrading/targetTune';
 import {
@@ -56,7 +61,12 @@ beforeEach(() => {
  * a hand-written shape the producer could not emit. Wrapped the way the
  * after-close hook persists it.
  */
-async function shortReport(n: number): Promise<ShortShadowReport> {
+/**
+ * A persisted short shadow record of `n` declined shorts. `losersOnOtherTapes`
+ * adds that many shorts declined on a MIXED tape that stop out, and stamps the
+ * `n` winners RED, so the record carries a red-tape split (2026-09-24).
+ */
+async function shortReport(n: number, losersOnOtherTapes = 0): Promise<ShortShadowReport> {
   const T0 = Date.parse('2026-09-10T13:35:00Z');
   const bar = (offsetMin: number, high: number, low: number): Candle => ({
     time: T0 + offsetMin * 60_000,
@@ -69,10 +79,31 @@ async function shortReport(n: number): Promise<ShortShadowReport> {
   // The replay enters at the signal's 100 less the whole 0.5% buffer (no live
   // fills measured here), 99.5, so 1R is $2.5 and the 2R target is 94.5, which
   // the 94 low trades through. The first bar opens at 100 to match.
+  const winning = [{ ...bar(0, 100, 99), open: 100 }, bar(5, 99, 97), bar(10, 97, 94)];
+  // Runs to the 102 stop on the second bar.
+  const losing = [{ ...bar(0, 100.5, 99.5), open: 100 }, bar(5, 102.6, 100)];
   const source = {
-    getCandles: async () => [{ ...bar(0, 100, 99), open: 100 }, bar(5, 99, 97), bar(10, 97, 94)],
+    getCandles: async (symbol: string) => (symbol.startsWith('L') ? losing : winning),
   };
-  const rows = Array.from({ length: n }, (_, i) => ({ symbol: `S${i}`, at: T0, score: 80, entry: 100, stop: 102 }));
+  const split = losersOnOtherTapes > 0;
+  const rows = [
+    ...Array.from({ length: n }, (_, i) => ({
+      symbol: `S${i}`,
+      at: T0,
+      score: 80,
+      entry: 100,
+      stop: 102,
+      ...(split ? { directionAtSkip: 'red' as const } : {}),
+    })),
+    ...Array.from({ length: losersOnOtherTapes }, (_, i) => ({
+      symbol: `L${i}`,
+      at: T0,
+      score: 80,
+      entry: 100,
+      stop: 102,
+      directionAtSkip: 'mixed' as const,
+    })),
+  ];
   const record = await buildShortShadowRecord(source, rows, {
     ...defaultAutotradeConfig(),
     liveMinSignalScore: 72,
@@ -462,17 +493,40 @@ describe('the shorts switch, over the persisted record (2026-09-19)', () => {
   const shortsPushes = () =>
     vi.mocked(dispatchNotifications).mock.calls.filter(([events]) => events[0]?.title.includes('shorts'));
 
-  it('proposes liveAllowNakedShort once the record’s gate passes, pushes once, and writes nothing', async () => {
+  /** The last edge-leak scan as persisted, carrying the paper book's stock
+   *  shorts on a red tape (the `marketTapeBySide` cut the rule reads). */
+  function saveScanWithPaperShortRed(control: { n: number; meanR: number }): void {
+    saveEdgeLeakScan({
+      asOf: AFTER_CLOSE - 60_000,
+      books: ['live', 'paper'],
+      leaks: [],
+      watches: [],
+      findings: [],
+      dimensions: [
+        {
+          id: 'marketTapeBySide',
+          label: 'Side and market direction at entry',
+          covered: 0,
+          uncovered: 0,
+          descriptive: null,
+          buckets: [{ bucket: 'equity_short_red', n: 0, meanR: null, control }],
+        },
+      ],
+    } as unknown as EdgeLeakScanResult);
+  }
+
+  it('proposes liveAllowNakedShort once the red-tape bar and the paper control pass, pushes once, and writes nothing', async () => {
     setAutotradeConfig({ ...defaultAutotradeConfig(), liveAllowNakedShort: false });
-    const report = await shortReport(31);
-    expect(report.gate.passes).toBe(true);
+    // 20 red-tape winners at +2R against 2 mixed-tape stop-outs.
+    const report = await shortReport(20, 2);
+    expect(report.redTapeGate.passes).toBe(true);
     saveShortShadowRecord('2026-09-10', report);
+    saveScanWithPaperShortRed({ n: 12, meanR: 0.3 });
     // The snapshot carries the record's OWN verdict, not a restatement of it.
     expect(buildGatedSwitchSnapshot(AFTER_CLOSE).shortShadow).toMatchObject({
       etDate: '2026-09-10',
-      n: 31,
-      winRatePct: 100,
-      gate: { passes: true },
+      n: 22,
+      redTapeGate: { n: 20, passes: true },
     });
 
     runGatedSwitches(AFTER_CLOSE);
@@ -494,7 +548,7 @@ describe('the shorts switch, over the persisted record (2026-09-19)', () => {
       .find((d) => d.rule === 'shorts');
     expect(proposed).toMatchObject({ direction: 'exposure', patch: { liveAllowNakedShort: true } });
     expect(proposed?.evidence).toMatch(
-      /^31 of 30 shadow shorts, avg \+2\.00R \(bar \+0\.1R\), win 100\.0% \(bar 50%\)/,
+      /^red tape: 20 of 20 shorts, avg \+2\.00R \(bar \+0\.15R\), win 100\.0% \(bar 50%\), .* — bar met; paper red-tape stock shorts: 12 of 10, mean \+0\.30R \(bar above 0\) — met; all tapes: 22 shadow shorts/,
     );
     expect(proposed?.blockers.join(' ')).toMatch(/only the operator applies this/);
     expect(listSwitchStates().get('shorts')).toMatchObject({ proposals: 1, lastMet: true, graduatedAt: null });
@@ -511,6 +565,54 @@ describe('the shorts switch, over the persisted record (2026-09-19)', () => {
     expect(getAutotradeConfig().liveAllowNakedShort).toBe(false);
   });
 
+  // THE CONSUMER, end to end: paper shorts taken on a red tape, filed by a
+  // REAL scan, persisted the way the route persists it, and read by the rule.
+  // The synthetic scan above stands in for the producer; this is the chain.
+  it('reads the paper control from a real scan of paper shorts on a red tape, and not from a live-only one', async () => {
+    setAutotradeConfig({ ...defaultAutotradeConfig(), liveAllowNakedShort: false });
+    saveShortShadowRecord('2026-09-10', await shortReport(20, 2));
+    const at = (time: string) => etDateTimeToMs('2026-09-10', time) as number;
+    db.prepare(
+      'INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) ' +
+        "VALUES (NULL,'screen','market_direction_read',?,NULL,?)",
+    ).run(JSON.stringify({ direction: 'red', indexChangePct: -0.4, redPct: 72 }), at('09:40'));
+    // Twelve paper shorts after the red reading: entry 100, stop 105, covered
+    // at 97, so +0.6R each.
+    for (let i = 0; i < 12; i++) {
+      const p = openPaperPosition({
+        symbol: `S${i}`,
+        side: 'sell',
+        quantity: 10,
+        entryPrice: 100,
+        stopPrice: 105,
+        targetPrice: 90,
+        riskAmount: 50,
+        riskProfile: 'MODERATE',
+        rationale: 'fixture',
+      });
+      db.prepare('UPDATE autotrade_paper_positions SET entry_at = ? WHERE id = ?').run(at('10:00') + i * 60_000, p.id);
+      closePaperPosition(p.id, { exitPrice: 97, exitReason: 'target' });
+    }
+
+    // A scan of the live book alone persists as well, and carries no paper
+    // figures: the rule must say so, not read it as zero paper shorts.
+    saveEdgeLeakScan(runEdgeLeakScanFromDb({ now: AFTER_CLOSE, books: ['live'] }));
+    runGatedSwitches(AFTER_CLOSE);
+    expect(listSwitchStates().get('shorts')).toMatchObject({ proposals: 0, lastMet: false });
+    expect(listSwitchStates().get('shorts')?.lastReading).toContain(
+      'paper red-tape stock shorts: unread (the last scan did not read the paper book)',
+    );
+
+    // The next session's scan reads both books: the control is met.
+    saveEdgeLeakScan(runEdgeLeakScanFromDb({ now: AFTER_CLOSE, books: ['live', 'paper'] }));
+    runGatedSwitches(Date.parse('2026-09-11T21:30:00Z'));
+    expect(listSwitchStates().get('shorts')).toMatchObject({ proposals: 1, lastMet: true });
+    expect(listSwitchStates().get('shorts')?.lastReading).toContain(
+      'paper red-tape stock shorts: 12 of 10, mean +0.60R (bar above 0) — met',
+    );
+    expect(getAutotradeConfig().liveAllowNakedShort).toBe(false);
+  });
+
   it('carries a record under the bar as a READING on the dashboard row, not a proposal', async () => {
     const report = await shortReport(19);
     expect(report.gate).toMatchObject({ passesN: false, passesAvgR: true, passesWinRate: true, passes: false });
@@ -522,12 +624,12 @@ describe('the shorts switch, over the persisted record (2026-09-19)', () => {
     expect(shortsPushes()).toHaveLength(0);
     // The dashboard's row reads the same persisted state the engine wrote.
     const row = buildGatedSwitchStatus().find((r) => r.id === 'shorts');
-    // Since 2026-09-24 it goes on with the red-tape bar. These 19 shorts carry
+    // Since 2026-09-24 it reads the red-tape bar first. These 19 shorts carry
     // no tape (the loop had not read the market yet), so none count toward it.
     expect(row?.lastReading).toBe(
-      '19 of 30 shadow shorts, avg +2.00R (bar +0.1R), win 100.0% (bar 50%) as of 2026-09-10 — short on trades' +
-        "; red tape: 0 of 20 shorts, avg n/a (bar +0.15R), win n/a (bar 50%), n/a over the other tapes' 0 " +
-        '(bar +0.1R) — short on trades, avg R, win rate, edge over other tapes',
+      "red tape: 0 of 20 shorts, avg n/a (bar +0.15R), win n/a (bar 50%), n/a over the other tapes' 0 " +
+        '(bar +0.1R) — short on trades, avg R, win rate, edge over other tapes; paper red-tape stock shorts: unread ' +
+        '(no edge-leak scan saved yet); all tapes: 19 shadow shorts, avg +2.00R, win 100.0%, as of 2026-09-10',
     );
   });
 
