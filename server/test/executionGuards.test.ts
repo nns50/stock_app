@@ -9,6 +9,7 @@ import {
   checkVolatility,
   getMarketAtrPct,
   getMarketChangePct,
+  getMarketQuoteLegs,
   getMarketRangePct,
   defaultVolatilityFilterConfig,
 } from '../src/services/autotrading/executionGuards';
@@ -239,5 +240,40 @@ describe('getMarketChangePct — the market-direction reading’s index leg (202
     vi.mocked(getProviderStatus).mockReturnValue({ synthetic: false } as never);
     mockGetProvider.mockReturnValue({ getQuote: vi.fn().mockRejectedValue(new Error('boom')) } as never);
     expect(await getMarketChangePct('SPY')).toBeNull();
+  });
+});
+
+// The tape score's index quote (2026-09-26; marketTape.ts). Its change figure
+// is quoteChangePct's, the derivation getMarketChangePct reads too.
+describe('getMarketQuoteLegs — one index quote for the tape score', () => {
+  const quote = (over: Record<string, unknown>) => ({
+    getQuote: vi.fn().mockResolvedValue({ symbol: 'QQQ', last: 400, timestamp: 0, ...over }),
+  });
+  beforeEach(() => {
+    mockGetProvider.mockReset();
+    vi.mocked(getProviderStatus).mockReturnValue({ synthetic: false } as never);
+  });
+
+  it('reads the last price, today’s open and the change the direction reading would read', async () => {
+    mockGetProvider.mockReturnValue(quote({ open: 404, prevClose: 402, changePct: -0.5 }) as never);
+    expect(await getMarketQuoteLegs('QQQ')).toEqual({ last: 400, open: 404, changePct: -0.5 });
+    mockGetProvider.mockReturnValue(quote({ prevClose: 402 }) as never);
+    const derived = await getMarketQuoteLegs('QQQ');
+    expect(derived?.changePct).toBeCloseTo(((400 - 402) / 402) * 100, 10);
+    expect(derived?.changePct).toBe(await getMarketChangePct('QQQ'));
+    expect(derived?.open).toBeNull();
+  });
+
+  it('is null for the synthetic provider, a failed quote, or no usable price', async () => {
+    vi.mocked(getProviderStatus).mockReturnValue({ synthetic: true } as never);
+    const p = quote({ open: 404 });
+    mockGetProvider.mockReturnValue(p as never);
+    expect(await getMarketQuoteLegs('QQQ')).toBeNull();
+    expect(p.getQuote).not.toHaveBeenCalled();
+    vi.mocked(getProviderStatus).mockReturnValue({ synthetic: false } as never);
+    mockGetProvider.mockReturnValue({ getQuote: vi.fn().mockRejectedValue(new Error('boom')) } as never);
+    expect(await getMarketQuoteLegs('QQQ')).toBeNull();
+    mockGetProvider.mockReturnValue(quote({ last: 0 }) as never);
+    expect(await getMarketQuoteLegs('QQQ')).toBeNull();
   });
 });

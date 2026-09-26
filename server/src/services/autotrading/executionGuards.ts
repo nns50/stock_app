@@ -1,5 +1,6 @@
 import { atr } from '../../indicators/indicators';
 import { getProvider, getProviderStatus } from '../../providers';
+import type { Quote } from '../../providers/types';
 import { isUsEquityMarketOpen } from '../trading/marketHours';
 
 // ---------------------------------------------------------------------------
@@ -174,11 +175,49 @@ export async function getMarketRangePct(proxySymbol: string): Promise<number | n
 export async function getMarketChangePct(proxySymbol: string): Promise<number | null> {
   try {
     if (getProviderStatus().synthetic) return null;
-    const q = await getProvider().getQuote(proxySymbol);
-    if (q.changePct !== undefined && Number.isFinite(q.changePct)) return q.changePct;
-    const { last, prevClose } = q;
-    if (prevClose == null || !(prevClose > 0) || !Number.isFinite(last) || !(last > 0)) return null;
-    return ((last - prevClose) / prevClose) * 100;
+    return quoteChangePct(await getProvider().getQuote(proxySymbol));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A quote's move vs its previous close, in percent: the quote's own
+ * `changePct` when it carries one, otherwise derived from `last` and
+ * `prevClose`; null when it carries neither. The ONE derivation both the
+ * market-direction reading's index leg (getMarketChangePct) and the tape
+ * score's index legs (getMarketQuoteLegs) read, so the two can never disagree
+ * about what "the index is down 0.4%" means.
+ */
+export function quoteChangePct(q: Pick<Quote, 'last' | 'prevClose' | 'changePct'>): number | null {
+  if (q.changePct !== undefined && Number.isFinite(q.changePct)) return q.changePct;
+  const { last, prevClose } = q;
+  if (prevClose == null || !(prevClose > 0) || !Number.isFinite(last) || !(last > 0)) return null;
+  return ((last - prevClose) / prevClose) * 100;
+}
+
+/** What the tape score reads off one index quote (marketTape.ts). */
+export interface MarketQuoteLegs {
+  /** The latest price. */
+  last: number;
+  /** Today's opening price, when the quote carries one. */
+  open: number | null;
+  /** The move vs the previous close, in percent (quoteChangePct). */
+  changePct: number | null;
+}
+
+/**
+ * One index quote, for the tape score's index legs (2026-09-26). Null under
+ * the same rule as getMarketChangePct: the synthetic Mock provider, a failed
+ * fetch, or a quote with no usable last price. Never throws.
+ */
+export async function getMarketQuoteLegs(symbol: string): Promise<MarketQuoteLegs | null> {
+  try {
+    if (getProviderStatus().synthetic) return null;
+    const q = await getProvider().getQuote(symbol);
+    if (!Number.isFinite(q.last) || !(q.last > 0)) return null;
+    const open = q.open !== undefined && Number.isFinite(q.open) && q.open > 0 ? q.open : null;
+    return { last: q.last, open, changePct: quoteChangePct(q) };
   } catch {
     return null;
   }

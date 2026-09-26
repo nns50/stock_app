@@ -916,6 +916,18 @@ longs the direction gate now refuses (red tape) were flat too, at +0.00R over 36
 bucket that lost the most was longs on a mixed tape: −4.0R over 50 trades. None of it counts
 toward a switch: rebuilt labels are history, and the rules read the live journal.
 
+**The tape score (since 2026-09-26) is for reading, not trading on.** The label has three
+values, so the losing mixed-tape longs above all share one: a mixed morning drifting red
+and a mixed morning drifting green read the same. The score grades the tape from −100 to
++100 (SPY and QQQ against their close, open, VWAP and 30-minute path, plus breadth and
+its 30-minute change; the About page has the weights). It sits on the Last cycle line and
+in the journal, and nothing acts on it. Resist acting on it by hand too: its first use is
+a pre-committed one. After 20 live-scored sessions it may be proposed in one of two ways,
+and only where the rebuilt history and the live record agree:
+- tighten red-tape shorts to a score of −40 or below;
+- replace the label with a score threshold, if that refuses no more live entries and the
+  longs it refuses lose at least 0.1R a trade more.
+
 One mechanical thing worth knowing, because it decides whether an exit is placeable at
 all: **an option under $3 of premium can only be priced in nickels.** Webull rejects
 anything else outright, so the live path snaps every option limit onto that grid — a buy

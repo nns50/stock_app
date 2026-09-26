@@ -4,6 +4,7 @@ import { resetUnplaceableSymbols } from '../src/services/autotrading/unplaceable
 import { resetRefusedShorts } from '../src/services/autotrading/refusedShorts';
 import { resetBuyingPowerRefusals } from '../src/services/autotrading/buyingPowerRefusals';
 import { resetMarketDirectionState } from '../src/services/autotrading/marketDirection';
+import { resetMarketTapeState } from '../src/services/autotrading/marketTape';
 
 // ---------------------------------------------------------------------------
 // IN-MEMORY MODULE STATE IS RESET BEFORE EVERY TEST (2026-09-09, #43/#46).
@@ -46,6 +47,10 @@ import { resetMarketDirectionState } from '../src/services/autotrading/marketDir
 // It had to go here rather than in one file's beforeEach — the ceiling it
 // learns is keyed by account and ET day, both of which every live-execution
 // file shares, so one file's refusal shrank the next file's orders.
+// So does `marketTape` (2026-09-26): its only import is `marketDirection`,
+// itself import-free. Its breadth ring and journal claim are per process, and
+// a test that expects the day's first tape row, or a momentum of null, must
+// not inherit the previous test's ticks.
 //
 // Everything else stays where it already is: a file that warms a heavy cache
 // resets it in its own `beforeEach` (autotradeScreen.test.ts does exactly
@@ -56,5 +61,6 @@ beforeEach(() => {
   resetUnplaceableSymbols();
   resetBuyingPowerRefusals();
   resetMarketDirectionState();
+  resetMarketTapeState();
   resetRefusedShorts();
 });

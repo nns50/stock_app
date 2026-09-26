@@ -16545,3 +16545,119 @@ Seven mutations, all caught: the paper hand close not respected; the loader, the
 route or the validation route reading the live book whatever was asked; the paper
 quantity taken from the remainder; the same-session filter dropped; an undated trade
 dropped from the population.
+
+## 2026-09-26 (tenth) — the tape has a score (measurement only)
+
+**Why.** The market-direction label has three values. On the 40 rebuilt sessions
+(2026-09-26 (fourth)) the live bucket that lost the most was longs on a MIXED tape, −4.0R
+over 50 trades. The label cannot tell a mixed morning drifting red from one drifting
+green. The tape plan's PR 6 grades the same reading on a −100..+100 scale.
+
+**The score** (`marketTape.ts`). There are six legs. Each leg's value is divided by its
+scale and clamped to ±1. The score is 100 × the weighted mean of the legs that could be
+measured: the weights renormalize over the legs present, and `coverage` says how much of
+the weight that was.
+
+| Leg | Weight | Scale (±1 at) |
+|---|---|---|
+| SPY+QQQ vs the previous close | 25 | 1.17% |
+| breadth, (green − red) ÷ names measured | 25 | 0.42 |
+| SPY+QQQ vs today's open | 15 | 0.77% |
+| SPY+QQQ vs the session VWAP | 15 | 0.39% |
+| SPY+QQQ over the last 30 minutes | 10 | 0.23% |
+| breadth's change over 30 minutes | 10 | 0.11 |
+
+- **The scales are frozen, not settings.** Each is that leg's 90th percentile of |value|,
+  measured on the tape backfill's copy: 40 sessions (2026-07-31..09-25), every
+  regular-session 5-minute slot (3,120; 2,880 for the two 30-minute legs), and every
+  name in the universe for breadth. A setting would let a scale be tuned to whatever the
+  score is later asked to predict. The medians, for reading a score: index vs previous
+  close 0.44%, breadth 0.25, vs open 0.25%, vs VWAP 0.12%, slope 0.08%, breadth change
+  0.04.
+- **Null exactly when the label is `unknown`.** A known label always has a score: its
+  first two legs are the label's own inputs, the SPY move and the breadth counts. SPY's
+  move vs the previous close is the reading's own figure, not a second quote's, so the
+  score and the label cannot disagree about it. QQQ's comes from its quote through the
+  same derivation (`quoteChangePct`, which `getMarketChangePct` now also reads).
+- **The 30-minute breadth change** comes from an in-memory ring of the session's
+  readings (one a tick). It reads the one closest to 30 minutes earlier and exists only
+  when that one is within 5 minutes of the mark: after a restart, the kill switch or a
+  stalled screen it is null, never a change measured over an hour. The ring clears when
+  the ET day changes.
+
+**Where it runs.** At the END of each tick, in the loop's `finally`, after every entry
+the tick placed and before the summary is saved.
+- It covers every return path taken after the direction was read, and none before. A
+  kill-switch tick scores nothing.
+- Its fetches are one quote each of SPY and QQQ, plus one 5-minute-bar fetch of each,
+  cached for 5 minutes (about 2.9 extra provider calls a tick). They never compete with
+  an order's own quotes.
+- It carries `readAt`, the moment the reading was taken, which is what places an entry
+  against it; `quotedAt` is when the index legs were read, a few seconds later.
+- A failure costs the tick a `loop_stage_failed` row (`market tape`) and nothing else.
+- It gives up after 15 seconds (`MARKET_TAPE_TIMEOUT_MS`). It runs before the tick
+  releases the loop, so a provider that hangs must never delay the next tick's exits.
+
+**The journal row is its own action, `market_tape_read`, not a field on
+`market_direction_read` as the plan said.** That row is one per change of direction or
+hold, and three readers rely on it: the flip counts (a row is not a flip), the
+backfill's parity, and the nightly review. A heartbeat there would change what a row
+means for each of them. A tape row is written:
+- on the day's first tick;
+- on a change of the label;
+- when the score has moved 5 points from the last ROW (so a slow drift lands);
+- when the score appears or goes null;
+- and at least every 10 minutes, so a quiet tape still has a reading in force at every
+  entry.
+
+That is 39 rows a full session at the least.
+
+**What it changes.** Nothing on the entry path reads it: no refusal, no size, no target.
+The Last cycle line shows it under the market reading ("Tape −62 · SPY −0.45% · 73% red ·
+breadth falling · measured, not acted on"), and the About page carries the table. Rule D
+stands: no decision role before 20 live-scored sessions, and then only a proposal where
+the backfill and the live window agree. PR 7 cuts the edge-leak scan and the backfill by
+it.
+
+**Tests.**
+- `marketTape.test.ts`:
+  - a broad red morning scores −76 and its mirror +76;
+  - unknown reads null;
+  - a missing leg renormalizes (the label's two legs alone at their scales: −100 at 50%
+    coverage);
+  - the clamps hold, and a flat tape is 0, not −0;
+  - the ring: null until 25 minutes, the reading closest to 30 minutes, null after a
+    gap, cleared on a new day, no nulls kept;
+  - the claim rule, including a drift of 5 in two steps and the heartbeat;
+  - the detail line.
+- `vwap.test.ts`: the opening bar, the VWAP and the close of the bar that ended 30
+  minutes ago, with premarket, other-day and future bars ignored.
+- `executionGuards.test.ts`: the quote legs, their change equal to
+  `getMarketChangePct`'s, and null for the synthetic provider, a failed quote or no
+  price.
+- `autotradeLoop.test.ts`, at the consumer:
+  - the tick's score equals the rule applied to the tick's own inputs;
+  - SPY's leg is the reading's −0.35, not its quote's −0.40;
+  - the index quotes are fetched after both live executors ran;
+  - one row, not repeated on an unchanged next tick;
+  - a failing bar fetch leaves the reading, the entries and the tick intact;
+  - a tape that never answers is abandoned at 15 seconds;
+  - a kill-switch tick fetches nothing.
+
+Sixteen mutations, all caught:
+- SPY's leg read from its own quote;
+- a tick with no reading scored anyway;
+- the score step made strict;
+- no heartbeat;
+- no renormalization;
+- no clamp;
+- the ring kept across days;
+- breadth read under the sample floor;
+- the VWAP leg reading the open;
+- the slope read from a bar still open 30 minutes ago;
+- future bars kept;
+- the tape scored before the entries;
+- `readAt` taken from the quote time;
+- the momentum tolerance ignored;
+- the quote legs' change not shared with the reading's;
+- the timeout never firing.

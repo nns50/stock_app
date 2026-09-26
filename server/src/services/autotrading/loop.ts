@@ -73,6 +73,8 @@ import {
   readMarketDirectionForTick,
   seedMarketDirectionState,
 } from './marketDirection';
+import { claimTapeJournal, MARKET_TAPE_ACTION } from './marketTape';
+import { MarketTapeReading, MarketTapeRequest, readMarketTape } from './marketTapeData';
 import { listMacroEvents } from '../../db/macroEvents';
 import { runWebullPositionsSync } from '../../providers/webull/positions';
 import { correctEstimatedStockExits } from './stockExitCorrection';
@@ -231,6 +233,10 @@ export interface LoopTickSummary {
    *  (seedMarketDirectionState, 2026-09-26), and the hold's bound counts from
    *  the reading, not from when the tick finished. */
   marketDirectionAt: number | null;
+  /** The tape score for this tick's reading (marketTape.ts, 2026-09-26):
+   *  -100..+100 from six legs, with each leg's value. MEASUREMENT ONLY — nothing
+   *  gates or sizes on it. Null on a tick that did not read the direction. */
+  marketTape: MarketTapeReading | null;
 }
 
 /** Ticker-level volatility pre-filter, applied between Screen and Decision —
@@ -304,6 +310,7 @@ function emptySummary(skippedReason?: string): LoopTickSummary {
     mlRegime: null,
     marketDirection: null,
     marketDirectionAt: null,
+    marketTape: null,
   };
 }
 
@@ -395,6 +402,9 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
   // actually ran — undefined only if something threw before it was ever
   // built, in which case there's nothing meaningful yet to persist.
   let summary: LoopTickSummary | undefined;
+  // What this tick's direction reading was taken from, for the tape score the
+  // finally block records (null until the reading is taken).
+  let tapeRequest: MarketTapeRequest | null = null;
   try {
     // A restarted process takes the market-direction hold and the latest
     // reading from the tick it saved last, before the add gates below read
@@ -994,6 +1004,12 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     );
     summary.marketDirection = marketDirection;
     summary.marketDirectionAt = marketDirectionAt;
+    tapeRequest = {
+      reading: marketDirection,
+      breadth: screenResult.breadth,
+      readAt: marketDirectionAt,
+      day: etToday(marketDirectionAt),
+    };
     if (claimDirectionChange(etToday(), marketDirection.direction, marketDirection.heldBy)) {
       logAutotradeEvent({
         stage: 'screen',
@@ -1267,6 +1283,12 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     summary.ranEntries = true;
     return summary;
   } finally {
+    // THE TAPE SCORE (2026-09-26; marketTape.ts), measurement only. Scored
+    // here, after every entry this tick placed, so its index fetches never
+    // compete with an order's own quotes; before the summary is saved, so the
+    // tick carries it; and on any return path taken after the direction was
+    // read. Its `readAt` is the reading's moment, not this one. Never throws.
+    if (summary && tapeRequest && !abortController.signal.aborted) await recordMarketTape(summary, tapeRequest);
     tickInFlight = false;
     if (tickAbortController === abortController) tickAbortController = null;
     // Persist the "last completed tick" snapshot regardless of which return
@@ -1306,6 +1328,38 @@ let started = false;
 /** Log AND journal a stage failure. See runStage for why both: console alone
  *  goes to a hosted log nobody reads, so a stage failing every tick was
  *  indistinguishable from a stage with nothing to do. */
+/** The longest the tape score may hold the end of a tick. It runs before the
+ *  tick releases the loop, and it gates nothing, so a provider that hangs must
+ *  never delay the next tick's exits: past this, the tick moves on and the
+ *  score is journaled as a failed stage. */
+export const MARKET_TAPE_TIMEOUT_MS = 15_000;
+
+/** Score this tick's tape onto its summary and journal it when the claim rule
+ *  says a row is due (claimTapeJournal). A failure or a timeout costs the tick
+ *  nothing but a journaled stage failure: the score gates nothing. */
+async function recordMarketTape(summary: LoopTickSummary, req: MarketTapeRequest): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const tape = await Promise.race([
+      readMarketTape(req),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`timed out after ${MARKET_TAPE_TIMEOUT_MS}ms`)),
+          MARKET_TAPE_TIMEOUT_MS,
+        );
+      }),
+    ]);
+    summary.marketTape = tape;
+    if (claimTapeJournal(req.day, tape.direction, tape.score, req.readAt)) {
+      logAutotradeEvent({ stage: 'screen', action: MARKET_TAPE_ACTION, detail: { ...tape } });
+    }
+  } catch (e) {
+    journalStageFailure('market tape', e);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 function journalStageFailure(stage: string, e: unknown): void {
   const reason = e instanceof Error ? e.message : String(e);
   console.error(`[autotrade-loop] ${stage} failed:`, reason);

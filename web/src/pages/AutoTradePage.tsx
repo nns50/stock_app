@@ -2315,6 +2315,13 @@ function MonitoringDashboard({
                 {!marketDirectionGateEnabled && ' · gate off (reading only)'}
               </p>
             )}
+            {/* The tape score for the same reading (2026-09-26): measurement
+                only, nothing gates or sizes on it. */}
+            {dash.lastTick.summary.marketTape && (
+              <p data-testid="last-cycle-market-tape">
+                {dash.lastTick.summary.marketTape.detail} · measured, not acted on
+              </p>
+            )}
             {/* The LIVE side of the tick. Every number below was already
                 computed, stored and served — and rendered nowhere, so this
                 panel showed a live cycle as if only its paper half had
