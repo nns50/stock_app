@@ -54,7 +54,10 @@ import { initDb, db } from '../src/db';
 import { getLiveEntryOrderForPosition } from '../src/db/autotradeLiveOrders';
 import { setAutotradeConfig, defaultAutotradeConfig, AutotradeConfig } from '../src/db/autotradeConfig';
 import { setTradingConfig } from '../src/db/trading';
-import { createPosition, listPositions } from '../src/db/positions';
+import { addExit, createPosition, listPositions } from '../src/db/positions';
+import { saveDailyBaseline } from '../src/db/dailyBaseline';
+import { etToday } from '../src/util/marketDate';
+import { resetOncePerDayEvents } from '../src/services/autotrading/oncePerDayEvents';
 import { createIntent, getIntent, listIntents, transitionIntent, type OrderIntentRecord } from '../src/db/orders';
 import { listPendingLiveOrders, getLiveOrder, recordLiveExitOrder } from '../src/db/autotradeLiveOrders';
 import { listAutotradeEvents, logAutotradeEvent } from '../src/db/autotradeEvents';
@@ -70,11 +73,13 @@ import {
   checkLivePerLotSecondLots,
   cancelLiveBracketExitLegs,
   checkLiveBracketProtection,
+  DAY_PROTECTIVE_ARMED_ACTION,
 } from '../src/services/autotrading/liveExecute';
 import { ORDER_DETAIL_LOOKUPS_PER_TICK } from '../src/services/autotrading/orderDetailFallback';
 import { bumpMissStreak } from '../src/db/webullMissStreak';
 import { contractKey } from '../src/providers/webull/positions';
 import { readMarketDirectionForTick } from '../src/services/autotrading/marketDirection';
+import { eventBook } from '../src/services/autotrading/eventBook';
 
 const mockGetProvider = vi.mocked(getProvider);
 const mockAccountState = vi.mocked(webullAccountState);
@@ -2272,6 +2277,133 @@ describe('checkLiveEquityStopAdjusts', () => {
     expect(mockReplaceOrder).not.toHaveBeenCalled();
     expect(listPositions({ status: 'open', symbol: 'AAPL' })[0].stopPrice).toBe(afterFirst);
     expect(position.id).toBeGreaterThan(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // The day-protective stop's own mark (2026-09-26). The rule writes nothing
+  // until it moves a stop, so a day that never reached the floor and a day the
+  // rule never ran read the same: the watch opened 2026-09-15 could not tell
+  // them apart after six scorable sessions. One row the first tick of a day
+  // the sweep sees the loop's realized P&L above the floor.
+  // -------------------------------------------------------------------------
+  describe('the day-protective armed row (2026-09-26)', () => {
+    const BASELINE = 100_000;
+
+    /** The rule on, a 3% goal, and the day's opening equity; the realized
+     *  gain comes from a closed loop trade booked today. */
+    function protectiveDay(realizedUsd: number, overrides: Partial<AutotradeConfig> = {}) {
+      setAutotradeConfig({
+        targetDailyGainPct: 3,
+        dayProtectiveStopEnabled: true,
+        dayProtectiveStopFloorPct: 1.5,
+        ...overrides,
+      });
+      saveDailyBaseline(etToday(), BASELINE);
+      const today = etToday();
+      const p = createPosition({
+        assetType: 'stock',
+        symbol: 'CLSD',
+        side: 'long',
+        quantity: 100,
+        entryPrice: 100,
+        entryDate: today,
+        tags: ['webull', 'live', 'autotrade'],
+      });
+      addExit(p.id, { quantity: 100, exitPrice: 100 + realizedUsd / 100, exitDate: today });
+    }
+
+    const armedRows = () =>
+      listAutotradeEvents({ actions: [DAY_PROTECTIVE_ARMED_ACTION], limit: 50 }).map((e) => JSON.parse(e.detail!));
+
+    it('writes one row the first tick the day is above its floor, with what the rule made of each position', async () => {
+      // Trailing armed only at 5R so this price leaves it quiet: the move
+      // below is the day-protective rule's alone.
+      const { position, quantity } = await armed(101, { breakevenTriggerRMultiple: 5, trailStartRMultiple: 5 });
+      protectiveDay(2_000, { breakevenTriggerRMultiple: 5, trailStartRMultiple: 5 });
+      mockOpenOrders.mockResolvedValue({ ok: true, orders: [stopLeg(), targetLeg()] });
+      mockReplaceOrder.mockResolvedValue({ ok: true });
+
+      const out = await checkLiveEquityStopAdjusts();
+
+      // +$2,000 on $100,000 is +2%, $500 above the 1.5% floor.
+      const required = Math.round((100.5 - 500 / quantity) * 100) / 100;
+      const rows = armedRows();
+      expect(rows).toHaveLength(1);
+      // Recent activity files it under Live, beside the ratchet row it explains
+      // (the route filters on this same classifier, reading the stored row).
+      const [stored] = listAutotradeEvents({ actions: [DAY_PROTECTIVE_ARMED_ACTION], limit: 1 });
+      expect(eventBook(stored.action, stored.detail)).toBe('live');
+      expect(rows[0]).toMatchObject({
+        dayGainPct: 2,
+        floorPct: 1.5,
+        configuredFloorPct: 1.5,
+        headroomUsd: 500,
+        strategyPnlUsd: 2_000,
+        baselineEquityUsd: BASELINE,
+        trailingEnabled: true,
+        killSwitch: false,
+        positions: [
+          {
+            positionId: position.id,
+            symbol: 'AAPL',
+            side: 'long',
+            quantity,
+            entryPrice: 100.5,
+            stopPrice: 95,
+            requiredStop: required,
+            verdict: 'would_move',
+            closeWorking: false,
+          },
+        ],
+      });
+      // The consumer: the same tick the rule moved the stop, to that price.
+      expect(out[0]).toMatchObject({ positionId: position.id, adjusted: true, kind: 'day_protective' });
+      expect(mockReplaceOrder.mock.calls[0][2]).toMatchObject({ stopPrice: required });
+
+      // Once a day, not once a tick.
+      await checkLiveEquityStopAdjusts();
+      expect(armedRows()).toHaveLength(1);
+    });
+
+    it('does not write a second row after a restart the same day: the journal is the claim', async () => {
+      await armed(101);
+      protectiveDay(2_000);
+      await checkLiveEquityStopAdjusts();
+      resetOncePerDayEvents(); // what a deploy mid-session does to the in-memory claim
+      await checkLiveEquityStopAdjusts();
+      expect(armedRows()).toHaveLength(1);
+    });
+
+    it('writes the row on a day that reaches the floor with nothing open', async () => {
+      protectiveDay(2_000);
+      expect(await checkLiveEquityStopAdjusts()).toEqual([]);
+      const rows = armedRows();
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ dayGainPct: 2, headroomUsd: 500, positions: [] });
+    });
+
+    it('writes nothing while the day is at or under the floor, or the rule is off', async () => {
+      await armed(101);
+      protectiveDay(1_500); // exactly at the floor: nothing to protect
+      await checkLiveEquityStopAdjusts();
+      expect(armedRows()).toHaveLength(0);
+
+      protectiveDay(2_000, { dayProtectiveStopEnabled: false });
+      await checkLiveEquityStopAdjusts();
+      expect(armedRows()).toHaveLength(0);
+    });
+
+    it('moves the stop with live trailing off: the rule no longer needs the trailing flag', async () => {
+      const { position } = await armed(101, { liveTrailingEnabled: false });
+      protectiveDay(2_000, { liveTrailingEnabled: false });
+      mockOpenOrders.mockResolvedValue({ ok: true, orders: [stopLeg(), targetLeg()] });
+      mockReplaceOrder.mockResolvedValue({ ok: true });
+
+      const out = await checkLiveEquityStopAdjusts();
+
+      expect(out[0]).toMatchObject({ positionId: position.id, adjusted: true, kind: 'day_protective' });
+      expect(armedRows()[0]).toMatchObject({ trailingEnabled: false, positions: [{ verdict: 'would_move' }] });
+    });
   });
 });
 

@@ -1309,6 +1309,14 @@ The lesson generalises past these particular numbers:
 - **Check reach before tuning value.** "What fraction of trades ever touched this level?"
   is the first question, and a threshold nothing reaches cannot be judged by its results
   because it has none.
+- **A rule that leaves no trace when idle cannot be told from one that never runs.** The
+  day-protective stop moved no stop in its first six scorable sessions (2026-09-15 to
+  09-24), and the record could not say whether the day never reached its 1.5% floor or
+  the rule never ran. Since 2026-09-26 it writes a `day_protective_armed` row the first
+  time each day the loop's realized P&L passes the floor. Read the days it **armed**, not
+  only the days it moved a stop: armed with every stop `already_safe` is the rule working
+  as designed; never armed across many scorable sessions means the floor sits above what
+  the book's days reach, and the honest options are a lower floor or turning it off.
 
 **One R, one denominator.** When a partial exit and a stop ratchet share a trigger value,
 they must compute R the same way or they mean different things by the same number. Both

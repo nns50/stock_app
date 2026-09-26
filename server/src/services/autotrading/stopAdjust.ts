@@ -154,8 +154,42 @@ function dayProtectiveStop(
   dt: DailyTargetStatus | undefined,
   initialStopDistance: number,
 ): number | null {
-  if (!cfg.dayProtectiveStopEnabled) return null;
-  if (!dt || !dt.active) return null;
+  const c = dayProtectiveCandidate(pos, cfg, dt, initialStopDistance);
+  return c.verdict === 'would_move' ? c.required : null;
+}
+
+/**
+ * What the day-protective rule makes of one position (2026-09-26). ONE
+ * derivation, read by the stop decision above and by the once-a-day
+ * `day_protective_armed` row (liveExecute.ts), so the row can never describe a
+ * rule the decision does not run.
+ */
+export type DayProtectiveVerdict =
+  /** The rule is off, has no floor, or the day has no measurable status. */
+  | 'off'
+  /** The day's loop P&L is at or under the floor: nothing to protect. */
+  | 'not_armed'
+  /** The position's size is unknown. */
+  | 'no_size'
+  /** The position has no stop, or no original stop to measure room against:
+   *  evaluateStopAdjust returns before any rule runs for it. */
+  | 'not_measurable'
+  /** The stop already keeps the day above its floor: the rule does nothing. */
+  | 'already_safe'
+  /** The stop the floor needs sits inside DAY_PROTECTIVE_MIN_ROOM_R of the
+   *  original risk, so the rule declines rather than scratch the trade. */
+  | 'too_tight'
+  /** The rule proposes moving the stop to `required`. */
+  | 'would_move';
+
+export function dayProtectiveCandidate(
+  pos: StopAdjustPosition,
+  cfg: StopAdjustConfig,
+  dt: DailyTargetStatus | undefined,
+  initialStopDistance: number,
+): { verdict: DayProtectiveVerdict; required: number | null } {
+  if (!cfg.dayProtectiveStopEnabled) return { verdict: 'off', required: null };
+  if (!dt || !dt.active) return { verdict: 'off', required: null };
   // ITS OWN FLOOR, AND NO ARM (2026-09-15). This used to read the give-back
   // guard's floor and run only while that guard was ARMED. On 2026-09-15 the
   // guard was switched off — arm and floor both to null, a deliberate decision
@@ -177,16 +211,17 @@ function dayProtectiveStop(
   // position's stop from money the loop never made. The status owns both
   // numbers, for both floors, through one function.
   const floorPct = dt.dayProtectiveFloorPct;
-  if (floorPct === undefined) return null;
-
-  const qty = pos.remainingQuantity;
-  if (!(qty > 0)) return null;
+  if (floorPct === undefined) return { verdict: 'off', required: null };
 
   // How much this position may lose before the day breaches its floor.
   // Non-positive means the day is already at or below it, which is the
-  // give-back guard's business, not this rule's.
+  // give-back guard's business, not this rule's. Asked before the position's
+  // size: it is the day's question, and the armed row reads it first.
   const headroomUsd = dt.dayProtectiveHeadroomUsd;
-  if (headroomUsd === undefined || !(headroomUsd > 0)) return null;
+  if (headroomUsd === undefined || !(headroomUsd > 0)) return { verdict: 'not_armed', required: null };
+
+  const qty = pos.remainingQuantity;
+  if (!(qty > 0)) return { verdict: 'no_size', required: null };
 
   const perShare = headroomUsd / qty;
   const long = pos.side === 'long';
@@ -194,14 +229,33 @@ function dayProtectiveStop(
 
   // Already safe: the stop we hold cannot breach the floor, so leave it be.
   // This is the common case, and the reason the rule is near-free.
-  if (pos.stopPrice !== null && (long ? pos.stopPrice >= required : pos.stopPrice <= required)) return null;
+  if (pos.stopPrice !== null && (long ? pos.stopPrice >= required : pos.stopPrice <= required)) {
+    return { verdict: 'already_safe', required };
+  }
 
   // Too tight to be a stop rather than an exit.
   const minRoom = DAY_PROTECTIVE_MIN_ROOM_R * initialStopDistance;
   const roomLeft = long ? pos.entryPrice - required : required - pos.entryPrice;
-  if (roomLeft < minRoom) return null;
+  if (roomLeft < minRoom) return { verdict: 'too_tight', required };
 
-  return required;
+  return { verdict: 'would_move', required };
+}
+
+/**
+ * The same verdict for a position as `evaluateStopAdjust` would reach it: a
+ * position with no stop or no original stop never gets as far as the rule
+ * there, so it reads `not_measurable` here rather than a verdict the decision
+ * could not have produced.
+ */
+export function dayProtectiveVerdictFor(
+  pos: StopAdjustPosition,
+  cfg: StopAdjustConfig,
+  dt: DailyTargetStatus | undefined,
+): { verdict: DayProtectiveVerdict; required: number | null } {
+  if (pos.stopPrice === null || pos.initialStopPrice === null) return { verdict: 'not_measurable', required: null };
+  const initialStopDistance = Math.abs(pos.entryPrice - pos.initialStopPrice);
+  if (!(initialStopDistance > 0)) return { verdict: 'not_measurable', required: null };
+  return dayProtectiveCandidate(pos, cfg, dt, initialStopDistance);
 }
 
 /**
@@ -220,7 +274,14 @@ export function evaluateStopAdjust(
    *  simply leaves the day-protective rule out of the running. */
   dailyTarget?: DailyTargetStatus,
 ): StopAdjustDecision {
-  if (!cfg.liveTrailingEnabled) return noAdjust('live trailing off');
+  // Either rule can run alone (2026-09-26). The caller has always let the
+  // sweep run with only the day-protective stop on, and this used to return
+  // here the moment trailing was off, so that rule could not move a stop at
+  // any setting while its own flag read as on. Trailing is on in production,
+  // which is why nothing ever showed it; each rule now asks its own flag.
+  if (!cfg.liveTrailingEnabled && !cfg.dayProtectiveStopEnabled) {
+    return noAdjust('live trailing and the day-protective stop are both off');
+  }
   if (pos.stopPrice === null) return noAdjust('no stop on this position — nothing to ratchet');
   if (pos.initialStopPrice === null) {
     // A manual/imported row, or one predating the column. Never guess the
@@ -245,14 +306,19 @@ export function evaluateStopAdjust(
   let candidate = pos.stopPrice;
   let kind: 'breakeven' | 'trail' | 'day_protective' | null = null;
 
-  if (cfg.breakevenTriggerRMultiple > 0 && rMultiple >= cfg.breakevenTriggerRMultiple) {
+  if (cfg.liveTrailingEnabled && cfg.breakevenTriggerRMultiple > 0 && rMultiple >= cfg.breakevenTriggerRMultiple) {
     const be = pos.entryPrice;
     if (long ? be > candidate : be < candidate) {
       candidate = be;
       kind = 'breakeven';
     }
   }
-  if (cfg.trailStartRMultiple > 0 && cfg.trailStopRMultiple > 0 && rMultiple >= cfg.trailStartRMultiple) {
+  if (
+    cfg.liveTrailingEnabled &&
+    cfg.trailStartRMultiple > 0 &&
+    cfg.trailStopRMultiple > 0 &&
+    rMultiple >= cfg.trailStartRMultiple
+  ) {
     const trailDistance = cfg.trailStopRMultiple * initialStopDistance;
     const trailing = long ? bestPrice - trailDistance : bestPrice + trailDistance;
     if (long ? trailing > candidate : trailing < candidate) {

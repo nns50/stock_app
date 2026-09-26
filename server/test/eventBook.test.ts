@@ -36,10 +36,47 @@ function tsFiles(dir: string): string[] {
  */
 const NOT_A_JOURNAL_ACTION = new Set(['skip', 'hold', 'reanchor']);
 
-/** Every action literal a file writes, by the two shapes the codebase uses. */
+/**
+ * Every `const NAME = 'snake_case'` in the source, by name.
+ *
+ * An action written through a constant is still an action. Until 2026-09-26 the
+ * scan read only a literal after `action:`, so `action: DAY_PROTECTIVE_ARMED_ACTION`
+ * was invisible to it and the row it names filed under `shared` with this guard
+ * green. A name declared with two different values keeps both, and the guard
+ * below refuses it rather than picking one.
+ */
+function constantsIn(files: string[]): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>();
+  for (const f of files) {
+    for (const m of readFileSync(f, 'utf8').matchAll(/\bconst\s+([A-Z][A-Z0-9_]*)\s*(?::[^=]+)?=\s*'([a-z0-9_]+)'/g)) {
+      const values = out.get(m[1]) ?? new Set<string>();
+      values.add(m[2]);
+      out.set(m[1], values);
+    }
+  }
+  return out;
+}
+const CONSTANTS = constantsIn(tsFiles(SRC));
+
+/** The names a file writes as an action through a constant: `action: SOME_ACTION`. */
+function actionConstantsIn(src: string): string[] {
+  return [...src.matchAll(/action:\s*([A-Z][A-Z0-9_]*)\b/g)].map((m) => m[1]);
+}
+
+/**
+ * Every action a file writes, by the shapes the codebase uses: a literal, a
+ * ternary between two literals, a constant, and the two skip helpers. A
+ * constant that does not resolve to one value is left to the test that
+ * refuses it, never dropped quietly.
+ */
 function actionsIn(src: string): string[] {
   const out: string[] = [];
   for (const m of src.matchAll(/action:\s*'([a-z0-9_]+)'/g)) out.push(m[1]);
+  for (const m of src.matchAll(/action:\s*[^,;'{}]*?\?\s*'([a-z0-9_]+)'\s*:\s*'([a-z0-9_]+)'/g)) out.push(m[1], m[2]);
+  for (const name of actionConstantsIn(src)) {
+    const values = CONSTANTS.get(name);
+    if (values?.size === 1) out.push(...values);
+  }
   for (const m of src.matchAll(/(?:journalEntrySkipOncePerDay|journalDeclinedEntry)\(\s*[^,]+,\s*'([a-z0-9_]+)'/g)) {
     out.push(m[1]);
   }
@@ -142,6 +179,7 @@ describe('the table is checked against the source, not trusted', () => {
     'services/autotrading/liveOptionsExecute.ts',
     'services/autotrading/liveCapsReanchor.ts',
     'services/autotrading/liveOptionsExpiry.ts',
+    'services/autotrading/liveFailureAlert.ts',
   ];
   const PAPER_MODULES = ['services/autotrading/optionsExecute.ts'];
 
@@ -177,6 +215,30 @@ describe('the table is checked against the source, not trusted', () => {
     for (const m of [...LIVE_MODULES, ...PAPER_MODULES]) {
       expect(fileOf(m), `${m} not found — update this guard`).toBeTruthy();
     }
+  });
+
+  it('reads an action written through a constant or a ternary', () => {
+    // The shapes the literal-only scan missed (2026-09-26). If the scan stops
+    // reading one, the two classification checks below pass vacuously for it.
+    const live = actionsIn(readFileSync(fileOf('services/autotrading/liveExecute.ts')!, 'utf8'));
+    expect(live).toContain('day_protective_armed');
+    expect(live).toEqual(expect.arrayContaining(['live_scale_out_filled', 'live_time_exit_closed']));
+    const liveOptions = actionsIn(readFileSync(fileOf('services/autotrading/liveOptionsExecute.ts')!, 'utf8'));
+    expect(liveOptions).toContain('short_dated_position_already_open');
+  });
+
+  it('resolves every constant a book module writes as an action', () => {
+    // A name the scan cannot resolve drops out of it, and an under-reading
+    // scan is the one direction this guard must never fail in.
+    const unresolved: string[] = [];
+    for (const m of [...LIVE_MODULES, ...PAPER_MODULES]) {
+      const f = fileOf(m);
+      if (!f) continue;
+      for (const name of actionConstantsIn(readFileSync(f, 'utf8'))) {
+        if (CONSTANTS.get(name)?.size !== 1) unresolved.push(`${name} (${m})`);
+      }
+    }
+    expect(unresolved, "declare each as one `const NAME = 'value'` somewhere under src/").toEqual([]);
   });
 
   it('classifies every action a live-only module writes as live', () => {
