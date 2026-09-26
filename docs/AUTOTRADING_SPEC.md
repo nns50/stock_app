@@ -16340,3 +16340,38 @@ single leg and a spread. `autotradeOptionsExecute.test.ts` joins the paper book'
 the join fails if a key is missing from the refusal row, so two absent values cannot read as
 a match. Six mutations, all caught: either row dropping the fields, a spread's long leg named
 from the short, a spread priced at its long leg, and a renamed single-leg or spread key.
+
+## 2026-09-26 (sixth) — a filled bracket leg is booked once, and never at $0
+
+**The defect** (from the 2026-09-24 second-round review; latent in production, where per-lot
+entries and scale-ins are both off). The order check books a filled STOP_LOSS or
+STOP_PROFIT leg through `materializeExitFill`, at `min(filledQty, remaining)`. An entry
+order stays in `listPendingLiveOrders` while its position is open, so a leg that filled only
+part of the position reports FILLED again on every tick. That happens when one position
+rests under more than one bracket: per-lot entries (each lot has its own), or a scale-in's
+add-on. Each tick booked the same leg again, and lot 1's target went on to sell lot 2's
+shares in the ledger. Separately, `exitLeg.filledPrice ?? fallbackPrice` does not fire on
+0, and the vendor docs say `filled_price` "may be zero or null" before execution completes,
+so a zero booked the shares as sold at $0. The entry path has read a zero as unreported
+since 2026-09-05 (#495); this exit path never had.
+
+**The fix.**
+- **Once.** Only `materializeExitFill` books an exit under an entry order's intent id, so
+  the position's own exit rows with that `source_intent_id` are what this order's legs have
+  already booked. It books `filledQty − already booked`, capped at the remainder, and
+  nothing when that is zero. A leg's running total that grows books only the new part. The
+  claim lives in the ledger, so a restart cannot repeat a booking.
+- **A leg with no quantity** closes the remainder on its first read, as before (a single
+  bracket filled whole), and never again once anything under its order has been booked.
+- **Other orders' exits do not count.** A scale-out's closing order books under its own
+  intent id, so the leg that later sells the rest is booked in full.
+- **A zero price is not reported.** The leg's own stop or target price stands in, as for
+  a null, and the exit correction replaces it with the broker's fill.
+
+**Tests** (`autotradeLiveExecute.test.ts`, through `reconcileLiveOrders`): the partially
+filled leg read on two more ticks books nothing more; a running total from 1 to 3 books 1
+then 2; a later read without a quantity books nothing more; a scale-out under another intent
+does not shrink the leg that sells the rest; a single bracket's leg with no quantity still
+closes the position at its price; a leg filled at $0 books the order's stop price. Four
+mutations, all caught: the old clamp, the zero price passed through, the no-quantity read
+closing the remainder again, and counting every exit rather than this order's.
