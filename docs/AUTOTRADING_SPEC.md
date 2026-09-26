@@ -16702,3 +16702,120 @@ open, VWAP and 30-minute path per slot. `runEdgeLeakScanFromDb` takes an injecte
 Seven mutations, all caught: the index keyed by write time; a later row reaching back; a
 band edge made exclusive; the bucket ignoring the side; the cut offering a lever; an
 unknown reading scored 0; the scores not handed to the collectors.
+
+## 2026-09-26 (twelfth) — the backfill scores the tape too
+
+**What.** The tape plan's PR 7, the backfill half. `npm run backfill:tape` now rebuilds
+the tape score for every past session as well as the label, and hands it to the edge-leak
+scan, so `tapeScoreBySide` covers the 40 sessions before the loop scored anything. The
+`tapeScores` injection the eleventh section added now has its caller.
+
+**One rule, live and rebuilt.** `scoresFromBars` (`historicalTape.ts`) scores each
+rebuilt reading with the functions the loop's `readMarketTape` calls:
+- `indexLegsFromBars` for each index's open, VWAP and 30-minute reference;
+- `indexLegsOf` to average SPY and QQQ;
+- `breadthNetOf` for breadth, and for its 30-minute change the ring's own rule, now the
+  pure `momentumFromSamples`, which the live ring calls too;
+- `scoreMarketTape` on the rebuilt label, hold and all.
+
+`historicalTapeScore.test.ts` drives `readMarketTape` itself over a whole session, with
+its two fetches answered from the same bars. The two agree at every slot, components
+included.
+
+**No slot sees a later price.** A reading is stamped at its slot's end and scored only
+from the bars that started before that moment. `indexLegsFromBars` keeps a bar that
+starts AT its `now`: live, that bar is still forming; in the rebuild it would hold the
+next five minutes.
+
+**Where the inputs differ from the loop's:**
+- the last price is the slot's close (live: the quote's last trade);
+- the open is the first regular bar's open (live: the quote's open);
+- the VWAP leaves out the bar still forming;
+- breadth's 30-minute change reads the slot exactly 30 minutes back (live: the ring's
+  reading closest to that mark, within 5 minutes; both take the 25-minute one at 10:00);
+- one score per 5-minute slot, and the rebuilt index keeps every slot, where the loop
+  journals a row only on a change, a 5-point move or a 10-minute heartbeat.
+
+**A day the loop scored is taken whole from the journal** (`mergeTapeScoreIndex`, the
+direction index's rule), and the rebuild is measured against it: the report's score
+parity line gives the mean distance in points and how often the two share a band. There
+is no such day yet. The first is the first session the loop scores, and the kill switch
+has held since 09-24.
+
+**The frozen scales, reproduced.** The report prints each leg's P90 of |value| over the
+rebuilt slots beside its frozen scale. The scales were measured offline before the
+script could compute them (2026-09-26 (tenth)). On the same copy the script reads:
+
+| Leg | Frozen | This run | Slots |
+|---|---|---|---|
+| index vs the previous close | 1.17 | 1.1698 | 3,120 |
+| breadth | 0.42 | 0.4211 | 3,120 |
+| index vs the open | 0.77 | 0.7718 | 3,120 |
+| index vs the VWAP | 0.39 | 0.3866 | 3,120 |
+| index over 30 minutes | 0.23 | 0.2252 | 2,880 |
+| breadth's 30-minute change | 0.11 | 0.1160 | 2,920 |
+
+The breadth change's 40 extra slots are the 10:00 readings, which the loop's rule
+measures from 25 minutes back and the offline measurement left out.
+
+**The reading (40 sessions, 2026-07-31..09-25, the 09-26 copy).** Slots by band: ≤ −40
+14.9%, −40..−15 24.8%, −15..15 22.5%, 15..40 18.4%, ≥ 40 19.4%; none unscored. The label
+tables came out as the fourth section's, to the digit.
+
+| Live stock longs | n | Mean R | Total R | Paper n | Paper mean R |
+|---|---|---|---|---|---|
+| ≤ −40 | 21 | −0.05 | −1.11 | 11 | +0.21 |
+| −40..−15 | 35 | −0.02 | −0.86 | 25 | +0.12 |
+| −15..15 | 13 | +0.01 | +0.11 | 18 | +0.29 |
+| 15..40 | 15 | +0.14 | +2.13 | 26 | −0.26 |
+| ≥ 40 | 25 | −0.05 | −1.31 | 27 | +0.17 |
+
+- **The score does not sort the live stock longs.** Every band's mean is within 0.14R of
+  zero, and every live interval spans it. The mixed-label losses (−4.0R over 50) are not
+  piled into a red-leaning band.
+- **Paper's one interval clear of zero is not yet a finding.** Paper longs at 15..40 read
+  −0.26R [−0.51, −0.01] over 26, while live longs in the same band made +0.14R. It is one
+  bucket of eighteen, and at 95% about one in twenty clears zero by chance.
+- **Paper calls lean with the tape**: −0.34R over 5 at ≤ −40 and −0.29R [−0.47, −0.07]
+  over 6 at −40..−15, against +0.17R over 12 at 15..40 and +0.25R over 9 at ≥ 40. That is
+  the direction gate's own premise, reaching into mixed labels that lean red. Live has 4
+  and 3 calls in those two bands, too few to read. It is what rule D's second option
+  would test after 20 live-scored sessions; nothing changes now.
+- **Paper shorts made money in every band**, +0.03R to +0.20R a trade over 47. Live
+  takes none.
+
+Rebuilt scores never count toward any switch. Rule D reads them only beside the live
+window, and proposes nothing until 20 live-scored sessions agree with them.
+
+**Tests.**
+- `historicalTape.test.ts`:
+  - a spike in the bar still forming at 10:00 moves nothing at 10:00, and moves the
+    10:05 score;
+  - SPY's leg is the reading's rounded −0.58, not the bars' −0.5822;
+  - breadth's change from 10:00 (25 minutes back), the slope from 10:05;
+  - an index with no bar in the slot leaves the four price legs to the other, rather
+    than carrying its last close forward; an unknown label is unscored;
+  - every slot is indexed at its reading's moment; a day the loop scored is taken whole.
+- `historicalTapeScore.test.ts`: `readMarketTape` and `scoresFromBars` agree slot for
+  slot over a session that runs red, mixed and green.
+- `historicalTapeData.test.ts`, through `runTapeBackfill`:
+  - both indexes load, all 78 slots are scored, and a paper short at 10:30 lands in
+    `equity_short_tape_le-40` at the rebuilt −45;
+  - the legs' P90 is of |value|;
+  - on a day the loop scored +50 the same short lands in `ge40`, the rebuild is measured
+    against the journal (78 slots, none in its band), and the day leaves the band mix.
+
+Thirteen mutations, all caught:
+- a slot reading the bar still forming;
+- SPY's leg re-derived from its bars;
+- a missing slot bar carrying the last close forward;
+- breadth's change measured over 25 minutes;
+- the momentum ring never filled;
+- the rebuild winning a day the loop scored;
+- the index keyed by the slot's start;
+- the scan not handed the rebuilt scores;
+- QQQ never loaded;
+- the band mix counting the journal's days;
+- the legs' P90 of signed values;
+- the parity counting every slot as the same band;
+- the shared momentum tolerance made strict.

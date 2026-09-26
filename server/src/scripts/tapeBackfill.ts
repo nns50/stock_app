@@ -15,8 +15,9 @@ import {
 
 // ---------------------------------------------------------------------------
 // CLI: `npm run backfill:tape -- --db <copy>` — rebuild the market-direction
-// tape for past sessions and read the record against it (the tape plan's PR 3;
-// services/autotrading/historicalTape.ts and historicalTapeData.ts).
+// tape for past sessions, its label (the tape plan's PR 3) and its score (PR
+// 7), and read the record against it (services/autotrading/historicalTape.ts
+// and historicalTapeData.ts).
 //
 // AGAINST A COPY OF THE DATABASE, NEVER THE LIVE ONE. Download it first
 // (GET /api/export/backup.db); the script refuses a missing path and any path

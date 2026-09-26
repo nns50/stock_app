@@ -3,6 +3,7 @@ import { listAutotradeEventsInWindow } from '../../db/autotradeEvents';
 import { listUniverseSymbols } from '../../db/universe';
 import { Candle } from '../../providers/types';
 import { etDateTimeToMs, etToday } from '../../util/marketDate';
+import { percentile } from '../../util/percentile';
 import { sessionDatesEndingAt } from '../trading/marketCalendar';
 import { atrReachRefuses } from './atrReach';
 import { lastCompletedSessionDate } from './dailyTargetSweepData';
@@ -14,7 +15,14 @@ import {
   ShadowTrade,
 } from './declinedEntryShadow';
 import { liveEntryConcessionPct } from './declinedEntryShadowData';
-import { DimensionReport, mulberry32, SCAN_RNG_SEED } from './edgeLeakScan';
+import {
+  DimensionReport,
+  mulberry32,
+  SCAN_RNG_SEED,
+  TAPE_SCORE_BANDS,
+  TapeScoreBand,
+  tapeScoreBand,
+} from './edgeLeakScan';
 import { runEdgeLeakScanFromDb } from './edgeLeakScanData';
 import {
   atrBefore,
@@ -26,21 +34,28 @@ import {
   JournaledCandidate,
   JournaledSignal,
   mergeDirectionIndex,
+  mergeTapeScoreIndex,
   readingsFromBars,
+  scoresFromBars,
   scoreSignals,
   seededSample,
   TAPE_BUCKETS,
   TapeBucket,
   tapeBucketOf,
   TapeReading,
+  TapeScoreRow,
   TapeSeries,
   TapeThresholds,
   toDirectionIndex,
+  toTapeScoreIndex,
   WindowBarFetch,
   windowCandleSource,
 } from './historicalTape';
 import { MARKET_DIRECTION_INDEX_SYMBOL, MarketDirection } from './marketDirection';
 import { directionAt, directionIndex } from './marketDirectionIndex';
+import { TAPE_LEGS, TapeLeg } from './marketTape';
+import { TAPE_INDEX_SYMBOLS } from './marketTapeData';
+import { tapeScoreAt, tapeScoreIndex } from './marketTapeIndex';
 import { loadSkippedShorts, SHORT_SHADOW_SINCE_MS } from './shortShadowRecordData';
 import { computeSignificanceStats } from './significance';
 
@@ -125,9 +140,35 @@ export interface TapeBackfillResult {
     greenPct: number | null;
     sample: number;
   }[];
+  /** The tape score, rebuilt at every slot with the loop's own functions
+   *  (historicalTape.ts, scoresFromBars). Rebuilt scores never count toward any
+   *  switch; rule D reads them only beside the live window. */
+  score: {
+    /** The indexes the price legs averaged over, and any whose bars failed to
+     *  load (the legs then read the rest). */
+    indexes: string[];
+    failedIndexes: string[];
+    /** Rebuilt slots by the scan's score band, and those left unscored (an
+     *  unknown label), over the sessions not taken from the journal. */
+    bands: Record<TapeScoreBand | 'unscored', number>;
+    /** Each leg's P90 of |value| over every rebuilt slot, beside the scale
+     *  frozen in marketTape.ts (measured the same way over 07-31..09-25): a
+     *  run that drifts far from it says the legs saturate more, or less, often
+     *  than they did when the scales were set. */
+    legs: { leg: TapeLeg; frozenScale: number; p90: number | null; n: number }[];
+    /** Days the loop scored itself, taken whole from the journal. */
+    liveDays: string[];
+    /** On those days, the rebuild's score against the loop's at the rebuild's
+     *  slots: the rebuild's error, measured where it can be. */
+    parity: { day: string; compared: number; meanAbsDiff: number | null; sameBand: number }[];
+  };
   leakScan: {
     bySide: DimensionReport | null;
     alignment: DimensionReport | null;
+    /** The book by side and SCORE band (tapeScoreBySide), each entry at the
+     *  score in force when it was taken: the journal's on a day the loop
+     *  scored, the rebuild's on every other. */
+    scoreBySide: DimensionReport | null;
     /** The by-side cut again, with the index leg alone deciding the tape:
      *  the same readings at a 0% breadth bar. The breadth leg is the rebuild's
      *  noisiest input; a result that holds without it does not rest on it. */
@@ -300,6 +341,22 @@ export async function runTapeBackfill(opts: TapeBackfillOptions): Promise<TapeBa
   // The index must load: without it no slot can be read at all.
   progress(`index ${MARKET_DIRECTION_INDEX_SYMBOL}: ${window.from}..${window.to}`);
   const index = await series(MARKET_DIRECTION_INDEX_SYMBOL);
+  // The score's price legs average the tape indexes (SPY and QQQ, as live);
+  // one that fails to load leaves them to the rest.
+  const tapeIndexes: TapeSeries[] = [];
+  const failedIndexes: string[] = [];
+  for (const symbol of TAPE_INDEX_SYMBOLS) {
+    if (symbol === index.symbol) {
+      tapeIndexes.push(index);
+      continue;
+    }
+    try {
+      tapeIndexes.push(await series(symbol));
+    } catch (e) {
+      failedIndexes.push(symbol);
+      progress(`  ${symbol}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
 
   const universe = listUniverseSymbols();
   const sampleSize = opts.sampleSize ?? universe.length;
@@ -322,10 +379,12 @@ export async function runTapeBackfill(opts: TapeBackfillOptions): Promise<TapeBa
   // --- the readings --------------------------------------------------------
   const readings: TapeReading[] = [];
   const spyOnly: TapeReading[] = [];
+  const scoreRows: TapeScoreRow[] = [];
   const coverage: TapeBackfillResult['coverage'] = [];
   for (const day of sessions) {
     const dayReadings = readingsFromBars(day, index, names, thresholds);
     readings.push(...dayReadings);
+    scoreRows.push(...scoresFromBars(day, dayReadings, tapeIndexes));
     spyOnly.push(...readingsFromBars(day, index, names, { ...thresholds, breadthPct: 0, exitBreadthPct: 0 }));
     const samples = dayReadings.map((r) => r.reading.sample);
     coverage.push({
@@ -359,6 +418,48 @@ export async function runTapeBackfill(opts: TapeBackfillOptions): Promise<TapeBa
   const slots = directionSlots(readings.filter((r) => !liveDays.includes(r.day)));
   for (const k of Object.keys(tapeMix) as MarketDirection[]) tapeMix[k] = slots[k];
 
+  // --- the score -------------------------------------------------------------
+  const liveScores = tapeScoreIndex(windowStart);
+  const scoreLiveDays = [...liveScores.keys()]
+    .filter((d) => sessions.includes(d) && (liveScores.get(d)?.length ?? 0) > 0)
+    .sort();
+  const mergedScores = mergeTapeScoreIndex(toTapeScoreIndex(scoreRows), liveScores);
+  const scoreParity = scoreLiveDays.map((day) => {
+    let compared = 0;
+    let absDiff = 0;
+    let sameBand = 0;
+    for (const r of scoreRows) {
+      if (r.day !== day || r.score === null) continue;
+      const loop = tapeScoreAt(liveScores, day, r.at);
+      if (loop === null) continue;
+      compared += 1;
+      absDiff += Math.abs(loop - r.score);
+      if (tapeScoreBand(loop) === tapeScoreBand(r.score)) sameBand += 1;
+    }
+    return { day, compared, meanAbsDiff: compared ? absDiff / compared : null, sameBand };
+  });
+  const scoreBands = Object.fromEntries([...TAPE_SCORE_BANDS, 'unscored'].map((b) => [b, 0])) as Record<
+    TapeScoreBand | 'unscored',
+    number
+  >;
+  for (const r of scoreRows) {
+    if (scoreLiveDays.includes(r.day)) continue;
+    scoreBands[r.score === null ? 'unscored' : tapeScoreBand(r.score)] += 1;
+  }
+  const legP90 = TAPE_LEGS.map((spec) => {
+    const values: number[] = [];
+    for (const r of scoreRows) {
+      const v = r.components.find((c) => c.leg === spec.leg)?.value;
+      if (v !== null && v !== undefined) values.push(Math.abs(v));
+    }
+    return {
+      leg: spec.leg,
+      frozenScale: spec.scale,
+      p90: values.length ? percentile(values, 90) : null,
+      n: values.length,
+    };
+  });
+
   const liveFlips = new Set(liveDays);
   const flips = flipsPerSession(merged)
     .filter((f) => sessions.includes(f.day))
@@ -366,7 +467,7 @@ export async function runTapeBackfill(opts: TapeBackfillOptions): Promise<TapeBa
 
   // --- the book, by the app's own scan -------------------------------------
   progress('edge-leak scan');
-  const scan = runEdgeLeakScanFromDb({ lookbackSessions: lookback, directions: merged, now });
+  const scan = runEdgeLeakScanFromDb({ lookbackSessions: lookback, directions: merged, tapeScores: mergedScores, now });
   const spyOnlyScan = runEdgeLeakScanFromDb({
     lookbackSessions: lookback,
     directions: toDirectionIndex(directionChangeRows(spyOnly)),
@@ -471,9 +572,18 @@ export async function runTapeBackfill(opts: TapeBackfillOptions): Promise<TapeBa
       greenPct: r.reading.greenPct,
       sample: r.reading.sample,
     })),
+    score: {
+      indexes: tapeIndexes.map((s) => s.symbol),
+      failedIndexes,
+      bands: scoreBands,
+      legs: legP90,
+      liveDays: scoreLiveDays,
+      parity: scoreParity,
+    },
     leakScan: {
       bySide: dimension(scan, 'marketTapeBySide'),
       alignment: dimension(scan, 'marketTape'),
+      scoreBySide: dimension(scan, 'tapeScoreBySide'),
       spyOnlyBySide: dimension(spyOnlyScan, 'marketTapeBySide'),
     },
     entryConcessionPct,
@@ -538,6 +648,32 @@ function dimensionTable(title: string, dim: DimensionReport | null): string[] {
   ];
 }
 
+function scoreSection(score: TapeBackfillResult['score']): string[] {
+  const total = Object.values(score.bands).reduce((s, v) => s + v, 0);
+  const share = (v: number) => (total ? `${((v / total) * 100).toFixed(1)}%` : '—');
+  return [
+    '## The tape score, rebuilt',
+    '',
+    `Price legs over ${score.indexes.join(', ')}` +
+      `${score.failedIndexes.length ? ` (failed to load: ${score.failedIndexes.join(', ')})` : ''}. ` +
+      `Slots by score band: ${[...TAPE_SCORE_BANDS, 'unscored' as const]
+        .map((b) => `${b} ${share(score.bands[b])}`)
+        .join(', ')}.`,
+    `Days the loop scored itself: ${score.liveDays.length ? score.liveDays.join(', ') : 'none'}.`,
+    ...score.parity.map(
+      (p) =>
+        `Score parity on ${p.day}: over ${p.compared} slots the rebuild read ` +
+        `${p.meanAbsDiff === null ? '—' : p.meanAbsDiff.toFixed(1)} points from the loop on average, ` +
+        `and the same band at ${p.sameBand}.`,
+    ),
+    '',
+    '| Leg | frozen scale | this run: P90 of abs(value) | slots |',
+    '|---|---|---|---|',
+    ...score.legs.map((l) => `| ${l.leg} | ${l.frozenScale} | ${l.p90 === null ? '—' : l.p90.toFixed(4)} | ${l.n} |`),
+    '',
+  ];
+}
+
 /** The run as Markdown: what the reading in the spec is written from. */
 export function formatTapeBackfill(r: TapeBackfillResult): string {
   const rebuiltFlips = r.flips.filter((f) => f.source === 'rebuilt');
@@ -567,9 +703,11 @@ export function formatTapeBackfill(r: TapeBackfillResult): string {
     `Sessions with an unreadable slot: ${r.coverage.filter((c) => c.unknownSlots > 0).length}; smallest breadth sample ` +
       `${r.coverage.length ? Math.min(...r.coverage.map((c) => c.minSample)) : '—'}.`,
     '',
+    ...scoreSection(r.score),
     '## The book against the tape (edge-leak scan)',
     '',
     ...dimensionTable('By side and tape', r.leakScan.bySide),
+    ...dimensionTable('By side and tape score', r.leakScan.scoreBySide),
     ...dimensionTable('With / against the tape', r.leakScan.alignment),
     ...dimensionTable('By side and tape, index leg only', r.leakScan.spyOnlyBySide),
     '## Declined live shorts by tape',

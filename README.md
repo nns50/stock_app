@@ -494,6 +494,12 @@ bars with the same functions the loop calls (breadth, then the hold), and reads 
 record against it with the app's own readers: the edge-leak scan, the declined-short
 replay, and a replay of every short signal the decision step produced.
 
+Since 2026-09-26 it also rebuilds the **tape score** at every slot (the −100..+100 grade
+the loop journals as `market_tape_read`), with the functions the loop's scorer calls,
+and the edge-leak scan files the book by it (`tapeScoreBySide`). The report prints each
+score leg's 90th percentile beside the scale frozen in the code, so a drift in how often
+the legs saturate shows up in the run that sees it.
+
 **It runs against a copy of the database, never the live one.** Download the copy
 first (the **Backup .db** button under Settings → Data, or `GET /api/export/backup.db`), then:
 
@@ -512,10 +518,10 @@ reads the whole universe, as the loop does; `--sample N` reads a seeded N-name s
 instead (`--seed`, default 20260926) for a key that is rate-limited, at a measured cost
 in accuracy (below). `--out` also writes the whole result as JSON. It needs
 `POLYGON_API_KEY`: about 1,100 calls on a first run
-(5-minute and daily bars for every universe name, SPY, and the few names a short replay
-needs beyond them), cached in the copy's `backtest_bars`, so a re-run fetches only what is
-new. Polygon's free tier allows 5 calls a minute; with a key not held to that, a first run
-took about 20 minutes. The
+(5-minute and daily bars for every universe name, SPY, QQQ, and the few names a short
+replay needs beyond them), cached in the copy's `backtest_bars`, so a re-run fetches only
+what is new. Polygon's free tier allows 5 calls a minute; with a key not held to that, a
+first run took about 20 minutes. The
 Markdown report goes to stdout and progress to stderr.
 
 What differs from the live reading, and is stated in the report:
@@ -526,8 +532,13 @@ What differs from the live reading, and is stated in the report:
   live quote. A 120-name sample agreed with the whole universe at 92% of slots, and read
   red more often (25% of slots against 21%).
 - **Regular-session bars only.** Polygon's minute bars include pre- and post-market.
-- **Where the loop already journaled a day, that day is taken from the journal**, and
-  the rebuild is measured against it (the report's parity line).
+- **The score reads the bars that had closed by the slot's end.** Its last price is the
+  slot's close, where the loop reads the quote's last trade, and its VWAP leaves out the
+  bar still forming. Breadth's 30-minute change is read from the slot exactly 30 minutes
+  back, where the loop reads the reading closest to that mark.
+- **Where the loop already journaled a day, that day is taken from the journal**, the
+  label and the score each, and the rebuild is measured against it (the report's parity
+  lines).
 
 Rebuilt readings **never count toward any switch**: the gated switches read the live
 journal only. What the report means, and how it was read, is recorded in

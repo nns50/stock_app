@@ -8,15 +8,21 @@ import {
   floorReader,
   flipsPerSession,
   mergeDirectionIndex,
+  mergeTapeScoreIndex,
   readingsFromBars,
+  scoresFromBars,
   scoreSignals,
   seededSample,
   TapeReading,
+  TapeScoreRow,
   TapeSeries,
   toDirectionIndex,
+  toTapeScoreIndex,
   windowCandleSource,
 } from '../src/services/autotrading/historicalTape';
 import { DirectionIndex, directionAt } from '../src/services/autotrading/marketDirectionIndex';
+import { TapeLeg } from '../src/services/autotrading/marketTape';
+import { TapeScoreIndex } from '../src/services/autotrading/marketTapeIndex';
 import {
   breadthOf,
   MarketDirectionReading,
@@ -227,6 +233,110 @@ describe('mergeDirectionIndex', () => {
     const merged = mergeDirectionIndex(rebuilt, live);
     expect(merged.get(DAY)).toEqual([{ at: at('09:37'), direction: 'mixed' }]);
     expect(merged.get('2026-09-11')).toEqual([{ at: at('09:35', '2026-09-11'), direction: 'green' }]);
+    // An empty journal day is not a reading.
+    expect(merged.has('2026-09-14')).toBe(false);
+  });
+});
+
+/** An index from a prior close of 100, a little lower each slot: a step that
+ *  gives the move a third decimal, so the reading's rounded figure and the raw
+ *  one differ. */
+const drift = (symbol: string, start = 99.5, step = 0.0137) =>
+  series(symbol, 100, (slot) => start - SLOTS.indexOf(slot) * step);
+
+describe('scoresFromBars — the loop’s tape score, rebuilt from bars', () => {
+  // Every name red throughout.
+  const rowAt = (rows: TapeScoreRow[], hhmm: string) => rows.find((r) => r.at === at(hhmm));
+  const leg = (row: TapeScoreRow | undefined, name: TapeLeg) =>
+    row?.components.find((c) => c.leg === name)?.value ?? null;
+
+  it('scores each slot from the bars that had closed by then: the next bar never moves it', () => {
+    const spyS = drift('SPY');
+    const qqq = drift('QQQ');
+    const readings = readingsFromBars(DAY, spyS, redNames(100), THRESHOLDS);
+    const plain = scoresFromBars(DAY, readings, [spyS, qqq]);
+    expect(plain.map((r) => r.at)).toEqual(readings.map((r) => r.at));
+    // QQQ's 10:00 bar prints far above everything on huge volume. It moves
+    // nothing about the tape at 10:00, when that bar was still forming...
+    const spiked: TapeSeries = {
+      ...qqq,
+      intraday: qqq.intraday.map((b) => (b.time === at('10:00') ? { ...b, high: 130, close: 120, volume: 1e9 } : b)),
+    };
+    const moved = scoresFromBars(DAY, readings, [spyS, spiked]);
+    expect(rowAt(moved, '10:00')).toEqual(rowAt(plain, '10:00'));
+    // ...and the tape from the moment it closed.
+    expect(rowAt(moved, '10:05')!.score).toBeGreaterThan(rowAt(plain, '10:05')!.score!);
+  });
+
+  it('reads the reading’s own index by the reading’s figure, and measures the 30-minute legs once they can be', () => {
+    const spyS = drift('SPY');
+    const readings = readingsFromBars(DAY, spyS, redNames(100), THRESHOLDS);
+    const rows = scoresFromBars(DAY, readings, [spyS]);
+    // SPY's first leg is the label's own number (rounded to two places), not a
+    // second derivation of it: the label and the score read one figure.
+    const reading = readings.find((r) => r.at === at('10:05'))!.reading;
+    expect(reading.indexChangePct).toBe(-0.58);
+    expect(leg(rowAt(rows, '10:05'), 'indexVsPrevClose')).toBe(-0.58);
+    // Breadth momentum: the reading closest to 30 minutes back, within 5. At
+    // 10:00 the first reading (09:35) is 25 minutes back.
+    expect(leg(rowAt(rows, '09:55'), 'breadthMomentum30')).toBeNull();
+    expect(leg(rowAt(rows, '10:00'), 'breadthMomentum30')).toBe(0);
+    // The slope: from the close of the bar that had ENDED 30 minutes before.
+    // At 10:05 that is the 09:30 bar (99.5); the slot's own close is 10:00's.
+    expect(leg(rowAt(rows, '10:00'), 'indexSlope30')).toBeNull();
+    expect(leg(rowAt(rows, '10:05'), 'indexSlope30')).toBeCloseTo(((99.5 - 6 * 0.0137 - 99.5) / 99.5) * 100, 3);
+  });
+
+  it('leaves an index with no bar in the slot out of the price legs, and scores no unknown label', () => {
+    const spyS = drift('SPY');
+    const qqq = drift('QQQ', 99);
+    const gap: TapeSeries = { ...qqq, intraday: qqq.intraday.filter((b) => b.time !== at('10:00')) };
+    const readings = readingsFromBars(DAY, spyS, redNames(100), THRESHOLDS);
+    const both = scoresFromBars(DAY, readings, [spyS, gap]);
+    const spyOnly = scoresFromBars(DAY, readings, [spyS]);
+    // At 10:05 QQQ has no closing price: the four price legs are SPY's alone,
+    // not QQQ's 09:55 close carried forward.
+    for (const name of ['indexVsPrevClose', 'indexVsOpen', 'indexVsVwap', 'indexSlope30'] as const) {
+      expect(leg(rowAt(both, '10:05'), name)).toBe(leg(rowAt(spyOnly, '10:05'), name));
+    }
+    // A slot later QQQ answers again, and pulls the average down.
+    expect(leg(rowAt(both, '10:10'), 'indexVsPrevClose')!).toBeLessThan(
+      leg(rowAt(spyOnly, '10:10'), 'indexVsPrevClose')!,
+    );
+    // Under 100 names the label is unknown, and so is the score.
+    const unknown = scoresFromBars(DAY, readingsFromBars(DAY, spyS, redNames(99), THRESHOLDS), [spyS]);
+    expect(unknown).toHaveLength(78);
+    expect(unknown.every((r) => r.direction === 'unknown' && r.score === null)).toBe(true);
+  });
+});
+
+describe('toTapeScoreIndex and mergeTapeScoreIndex', () => {
+  it('indexes every rebuilt slot at its reading’s moment, by day, oldest first', () => {
+    const spyS = drift('SPY');
+    const rows = scoresFromBars(DAY, readingsFromBars(DAY, spyS, redNames(100), THRESHOLDS), [spyS]);
+    const index = toTapeScoreIndex([...rows].reverse());
+    expect(index.get(DAY)).toEqual(rows.map((r) => ({ at: r.at, score: r.score })));
+    expect(index.get(DAY)![0].at).toBe(at('09:35'));
+  });
+
+  it('takes a day the loop scored whole from the journal, and every other day from the rebuild', () => {
+    const rebuilt: TapeScoreIndex = new Map([
+      [
+        DAY,
+        [
+          { at: at('09:35'), score: -40 },
+          { at: at('09:40'), score: -45 },
+        ],
+      ],
+      ['2026-09-11', [{ at: at('09:35', '2026-09-11'), score: 20 }]],
+    ]);
+    const live: TapeScoreIndex = new Map([
+      [DAY, [{ at: at('09:37'), score: -10 }]],
+      ['2026-09-14', []],
+    ]);
+    const merged = mergeTapeScoreIndex(rebuilt, live);
+    expect(merged.get(DAY)).toEqual([{ at: at('09:37'), score: -10 }]);
+    expect(merged.get('2026-09-11')).toEqual([{ at: at('09:35', '2026-09-11'), score: 20 }]);
     // An empty journal day is not a reading.
     expect(merged.has('2026-09-14')).toBe(false);
   });

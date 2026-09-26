@@ -1570,7 +1570,10 @@ equally-weighted cards in the order they happened to be built:
   - **Side and tape score at entry** (since 2026-09-26): the same entries by the band of
     the tape score in force (below), for example `equity_long_tape_le-40` (a stock long
     taken into a score of −40 or lower). The bands split at ±15 and ±40. No bucket
-    carries a lever, because the score gates nothing.
+    carries a lever, because the score gates nothing. In the app the cut fills from the
+    first session the loop scores. For the sessions before that, the `backfill:tape`
+    script (see the [README](../README.md)) scores each slot from bars on a database copy
+    and prints the same cut. Its readings never count toward a switch.
 
   The paper-vs-live attribution files the paper entries the gate
   refused under their own class, so what the gate costs or saves is measured on paper

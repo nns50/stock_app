@@ -934,6 +934,16 @@ and only where the rebuilt history and the live record agree:
 - replace the label with a score threshold, if that refuses no more live entries and the
   longs it refuses lose at least 0.1R a trade more.
 
+**What 40 rebuilt sessions say about the score (2026-09-26).** The tape backfill now
+scores every past slot with the loop's own scorer (AUTOTRADING_SPEC, 2026-09-26
+(twelfth)). The score does not sort the live stock longs: every band's mean sits within
+0.14R of zero, and the mixed-tape losses are not piled into the red-leaning bands. The one
+pattern that keeps its direction is paper's calls, which lost on red-leaning tapes (−0.29R
+over 6 at −40..−15) and made money on green-leaning ones. That is the direction gate's own
+premise, reaching into mixed labels; live has too few calls there to confirm it. There is
+nothing to act on, by rule or by hand: the score's first test is rule D's, after 20
+live-scored sessions.
+
 One mechanical thing worth knowing, because it decides whether an exit is placeable at
 all: **an option under $3 of premium can only be priced in nickels.** Webull rejects
 anything else outright, so the live path snaps every option limit onto that grid — a buy

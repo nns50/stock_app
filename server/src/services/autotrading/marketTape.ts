@@ -174,18 +174,31 @@ export const BREADTH_MOMENTUM_TOLERANCE_MS = 5 * 60_000;
 
 let breadthRing: { day: string; samples: { at: number; value: number }[] } | null = null;
 
-/** Net breadth's change over the last ~30 minutes of this session, from the
- *  ring; null until the ring reaches back 25 minutes. Read it BEFORE
- *  recordBreadthNet adds the current tick. */
-export function breadthMomentum30(day: string, now: number, value: number | null): number | null {
-  if (value === null || breadthRing === null || breadthRing.day !== day) return null;
+/** `value` minus the sample closest to 30 minutes before `now`, when one lies
+ *  within 5 minutes of that mark; null otherwise. Pure: the ring below and the
+ *  tape rebuild (historicalTape.ts) both call it, so a rebuilt session's
+ *  momentum and a live one's are one rule. */
+export function momentumFromSamples(
+  samples: readonly { at: number; value: number }[],
+  now: number,
+  value: number | null,
+): number | null {
+  if (value === null) return null;
   const target = now - BREADTH_MOMENTUM_WINDOW_MS;
   let best: { at: number; value: number } | null = null;
-  for (const s of breadthRing.samples) {
+  for (const s of samples) {
     if (Math.abs(s.at - target) > BREADTH_MOMENTUM_TOLERANCE_MS) continue;
     if (best === null || Math.abs(s.at - target) < Math.abs(best.at - target)) best = s;
   }
   return best === null ? null : value - best.value;
+}
+
+/** Net breadth's change over the last ~30 minutes of this session, from the
+ *  ring; null until the ring reaches back 25 minutes. Read it BEFORE
+ *  recordBreadthNet adds the current tick. */
+export function breadthMomentum30(day: string, now: number, value: number | null): number | null {
+  if (breadthRing === null || breadthRing.day !== day) return null;
+  return momentumFromSamples(breadthRing.samples, now, value);
 }
 
 /** Add this tick's net breadth to the ring (a null is not a reading and is not
