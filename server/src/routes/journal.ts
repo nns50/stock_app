@@ -24,6 +24,7 @@ import {
   type ExitRules,
   type ReplayResult,
   type ReplayTrade,
+  type ReplayFillModel,
 } from '../services/exitReplay';
 import {
   carriedExitRules,
@@ -310,6 +311,16 @@ async function loadSameSessionBars(): Promise<SameSessionLoad> {
   };
 }
 
+/**
+ * The fill model an exit comparison replays under (exitReplay.ts's
+ * ReplayFillModel): honest, what a live order gets, unless `?fills=touch` asks
+ * for the model every reading before 2026-09-26 used. Anything else is honest,
+ * so a typo cannot quietly bring back the optimistic fills.
+ */
+function replayFillsOf(v: unknown): ReplayFillModel {
+  return v === 'touch' ? 'touch' : 'honest';
+}
+
 journalRouter.get(
   '/exit-replay',
   asyncHandler(async (req, res) => {
@@ -322,6 +333,7 @@ journalRouter.get(
     };
     // 0–100, for the scale-out share; anything else keeps the default.
     const pct = (v: unknown, dflt: number): number => Math.min(100, num(v, dflt));
+    const fills = replayFillsOf(req.query.fills);
     // The CURRENT policy is more than the four multiples (2026-09-11): the live
     // scale-out (when its flag is on) and the stagnation timer are part of it,
     // so a bare call replays them too. The defaults are liveExitRules, the one
@@ -386,7 +398,7 @@ journalRouter.get(
 
     for (const { position: p, stop, bars } of load.trades) {
       const input = { side: p.side, entryPrice: p.entryPrice, initialStopPrice: stop };
-      const out = replayExit(input, bars, rules);
+      const out = replayExit(input, bars, rules, fills);
       if (!out) {
         unreplayable++;
         continue;
@@ -412,6 +424,7 @@ journalRouter.get(
       xs.length ? Math.round((xs.reduce((a, b) => a + b, 0) / xs.length) * 100) / 100 : null;
     res.json({
       rules,
+      fills,
       replay: aggregateReplay(results),
       // The SAME trades' real outcome. Paired on purpose: comparing a replay
       // over one population against a headline average over another is how a
@@ -421,7 +434,7 @@ journalRouter.get(
       // The candidate against the current rules over the SAME trades, with the
       // paired sign-flip test and the shared verdict rule. Null when no `c*`
       // override was asked for.
-      comparison: candidate ? compareExitRules(paired, rules, candidate) : null,
+      comparison: candidate ? compareExitRules(paired, rules, candidate, { fills }) : null,
       rows,
     });
   }),
@@ -492,6 +505,7 @@ journalRouter.get(
     }
 
     const oosFraction = Number(req.query.oosFraction);
+    const fills = replayFillsOf(req.query.fills);
     const result = validateExitTuneRules(
       trades,
       { stopAtrMultiple: cfg.stopAtrMultiple, targetRMultiple: cfg.targetRMultiple },
@@ -508,7 +522,10 @@ journalRouter.get(
         // is what keeps the fit honest here.
         sampleSince: null,
       },
-      { oosFraction: Number.isFinite(oosFraction) && oosFraction > 0 && oosFraction < 1 ? oosFraction : undefined },
+      {
+        oosFraction: Number.isFinite(oosFraction) && oosFraction > 0 && oosFraction < 1 ? oosFraction : undefined,
+        fills,
+      },
     );
 
     res.json({

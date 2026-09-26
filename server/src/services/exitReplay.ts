@@ -147,7 +147,7 @@ export function counterfactualPathEnd(lastExit: { at: number; reason: string | n
 /**
  * How a replay fills (2026-09-26).
  *
- *   `touch`   the original model, and every caller's default: a stop fills at
+ *   `touch`   the original model, and replayExit's default: a stop fills at
  *             its price even when a bar opens through it, the breakeven move and
  *             the trail read each bar's EXTREME, and a target fills the moment a
  *             bar touches it. Each of those favours the trade.
@@ -159,12 +159,14 @@ export function counterfactualPathEnd(lastExit: { at: number; reason: string | n
  *             since a resting limit at the level is not filled by a touch.
  *
  * The honest model is the declined-entry shadow's (declinedEntryShadow.ts),
- * whose records feed rules that ADD exposure. The exit-tuning replays still
- * default to touch, so their stored readings stay comparable. Do not read that
- * as the optimism cancelling between two geometries: it does not. A closer
- * target is touched more often than a farther one, and on the live book a
- * no-scratch candidate read +0.039R under touch against +0.056R honest
- * (2026-09-24). Moving those comparisons to honest is a change of its own.
+ * whose records feed rules that ADD exposure. Since 2026-09-26 it is also the
+ * exit comparisons' (compareExitRules, and exitTuneValidation.ts's replays),
+ * the numbers exit-shape decisions are read from. Touch's optimism does not
+ * cancel between two geometries: a closer target is touched more often than a
+ * farther one, and on the live book a no-scratch candidate read +0.039R under
+ * touch against +0.056R honest (2026-09-24). Readings taken before that date
+ * were touch; `?fills=touch` on either route reproduces them. replayExit's own
+ * default stays touch, so a caller has to name the model it reads.
  */
 export type ReplayFillModel = 'touch' | 'honest';
 
@@ -414,6 +416,8 @@ export interface ExitRulesComparison {
   /** Sign-flip permutation test over the paired per-trade differences. */
   significance: SignificanceStats;
   verdict: ReplayVerdict;
+  /** The fill model both arms were replayed under (ReplayFillModel). */
+  fills: ReplayFillModel;
 }
 
 function normalizedRules(r: ExitRules): Required<ExitRules> {
@@ -439,15 +443,18 @@ export function compareExitRules(
   trades: ReplayTrade[],
   current: ExitRules,
   candidate: ExitRules,
-  opts: { rng?: () => number; resamples?: number } = {},
+  opts: { rng?: () => number; resamples?: number; fills?: ReplayFillModel } = {},
 ): ExitRulesComparison {
+  // Both arms under ONE fill model, honest unless a caller names touch
+  // (2026-09-26): a comparison across two models would be measuring the models.
+  const fills = opts.fills ?? 'honest';
   const currentResults: ReplayResult[] = [];
   const candidateResults: ReplayResult[] = [];
   const diffs: number[] = [];
   let unpaired = 0;
   for (const t of trades) {
-    const a = replayExit(t.input, t.bars, current);
-    const b = replayExit(t.input, t.bars, candidate);
+    const a = replayExit(t.input, t.bars, current, fills);
+    const b = replayExit(t.input, t.bars, candidate, fills);
     if (!a || !b) {
       unpaired++;
       continue;
@@ -468,5 +475,6 @@ export function compareExitRules(
     meanDiffR: diffs.length ? round2(diffs.reduce((a, b) => a + b, 0) / diffs.length) : null,
     significance,
     verdict: replayVerdict(significance, rulesEqual(current, candidate)),
+    fills,
   };
 }

@@ -202,8 +202,9 @@ this book they converge to **both safety clamps** (stop `1.5 -> 0.50 x ATR`, tar
 enough that no single day looks alarming. `GET /api/journal/exit-tune-validation` prices
 that directly — it fits the rules on the older half of your same-session trades and replays
 the newer half under what they produced, against the geometry you actually traded, and
-reports a paired significance verdict. Read it before flipping the toggle; a
-`better` verdict there is the evidence this feature has never had.
+reports a paired significance verdict. Since 2026-09-26 it prices both arms on honest
+fills, as the exit replay does (below). Read it before flipping the toggle; a `better`
+verdict there is the evidence this feature has never had.
 
 Did a past adjustment actually help? The Journal page's **Auto-tune efficacy** card
 answers that directly — before/after win rate and expectancy around each adjustment's
@@ -686,6 +687,19 @@ asks again after another 20 same-session trades. The replay resolves every intra
 collision against the trade and models no slippage, so a `better` here is a pessimistic
 reading of the shape, not a promise of its dollars — and the live scale-out's own
 mechanics (reduce the bracket first, then sell) are not in it.
+
+**Since 2026-09-26 both arms fill the way a live order fills** (`honest`, the
+declined-entry shadow's model), and the response says so (`fills`):
+- a stop that a bar opens through fills at that open;
+- the breakeven, the trail and the scale-out arm on bar closes;
+- a target fills only when a bar trades through it.
+
+Earlier readings used `touch`: a stop filled at its price through a gap, the trail armed
+on a bar's extreme, and a target filled on a touch. That optimism does not cancel
+between two shapes, because a closer target is touched more often than a farther one.
+On the live book, no scratch read +0.039R under `touch` against +0.056R honest. To set a
+new reading beside an old one, add `?fills=touch` to either route. Otherwise compare only
+readings that say `honest`.
 
 The first reading (2026-09-11, 60 paired trades) put all three shapes inside the noise,
 so the settings stayed; the rows are in the spec's 2026-09-11 section, with the next

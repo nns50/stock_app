@@ -4527,7 +4527,9 @@ describe('journal analysis routes tell you what they could not cover (integratio
         });
         addExit(p.id, { quantity: 10, exitPrice: 100.2, exitDate: day });
       }
-      const rep = (await getJson('/api/journal/exit-replay?cScaleOutR=0.5&cScaleOutPct=50')) as {
+      // The touch model (2026-09-26): these numbers are the trail and the
+      // scale-out arming on the 103 high. The honest default is its own test.
+      const rep = (await getJson('/api/journal/exit-replay?cScaleOutR=0.5&cScaleOutPct=50&fills=touch')) as {
         rules: { scaleOutR: number };
         replay: { trades: number; meanR: number; reasons: Record<string, number>; scaleOuts: number };
         comparison: {
@@ -4557,7 +4559,7 @@ describe('journal analysis routes tell you what they could not cover (integratio
       expect(c.verdict).toBe('better');
       // The candidate changes only what it names: the timer it did not name is the current one.
       const timer = (await getJson(
-        '/api/journal/exit-replay?cStagnationMinutes=5&cStagnationMinR=0.9&cBreakevenR=0&cTrailStartR=0',
+        '/api/journal/exit-replay?cStagnationMinutes=5&cStagnationMinR=0.9&cBreakevenR=0&cTrailStartR=0&fills=touch',
       )) as {
         comparison: {
           candidate: {
@@ -4578,6 +4580,85 @@ describe('journal analysis routes tell you what they could not cover (integratio
       // trade — and 0.04R is worse than the trail's 0.1R, uniformly.
       expect(timer.comparison.candidate.replay.reasons.stagnation).toBe(24);
       expect(timer.comparison.verdict).toBe('worse');
+    } finally {
+      candles.mockRestore();
+      setAutotradeConfig({
+        liveScaleOutEnabled: before.liveScaleOutEnabled,
+        liveTrailingEnabled: before.liveTrailingEnabled,
+        stagnationExitMinutes: before.stagnationExitMinutes,
+        breakevenTriggerRMultiple: before.breakevenTriggerRMultiple,
+        trailStartRMultiple: before.trailStartRMultiple,
+        trailStopRMultiple: before.trailStopRMultiple,
+      });
+      db.exec('DELETE FROM position_exits; DELETE FROM positions;');
+    }
+  });
+
+  // HONEST BY DEFAULT (2026-09-26). Both comparisons replay under the fill
+  // model a live order gets unless `?fills=touch` names the one every earlier
+  // reading used. Asserted where the numbers come out, not only on the label:
+  // the same trades read differently under the two models.
+  it('exit-replay and exit-tune-validation replay honest fills unless touch is named', async () => {
+    db.exec('DELETE FROM position_exits; DELETE FROM positions;');
+    // The high touches 103 (+0.6R) and the bar closes at 101 (+0.2R): the trail
+    // arms on the touch and never on the close.
+    const candles = vi
+      .spyOn(getProvider(), 'getCandles')
+      .mockImplementation(async (_symbol: string, _timeframe, q?: { start?: string }) => {
+        const day = q?.start ?? '2026-06-10';
+        return [
+          { time: Date.parse(`${day}T15:00:00Z`), open: 100, high: 103, low: 100, close: 101, volume: 1000 },
+          { time: Date.parse(`${day}T15:05:00Z`), open: 101, high: 101.2, low: 99.8, close: 100.2, volume: 1000 },
+        ];
+      });
+    const before = getAutotradeConfig();
+    setAutotradeConfig({
+      liveScaleOutEnabled: false,
+      liveTrailingEnabled: true,
+      stagnationExitMinutes: 0,
+      breakevenTriggerRMultiple: 0.25,
+      trailStartRMultiple: 0.5,
+      trailStopRMultiple: 0.5,
+    });
+    try {
+      for (let i = 0; i < 24; i++) {
+        const day = `2026-05-${String(1 + i).padStart(2, '0')}`;
+        const p = createPosition({
+          assetType: 'stock',
+          symbol: `HON${i}`,
+          side: 'long',
+          quantity: 10,
+          entryPrice: 100,
+          entryDate: day,
+          stopPrice: 95,
+        });
+        addExit(p.id, { quantity: 10, exitPrice: 100.2, exitDate: day });
+      }
+      type Rep = {
+        fills: string;
+        replay: { meanR: number; reasons: Record<string, number> };
+        comparison: { fills: string };
+      };
+      const honest = (await getJson('/api/journal/exit-replay?cTargetR=3')) as Rep;
+      const touch = (await getJson('/api/journal/exit-replay?cTargetR=3&fills=touch')) as Rep;
+      const typo = (await getJson('/api/journal/exit-replay?cTargetR=3&fills=optimistic')) as Rep;
+      expect(honest.fills).toBe('honest');
+      expect(honest.comparison.fills).toBe('honest');
+      expect(touch.fills).toBe('touch');
+      expect(touch.comparison.fills).toBe('touch');
+      // Anything but `touch` is honest: a typo cannot bring the optimism back.
+      expect(typo.fills).toBe('honest');
+      // Touch arms the trail on the 103 high and exits on the dip at +0.1R;
+      // honest never arms it (closes 101, 100.2) and holds to the close.
+      expect(touch.replay.reasons.trail).toBe(24);
+      expect(touch.replay.meanR).toBe(0.1);
+      expect(honest.replay.reasons.trail ?? 0).toBe(0);
+      expect(honest.replay.meanR).toBe(0.04);
+
+      const v = (await getJson('/api/journal/exit-tune-validation')) as { fills: string };
+      const vt = (await getJson('/api/journal/exit-tune-validation?fills=touch')) as { fills: string };
+      expect(v.fills).toBe('honest');
+      expect(vt.fills).toBe('touch');
     } finally {
       candles.mockRestore();
       setAutotradeConfig({

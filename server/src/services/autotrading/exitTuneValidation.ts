@@ -57,6 +57,7 @@ import {
   aggregateReplay,
   replayExit,
   replayVerdict,
+  ReplayFillModel,
 } from '../exitReplay';
 import { ExcursionTuneBounds, computeExcursionTune } from './excursionTune';
 import { DEFAULT_OOS_FRACTION, SignificanceStats, computeSignificanceStats } from './significance';
@@ -195,6 +196,9 @@ export interface ExitTuneValidation {
     oneStep: FittedArm;
     fixedPoint: FittedArm;
   };
+  /** The fill model every replay here ran under (exitReplay.ts's
+   *  ReplayFillModel): honest unless the caller named touch (2026-09-26). */
+  fills: ReplayFillModel;
   coverage: {
     /** Trades handed in. */
     supplied: number;
@@ -277,6 +281,7 @@ export function replayUnderGeometry(
   current: ExitGeometry,
   candidate: ExitGeometry,
   carried: CarriedExitRules,
+  fills: ReplayFillModel = 'honest',
 ): ReplayResult | null {
   if (!(current.stopAtrMultiple > 0) || !(candidate.stopAtrMultiple > 0)) return null;
   const ratio = candidate.stopAtrMultiple / current.stopAtrMultiple;
@@ -284,7 +289,12 @@ export function replayUnderGeometry(
   const actualDistance = Math.abs(trade.entryPrice - trade.initialStopPrice);
   const stopPrice = trade.entryPrice - sign * actualDistance * ratio;
   const rules: ExitRules = { ...carried, targetR: candidate.targetRMultiple };
-  return replayExit({ side: trade.side, entryPrice: trade.entryPrice, initialStopPrice: stopPrice }, trade.bars, rules);
+  return replayExit(
+    { side: trade.side, entryPrice: trade.entryPrice, initialStopPrice: stopPrice },
+    trade.bars,
+    rules,
+    fills,
+  );
 }
 
 function compare(
@@ -292,15 +302,15 @@ function compare(
   current: ExitGeometry,
   candidate: ExitGeometry,
   carried: CarriedExitRules,
-  opts: { rng?: () => number; resamples?: number },
+  opts: { rng?: () => number; resamples?: number; fills: ReplayFillModel },
 ): { comparison: ValidationComparison; unpaired: number } {
   const currentResults: ReplayResult[] = [];
   const candidateResults: ReplayResult[] = [];
   const diffs: number[] = [];
   let unpaired = 0;
   for (const t of trades) {
-    const a = replayUnderGeometry(t, current, current, carried);
-    const b = replayUnderGeometry(t, current, candidate, carried);
+    const a = replayUnderGeometry(t, current, current, carried, opts.fills);
+    const b = replayUnderGeometry(t, current, candidate, carried, opts.fills);
     // PAIRED or not at all. A trade one arm can replay and the other cannot
     // would put the two geometries against different populations, which is the
     // mistake the exit-replay route's `actual` field exists to avoid.
@@ -342,6 +352,8 @@ export interface ValidateOptions {
   oosFraction?: number;
   rng?: () => number;
   resamples?: number;
+  /** The fill model the replays run under; honest unless named (2026-09-26). */
+  fills?: ReplayFillModel;
 }
 
 /**
@@ -374,10 +386,12 @@ export function validateExitTuneRules(
   const allOneStep = fitOnce(rowsOf(ordered), current, bounds);
   const allFixed = fitToFixedPoint(rowsOf(ordered), current, bounds);
 
-  const h1 = compare(test, current, holdoutOneStep.geometry, carried, opts);
-  const h2 = compare(test, current, holdoutFixed.geometry, carried, opts);
-  const a1 = compare(ordered, current, allOneStep.geometry, carried, opts);
-  const a2 = compare(ordered, current, allFixed.geometry, carried, opts);
+  const fills = opts.fills ?? 'honest';
+  const cmpOpts = { rng: opts.rng, resamples: opts.resamples, fills };
+  const h1 = compare(test, current, holdoutOneStep.geometry, carried, cmpOpts);
+  const h2 = compare(test, current, holdoutFixed.geometry, carried, cmpOpts);
+  const a1 = compare(ordered, current, allOneStep.geometry, carried, cmpOpts);
+  const a2 = compare(ordered, current, allFixed.geometry, carried, cmpOpts);
 
   return {
     current,
@@ -392,6 +406,7 @@ export function validateExitTuneRules(
       oneStep: { fit: allOneStep, comparison: a1.comparison },
       fixedPoint: { fit: allFixed, comparison: a2.comparison },
     },
+    fills,
     coverage: { supplied: trades.length, unpaired: Math.max(h1.unpaired, h2.unpaired, a1.unpaired, a2.unpaired) },
   };
 }
