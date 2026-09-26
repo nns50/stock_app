@@ -2531,7 +2531,10 @@ Three checks are worth making when the rule proposes:
 - it still clears with its best day taken out;
 - a one-share test short has shown how Webull reports a short holding (done 2026-09-24:
   a negative quantity, a SHORT entry and a BUY cover, booked with a short's sign);
-- the first sessions run at half size.
+- the first shorts run small. Since 2026-09-26 that is automatic: the first 10 live
+  shorts after shorts are switched on go out at half size (**Short probation** on the
+  Live trading card), on top of the book's own probation if that is still running. It
+  is counted in shorts, not sessions, so a quiet red week does not use it up.
 
 Since 2026-09-12 that is enforced by **arithmetic, not by a label**. One rule (`leak_lever`)
 takes its field and its number from the leak scan's output rather than from literal code,

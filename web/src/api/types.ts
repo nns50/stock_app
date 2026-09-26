@@ -1803,6 +1803,13 @@ export interface AutotradeConfig {
   /** With naked shorts on, a live stock short goes out only on a broadly red
    *  market (2026-09-24). Default true. */
   liveShortsRedTapeOnly: boolean;
+  /** When live shorts were last switched on (2026-09-24): where the short
+   *  probation's window starts. Stamped by the server, never sent. */
+  liveShortsEnabledAt: number | null;
+  /** The first this-many live stock shorts after they are switched on take
+   *  liveShortProbationSizeMultiplier on top of the probation above. */
+  liveShortProbationTrades: number;
+  liveShortProbationSizeMultiplier: number;
   liveMaxExposurePct: number;
   optionsMaxConcurrentPositions: number;
   optionsOwnExposurePool: boolean;
@@ -2980,6 +2987,8 @@ export interface AutotradeDashboard {
   liveMaxDailyLossUsd: number;
   liveMaxOrdersPerDay: number;
   probation: AutotradeProbationStatus;
+  /** The first live shorts' own size cut (2026-09-24), on top of `probation`. */
+  shortProbation: AutotradeProbationStatus;
 
   // --- Task #70: live options — own pool nested under the live gate above,
   // own $ caps and probation window (see server dashboard.ts's header). ---

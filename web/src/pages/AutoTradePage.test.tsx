@@ -217,6 +217,9 @@ function configFixture(overrides: Partial<AutotradeConfig> = {}): AutotradeConfi
     liveFatFingerPct: 10,
     liveAllowNakedShort: false,
     liveShortsRedTapeOnly: true,
+    liveShortsEnabledAt: null,
+    liveShortProbationTrades: 10,
+    liveShortProbationSizeMultiplier: 0.5,
     liveMaxExposurePct: 100,
     optionsMaxConcurrentPositions: 0,
     optionsOwnExposurePool: false,
@@ -427,6 +430,7 @@ function dashboardFixture(overrides: Partial<AutotradeDashboard> = {}): Autotrad
     liveMaxDailyLossUsd: 3_000,
     liveMaxOrdersPerDay: 6,
     probation: { active: false, multiplier: 1, tradesPlaced: 0, tradesRemaining: 20 },
+    shortProbation: { active: false, multiplier: 1, tradesPlaced: 0, tradesRemaining: 10 },
     liveOptionsEnabled: false,
     liveOptionsOpenPositions: [],
     liveOptionsOpenPositionsCount: 0,
@@ -4463,6 +4467,32 @@ describe('AutoTradePage', () => {
       expect(await screen.findByText(/Probation active: 17 of 20 trades remaining at 0.5× size/)).toBeInTheDocument();
     });
 
+    // 2026-09-24: the first live shorts' own window, shown only while shorts
+    // are on (a window for a switched-off side would read as a cut in force).
+    it('shows the short probation while shorts are on, and not while they are off', async () => {
+      const shortWindow = { active: true, multiplier: 0.5, tradesPlaced: 2, tradesRemaining: 8 };
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({ liveTradingEnabled: true, liveAccountId: 'ACC1', shortProbation: shortWindow }),
+      );
+      const cfg = vi
+        .spyOn(client, 'autotradeConfig')
+        .mockResolvedValue(
+          configFixture({ liveTradingEnabled: true, liveAccountId: 'ACC1', liveAllowNakedShort: true }),
+        );
+      const { unmount } = renderPage();
+      expect(
+        await screen.findByText(/Short probation active: 8 of 10 shorts remaining at 0.5× size/),
+      ).toBeInTheDocument();
+      unmount();
+
+      cfg.mockResolvedValue(
+        configFixture({ liveTradingEnabled: true, liveAccountId: 'ACC1', liveAllowNakedShort: false }),
+      );
+      renderPage();
+      await screen.findByText(/LIVE TRADING ENABLED/);
+      expect(screen.queryByText(/Short probation active/)).not.toBeInTheDocument();
+    });
+
     it('saves the live-trading caps as one batch', async () => {
       const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
       renderPage();
@@ -4493,6 +4523,31 @@ describe('AutoTradePage', () => {
 
       await waitFor(() =>
         expect(setConfig).toHaveBeenCalledWith(expect.objectContaining({ liveShortsRedTapeOnly: false })),
+      );
+    });
+
+    // 2026-09-24: the short probation's two settings save with the live card,
+    // starting from what the server holds.
+    it('saves the short probation settings with the live card', async () => {
+      vi.spyOn(client, 'autotradeConfig').mockResolvedValue(
+        configFixture({ liveShortProbationTrades: 10, liveShortProbationSizeMultiplier: 0.5 }),
+      );
+      const setConfig = vi.spyOn(client, 'setAutotradeConfig').mockResolvedValue(configFixture());
+      renderPage();
+      await screen.findByText('VNQ');
+
+      const trades = screen.getByLabelText('Short probation trades');
+      const multiplier = screen.getByLabelText('Short probation size multiplier');
+      await waitFor(() => expect(trades).toHaveValue('10'));
+      expect(multiplier).toHaveValue('0.5');
+      fireEvent.change(trades, { target: { value: '6' } });
+      fireEvent.change(multiplier, { target: { value: '0.25' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save live-trading settings' }));
+
+      await waitFor(() =>
+        expect(setConfig).toHaveBeenCalledWith(
+          expect.objectContaining({ liveShortProbationTrades: 6, liveShortProbationSizeMultiplier: 0.25 }),
+        ),
       );
     });
 

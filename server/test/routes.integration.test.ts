@@ -2953,6 +2953,37 @@ describe('autotrade config routes (integration)', () => {
     });
   });
 
+  // The first live shorts are small (2026-09-24, the tape plan's PR 9). The
+  // window starts when shorts are switched on, and the store stamps it, so the
+  // operator's own switch-on through this route is what starts it.
+  describe('the short probation window', () => {
+    it('starts when live shorts are switched on through the route, and a body cannot set it', async () => {
+      const before = Date.now();
+      // Not a field the route accepts: the stamp is the store's.
+      const res = await put('/api/autotrade/config', { liveAllowNakedShort: true, liveShortsEnabledAt: 1 });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { liveShortsEnabledAt: number | null };
+      expect(body.liveShortsEnabledAt).toBeGreaterThanOrEqual(before);
+      // …and the dashboard's window runs from it.
+      const dash = (await getJson('/api/autotrade/dashboard')) as {
+        shortProbation: { active: boolean; multiplier: number; tradesRemaining: number };
+      };
+      expect(dash.shortProbation).toEqual(
+        expect.objectContaining({ active: true, multiplier: 0.5, tradesRemaining: 10 }),
+      );
+    });
+
+    it('a later save that leaves shorts on does not restart the window', async () => {
+      const first = (await (await put('/api/autotrade/config', { liveAllowNakedShort: true })).json()) as {
+        liveShortsEnabledAt: number;
+      };
+      const again = (await (
+        await put('/api/autotrade/config', { liveAllowNakedShort: true, liveShortProbationTrades: 5 })
+      ).json()) as { liveShortsEnabledAt: number; liveShortProbationTrades: number };
+      expect(again).toMatchObject({ liveShortsEnabledAt: first.liveShortsEnabledAt, liveShortProbationTrades: 5 });
+    });
+  });
+
   it('GET /live-caps/suggest fails closed (400) when account equity is not set', async () => {
     const res = await fetch(`${base}/api/autotrade/live-caps/suggest`);
     expect(res.status).toBe(400);

@@ -586,6 +586,8 @@ export const client = {
     liveFatFingerPct?: number;
     liveAllowNakedShort?: boolean;
     liveShortsRedTapeOnly?: boolean;
+    liveShortProbationTrades?: number;
+    liveShortProbationSizeMultiplier?: number;
     liveProbationTrades?: number;
     liveProbationSizeMultiplier?: number;
     liveScaleInEnabled?: boolean;

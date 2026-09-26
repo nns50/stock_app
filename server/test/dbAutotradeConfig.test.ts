@@ -894,3 +894,94 @@ describe('exit-geometry clock (autoTuneExitTunedAt)', () => {
     expect(setAutotradeConfig(defaultAutotradeConfig()).autoTuneExitTunedAt).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// The short probation's clock (2026-09-24, the tape plan's PR 9). Stamped
+// where every writer passes, like the exit geometry's above, so the window
+// starts however live shorts were switched on.
+// ---------------------------------------------------------------------------
+describe('short probation clock (liveShortsEnabledAt)', () => {
+  it('is null until live shorts are switched on', () => {
+    expect(getAutotradeConfig().liveShortsEnabledAt).toBeNull();
+    expect(setAutotradeConfig({ riskProfile: 'AGGRESSIVE' }).liveShortsEnabledAt).toBeNull();
+  });
+
+  it('stamps when liveAllowNakedShort goes from off to on', () => {
+    const before = Date.now();
+    expect(setAutotradeConfig({ liveAllowNakedShort: true }).liveShortsEnabledAt).toBeGreaterThanOrEqual(before);
+  });
+
+  it('keeps the stamp through a save that leaves shorts on, and through switching them off', () => {
+    const stamped = setAutotradeConfig({ liveAllowNakedShort: true }).liveShortsEnabledAt;
+    // Otherwise every settings save would restart the window, and it would
+    // never end.
+    expect(setAutotradeConfig({ liveAllowNakedShort: true }).liveShortsEnabledAt).toBe(stamped);
+    expect(setAutotradeConfig({ riskProfile: 'AGGRESSIVE' }).liveShortsEnabledAt).toBe(stamped);
+    expect(setAutotradeConfig({ liveAllowNakedShort: false }).liveShortsEnabledAt).toBe(stamped);
+  });
+
+  it('restarts the window when shorts are switched on again', () => {
+    db.prepare('INSERT INTO autotrade_config (id, config, updated_at) VALUES (1, ?, ?)').run(
+      JSON.stringify({ ...defaultAutotradeConfig(), liveShortsEnabledAt: 1_000 }),
+      Date.now(),
+    );
+    const before = Date.now();
+    expect(setAutotradeConfig({ liveAllowNakedShort: true }).liveShortsEnabledAt).toBeGreaterThanOrEqual(before);
+  });
+
+  it('lets an explicit stamp in the patch win, so a known state can be restored', () => {
+    expect(setAutotradeConfig({ liveAllowNakedShort: true, liveShortsEnabledAt: 5_000 }).liveShortsEnabledAt).toBe(
+      5_000,
+    );
+    setAutotradeConfig({ liveAllowNakedShort: false });
+    // An explicit NULL is not a state to restore while shorts are on (2026-09-24,
+    // on review): the probation and the tripwires read null as "never switched
+    // on", so shorts on with no stamp ran with neither. A patch spreading the
+    // defaults carries exactly that null.
+    const before = Date.now();
+    expect(
+      setAutotradeConfig({ ...defaultAutotradeConfig(), liveAllowNakedShort: true }).liveShortsEnabledAt,
+    ).toBeGreaterThanOrEqual(before);
+  });
+
+  it('stamps shorts that were already on with no stamp, on the next write of any field', () => {
+    // Shorts on before the stamp existed: the next save, whatever it changes,
+    // starts the window, so probation and the tripwires are never both off.
+    db.prepare('INSERT OR REPLACE INTO autotrade_config (id, config, updated_at) VALUES (1, ?, ?)').run(
+      JSON.stringify({ ...defaultAutotradeConfig(), liveAllowNakedShort: true, liveShortsEnabledAt: null }),
+      Date.now(),
+    );
+    expect(getAutotradeConfig().liveShortsEnabledAt).toBeNull();
+    const before = Date.now();
+    expect(setAutotradeConfig({ riskProfile: 'AGGRESSIVE' }).liveShortsEnabledAt).toBeGreaterThanOrEqual(before);
+    // And a stamp already there is kept: a save does not restart the window.
+    const stamp = getAutotradeConfig().liveShortsEnabledAt;
+    expect(setAutotradeConfig({ riskProfile: 'MODERATE' }).liveShortsEnabledAt).toBe(stamp);
+  });
+
+  it('stamps a switch-on whose explicit stamp the config would store as null (2026-09-25, on review)', () => {
+    // 0 is not null, so a test of the PATCH let it through; the sanitizer then
+    // stored it as null, and shorts were on with no stamp.
+    setAutotradeConfig({ liveAllowNakedShort: false });
+    const before = Date.now();
+    for (const bad of [0, -5, Number.NaN]) {
+      setAutotradeConfig({ liveAllowNakedShort: false });
+      const next = setAutotradeConfig({ liveAllowNakedShort: true, liveShortsEnabledAt: bad });
+      expect(next.liveShortsEnabledAt, String(bad)).toBeGreaterThanOrEqual(before);
+      expect(getAutotradeConfig().liveShortsEnabledAt, String(bad)).toBe(next.liveShortsEnabledAt);
+    }
+    // An explicit, valid stamp still wins on the switch-on.
+    setAutotradeConfig({ liveAllowNakedShort: false });
+    expect(setAutotradeConfig({ liveAllowNakedShort: true, liveShortsEnabledAt: 5_000 }).liveShortsEnabledAt).toBe(
+      5_000,
+    );
+  });
+
+  it('reads a stored 0 back as never', () => {
+    db.prepare('INSERT INTO autotrade_config (id, config, updated_at) VALUES (1, ?, ?)').run(
+      JSON.stringify({ ...defaultAutotradeConfig(), liveShortsEnabledAt: 0 }),
+      Date.now(),
+    );
+    expect(getAutotradeConfig().liveShortsEnabledAt).toBeNull();
+  });
+});

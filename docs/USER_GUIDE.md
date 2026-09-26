@@ -1779,7 +1779,10 @@ equally-weighted cards in the order they happened to be built:
   for each), and the row also carries that direction and the signal's ATR. With the box
   checked, **Short only on a broadly red market** (on by default) still holds a live short,
   and any add to one, to a red market reading; a short refused that way is journaled the
-  same way, with cause `red_tape_only` in place of `shorts_off`. Options
+  same way, with cause `red_tape_only` in place of `shorts_off`. A short is also refused,
+  with cause `shorts_unstamped`, while shorts are on without the date they were switched
+  on (a restored or hand-edited settings row): that date starts the first-shorts size cut
+  and the automatic switch-off's count, and the next save sets it. Options
   entries are unaffected either way — an autotrade options position is always long the
   contract, a put for a bearish read instead of a call, which is already defined-risk),
   **min relative volume** (a candidate's volume must be at least this many
@@ -2374,6 +2377,15 @@ equally-weighted cards in the order they happened to be built:
   switch reads is the shorts declined on a red market, so this keeps a live short to the
   trade that evidence covers. It changes nothing while naked shorts are off, and paper
   keeps taking shorts on every market as the control.
+  Beside it, **Short probation trades** and **Short probation size multiplier**
+  (2026-09-26; 10 and 0.5 by default) make the first live shorts small: the first 10
+  live stock shorts after naked shorts are switched on go out at half size. That is on
+  top of the **probation** below, so a short placed while both run at 0.5 goes out at a
+  quarter. The window counts real short entry orders placed since shorts were last
+  switched on, however they were switched on. A long never spends it, and switching shorts
+  off and on again starts a new one. While it runs, the card shows "Short probation
+  active: 8 of 10 shorts remaining at 0.5× size", and each placement's `live_order_placed`
+  row carries the `probationMultiplier` it took. 0 trades turns it off.
   **Suggest from
   equity** fills the first three of those from your account equity and the configured
   daily-drawdown %/max-trades-per-day (25% of equity for the order cap on the moderate
@@ -2456,7 +2468,8 @@ because the loop is the only caller that is always flat by the bell, so it is
   Needs account equity set first (Configuration, above). A **probation**
   setting cuts position size (e.g. to half) for the first N live trades after you enable
   it, on top of whatever the configured risk-per-trade % and any loss-streak step-down
-  already produce — save these before enabling. Your **paper track record** (trade count, win rate, date
+  already produce — save these before enabling. Live shorts have a window of their own
+  as well (**Short probation**, above). Your **paper track record** (trade count, win rate, date
   range) is shown for you to review first — it's informational only, not an enforced
   gate. To actually go live, type the exact phrase shown (**ENABLE LIVE TRADING**) into
   the confirmation box — a one-time, deliberate gesture, not a per-order one: once
