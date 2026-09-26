@@ -157,6 +157,7 @@ describe('getAutotradeDashboard', () => {
       moversFetchError: null,
       mlRegime: null,
       marketDirection: null,
+      marketDirectionAt: null,
     });
     const dash = getAutotradeDashboard();
     expect(dash.lastTick).not.toBeNull();

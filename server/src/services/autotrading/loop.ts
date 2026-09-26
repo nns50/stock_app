@@ -1,6 +1,6 @@
 import { config } from '../../config';
 import { getAutotradeConfig, AutotradeConfig } from '../../db/autotradeConfig';
-import { saveLastTick } from '../../db/autotradeLastTick';
+import { getLastTick, saveLastTick } from '../../db/autotradeLastTick';
 import { MlRegimeTickSummary, actionableRegime, getMarketRegime, summarizeMlRegime } from '../mlRegime';
 import { TickRegime, regimeTriggers } from './effectiveRisk';
 import { regimeAdjustedTargets } from './regimeTargets';
@@ -67,8 +67,11 @@ import {
   MARKET_DIRECTION_ACTION,
   MARKET_DIRECTION_INDEX_SYMBOL,
   MarketDirectionReading,
+  MarketDirectionSeed,
   claimDirectionChange,
+  marketDirectionWantsSeed,
   readMarketDirectionForTick,
+  seedMarketDirectionState,
 } from './marketDirection';
 import { listMacroEvents } from '../../db/macroEvents';
 import { runWebullPositionsSync } from '../../providers/webull/positions';
@@ -223,6 +226,11 @@ export interface LoopTickSummary {
    *  move and the universe's breadth, and the verdict read from them. Null on a
    *  tick that ended before the screen ran. */
   marketDirection: MarketDirectionReading | null;
+  /** When this tick's market-direction reading was taken (epoch ms), or null
+   *  with it. A restarted process seeds its hold from the last saved tick
+   *  (seedMarketDirectionState, 2026-09-26), and the hold's bound counts from
+   *  the reading, not from when the tick finished. */
+  marketDirectionAt: number | null;
 }
 
 /** Ticker-level volatility pre-filter, applied between Screen and Decision —
@@ -249,6 +257,17 @@ function filterByVolatility(
     }
     return check.ok;
   });
+}
+
+/** The market-direction reading the last saved tick carries, as the seed a
+ *  restarted process takes (seedMarketDirectionState). Null when that tick
+ *  read no market, or was saved before ticks recorded when they read it. */
+function directionSeedFromLastTick(): MarketDirectionSeed | null {
+  const last = getLastTick();
+  const reading = last?.summary.marketDirection ?? null;
+  const at = last?.summary.marketDirectionAt;
+  if (reading === null || typeof at !== 'number') return null;
+  return { reading, at, day: etToday(at) };
 }
 
 function emptySummary(skippedReason?: string): LoopTickSummary {
@@ -284,6 +303,7 @@ function emptySummary(skippedReason?: string): LoopTickSummary {
     moversFetchError: null,
     mlRegime: null,
     marketDirection: null,
+    marketDirectionAt: null,
   };
 }
 
@@ -376,6 +396,16 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
   // built, in which case there's nothing meaningful yet to persist.
   let summary: LoopTickSummary | undefined;
   try {
+    // A restarted process takes the market-direction hold and the latest
+    // reading from the tick it saved last, before the add gates below read
+    // them (2026-09-26, #148; seedMarketDirectionState). Asked once per process.
+    if (marketDirectionWantsSeed()) {
+      try {
+        seedMarketDirectionState(directionSeedFromLastTick(), etToday());
+      } catch (e) {
+        journalStageFailure('market direction seed', e);
+      }
+    }
     const exitOutcomes = await runStage('paper exits', checkPaperExits, []);
     const optionsExitOutcomes = await runStage('paper options exits', checkOptionsPaperExits, []);
     const liveReconcileOutcomes = await runStage('live order reconcile', reconcileLiveOrders, []);
@@ -514,8 +544,13 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     } catch (e) {
       journalStageFailure('daily-target check', e);
     }
+    // A macro-event blackout holds adds as it holds entries (2026-09-26, #148).
+    // Until this date it was asked only after the adds below, before the
+    // screen, so a scale-in or a second lot could go out inside the window
+    // that refuses every fresh entry. One reading per tick, for both.
+    const macroBlackout = checkMacroEventBlackout(listMacroEvents(), getAutotradeConfig().macroEventBlackoutHours);
     const liveScaleInOutcomes =
-      isLiveEntryActive(getAutotradeConfig()) && !dailyTarget.entriesHalted
+      isLiveEntryActive(getAutotradeConfig()) && !dailyTarget.entriesHalted && macroBlackout.ok
         ? await checkLiveScaleIns(liveOptionsDay())
         : [];
     // The SECOND lot of a per-lot bracketed entry (#26). Gated exactly like a
@@ -526,7 +561,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     // pieces. Runs after the scale-in so the shared add-on counter is read
     // consistently within a tick.
     const perLotSecondLotOutcomes =
-      isLiveEntryActive(getAutotradeConfig()) && !dailyTarget.entriesHalted
+      isLiveEntryActive(getAutotradeConfig()) && !dailyTarget.entriesHalted && macroBlackout.ok
         ? await runStage('per-lot second bracket', checkLivePerLotSecondLots, [])
         : [];
     // Reconcile before checking for NEW triggers: catches up on anything an
@@ -735,7 +770,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
 
     // Market-wide, same as checkSessionWindow just above — checked once per
     // cycle, never per-candidate (see executionGuards.ts's own doc comment).
-    const macroBlackout = checkMacroEventBlackout(listMacroEvents(), config.macroEventBlackoutHours);
+    // Read before the adds above, so adds and entries share one answer.
     if (!macroBlackout.ok) {
       summary.skippedReason = macroBlackout.reason;
       return summary;
@@ -943,6 +978,7 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     // scale-ins and second lots, which run before this screen.
     const freshIndexChangePct = await getMarketChangePct(MARKET_DIRECTION_INDEX_SYMBOL);
     const indexFromScreen = freshIndexChangePct === null && screenResult.indexChangePct !== null;
+    const marketDirectionAt = Date.now();
     const marketDirection = readMarketDirectionForTick(
       {
         indexSymbol: MARKET_DIRECTION_INDEX_SYMBOL,
@@ -953,10 +989,11 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
         exitIndexPct: config.marketDirectionExitIndexPct,
         exitBreadthPct: config.marketDirectionExitBreadthPct,
       },
-      Date.now(),
-      etToday(),
+      marketDirectionAt,
+      etToday(marketDirectionAt),
     );
     summary.marketDirection = marketDirection;
+    summary.marketDirectionAt = marketDirectionAt;
     if (claimDirectionChange(etToday(), marketDirection.direction, marketDirection.heldBy)) {
       logAutotradeEvent({
         stage: 'screen',

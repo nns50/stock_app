@@ -79,6 +79,7 @@ import {
   MarketDirectionReading,
   directionRefuses,
   latestMarketDirection,
+  LATEST_DIRECTION_MAX_AGE_MS,
   liveShortPermitted,
   liveShortsArmed,
   ShortRefusalCause,
@@ -5455,22 +5456,41 @@ export async function checkLiveEquityTimeExits(): Promise<LiveEquityTimeExitOutc
  * long bought into a red market. Until this date only the entry path asked.
  *
  * Both add paths run BEFORE the tick's screen (loop.ts), so they judge the
- * previous tick's held reading, about one tick old; a reading older than
- * LATEST_DIRECTION_MAX_AGE_MS is one the loop has not taken lately, and it
- * refuses nothing, the same as an `unknown` one. One function for both paths,
- * so the two cannot come to disagree about when an add is refused.
+ * previous tick's held reading, about one tick old. One function for both
+ * paths, so the two cannot come to disagree about when an add is refused.
  *
- * Returns the reading that refuses this add, or null.
+ * NO RECENT READING REFUSES THE ADD (2026-09-26, #148). Until this date a
+ * reading older than LATEST_DIRECTION_MAX_AGE_MS, or none at all, refused
+ * nothing. A fresh entry is never judged blind: it is placed after the tick's
+ * own screen, which reads the tape first. An add is placed before it, so on
+ * the first tick after the loop stopped reading (the screen failing, a stall,
+ * a restart) it went out on no reading at all. An `unknown` reading still
+ * refuses nothing: the loop looked, and the tape could not be seen, which is
+ * what a fresh entry is judged on too.
+ *
+ * Returns why this add is refused, or null.
  */
+export type AddOnDirectionRefusal =
+  { kind: 'leans_against'; reading: MarketDirectionReading; ageMs: number } | { kind: 'no_recent_reading' };
+
 function addOnDirectionRefusal(
   cfg: AutotradeConfig,
   side: 'long' | 'short',
   now: number,
-): { reading: MarketDirectionReading; ageMs: number } | null {
+): AddOnDirectionRefusal | null {
   if (!cfg.marketDirectionGateEnabled) return null;
   const latest = latestMarketDirection(now);
-  if (latest === null || !directionRefuses(latest.reading, side)) return null;
-  return latest;
+  if (latest === null) return { kind: 'no_recent_reading' };
+  if (!directionRefuses(latest.reading, side)) return null;
+  return { kind: 'leans_against', ...latest };
+}
+
+/** What a refused add says: the reading it leans against, or that there was
+ *  none recent enough to judge it by. */
+function addOnDirectionReason(refusedBy: AddOnDirectionRefusal, what: string): string {
+  return refusedBy.kind === 'no_recent_reading'
+    ? `no market-direction reading in the last ${LATEST_DIRECTION_MAX_AGE_MS / 60_000} minutes, so ${what} is not sent blind`
+    : `${refusedBy.reading.detail} — ${what} leans against it`;
 }
 
 /**
@@ -5497,9 +5517,12 @@ function addOnShortRefusal(
 /** The journal detail an add refused by the market's direction carries: the
  *  reading, whether it was held, and how old it was. */
 function addOnDirectionDetail(
-  refusedBy: { reading: MarketDirectionReading; ageMs: number },
+  refusedBy: AddOnDirectionRefusal,
   extra: Record<string, unknown>,
 ): Record<string, unknown> {
+  if (refusedBy.kind === 'no_recent_reading') {
+    return { ...extra, direction: null, noRecentReading: true, readingAgeSec: null };
+  }
   const r = refusedBy.reading;
   return {
     ...extra,
@@ -5651,8 +5674,9 @@ export async function checkLiveScaleIns(
       // refusal stands every tick the reading does.
       const refusedBy = addOnDirectionRefusal(cfg, pos.side, Date.now());
       if (refusedBy !== null) {
-        const reason = `${refusedBy.reading.detail} — a ${pos.side} add-on leans against it`;
-        if (claimOncePerDay('live_scale_in_direction_skipped', `${pos.id}|${refusedBy.reading.direction}`)) {
+        const reason = addOnDirectionReason(refusedBy, `a ${pos.side} add-on`);
+        const readKey = refusedBy.kind === 'no_recent_reading' ? 'none' : refusedBy.reading.direction;
+        if (claimOncePerDay('live_scale_in_direction_skipped', `${pos.id}|${readKey}`)) {
           logAutotradeEvent({
             symbol: pos.symbol,
             stage: 'execution',
@@ -6503,7 +6527,7 @@ export async function checkLivePerLotSecondLots(): Promise<LivePerLotOutcome[]> 
       const refusedBy = addOnDirectionRefusal(cfg, pos.side, Date.now());
       if (refusedBy !== null) {
         const reason =
-          `${refusedBy.reading.detail} — a ${pos.side} second lot leans against it; dropped, not deferred ` +
+          `${addOnDirectionReason(refusedBy, `a ${pos.side} second lot`)}; dropped, not deferred ` +
           '(a later send would go in at a different price against the entry stop)';
         logAutotradeEvent({
           symbol: pos.symbol,

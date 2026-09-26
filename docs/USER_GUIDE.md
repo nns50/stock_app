@@ -1528,6 +1528,10 @@ equally-weighted cards in the order they happened to be built:
     readable tick last supported it. After that it reads unknown. Neither hold survives
     5 minutes without a reading at all: after the loop has stopped reading the tape (a
     kill switch, a stopped loop, a macro blackout), the full bar has to be met again.
+    A restart of the app is not such a gap (since 2026-09-26): the loop saves its
+    reading with every tick, and a restarted app takes the hold from the last one,
+    under the same 5-minute bound. A reading held through a data gap is not carried
+    over, and neither is one from an earlier day.
 
   Without the band, a market sitting near the bar crossed it back and forth about ten
   times a session, and each dip to mixed let that tick's longs through. A held reading
@@ -1541,8 +1545,10 @@ equally-weighted cards in the order they happened to be built:
   scale-in or a per-lot second lot that leans against the reading is refused and
   journaled once per position a day (`live_scale_in_direction_skipped`,
   `per_lot_second_lot_direction_skipped`). Both run before the tick's screen, so they
-  judge the previous tick's reading, and one older than 10 minutes refuses nothing. A
-  refused scale-in is asked again the next tick, priced afresh. A refused second lot is
+  judge the previous tick's reading. Since 2026-09-26 an add with no reading from the
+  last 10 minutes is refused too, and its row says `noRecentReading` (until then it went
+  out blind, where a fresh entry never can). A macro-event blackout now holds both adds
+  as it holds entries. A refused scale-in is asked again the next tick, priced afresh. A refused second lot is
   dropped for good: it was sized at entry against the entry's stop, and sent later it
   would buy at a different price with none of the entry's checks run again. Both
   are off by default. Paper
@@ -1924,7 +1930,8 @@ equally-weighted cards in the order they happened to be built:
   options entries are unaffected, since an approaching print already shows up as
   elevated IV rank there instead), and **macro event blackout (hours)** (2026-07-18 —
   hard-block ALL new entries, every symbol, within this many hours either side of any
-  date-time on the **macro event blackout list** below it — unlike earnings blackout,
+  date-time on the **macro event blackout list** below it, and since 2026-09-26 the
+  live scale-ins and per-lot second lots too — unlike earnings blackout,
   this is market-wide and checked once per cycle, the same gating point as session
   buffer, not a per-candidate screener check. There's no economic-calendar data feed
   in this app, so that list is entirely hand-maintained: add your own FOMC/CPI/jobs-

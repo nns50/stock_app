@@ -1825,6 +1825,7 @@ describe('health (integration)', () => {
       moversFetchError: null,
       mlRegime: null,
       marketDirection: null,
+      marketDirectionAt: null,
     });
     const after = (await getJson('/api/health')) as { loopLastTickAgeMs: number | null };
     expect(after.loopLastTickAgeMs).toBeGreaterThanOrEqual(0);

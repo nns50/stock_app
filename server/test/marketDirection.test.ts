@@ -10,9 +10,11 @@ import {
   liveShortPermitted,
   holdMarketDirection,
   latestMarketDirection,
+  marketDirectionWantsSeed,
   readMarketDirection,
   readMarketDirectionForTick,
   resetMarketDirectionState,
+  seedMarketDirectionState,
   tapeAlignment,
   type HeldDirection,
   type MarketBreadth,
@@ -406,5 +408,84 @@ describe('the loop’s held reading — readMarketDirectionForTick and latestMar
     expect(latestMarketDirection(T0 + 130_000)).toMatchObject({ reading: { direction: 'red' }, ageMs: 130_000 });
     expect(latestMarketDirection(T0 + LATEST_DIRECTION_MAX_AGE_MS)).not.toBeNull();
     expect(latestMarketDirection(T0 + LATEST_DIRECTION_MAX_AGE_MS + 1)).toBeNull();
+  });
+});
+
+// AFTER A RESTART (2026-09-26, #148). The hold and the latest reading are
+// module state; the loop seeds both from the tick it saved last, once.
+describe('seedMarketDirectionState — the hold a restarted process takes', () => {
+  const DAY = '2026-09-24';
+  const T0 = Date.UTC(2026, 8, 24, 14, 0, 0);
+  const input = (indexChangePct: number, red: number) => ({
+    indexSymbol: 'SPY',
+    indexChangePct,
+    breadth: breadth(red, 100 - red),
+    indexPct: 0.2,
+    breadthPct: 65,
+    exitIndexPct: 0.1,
+    exitBreadthPct: 60,
+  });
+  /** A red reading as the loop saved it, then a restart. */
+  function savedRed(at: number) {
+    const reading = readMarketDirectionForTick(input(-0.35, 73), at, DAY);
+    resetMarketDirectionState();
+    return reading;
+  }
+
+  it('carries a red reading from today across the restart, under the hold’s own bound', () => {
+    const reading = savedRed(T0);
+    expect(seedMarketDirectionState({ reading, at: T0, day: DAY }, DAY)).toBe(true);
+    // The add gates see it, aged from when it was taken.
+    expect(latestMarketDirection(T0 + 60_000)).toMatchObject({ reading: { direction: 'red' }, ageMs: 60_000 });
+    // The first tick inside the band is held red, as without the restart.
+    expect(readMarketDirectionForTick(input(-0.15, 62), T0 + 130_000, DAY)).toMatchObject({
+      direction: 'red',
+      heldBy: 'hysteresis',
+    });
+  });
+
+  it('lets go past the data-gap bound, as the hold would have', () => {
+    const reading = savedRed(T0);
+    seedMarketDirectionState({ reading, at: T0, day: DAY }, DAY);
+    expect(readMarketDirectionForTick(input(-0.15, 62), T0 + DIRECTION_DATA_GAP_HOLD_MS + 1_000, DAY).direction).toBe(
+      'mixed',
+    );
+  });
+
+  it('does not seed from another day', () => {
+    const reading = savedRed(T0);
+    expect(seedMarketDirectionState({ reading, at: T0, day: DAY }, '2026-09-25')).toBe(false);
+    expect(latestMarketDirection(T0 + 60_000)).toBeNull();
+    expect(readMarketDirectionForTick(input(-0.15, 62), T0 + 130_000, DAY).direction).toBe('mixed');
+  });
+
+  it('seeds the latest reading but not the hold from a reading held through a data gap', () => {
+    const red = readMarketDirectionForTick(input(-0.35, 73), T0, DAY);
+    // An unreadable tick, held red through the gap.
+    const gapHeld = readMarketDirectionForTick({ ...input(-0.35, 73), indexChangePct: null }, T0 + 130_000, DAY);
+    expect(red.direction).toBe('red');
+    expect(gapHeld).toMatchObject({ direction: 'red', heldBy: 'data_gap' });
+    resetMarketDirectionState();
+
+    expect(seedMarketDirectionState({ reading: gapHeld, at: T0 + 130_000, day: DAY }, DAY)).toBe(true);
+    expect(latestMarketDirection(T0 + 190_000)).toMatchObject({ reading: { heldBy: 'data_gap' } });
+    // No hold carried: the band alone does not keep it red.
+    expect(readMarketDirectionForTick(input(-0.15, 62), T0 + 260_000, DAY).direction).toBe('mixed');
+  });
+
+  it('asks once per process, and never over a reading of its own', () => {
+    const reading = savedRed(T0);
+    expect(marketDirectionWantsSeed()).toBe(true);
+    expect(seedMarketDirectionState(null, DAY)).toBe(false);
+    // Asked, even though there was nothing to take: not asked again.
+    expect(marketDirectionWantsSeed()).toBe(false);
+    expect(seedMarketDirectionState({ reading, at: T0, day: DAY }, DAY)).toBe(false);
+    expect(latestMarketDirection(T0 + 60_000)).toBeNull();
+
+    resetMarketDirectionState();
+    readMarketDirectionForTick(input(0.05, 50), T0 + 10_000, DAY);
+    expect(marketDirectionWantsSeed()).toBe(false);
+    expect(seedMarketDirectionState({ reading, at: T0, day: DAY }, DAY)).toBe(false);
+    expect(latestMarketDirection(T0 + 20_000)).toMatchObject({ reading: { direction: 'mixed' } });
   });
 });
