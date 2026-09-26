@@ -2005,7 +2005,11 @@ equally-weighted cards in the order they happened to be built:
   automatically, since the two are different answers to the same question. It
   costs a second entry order per trade (halving the daily order allowance for
   entries) and leaves the position smaller than intended if the second lot never
-  fills. Leave it off until a first live entry has been watched. A separate
+  fills. Since 2026-09-26 the second lot also has a deadline: one not sent within 10
+  minutes of the entry, whatever held it back (a daily halt, the kill switch, a macro
+  blackout, a banked day), is dropped for good and journaled once
+  (`per_lot_second_lot_expired`). Sent later, it would buy at a different price against
+  the entry's stop. Leave it off until a first live entry has been watched. A separate
   **Only scratch when the slot is scarce** toggle (2026-09-09,
   default off) narrows it to the case its own justification describes: with it on,
   a stagnant position is scratched only when the book is at **Max concurrent

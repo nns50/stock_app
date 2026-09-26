@@ -98,7 +98,13 @@ import {
   TickRegime,
 } from './effectiveRisk';
 import { evaluateStagnation, type SlotPressure } from './stagnationExit';
-import { classifySecondBracketRefusal, lotTargetPrice, splitEntryForPerLot } from './perLotBrackets';
+import {
+  classifySecondBracketRefusal,
+  lotTargetPrice,
+  SECOND_LOT_MAX_DELAY_MS,
+  secondLotExpired,
+  splitEntryForPerLot,
+} from './perLotBrackets';
 import { claimOncePerDay } from './oncePerDayEvents';
 import {
   FilledBracketLegCandidate,
@@ -6367,11 +6373,13 @@ export interface LivePerLotOutcome {
 }
 
 /** The second lot's plan, as journaled at entry. Null when this position never
- *  had one, or its event has aged out of the scan window. */
+ *  had one, or its event has aged out of the scan window. `plannedAt` is when
+ *  the entry journaled it, which starts the lot's deadline. */
 function perLotPlanFor(entryIntentId: number | null): {
   quantity: number;
   targetPrice: number;
   targetR: number;
+  plannedAt: number;
 } | null {
   if (entryIntentId === null) return null;
   for (const e of listAutotradeEvents({ stage: 'execution', actions: ['per_lot_entry_planned'], limit: 400 })) {
@@ -6385,7 +6393,7 @@ function perLotPlanFor(entryIntentId: number | null): {
       const t = d.second?.targetPrice;
       const r = d.second?.targetR;
       if (typeof q === 'number' && q >= 1 && typeof t === 'number' && t > 0 && typeof r === 'number') {
-        return { quantity: q, targetPrice: t, targetR: r };
+        return { quantity: q, targetPrice: t, targetR: r, plannedAt: e.createdAt };
       }
       return null;
     } catch {
@@ -6471,6 +6479,45 @@ export async function checkLivePerLotSecondLots(): Promise<LivePerLotOutcome[]> 
       }
       const plan = perLotPlanFor(entryIntentId);
       if (!plan) continue;
+      // A LATE SECOND LOT IS DROPPED (2026-09-26; perLotBrackets.ts,
+      // SECOND_LOT_MAX_DELAY_MS). The direction gate below drops a lot it
+      // refuses; a daily halt (the guardrails further down), the kill switch, a
+      // macro blackout and a banked day hold one back too, and the last three
+      // keep this function from running at all. Whatever held it, a lot past
+      // its deadline would go in at that moment's price against the entry's
+      // stop, so it is dropped before any other check: one row, never sent.
+      const now = Date.now();
+      if (secondLotExpired(plan.plannedAt, now)) {
+        if (claimOncePerDay('per_lot_second_lot_expired', String(pos.id))) {
+          const ageMinutes = Math.round((now - plan.plannedAt) / 60_000);
+          const reason =
+            `planned ${ageMinutes} min ago, past its ${SECOND_LOT_MAX_DELAY_MS / 60_000}-minute deadline; ` +
+            'dropped, not deferred (a later send would go in at a different price against the entry stop)';
+          logAutotradeEvent({
+            symbol: pos.symbol,
+            stage: 'execution',
+            action: 'per_lot_second_lot_expired',
+            detail: {
+              positionId: pos.id,
+              side: pos.side,
+              quantity: plan.quantity,
+              plannedAt: plan.plannedAt,
+              ageMinutes,
+              deadlineMinutes: SECOND_LOT_MAX_DELAY_MS / 60_000,
+              dropped: true,
+              reason,
+            },
+            riskProfile: cfg.riskProfile,
+          });
+          outcomes.push({
+            symbol: pos.symbol,
+            positionId: pos.id,
+            requested: false,
+            reason: `Second lot expired: ${reason}`,
+          });
+        }
+        continue;
+      }
       // Both lots share ONE stop — the position has a single risk level, and two
       // stops would be two ideas about where the trade is wrong. The FROZEN
       // entry stop, not the ratcheted one: the second lot is part of the

@@ -314,6 +314,7 @@ describe('journal action reachability', () => {
       per_lot_entry_planned: 'the entry planned and placed, so the attribution pairs it',
       per_lot_second_lot_blocked: 'the second lot of an entry already taken',
       per_lot_second_lot_direction_skipped: 'the second lot of an entry already taken',
+      per_lot_second_lot_expired: 'the second lot of an entry already taken',
       per_lot_second_lot_short_skipped: 'the second lot of an entry already taken',
       per_lot_second_lot_failed: 'the second lot of an entry already taken',
       per_lot_second_lot_placed: 'the second lot of an entry already taken',

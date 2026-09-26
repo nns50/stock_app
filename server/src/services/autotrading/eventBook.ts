@@ -74,6 +74,8 @@ export const LIVE_ACTIONS = new Set([
   'per_lot_entry_planned',
   'per_lot_second_lot_blocked',
   'per_lot_second_lot_direction_skipped',
+  // 2026-09-26: a second lot not sent by its deadline, whatever held it.
+  'per_lot_second_lot_expired',
   'per_lot_second_lot_failed',
   'per_lot_second_lot_placed',
   // 2026-09-24: a short's second lot refused by the shorts switch or the

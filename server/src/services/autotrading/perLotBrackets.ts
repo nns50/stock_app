@@ -254,6 +254,34 @@ export function splitEntryForPerLot(input: LotPlanInput): EntrySplit | null {
   return { first, second };
 }
 
+// ---------------------------------------------------------------------------
+// A SECOND LOT HAS A DEADLINE (2026-09-26).
+//
+// Lot 2 is part of the ENTRY's plan: its quantity was sized at the entry's
+// price against the entry's stop, and it is meant to follow the first lot
+// within a tick or two. The market-direction gate already drops a lot it
+// refuses ("dropped, not deferred", liveExecute.ts), but it is not the only
+// thing that holds one back. A daily halt refuses it at the guardrails, and
+// the kill switch, a macro blackout or a banked day keep the check from
+// running at all. Sent when any of those lifts, the lot would buy at that
+// moment's price against the same stop, with none of the entry's other checks
+// run again: long 34 @ 100 with a 98 stop, a 17-share lot sent at 103.5 risks
+// $93.50 where the sizer budgeted $34. So, whatever held it, a lot not sent
+// by its deadline is dropped.
+// ---------------------------------------------------------------------------
+
+/** How long after its entry was planned a second lot may still be sent: about
+ *  four loop ticks (~2m10s each). Booking the first lot's fill takes one or
+ *  two; the rest is room for a failed quote or an order still merging. */
+export const SECOND_LOT_MAX_DELAY_MS = 10 * 60_000;
+
+/** Whether a second lot planned at `plannedAt` (epoch ms) is past its deadline
+ *  at `now`. A plan that cannot be dated is past it: a lot is never sent on a
+ *  plan of unknown age. */
+export function secondLotExpired(plannedAt: number, now: number): boolean {
+  return !Number.isFinite(plannedAt) || now - plannedAt > SECOND_LOT_MAX_DELAY_MS;
+}
+
 /**
  * The price this lot takes profit at, `targetR` R from entry.
  *

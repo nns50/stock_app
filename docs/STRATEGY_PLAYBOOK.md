@@ -2102,9 +2102,13 @@ have it cancel a bracket whose near target is already resting. The costs are an
 extra entry order per signal (so the 20/day order cap is effectively 10 entries)
 and a window between the two lots where the position is smaller than intended —
 if the second lot never fills, it stays that way, capped at the near target.
-That is why the larger lot goes first. Leave it off until a first live entry has
-been watched: a 2026-09-09 probe proved the broker accepts two bracket groups on
-one symbol, but not yet that both sets of exits sit happily over one holding.
+That is why the larger lot goes first. Since 2026-09-26 the same is true of a
+second lot that could not go out within 10 minutes of the entry (a halt, the kill
+switch, a blackout or a banked day held it): it is dropped, because sent late it
+would buy at a price its size was never set for, against the entry's stop. Leave
+it off until a first live entry has been watched: a 2026-09-09 probe proved the
+broker accepts two bracket groups on one symbol, but not yet that both sets of
+exits sit happily over one holding.
 
 Two exceptions worth being deliberate about. A **stagnation** scratch does not
 transfer: a stock that goes nowhere is holding a slot for free, while a long option that
