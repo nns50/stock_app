@@ -2613,7 +2613,10 @@ because the loop is the only caller that is always flat by the bell, so it is
   app is already closing with its own order is not asked about, and a scale-out that has
   already sold does not count as that. The four-minute wait and the correction stay for
   anything this does not settle: a position the app did not place, a bracket placed before
-  that date, or a close made by hand.
+  that date, or a close made by hand. A check that cannot read Webull's row for the name
+  (Webull holds something there the app cannot parse) is not "none of the shares": since
+  2026-09-26 the earlier reading is forgotten rather than kept, so the stop ratchet keeps
+  treating the position as held and nothing is looked up for it.
   **A leg that sells part of a position is booked once** (since 2026-09-26). With per-lot
   entries or scale-ins on (both off by default), one position can rest under more than one
   bracket, and a leg can fill for only its own bracket's shares. The entry order stays on

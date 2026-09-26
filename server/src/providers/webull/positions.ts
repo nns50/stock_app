@@ -19,6 +19,7 @@ import {
   bumpMissStreak,
   clearMissStreak,
   clearMissStreaksWithoutLots,
+  forgetMissStreakBrokerQty,
   missStreakStartedAt,
   MISS_CONFIRM_THRESHOLD,
 } from '../../db/webullMissStreak';
@@ -691,7 +692,12 @@ async function closePositionsFromPreview(
     const brokerQty = liveQtyByKey.get(key) ?? 0;
     const gap = journalQty - brokerQty;
     if (gap > 1e-9) {
-      if (unmappedSymbols.has(lots[0].symbol.toUpperCase())) continue;
+      if (unmappedSymbols.has(lots[0].symbol.toUpperCase())) {
+        // Frozen: the count stands, but the shares the last miss recorded are
+        // no longer known (forgetMissStreakBrokerQty).
+        forgetMissStreakBrokerQty(preview.accountId, key);
+        continue;
+      }
       // Missing (fully or partially) from THIS preview — require it to stay
       // missing on MISS_CONFIRM_THRESHOLD consecutive syncs, with no
       // fully-confirmed observation in between, before trusting it enough to

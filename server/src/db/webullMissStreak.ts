@@ -30,12 +30,6 @@ export function bumpMissStreak(accountId: string, contractKey: string, brokerQty
   return row?.streak ?? 0;
 }
 
-/**
- * When the current run of misses for (accountId, contractKey) began, or null
- * when the contract is not missing. A COUNT of misses is not a duration: the
- * loop's sync and the background scheduler both bump the same row, so in
- * production a streak of 4 has been as little as two minutes (COIN, 2026-09-21).
- */
 /** The current run of consecutive syncs that did not find `contractKey` at
  *  the broker; 0 when it was last seen, or never missed. Read-only. */
 export function missStreakOf(accountId: string, contractKey: string): number {
@@ -58,6 +52,27 @@ export function missStreakBrokerQty(accountId: string, contractKey: string): num
   return row?.brokerQty ?? null;
 }
 
+/**
+ * A sync that froze this contract's streak (2026-09-26) could not read the
+ * broker's row for it, so how many shares the broker holds is no longer known.
+ * The last miss's figure is forgotten rather than carried: a 0 kept from before
+ * the freeze reads as "the shares are gone" (sharesGoneAtBroker) while the
+ * broker holds something the sync could not map, and the stop ratchet then
+ * skips a position whose shares may still be there. The count is left alone.
+ */
+export function forgetMissStreakBrokerQty(accountId: string, contractKey: string): void {
+  db.prepare('UPDATE webull_miss_streak SET broker_qty = NULL WHERE account_id = ? AND contract_key = ?').run(
+    accountId,
+    contractKey,
+  );
+}
+
+/**
+ * When the current run of misses for (accountId, contractKey) began, or null
+ * when the contract is not missing. A COUNT of misses is not a duration: the
+ * loop's sync and the background scheduler both bump the same row, so in
+ * production a streak of 4 has been as little as two minutes (COIN, 2026-09-21).
+ */
 export function missStreakStartedAt(accountId: string, contractKey: string): number | null {
   const row = db
     .prepare(
