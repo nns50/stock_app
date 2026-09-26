@@ -531,7 +531,8 @@ What differs from the live reading, and is stated in the report:
 - **Breadth from Polygon's bars of the whole universe**, where the loop reads each name's
   live quote. A 120-name sample agreed with the whole universe at 92% of slots, and read
   red more often (25% of slots against 21%).
-- **Regular-session bars only.** Polygon's minute bars include pre- and post-market.
+- **Regular-session bars only**, to each day's own close: 16:00, or 13:00 on a half-day
+  (2026-11-27, 2026-12-24). Polygon's minute bars include pre- and post-market.
 - **The score reads the bars that had closed by the slot's end.** Its last price is the
   slot's close, where the loop reads the quote's last trade, and its VWAP leaves out the
   bar still forming. Breadth's 30-minute change is read from the slot exactly 30 minutes

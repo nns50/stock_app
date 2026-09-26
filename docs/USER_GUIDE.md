@@ -952,8 +952,9 @@ tabs of one **Analytics** button (top right) — pick a tab, the report loads on
   and set realistic targets. A trade opened and closed in the **same session** is measured
   on 5-minute bars narrowed to the minutes you actually held; trades held longer use daily
   bars. A past session is read as its **regular hours, 09:30–16:00 ET, whole**, from the
-  open. That includes days older than the ~15 sessions of 5-minute history Webull
-  serves, which come from Yahoo. Until 2026-09-24 such a day was read from 10:00 to 19:55
+  open; a half-day (the day after Thanksgiving, Christmas Eve) ends at its 13:00 close.
+  That includes days older than the ~15 sessions of 5-minute history Webull serves,
+  which come from Yahoo. Until 2026-09-24 such a day was read from 10:00 to 19:55
   ET, and the oldest day Webull still reached was read from wherever its history ran out.
   The declined-entry shadow and the exit replay read the same bars. Intraday history is
   short, so an older same-session trade may fall back to daily —

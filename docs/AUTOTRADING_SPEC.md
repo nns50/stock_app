@@ -16904,3 +16904,50 @@ instead of unknown; an unknown quantity read as gone; the freeze clearing the st
 
 Also moved `missStreakStartedAt`'s doc comment back onto its own function; it had drifted
 above `missStreakOf`.
+
+## 2026-09-26 (fifteenth) — a half-day's bars end at 13:00
+
+**Why.** Every reader of past intraday bars applies one test, `isRegularSessionMinute`
+(`util/marketDate.ts`): Yahoo's candles and the tape rebuild's Polygon bars. Its close
+was a fixed 16:00. The live paths already knew better: the flatten, the entry cutoffs,
+the stagnation clock and the market-hours check read `sessionCloseMinute`, which ends a
+half-day at 13:00 (`marketCalendar.ts`, since 2026-09-05). The bar readers did not.
+
+On a half-day (2026-11-27, 2026-12-24) Polygon's minute aggregates carry a post-market
+from 13:00, and the test kept 13:00–15:55 as session bars. `npm run backfill:tape` would
+then:
+- take readings from the post-market, 36 slots a half-day that the loop never reads, and
+  count them in the band mix and the flips;
+- replay a short signal still open at 13:00 on through thin after-hours prints, to a
+  15:55 time exit, or to a stop the session never reached.
+
+The production replays read Webull's regular-session bars, or Yahoo's asked with pre-
+and post-market off, so neither should carry a post-market; no half-day has been read
+from either yet. The one known exception is the zero-volume marker Yahoo appends at the
+latest trade, which fell inside the old bound only when the day asked for was today. The
+new bound drops it there too.
+
+**The fix.** The test takes the bar's ET day: `isRegularSessionMinute(day, minute)`. The
+close comes from the calendar, `sessionCloseMinuteOn(day)`, which `sessionCloseMinute`
+now calls too, so the live clock and the bar readers read one table. The day is required,
+so no caller can fall back to 16:00, and `REGULAR_SESSION_CLOSE_MINUTE` is gone.
+
+**What it changes.** Nothing until 2026-11-27: there has been no half-day since the bars
+were first read. After it, a backfill run over that day reads 42 slots, not 78, and
+books a short still open at the close at 12:55's price.
+
+**Tests.**
+- `marketCalendar.test.ts`: the by-day close, and the session test on a half-day and on
+  the ordinary day before it.
+- `historicalTape.test.ts`: a half-day's readings stop at 13:00 and a green post-market
+  moves none of them; the Polygon source serves 09:30–12:55.
+- `historicalTapeData.test.ts`, at the consumer: `runTapeBackfill` over 2026-11-27 reads
+  42 slots, never labels the tape green, and replays a declined short to +0.2R at 12:55.
+  Through the post-market's 52 open it would have been stopped at −2.6R.
+- `yahooProvider.test.ts`: a half-day that comes back with pre- and post-market ends at
+  12:55.
+
+Seven mutations, all caught: the test ignoring the day; the calendar ignoring early
+closes by day; `sessionCloseMinute` no longer reading that table; and an ordinary day's
+close at each of the four call sites (Yahoo, the rebuild's per-day buckets, the Polygon
+source, `regularSessionBars`).

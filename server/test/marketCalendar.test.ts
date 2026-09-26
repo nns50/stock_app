@@ -10,8 +10,10 @@ import {
   isTradingSession,
   previousTradingSession,
   sessionCloseMinute,
+  sessionCloseMinuteOn,
   sessionDatesEndingAt,
 } from '../src/services/trading/marketCalendar';
+import { isRegularSessionMinute } from '../src/util/marketDate';
 import { isUsEquityMarketOpen } from '../src/services/trading/marketHours';
 import { minutesUntilClose, evaluateEndOfDayFlatten } from '../src/services/autotrading/endOfDayFlatten';
 import { checkSessionWindow } from '../src/services/autotrading/executionGuards';
@@ -205,6 +207,35 @@ describe('sessionCloseMinute', () => {
     expect(sessionCloseMinute(et(2026, 9, 8, 11, 0))).toBe(16 * 60);
     expect(sessionCloseMinute(Date.parse('2026-11-27T11:00:00-05:00'))).toBe(EARLY_CLOSE_MINUTES);
     expect(sessionCloseMinute(Date.parse('2026-12-24T11:00:00-05:00'))).toBe(EARLY_CLOSE_MINUTES);
+  });
+
+  it('answers by ET day from the same table (sessionCloseMinuteOn)', () => {
+    expect(sessionCloseMinuteOn('2026-11-25')).toBe(16 * 60);
+    expect(sessionCloseMinuteOn('2026-11-27')).toBe(EARLY_CLOSE_MINUTES);
+    expect(sessionCloseMinuteOn('2026-12-24')).toBe(EARLY_CLOSE_MINUTES);
+    for (const d of EARLY_CLOSES) {
+      expect(sessionCloseMinuteOn(d)).toBe(sessionCloseMinute(Date.parse(`${d}T11:00:00-05:00`)));
+    }
+  });
+});
+
+describe("isRegularSessionMinute — a bar is read against its own day's close (2026-09-26)", () => {
+  // The one test every reader of past intraday bars applies (Yahoo's candles,
+  // the tape rebuild's Polygon bars). Its close was a fixed 16:00, so on a
+  // half-day Polygon's post-market bars from 13:00 read as the session.
+  it('ends a half-day at 13:00', () => {
+    expect(isRegularSessionMinute('2026-11-27', 12 * 60 + 55)).toBe(true);
+    expect(isRegularSessionMinute('2026-11-27', 13 * 60)).toBe(false);
+    expect(isRegularSessionMinute('2026-11-27', 15 * 60 + 55)).toBe(false);
+    expect(isRegularSessionMinute('2026-12-24', 13 * 60 + 30)).toBe(false);
+  });
+
+  it('keeps an ordinary day at 09:30-16:00', () => {
+    expect(isRegularSessionMinute('2026-11-25', 9 * 60 + 25)).toBe(false);
+    expect(isRegularSessionMinute('2026-11-25', 9 * 60 + 30)).toBe(true);
+    expect(isRegularSessionMinute('2026-11-25', 13 * 60)).toBe(true);
+    expect(isRegularSessionMinute('2026-11-25', 15 * 60 + 55)).toBe(true);
+    expect(isRegularSessionMinute('2026-11-25', 16 * 60)).toBe(false);
   });
 });
 

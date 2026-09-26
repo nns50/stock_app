@@ -297,7 +297,7 @@ export class YahooProvider implements MarketDataProvider {
           const { day, minute } = etDayAndMinute(c.time);
           if (query?.start != null && day < query.start) return false;
           if (query?.end != null && day > query.end) return false;
-          return isRegularSessionMinute(minute);
+          return isRegularSessionMinute(day, minute);
         })
       : candles;
     // An explicit window comes back whole unless a limit was asked for too.
