@@ -46,8 +46,21 @@ const mockBatch = vi.mocked(webullOrderStatusBatch);
 const mockEquityFills = vi.mocked(listBrokerEquityFills);
 const origWebull = { ...config.webull };
 
+/** A fixed mid-session instant: Thursday 2026-09-24, 11:00 ET. */
+const PINNED_NOW = Date.parse('2026-09-24T15:00:00Z');
+
 beforeAll(() => initDb());
 beforeEach(() => {
+  // THE CLOCK IS PINNED (2026-09-26). These cases read "today" and "now" off the
+  // wall clock: a hand sale filled a minute before now, an estimate dated
+  // today, a pass fifteen minutes later. So they failed on the clock rather than
+  // the code. In the first minute after ET midnight, the sale sat on the day
+  // before its position's entry (five cases). Within about twenty minutes before
+  // midnight, a pass minutes later landed on the next day (up to four more). A
+  // local run hit the first at 2026-09-26 00:00 ET. The correction's own day
+  // logic is right; only the fixtures moved with the wall clock.
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(PINNED_NOW);
   db.exec(
     `DELETE FROM position_exits; DELETE FROM positions; DELETE FROM autotrade_live_orders;
      DELETE FROM order_intents; DELETE FROM autotrade_events; DELETE FROM webull_miss_streak;
@@ -229,12 +242,11 @@ describe('correctEstimatedStockExits', () => {
       async (positions) => new Map(positions.map((p) => [p.id, { price: 205.0451, stale: false, asOf: 0 }])),
     );
     const t0 = Date.now();
-    vi.useFakeTimers({ toFake: ['Date'] });
     for (let i = 0; i < 4; i++) {
       vi.setSystemTime(t0 + (i * BRACKET_RECONCILE_GRACE_MS) / 3);
       await syncClosedWebullPositions('ACC1');
     }
-    vi.useRealTimers();
+    // The rest reads on from the last sync's clock, not the wall clock.
     const booked = getPosition(pos.id)!;
     expect(booked.status).toBe('closed');
     expect(booked.exits[0]).toMatchObject({ exitPrice: 205.0451, exitReason: 'manual' });

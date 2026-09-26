@@ -88,6 +88,13 @@ Guidelines:
   `vi.mock` factories run: adding `screen.ts`, `services/events.ts` and `splitCheck.ts`
   there failed **321 tests** across files that had nothing to do with the caches being
   reset. A file that warms a heavy cache resets it in its own `beforeEach` instead.
+- **A test that reads the wall clock fails at the wrong hour** (2026-09-26).
+  `stockExitCorrection.test.ts` put a hand sale a minute before `Date.now()` on a position
+  entered `etToday()`, so in the first minute after ET midnight the sale sat on the day
+  before the entry and five cases failed on the clock, not the code. A test that reasons
+  about "today" or "now" pins `Date` to a fixed mid-session instant
+  (`vi.useFakeTimers({ toFake: ['Date'] })` + `vi.setSystemTime`). The whole server suite
+  run under `faketime` at 00:00:30 and 23:52 ET found no other file.
 - Demo data: `npm run seed` (idempotent; `--force` to add anyway).
 - Run locally: `npm run dev` → API `:3001` + web `:5173`.
 
