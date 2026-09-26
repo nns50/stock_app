@@ -8,6 +8,9 @@ import { isAfterSessionClose } from '../trading/marketHours';
 import type { ShortShadowEvidence } from './gatedSwitches';
 import { buildShortShadowRecord, ShortShadowRecord, SkippedShort } from './shortShadowRecord';
 import { shadowFillInputs } from './declinedEntryShadowData';
+import type { MarketDirection } from './marketDirection';
+
+const MARKET_DIRECTIONS: ReadonlySet<string> = new Set(['red', 'green', 'mixed', 'unknown']);
 
 // ---------------------------------------------------------------------------
 // The DB half of the short shadow record (2026-09-19): load the declined
@@ -62,6 +65,8 @@ export function loadSkippedShorts(since: number = SHORT_SHADOW_SINCE_MS): {
           entry?: number;
           stop?: number;
           liveMinSignalScore?: number;
+          atr?: unknown;
+          direction?: unknown;
         };
         if (typeof d.score !== 'number' || typeof d.entry !== 'number' || typeof d.stop !== 'number') return null;
         return {
@@ -74,6 +79,12 @@ export function loadSkippedShorts(since: number = SHORT_SHADOW_SINCE_MS): {
           // actually declined it. Without this the report silently re-scores
           // its own history every time liveMinSignalScore moves.
           ...(typeof d.liveMinSignalScore === 'number' ? { floorAtSkip: d.liveMinSignalScore } : {}),
+          // From 2026-09-24: the signal's ATR, for the ATR reachability gate
+          // the replay applies, and the tape the row was declined on.
+          ...(typeof d.atr === 'number' && d.atr > 0 ? { atr: d.atr } : {}),
+          ...(typeof d.direction === 'string' && MARKET_DIRECTIONS.has(d.direction)
+            ? { directionAtSkip: d.direction as MarketDirection }
+            : {}),
         };
       } catch {
         return null;
@@ -103,6 +114,8 @@ export function shortShadowEvidenceOf(row: ShortShadowRecordRow | null): ShortSh
     avgR: r.avgR,
     winRatePct: r.winRatePct,
     gate: r.gate,
+    // A record persisted before 2026-09-24 has no tape split.
+    redTapeGate: r.redTapeGate ?? null,
   };
 }
 

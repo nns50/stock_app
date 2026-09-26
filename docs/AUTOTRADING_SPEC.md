@@ -15800,3 +15800,62 @@ opening equity, `GET /api/autotrade/events?actions=day_protective_armed` returns
 for that day. A session with such a close and no row means the sweep did not run, unless
 the P&L crossed the floor only after the session's last tick (a close-out in the final
 minutes), when the sweep had no regular-session tick left and nothing open to protect.
+
+## 2026-09-24 (seventh) — declined shorts are read against the tape
+
+The tape plan's PR 4. The red-tape bar (rule B) reads the shorts the live book declined on a
+red tape, and the record could not produce that number.
+
+**The row.** The shorts-off skip journaled `live_short_skipped` once per symbol per day. A
+short first declined on a mixed tape at 09:37 was never written again when the tape turned
+red at 10:15, so the red-tape short was missing from the record. The row is now written once
+per symbol **per tape** per day, keyed on the reading the gate acts on (held, under the
+hysteresis). It also carries:
+- `side: 'short'`;
+- `direction`, `rawDirection` and `heldBy`, the reading as the entry path saw it;
+- `atr`, the signal's ATR, which the next gate reads.
+
+Nothing about what is placed changes. There are more rows: a name can now have one per tape
+per day.
+
+**The record** (`shortShadowRecord.ts`) gains two fields.
+- **`byTape`.** The declined shorts are replayed once per tape (red, mixed, green,
+  unlabeled). Each set keeps its own first row per symbol-day, so `red` replays the 10:15 row
+  above, not the 09:37 one. A row's tape is its own stamp, else the loop's journaled reading
+  in force at that moment. Both are live readings; a backfilled tape never labels a row here.
+  Rows from before the loop read the market (2026-09-24) are `unlabeled`. The direction gate
+  is not replayed inside the split, since the tape is what is being read. The split uses the
+  same function as the tape backfill (`replayByTape` in `declinedEntryShadow.ts`), so the
+  two tables are one computation on different labels.
+- **`redTapeGate`.** The bar against `byTape.red`: at least 20 trades, an average of at
+  least +0.15R, a win rate of at least 50%, and at least +0.10R above the shorts declined on
+  mixed and green tapes, pooled (`SHORT_RED_TAPE_GATE`). An unlabeled trade is not an "other
+  tape". With no other-tape trade the edge is null and fails. Each comparison allows 1e-9 of
+  float slack, since a mean of exactly +0.15R can sum to 0.1499….
+
+The old bar (task #21's 30 / +0.1R / 50%) and what the `shorts` switch proposes on are
+unchanged here; PR 8 moves the switch to the red-tape bar. Its reading now ends with the
+red-tape distance, for example "red tape: 3 of 20 shorts, avg −0.03R (bar +0.15R), …".
+
+**The ATR gate (F7's forward fix).** The live path applies the ATR reachability gate right
+after the shorts-off skip. So a short that the switch would admit meets that gate next, and
+the record never applied it. The replay now does, through the live path's own function
+(`atrReachRefuses`) at the book's `maxRiskAtrFraction`, on rows that carry an ATR. It counts
+`refused_by_atr_reach`. A trade replayed without an ATR (every row written before this date)
+is counted in `atrReach.unchecked`, never guessed. At a fraction of 0, the gate's off
+setting, nothing is replayed and `atrReach` is null.
+
+**Tests (each mutation-checked; 15 mutations, all caught):**
+- **Writer.** A mixed tick, a red tick and a second red tick write two rows, each with its
+  tape, ATR and side (catches the old once-a-day key and a dropped ATR).
+- **Loader.** It reads `direction` and `atr` and drops values it cannot use.
+- **The persisted record.** On the record the switch reads, the red row replays from 10:15
+  and wins, while the day's first row loses. A row with no stamp takes the journal's reading;
+  a row from a day with none is unlabeled. The switch's evidence carries the same bar.
+- **The split.** It reads a green-tape short even with the gate on, which the whole record's
+  gate replay excludes.
+- **The ATR gate.** A stop past 0.7 × ATR is refused, a row without an ATR is counted, and a
+  fraction of 0 replays nothing.
+- **The bar.** It passes only when all four legs pass; it fails on each leg alone and without
+  an other-tape trade; it holds on float sums that land one bit under.
+- **The reading.** The switch's reading carries the red-tape clause.

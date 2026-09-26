@@ -6,7 +6,10 @@ import {
   buildShortShadowRecord,
   dedupeBySymbolDay,
   liveExitRules,
+  redTapeGateOf,
   SHORT_ENABLE_GATE,
+  SHORT_RED_TAPE_GATE,
+  type ShadowTrade,
   type SkippedShort,
 } from '../src/services/autotrading/shortShadowRecord';
 
@@ -318,5 +321,136 @@ describe('buildShortShadowRecord', () => {
     expect(out.gate.passesWinRate).toBe(true);
     expect(out.gate.passesN).toBe(false);
     expect(out.gate.passes).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// THE ATR GATE AND THE TAPE (2026-09-24, the tape plan's PR 4).
+// ---------------------------------------------------------------------------
+describe('buildShortShadowRecord — the ATR reachability gate the live path applies next', () => {
+  // A short at 100 with its stop at 102: 1R is $2. At the book's 0.7, an ATR
+  // under $2.86 makes that stop unreachable in a session.
+  const win = { KLAC: [ohlc(0, 100, 100, 95.5, 96)], AMD: [ohlc(0, 100, 100, 95.5, 96)] };
+
+  it('refuses a row whose stop is past the fraction of its own ATR, and counts one that carries none', async () => {
+    const out = await buildShortShadowRecord(
+      sourceOf(win),
+      [shortAt100({ atr: 2.5 }), shortAt100({ symbol: 'AMD' })],
+      cfg({ maxRiskAtrFraction: 0.7 }),
+      EXACT,
+    );
+    expect(out.excluded.refused_by_atr_reach).toBe(1);
+    expect(out.trades.map((t) => t.symbol)).toEqual(['AMD']);
+    expect(out.atrReach).toEqual({ maxRiskAtrFraction: 0.7, refused: 1, unchecked: 1 });
+  });
+
+  it('keeps a row whose stop the ATR can reach, and replays nothing of the gate while it is off', async () => {
+    const reachable = await buildShortShadowRecord(
+      sourceOf(win),
+      [shortAt100({ atr: 3 })],
+      cfg({ maxRiskAtrFraction: 0.7 }),
+      EXACT,
+    );
+    expect(reachable.n).toBe(1);
+    expect(reachable.atrReach).toEqual({ maxRiskAtrFraction: 0.7, refused: 0, unchecked: 0 });
+
+    const off = await buildShortShadowRecord(
+      sourceOf(win),
+      [shortAt100({ atr: 2.5 })],
+      cfg({ maxRiskAtrFraction: 0 }),
+      EXACT,
+    );
+    expect(off.n).toBe(1);
+    expect(off.atrReach).toBeNull();
+  });
+});
+
+describe('buildShortShadowRecord — by tape', () => {
+  const winning = [ohlc(0, 100, 100, 95.5, 96)];
+
+  it('puts each row on the tape it was declined on, and reads every tape even with the gate on', async () => {
+    const out = await buildShortShadowRecord(
+      sourceOf({ KLAC: winning, AMD: winning, NVDA: winning, TSLA: winning }),
+      [
+        shortAt100({ directionAtSkip: 'red' }),
+        shortAt100({ symbol: 'AMD', at: T0 - 1, directionAtSkip: 'green' }),
+        shortAt100({ symbol: 'NVDA', directionAtSkip: 'unknown' }),
+        shortAt100({ symbol: 'TSLA' }),
+      ],
+      cfg({ marketDirectionGateEnabled: true }),
+      // The journal agrees AMD's moment was green, so the gate replay on the
+      // whole record refuses it; the tape split must not.
+      { ...EXACT, directionAt: (at) => (at === T0 - 1 ? 'green' : null) },
+    );
+    expect(out.excluded.refused_by_direction).toBe(1);
+    expect(out.trades.map((t) => t.symbol)).not.toContain('AMD');
+    expect(out.byTape.red.trades.map((t) => t.symbol)).toEqual(['KLAC']);
+    // The gate would refuse a short on a green tape; the split still reads it.
+    expect(out.byTape.green.trades.map((t) => t.symbol)).toEqual(['AMD']);
+    expect(out.byTape.mixed.n).toBe(0);
+    // An unknown reading, and no reading at all, are not a tape.
+    expect(out.byTape.unlabeled.trades.map((t) => t.symbol).sort()).toEqual(['NVDA', 'TSLA']);
+  });
+});
+
+describe('redTapeGateOf — the red-tape bar', () => {
+  const trades = (...rs: number[]) => ({ trades: rs.map((exitR) => ({ exitR }) as ShadowTrade) });
+  const none = trades();
+  const g = SHORT_RED_TAPE_GATE;
+
+  it('passes only when the count, the average, the win rate and the edge over the other tapes all do', () => {
+    // 20 red trades: 12 at +0.5R and 8 at -0.35R, so +0.16R at 60%.
+    const red = trades(...Array(12).fill(0.5), ...Array(8).fill(-0.35));
+    const out = redTapeGateOf({ red, mixed: trades(0, 0.1), green: trades(-0.1), unlabeled: trades(5) });
+    expect(out.n).toBe(g.minTrades);
+    expect(out.avgR).toBeCloseTo(0.16, 9);
+    expect(out.winRatePct).toBe(60);
+    // Mixed and green pooled; an unlabeled trade is not an "other tape".
+    expect(out.otherTapesN).toBe(3);
+    expect(out.otherTapesAvgR).toBeCloseTo(0, 9);
+    expect(out.edgeR).toBeCloseTo(0.16, 9);
+    expect(out).toMatchObject({ passesN: true, passesAvgR: true, passesWinRate: true, passesEdge: true, passes: true });
+  });
+
+  it('fails on each leg alone', () => {
+    const base = [...Array(12).fill(0.5), ...Array(8).fill(-0.35)];
+    expect(
+      redTapeGateOf({ red: trades(...base.slice(1)), mixed: none, green: trades(0), unlabeled: none }),
+    ).toMatchObject({ passesN: false, passes: false });
+    const thin = [...Array(12).fill(0.3), ...Array(8).fill(-0.2)]; // +0.10R
+    expect(redTapeGateOf({ red: trades(...thin), mixed: trades(0), green: none, unlabeled: none })).toMatchObject({
+      passesAvgR: false,
+      passes: false,
+    });
+    const coinFlip = [...Array(9).fill(1), ...Array(11).fill(-0.5)]; // +0.175R at 45%
+    expect(redTapeGateOf({ red: trades(...coinFlip), mixed: trades(0), green: none, unlabeled: none })).toMatchObject({
+      passesAvgR: true,
+      passesWinRate: false,
+      passes: false,
+    });
+    // Every tape paying the same is not a red-tape edge.
+    expect(redTapeGateOf({ red: trades(...base), mixed: trades(0.16), green: none, unlabeled: none })).toMatchObject({
+      passesEdge: false,
+      passes: false,
+    });
+  });
+
+  it('cannot pass the edge with nothing to compare it to', () => {
+    const out = redTapeGateOf({ red: trades(...Array(20).fill(0.5)), mixed: none, green: none, unlabeled: none });
+    expect(out.edgeR).toBeNull();
+    expect(out.passesEdge).toBe(false);
+    expect(out.passes).toBe(false);
+  });
+
+  it('does not fail a bar on the last bit of a float sum', () => {
+    // (-0.17 + 0.47) / 2 computes to 0.14999999999999997: a mean of exactly
+    // +0.15R, the bar, one bit under it.
+    const avgOnTheBar = redTapeGateOf({ red: trades(-0.17, 0.47), mixed: trades(0), green: none, unlabeled: none });
+    expect(avgOnTheBar.avgR).toBeLessThan(0.15);
+    expect(avgOnTheBar.passesAvgR).toBe(true);
+    // 0.15 - 0.05 computes to 0.09999999999999999: an edge of exactly +0.10R.
+    const edgeOnTheBar = redTapeGateOf({ red: trades(0.35, -0.05), mixed: trades(0.05), green: none, unlabeled: none });
+    expect(edgeOnTheBar.edgeR).toBeLessThan(0.1);
+    expect(edgeOnTheBar.passesEdge).toBe(true);
   });
 });

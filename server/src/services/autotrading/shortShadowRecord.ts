@@ -1,7 +1,14 @@
 import { AutotradeConfig } from '../../db/autotradeConfig';
 import { CandleSource } from '../excursion';
 import { DeclinedEntry } from './declinedEntry';
-import { buildDeclinedEntryShadow, DeclinedEntryShadow, ShadowOptions } from './declinedEntryShadow';
+import {
+  buildDeclinedEntryShadow,
+  DeclinedEntryShadow,
+  memoCandleSource,
+  replayByTape,
+  ShadowOptions,
+} from './declinedEntryShadow';
+import { TAPE_BUCKETS, TapeBucket, tapeBucketOf } from './marketDirection';
 
 /**
  * What the live book WOULD have made on the shorts it declined — measured on
@@ -38,14 +45,41 @@ import { buildDeclinedEntryShadow, DeclinedEntryShadow, ShadowOptions } from './
  *     whether to point real money at a new direction.
  */
 
-/** One declined short, as journaled. */
-/** A row from `live_short_skipped`. It carries no `side`, and should not: the
- *  ACTION is the side. buildShortShadowRecord stamps it on the way into the
- *  shared replay, which is the one place that knows both. */
+/** One declined short, as the loader reads a `live_short_skipped` row. The
+ *  row has carried `side: 'short'` since 2026-09-24, for readers of the raw
+ *  journal; this type leaves it out, because the ACTION is the side.
+ *  buildShortShadowRecord stamps it on the way into the shared replay, which
+ *  is the one place that knows both. */
 export type SkippedShort = Omit<DeclinedEntry, 'side'>;
 
 export type { ShadowSkipReason, ShadowTrade } from './declinedEntryShadow';
 export { dedupeBySymbolDay, barsFromSignal, liveExitRules } from './declinedEntryShadow';
+
+/** One tape's replay, as the record carries it. */
+export type TapeShadowReading = Pick<DeclinedEntryShadow, 'trades' | 'n' | 'avgR' | 'winRatePct' | 'byReason'>;
+
+/** The red-tape bar (rule B of the tape plan) against this record's red-tape
+ *  trades: each number, its bar, and whether it passes. */
+export interface ShortRedTapeGate {
+  minTrades: number;
+  minAvgR: number;
+  minWinRatePct: number;
+  minEdgeOverOtherTapesR: number;
+  n: number;
+  avgR: number | null;
+  winRatePct: number | null;
+  /** The shorts declined on the other LABELED tapes (mixed and green),
+   *  pooled: what the red tape has to beat. */
+  otherTapesN: number;
+  otherTapesAvgR: number | null;
+  /** avgR less otherTapesAvgR; null while either side has no trade. */
+  edgeR: number | null;
+  passesN: boolean;
+  passesAvgR: boolean;
+  passesWinRate: boolean;
+  passesEdge: boolean;
+  passes: boolean;
+}
 
 export interface ShortShadowRecord extends DeclinedEntryShadow {
   /** The three numbers task #21's rule reads, and whether each passes. */
@@ -58,12 +92,71 @@ export interface ShortShadowRecord extends DeclinedEntryShadow {
     passesWinRate: boolean;
     passes: boolean;
   };
+  /**
+   * The same shorts, replayed once per tape they were declined on (2026-09-24;
+   * replayByTape): each tape keeps its own first row per symbol-day. A row's
+   * tape is the loop's own reading, stamped on the row or read from the
+   * journal's `market_direction_read` rows at that moment, never a backfilled
+   * one, so rows from before the loop read the market (2026-09-24) are
+   * `unlabeled`. Not the direction gate replayed: every tape is read.
+   */
+  byTape: Record<TapeBucket, TapeShadowReading>;
+  /** The red-tape bar against byTape.red (SHORT_RED_TAPE_GATE). */
+  redTapeGate: ShortRedTapeGate;
 }
 
 /** Task #21's pre-committed enabling rule, in one place so the report and any
  *  future reader cannot drift from it. Changing these is changing the DECISION,
  *  which is a written-down operator call, not a tuning knob. */
 export const SHORT_ENABLE_GATE = { minTrades: 30, minAvgR: 0.1, minWinRatePct: 50 } as const;
+
+/**
+ * The red-tape bar (the tape plan's rule B, the operator's call of 2026-09-23):
+ * live stock shorts are proposed only for a red tape, and only once the shorts
+ * declined on red tapes have made at least this. The edge term is what makes it
+ * a RED-tape bar and not the old one on fewer trades: red tapes have to beat the
+ * other tapes, or the tape is not what is paying.
+ */
+export const SHORT_RED_TAPE_GATE = {
+  minTrades: 20,
+  minAvgR: 0.15,
+  minWinRatePct: 50,
+  minEdgeOverOtherTapesR: 0.1,
+} as const;
+
+/** Float slack for the bar's comparisons: a mean of exactly +0.15R can come
+ *  out of the sum as 0.1499999…, and a bar must not fail on the last bit. */
+const GATE_EPS = 1e-9;
+
+/** The red-tape bar against the per-tape replays. PURE. */
+export function redTapeGateOf(byTape: Record<TapeBucket, Pick<DeclinedEntryShadow, 'trades'>>): ShortRedTapeGate {
+  const g = SHORT_RED_TAPE_GATE;
+  const mean = (xs: number[]): number | null => (xs.length ? xs.reduce((sum, v) => sum + v, 0) / xs.length : null);
+  const red = byTape.red.trades.map((t) => t.exitR);
+  const other = [...byTape.mixed.trades, ...byTape.green.trades].map((t) => t.exitR);
+  const avgR = mean(red);
+  const winRatePct = red.length ? (red.filter((v) => v > 0).length / red.length) * 100 : null;
+  const otherTapesAvgR = mean(other);
+  const edgeR = avgR !== null && otherTapesAvgR !== null ? avgR - otherTapesAvgR : null;
+  const passesN = red.length >= g.minTrades;
+  const passesAvgR = avgR !== null && avgR >= g.minAvgR - GATE_EPS;
+  const passesWinRate = winRatePct !== null && winRatePct >= g.minWinRatePct - GATE_EPS;
+  const passesEdge = edgeR !== null && edgeR >= g.minEdgeOverOtherTapesR - GATE_EPS;
+  return {
+    ...g,
+    n: red.length,
+    avgR,
+    winRatePct,
+    otherTapesN: other.length,
+    otherTapesAvgR,
+    edgeR,
+    passesN,
+    passesAvgR,
+    passesWinRate,
+    passesEdge,
+    passes: passesN && passesAvgR && passesWinRate && passesEdge,
+  };
+}
 
 /**
  * The short half of the declined-entry shadow: the same replay, plus task #21's
@@ -85,20 +178,39 @@ export async function buildShortShadowRecord(
    *  readings): shortShadowRecordData.ts supplies them from the database. */
   options: Pick<ShadowOptions, 'entryConcessionPct' | 'directionAt'> = {},
 ): Promise<ShortShadowRecord> {
-  const shadow = await buildDeclinedEntryShadow(
-    source,
-    // Every row here came from the naked-short skip, so the side is not in
-    // doubt even for rows written before `side` was stamped.
-    rows.map((r) => ({ ...r, side: 'short' as const })),
-    cfg,
-    options,
-  );
+  // Every row here came from the naked-short skip, so the side is not in
+  // doubt even for rows written before `side` was stamped.
+  const shorts = rows.map((r) => ({ ...r, side: 'short' as const }));
+  // The ATR reachability gate comes straight after the shorts-off skip on the
+  // live path (2026-09-24, the tape plan's F7): a short the switch admitted
+  // would meet it next, so the record replays it, at the book's own fraction.
+  const replay: ShadowOptions = { ...options, maxRiskAtrFraction: cfg.maxRiskAtrFraction };
+  const memo = memoCandleSource(source);
+  const shadow = await buildDeclinedEntryShadow(memo, shorts, cfg, replay);
   const g = SHORT_ENABLE_GATE;
   const passesN = shadow.n >= g.minTrades;
   const passesAvgR = shadow.avgR !== null && shadow.avgR >= g.minAvgR;
   const passesWinRate = shadow.winRatePct !== null && shadow.winRatePct >= g.minWinRatePct;
+
+  // The tape a row was declined on: its own stamp, else the loop's journaled
+  // reading at that moment. Both are live readings, so nothing backfilled can
+  // put a trade on a tape here.
+  const tapes = await replayByTape(
+    memo,
+    shorts,
+    (r) => tapeBucketOf(r.directionAtSkip ?? options.directionAt?.(r.at) ?? null),
+    cfg,
+    replay,
+  );
+  const byTape = {} as Record<TapeBucket, TapeShadowReading>;
+  for (const tape of TAPE_BUCKETS) {
+    const t = tapes[tape];
+    byTape[tape] = { trades: t.trades, n: t.n, avgR: t.avgR, winRatePct: t.winRatePct, byReason: t.byReason };
+  }
   return {
     ...shadow,
     gate: { ...g, passesN, passesAvgR, passesWinRate, passes: passesN && passesAvgR && passesWinRate },
+    byTape,
+    redTapeGate: redTapeGateOf(tapes),
   };
 }
