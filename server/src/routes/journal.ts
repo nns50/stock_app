@@ -230,20 +230,83 @@ journalRouter.get(
 // geometry have done" and any query param answers "what would this one change".
 // Both are returned against the ACTUAL realized R on the same trades, paired.
 // ---------------------------------------------------------------------------
-/** A same-session closed trade with its 5-minute bars already fetched, and the
- *  FROZEN stop that denominates its R. */
+/** A same-session closed trade with its 5-minute bars already fetched. */
 interface SameSessionTrade {
-  position: Position & { entryDate: string };
-  /** initialStopPrice, falling back to the live stop only when there is no
-   *  frozen one. The ratchet mutates the live one, which is why the frozen
-   *  value is preferred everywhere R is computed. */
-  stop: number;
+  /** The trade AS HELD, in the excursion's terms, whichever book it is from:
+   *  the FROZEN stop that denominates its R (initialStopPrice, falling back to
+   *  the live stop only when there is no frozen one; the ratchet mutates the
+   *  live one), the ORIGINAL quantity (paper's row keeps only the remainder
+   *  after a scale-out: paperExcursionInput), the realized P&L, and the
+   *  holding window up to the last exit. */
+  trade: ExcursionInput & { entryDate: string; stopPrice: number };
+  /** The path a counterfactual walks: from the entry to the end of the
+   *  session, or to a close no geometry made (counterfactualPathEnd). */
   bars: Candle[];
+}
+
+/** Which book an exit comparison reads (2026-09-26): the live ledger, or the
+ *  paper book, the control arm that sees the same signals. */
+const exitBookQuery = z.object({ book: z.enum(['live', 'paper']).default('live') });
+type ExitBook = z.infer<typeof exitBookQuery>['book'];
+
+/** A closed trade of either book, before its bars are fetched: the trade as
+ *  held, and where its counterfactual path ends. Null when it has no stop to
+ *  denominate R. */
+interface ExitBookTrade {
+  trade: ExcursionInput & { entryDate: string };
+  pathEnd: number | null;
+}
+
+/** The book's closed stock trades, each mapped onto the excursion's input.
+ *  The paper mapping is paperExcursionInput, the one /excursions?book=paper
+ *  reads, so the three routes cannot measure two different paper books. */
+function closedTradesOf(book: ExitBook): { trades: ExitBookTrade[]; undated: number } {
+  if (book === 'paper') {
+    const trades: ExitBookTrade[] = [];
+    let undated = 0;
+    for (const p of listPaperPositions({ status: 'closed' })) {
+      const trade = paperExcursionInput(p);
+      if (!trade || p.exitAt === null) {
+        undated++;
+        continue;
+      }
+      trades.push({ trade, pathEnd: counterfactualPathEnd({ at: p.exitAt, reason: p.exitReason }) });
+    }
+    return { trades, undated };
+  }
+  const closedStock = listPositions({ status: 'closed', assetType: 'stock' });
+  const trades: ExitBookTrade[] = [];
+  let undated = 0;
+  for (const p of closedStock) {
+    if (p.entryDate === null) {
+      undated++;
+      continue;
+    }
+    trades.push({
+      trade: {
+        positionId: p.id,
+        symbol: p.symbol,
+        side: p.side,
+        entryPrice: p.entryPrice,
+        quantity: p.quantity,
+        multiplier: p.multiplier,
+        stopPrice: p.initialStopPrice ?? p.stopPrice,
+        realizedPnl: realizedPnlOf(p),
+        entryDate: p.entryDate,
+        exitDate: lastExitDate(p),
+        entryTime: p.entryTime,
+        exitAt: lastExitAt(p),
+      },
+      pathEnd: counterfactualPathEnd(lastExitOf(p)),
+    });
+  }
+  return { trades, undated };
 }
 
 interface SameSessionLoad {
   trades: SameSessionTrade[];
   coverage: {
+    /** The book's closed stock trades (paper's book is stock only). */
     closedStockTrades: number;
     undated: number;
     notSameSession: number;
@@ -268,32 +331,34 @@ interface SameSessionLoad {
  * the traded geometry made (counterfactualPathEnd, 2026-09-24): both routes
  * replay OTHER geometries, and a path cut at the actual exit could never show
  * one that holds longer.
+ *
+ * `book` (2026-09-26): the paper book runs through the same filter, cap,
+ * fetch and path rule. Only the mapping differs (closedTradesOf).
  */
-async function loadSameSessionBars(): Promise<SameSessionLoad> {
-  const closedStock = listPositions({ status: 'closed', assetType: 'stock' });
-  const dated = closedStock.filter((p): p is typeof p & { entryDate: string } => p.entryDate !== null);
-  const sameSession = dated.filter((p) => lastExitDate(p) === p.entryDate);
+async function loadSameSessionBars(book: ExitBook): Promise<SameSessionLoad> {
+  const { trades: closed, undated } = closedTradesOf(book);
+  const sameSession = closed.filter((t) => t.trade.exitDate === t.trade.entryDate);
   const selected = sameSession.slice(0, EXCURSION_TRADE_CAP);
 
   const provider = getProvider();
   const trades: SameSessionTrade[] = [];
   let unusable = 0;
-  await mapPool(selected, EXCURSION_FETCH_CONCURRENCY, async (p) => {
+  await mapPool(selected, EXCURSION_FETCH_CONCURRENCY, async ({ trade: t, pathEnd }) => {
     try {
-      const stop = p.initialStopPrice ?? p.stopPrice;
+      const stop = t.stopPrice;
       if (stop == null) {
         unusable++;
         return;
       }
-      const candles = await provider.getCandles(p.symbol, INTRADAY_TIMEFRAME, {
-        start: p.entryDate,
-        end: lastExitDate(p) ?? undefined,
+      const candles = await provider.getCandles(t.symbol, INTRADAY_TIMEFRAME, {
+        start: t.entryDate,
+        end: t.exitDate ?? undefined,
       });
-      const bars = barsWithinHoldingPeriod(candles, p.entryDate, lastExitDate(p), {
-        entryAt: p.entryTime ? etDateTimeToMs(p.entryDate, p.entryTime) : null,
-        exitAt: counterfactualPathEnd(lastExitOf(p)),
+      const bars = barsWithinHoldingPeriod(candles, t.entryDate, t.exitDate, {
+        entryAt: t.entryTime ? etDateTimeToMs(t.entryDate, t.entryTime) : null,
+        exitAt: pathEnd,
       });
-      trades.push({ position: p, stop, bars });
+      trades.push({ trade: { ...t, stopPrice: stop }, bars });
     } catch {
       unusable++;
     }
@@ -302,9 +367,9 @@ async function loadSameSessionBars(): Promise<SameSessionLoad> {
   return {
     trades,
     coverage: {
-      closedStockTrades: closedStock.length,
-      undated: closedStock.length - dated.length,
-      notSameSession: dated.length - sameSession.length,
+      closedStockTrades: closed.length + undated,
+      undated,
+      notSameSession: closed.length - sameSession.length,
       overCap: sameSession.length - selected.length,
       unusable,
     },
@@ -334,6 +399,7 @@ journalRouter.get(
     // 0–100, for the scale-out share; anything else keeps the default.
     const pct = (v: unknown, dflt: number): number => Math.min(100, num(v, dflt));
     const fills = replayFillsOf(req.query.fills);
+    const { book } = parseQuery(exitBookQuery, req);
     // The CURRENT policy is more than the four multiples (2026-09-11): the live
     // scale-out (when its flag is on) and the stagnation timer are part of it,
     // so a bare call replays them too. The defaults are liveExitRules, the one
@@ -378,7 +444,7 @@ journalRouter.get(
         }
       : null;
 
-    const load = await loadSameSessionBars();
+    const load = await loadSameSessionBars(book);
     const rows: {
       positionId: number;
       symbol: string;
@@ -396,22 +462,25 @@ journalRouter.get(
     const { unusable, ...coverage } = load.coverage;
     let unreplayable = unusable;
 
-    for (const { position: p, stop, bars } of load.trades) {
-      const input = { side: p.side, entryPrice: p.entryPrice, initialStopPrice: stop };
+    for (const { trade: t, bars } of load.trades) {
+      const input = { side: t.side, entryPrice: t.entryPrice, initialStopPrice: t.stopPrice };
       const out = replayExit(input, bars, rules, fills);
       if (!out) {
         unreplayable++;
         continue;
       }
       paired.push({ input, bars });
-      const risk = Math.abs(p.entryPrice - stop) * p.quantity * p.multiplier;
-      const actualR = risk > 0 ? Math.round((realizedPnlOf(p) / risk) * 100) / 100 : null;
+      // The ORIGINAL risk: paper's quantity is its original one too
+      // (paperExcursionInput), so a scaled-out paper trade's actual R is
+      // paperRealizedR, not its P&L over the remainder's risk.
+      const risk = Math.abs(t.entryPrice - t.stopPrice) * t.quantity * t.multiplier;
+      const actualR = risk > 0 ? Math.round((t.realizedPnl / risk) * 100) / 100 : null;
       results.push(out);
       if (actualR !== null) actualRs.push(actualR);
       rows.push({
-        positionId: p.id,
-        symbol: p.symbol,
-        entryDate: p.entryDate,
+        positionId: t.positionId,
+        symbol: t.symbol,
+        entryDate: t.entryDate,
         actualR,
         replayR: out.exitR,
         reason: out.reason,
@@ -423,6 +492,7 @@ journalRouter.get(
     const mean = (xs: number[]) =>
       xs.length ? Math.round((xs.reduce((a, b) => a + b, 0) / xs.length) * 100) / 100 : null;
     res.json({
+      book,
       rules,
       fills,
       replay: aggregateReplay(results),
@@ -456,49 +526,34 @@ journalRouter.get(
   '/exit-tune-validation',
   asyncHandler(async (req, res) => {
     const cfg = getAutotradeConfig();
-    const load = await loadSameSessionBars();
+    const { book } = parseQuery(exitBookQuery, req);
+    const load = await loadSameSessionBars(book);
     const trades: ValidationTrade[] = [];
     const { unusable, ...coverage } = load.coverage;
     let unmeasured = unusable;
 
-    for (const { position: p, stop, bars } of load.trades) {
+    for (const { trade: t, bars } of load.trades) {
       // The excursion row is computed from the SAME bars the replay walks, so
       // the rule's input and the outcome it is scored on can never come from
       // two different fetches of two different windows.
       //
       // Those bars now run to the end of the session (counterfactualPathEnd),
       // but the rule is fitted on the excursion AS HELD, bounded by the last
-      // exit, because that is what autoTune.ts's own input reads. Fitted on
-      // the path past the exit, this would validate a tuner that does not exist.
-      const excursion = computeExcursion(
-        {
-          positionId: p.id,
-          symbol: p.symbol,
-          side: p.side,
-          entryPrice: p.entryPrice,
-          quantity: p.quantity,
-          multiplier: p.multiplier,
-          stopPrice: stop,
-          realizedPnl: realizedPnlOf(p),
-          entryDate: p.entryDate,
-          exitDate: lastExitDate(p),
-          entryTime: p.entryTime,
-          exitAt: lastExitAt(p),
-        },
-        bars,
-        'intraday',
-      );
+      // exit (the trade's own exitAt), because that is what autoTune.ts's own
+      // input reads. Fitted on the path past the exit, this would validate a
+      // tuner that does not exist.
+      const excursion = computeExcursion(t, bars, 'intraday');
       if (!excursion) {
         unmeasured++;
         continue;
       }
       trades.push({
-        positionId: p.id,
-        symbol: p.symbol,
-        entryDate: p.entryDate,
-        side: p.side,
-        entryPrice: p.entryPrice,
-        initialStopPrice: stop,
+        positionId: t.positionId,
+        symbol: t.symbol,
+        entryDate: t.entryDate,
+        side: t.side,
+        entryPrice: t.entryPrice,
+        initialStopPrice: t.stopPrice,
         bars,
         excursion,
       });
@@ -529,6 +584,7 @@ journalRouter.get(
     );
 
     res.json({
+      book,
       ...result,
       autoTuneExitsEnabled: cfg.autoTuneExitsEnabled,
       autoTuneExitTunedAt: cfg.autoTuneExitTunedAt,

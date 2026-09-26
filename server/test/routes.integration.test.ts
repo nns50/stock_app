@@ -18,7 +18,7 @@ import { addExit, createPosition } from '../src/db/positions';
 import { getAutotradeConfig } from '../src/db/autotradeConfig';
 import { setAutotradeConfig } from '../src/db/autotradeConfig';
 import { saveDailyResult } from '../src/db/dailyResults';
-import { closePaperPosition, openPaperPosition } from '../src/db/autotradePaperPositions';
+import { closePaperPosition, openPaperPosition, partialClosePaperPosition } from '../src/db/autotradePaperPositions';
 import { openOptionsPaperPosition } from '../src/db/autotradeOptionsPaperPositions';
 import { createLiveOptionsPosition } from '../src/db/autotradeLiveOptionsPositions';
 import { saveLastTick } from '../src/db/autotradeLastTick';
@@ -4425,6 +4425,17 @@ describe('journal analysis routes tell you what they could not cover (integratio
       stopPrice: 95,
     });
     addExit(overnight.id, { quantity: 10, exitPrice: 101, exitDate: '2026-06-12' });
+    // No entry date: nothing to walk from, and still one of the book's trades.
+    const undated = createPosition({
+      assetType: 'stock',
+      symbol: 'RPUND',
+      side: 'long',
+      quantity: 10,
+      entryPrice: 100,
+      entryDate: null,
+      stopPrice: 95,
+    });
+    addExit(undated.id, { quantity: 10, exitPrice: 101, exitDate: '2026-06-12' });
 
     const rep = (await getJson('/api/journal/exit-replay')) as {
       rules: {
@@ -4463,9 +4474,11 @@ describe('journal analysis routes tell you what they could not cover (integratio
     expect(rep.rules.stagnationMinutes).toBe(cfg.stagnationExitMinutes);
     expect(rep.rules.stagnationMinR).toBe(cfg.stagnationExitMinR);
     expect(rep.comparison).toBeNull();
-    // The overnight trade is EXCLUDED and counted, never silently dropped.
-    expect(rep.coverage.closedStockTrades).toBe(2);
+    // The overnight and undated trades are EXCLUDED and counted, never
+    // silently dropped.
+    expect(rep.coverage.closedStockTrades).toBe(3);
     expect(rep.coverage.notSameSession).toBe(1);
+    expect(rep.coverage.undated).toBe(1);
     // Every closed trade is accounted for by exactly one bucket.
     const c = rep.coverage;
     expect(rep.replay.trades + c.undated + c.notSameSession + c.overCap + c.unreplayable).toBe(c.closedStockTrades);
@@ -4978,6 +4991,106 @@ describe('journal analysis routes tell you what they could not cover (integratio
       });
       expect(rep.rows.find((r) => r.symbol === 'TGHT')).toMatchObject({ mfeR: 1.2, fullReached: false });
       expect(rep.rows.find((r) => r.symbol === 'TGHQ')).toMatchObject({ mfeR: 2.5, fullReached: true });
+    });
+
+    // THE PAPER BOOK (2026-09-26). The control arm through the same filter,
+    // cap, fetch and path rule, mapped by paperExcursionInput. Asserted on the
+    // numbers, not only the label: a route that parsed `book` and still read
+    // the live ledger would answer `paper` over the wrong trades.
+    describe('?book=paper replays the paper book', () => {
+      /** The paper twin of `trade`: a long at 100 / 99, entered 09:30 and
+       *  closed at 09:37 by `reason`, at the 1R target unless it scaled out. */
+      const paperTrade = (i: number, reason: 'target' | 'manual', { scaledOut = false } = {}) => {
+        const day = `2026-05-${String(1 + i).padStart(2, '0')}`;
+        const p = openPaperPosition({
+          symbol: `PFX${i}`,
+          side: 'buy',
+          quantity: 10,
+          entryPrice: 100,
+          stopPrice: 99,
+          targetPrice: 101,
+          riskAmount: 10,
+          riskProfile: 'MODERATE',
+          rationale: 'fixture',
+        });
+        // Half out at +0.5R first: the row keeps 5 shares and banks $2.50.
+        if (scaledOut) partialClosePaperPosition(p.id, { quantity: 5, exitPrice: 100.5 });
+        db.prepare(
+          "UPDATE autotrade_paper_positions SET status='closed', exit_price=101, exit_at=?, exit_reason=?, entry_at=? WHERE id=?",
+        ).run(dayAt(day, '09:37'), reason, dayAt(day, '09:30'), p.id);
+        return p;
+      };
+      beforeEach(() => db.exec('DELETE FROM autotrade_paper_positions;'));
+      afterEach(() => db.exec('DELETE FROM autotrade_paper_positions;'));
+
+      type BookCmp = Cmp & {
+        book: string;
+        replay: { trades: number };
+        coverage: { closedStockTrades: number; notSameSession: number };
+        rows: { symbol: string; actualR: number | null }[];
+      };
+
+      it('exit-replay walks the paper trades, keeps a hand close cut, and reads R on the original size', async () => {
+        for (let i = 0; i < 23; i++) paperTrade(i, 'target');
+        paperTrade(23, 'target', { scaledOut: true });
+        paperTrade(24, 'manual');
+        // Still open: no holding window, so not a closed trade of the book.
+        openPaperPosition({
+          symbol: 'PFXOPEN',
+          side: 'buy',
+          quantity: 10,
+          entryPrice: 50,
+          stopPrice: 49,
+          targetPrice: 51,
+          riskAmount: 10,
+          riskProfile: 'MODERATE',
+          rationale: 'fixture',
+        });
+        // Held overnight: intraday bars would span two sessions, so it is
+        // counted and left out, as on the live side.
+        const overnight = paperTrade(25, 'target');
+        db.prepare('UPDATE autotrade_paper_positions SET exit_at = ? WHERE id = ?').run(
+          dayAt('2026-05-27', '09:37'),
+          overnight.id,
+        );
+        trade(0, 'target');
+
+        const rep = (await getJson('/api/journal/exit-replay?book=paper&cTargetR=2')) as BookCmp;
+        expect(rep.book).toBe('paper');
+        expect(rep.coverage).toMatchObject({ closedStockTrades: 26, notSameSession: 1 });
+        expect(rep.replay.trades).toBe(25);
+        expect(rep.rows.every((r) => r.symbol.startsWith('PFX'))).toBe(true);
+        // The 24 paths run to the close and a 2R target fills at 09:40; the
+        // hand close ends at 09:37 and never sees 102.
+        expect(rep.comparison.candidate.replay.reasons.target).toBe(24);
+        expect(rep.comparison.meanDiffR).toBe(0.96);
+        // $2.50 banked + $5 on the remainder, over the $10 risked: 0.75R.
+        // Over the remaining 5 shares' risk it would read 1.5R.
+        expect(rep.rows.find((r) => r.symbol === 'PFX23')!.actualR).toBe(0.75);
+
+        // The default is unchanged: the live ledger, labelled.
+        const live = (await getJson('/api/journal/exit-replay')) as BookCmp;
+        expect(live.book).toBe('live');
+        expect(live.replay.trades).toBe(1);
+      });
+
+      it('exit-tune-validation fits and replays the paper trades', async () => {
+        for (let i = 0; i < 6; i++) paperTrade(i, 'target');
+        trade(0, 'target');
+        type Val = { book: string; coverage: { supplied: number; closedStockTrades: number } };
+        const paper = (await getJson('/api/journal/exit-tune-validation?book=paper')) as Val;
+        expect(paper.book).toBe('paper');
+        expect(paper.coverage.closedStockTrades).toBe(6);
+        expect(paper.coverage.supplied).toBe(6);
+        const live = (await getJson('/api/journal/exit-tune-validation')) as Val;
+        expect(live.book).toBe('live');
+        expect(live.coverage.supplied).toBe(1);
+      });
+
+      it('refuses a book it does not have', async () => {
+        expect((await fetch(`${base}/api/journal/exit-replay?book=options`)).status).toBe(400);
+        expect((await fetch(`${base}/api/journal/exit-tune-validation?book=options`)).status).toBe(400);
+      });
     });
   });
 

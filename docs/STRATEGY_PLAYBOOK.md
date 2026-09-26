@@ -701,6 +701,12 @@ On the live book, no scratch read +0.039R under `touch` against +0.056R honest. 
 new reading beside an old one, add `?fills=touch` to either route. Otherwise compare only
 readings that say `honest`.
 
+**Read the paper book beside it** (since 2026-09-26): `?book=paper` runs either route over
+the paper book, the control arm handed the same signals, through the same filter, path
+rule and fill model. A shape that reads the same way on both books is stronger evidence
+than either alone. A shape is still adopted only on a live `better`: paper enters at a
+quote with no broker in the way, and it takes shorts the live book declines.
+
 The first reading (2026-09-11, 60 paired trades) put all three shapes inside the noise,
 so the settings stayed; the rows are in the spec's 2026-09-11 section, with the next
 reading due at 80 paired trades.
