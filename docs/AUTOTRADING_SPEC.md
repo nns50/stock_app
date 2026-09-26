@@ -16495,3 +16495,53 @@ Six mutations, all caught: the route's own replay ignoring the model; `compareEx
 defaulting to `touch`; the route never honouring `touch`; the route defaulting to
 `touch`; the validation's replays ignoring the model; the validation defaulting to
 `touch`.
+
+## 2026-09-26 (ninth) — the exit comparisons read the paper book too
+
+**What happened.** `/exit-replay` and `/exit-tune-validation` read the live ledger only.
+The paper book, the control arm that is handed the same signals, had been measured this
+way only by hand. The uncensored readings in 2026-09-24 (fifth) were computed outside
+the routes, so no one could repeat the paper half of that table on demand. Paper is the
+larger sample and takes the trades live declines (shorts among them), and a shape that
+reads the same way on both books is stronger evidence than either alone.
+
+**Changed.**
+- Both routes take `?book=paper` (default `live`, anything else is a 400) and say which
+  book they read (`book`).
+- The paper book runs through the same loader as the live one (`loadSameSessionBars`):
+  - the same same-session filter, 250-trade cap and candle fetch;
+  - the same path rule: to the end of the session, or to a close no geometry made
+    (`counterfactualPathEnd`, reading the paper row's `exitReason`);
+  - the same coverage accounting.
+- A paper row is mapped by `paperExcursionInput`, the mapping `/excursions?book=paper`
+  already reads, so the three routes see one paper book. Its quantity is the ORIGINAL
+  one: a scale-out leaves only the remainder on the row, so the replay's `actual` R is
+  `paperRealizedR`, not the P&L over the remainder's risk.
+- The rules are the same `liveExitRules(cfg)` for both books, which paper position
+  management has followed since 2026-09-23. A paper trade closed before that date kept
+  its old exits in `actual`; the replayed arms do not depend on them.
+
+**What it changes.** No setting and no switch. The pre-committed exit reading still
+reads the live book: a shape is adopted only on a live `better`. The paper reading is
+the control beside it. Paper's entries fill at a quote with no broker in the way, and it
+takes shorts that live declines, so the two populations are not the same trades.
+
+**Tests (each mutation-checked).**
+- `/exit-replay?book=paper`: 25 same-session paper longs, one open row and one held
+  overnight, beside one live trade.
+  - The population is 26 (the open row is not a closed trade), one of them not
+    same-session.
+  - A 2R candidate fills on the 24 paths that run to the close, and not on the hand close
+    cut at 09:37: a paired +0.96R.
+  - A trade that scaled out half at +0.5R reads 0.75R, not the 1.5R the remainder's risk
+    would give.
+  - A bare call still reads the live trade alone.
+- `/exit-tune-validation?book=paper` fits and replays the six paper trades; the bare call
+  reads the one live trade.
+- `?book=options` is a 400 on both routes.
+- The live route counts an undated trade in its population.
+
+Seven mutations, all caught: the paper hand close not respected; the loader, the replay
+route or the validation route reading the live book whatever was asked; the paper
+quantity taken from the remainder; the same-session filter dropped; an undated trade
+dropped from the population.

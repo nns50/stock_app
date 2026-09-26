@@ -2143,7 +2143,7 @@ equally-weighted cards in the order they happened to be built:
   **exit replay** defaults to the same shape. Since **2026-09-26** it also fills the way
   a live order does, and so does the exit-tune validation: a stop a bar gaps through
   fills at the open, and a target needs a trade through it (`?fills=touch` reproduces
-  earlier readings).
+  earlier readings). Either one reads the paper book with `?book=paper`.
   R-multiples here are always measured against the position's own original stop
   distance, fixed at entry, even after the stop itself has since moved.
   A paper scale-out **banks** the closed slice's P&L onto the position
