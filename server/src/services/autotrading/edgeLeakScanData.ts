@@ -23,6 +23,7 @@ import {
 import { maxAffordablePremiumPerShare, riskPctUpperBound } from './optionsAffordability';
 import { getOptionsProbationStatus } from './liveOptionsExecute';
 import { buildLiveSlippageRows } from './autoTune';
+import { isStockEntrySlippage } from '../slippage';
 import { MARKETABLE_LIMIT_BUFFER_PCT } from './marketableLimit';
 import { entryDriftPct } from './entryRisk';
 import { getLastReentryShadowRecord } from '../../db/reentryShadowRecords';
@@ -47,7 +48,8 @@ import {
   ScanFinding,
 } from './edgeLeakScan';
 import { liveDrawdownHaltRetracted } from './dailyHaltMarker';
-import { MARKET_DIRECTION_ACTION, Lean, MarketDirection, tapeAlignment } from './marketDirection';
+import { Lean, tapeAlignment } from './marketDirection';
+import { DirectionIndex, directionAt, directionIndex } from './marketDirectionIndex';
 
 // ---------------------------------------------------------------------------
 // The DB half of the edge-leak scan: turn both books' closed positions into
@@ -487,46 +489,6 @@ function extensionIndex(since: number): { rows: Map<string, ExtensionRow>; quali
 
 function extensionKey(book: 'live' | 'paper', symbol: string, etDate: string, minute: number): string {
   return `${book}|${symbol}|${etDate}|${minute}`;
-}
-
-/** The market-direction readings the loop journaled (`market_direction_read`,
- *  one row per change — marketDirection.ts), grouped by ET date, oldest first.
- *  The reading in force at any moment is the latest row at or before it. */
-export type DirectionIndex = Map<string, { at: number; direction: MarketDirection }[]>;
-
-const MARKET_DIRECTIONS: ReadonlySet<string> = new Set(['red', 'green', 'mixed', 'unknown']);
-
-export function directionIndex(since: number): DirectionIndex {
-  const out: DirectionIndex = new Map();
-  for (const e of listAutotradeEventsInWindow({ actions: [MARKET_DIRECTION_ACTION], since }).events) {
-    if (!e.detail) continue;
-    let direction: unknown;
-    try {
-      direction = (JSON.parse(e.detail) as { direction?: unknown }).direction;
-    } catch {
-      continue;
-    }
-    if (typeof direction !== 'string' || !MARKET_DIRECTIONS.has(direction)) continue;
-    const day = etToday(e.createdAt);
-    const rows = out.get(day) ?? [];
-    rows.push({ at: e.createdAt, direction: direction as MarketDirection });
-    out.set(day, rows);
-  }
-  for (const rows of out.values()) rows.sort((a, b) => a.at - b.at);
-  return out;
-}
-
-/** The reading in force at `at` on `etDate`: the latest row at or before it,
- *  never one from a later minute and never one from another day. Null when the
- *  loop had journaled none yet that day. */
-export function directionAt(index: DirectionIndex, etDate: string, at: number | null): MarketDirection | null {
-  if (at === null) return null;
-  let found: MarketDirection | null = null;
-  for (const r of index.get(etDate) ?? []) {
-    if (r.at > at) break;
-    found = r.direction;
-  }
-  return found;
 }
 
 /** Attributes for one collector id, before the round number is assigned. */
@@ -1599,8 +1561,10 @@ export function runEdgeLeakScanFromDb(opts: EdgeLeakScanOptions = {}): EdgeLeakS
   // exit's slippage is the chase doing its job, and pooling the two would hide
   // the number the attribution is actually about.
   const skipRead = collectJournalSkips(windowStart);
+  // Stock entries only (2026-09-24): the buffer this is read against is the
+  // stock's marketable 0.5%, and an option's limit sits at its ask x 1.05.
   const entrySlippagePct = buildLiveSlippageRows()
-    .filter((r) => r.kind === 'entry' && r.date >= (liveCollected.sessionDates[0] ?? '0000-00-00'))
+    .filter((r) => isStockEntrySlippage(r) && r.date >= (liveCollected.sessionDates[0] ?? '0000-00-00'))
     .map((r) => r.pct);
 
   return runEdgeLeakScan({

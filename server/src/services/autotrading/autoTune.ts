@@ -57,11 +57,14 @@ function round2(n: number): number {
 
 /** Every live-traded fill (entry or exit) that traces back to an order whose
  *  limit is a fair reference for it (slippage.ts's limitIsReference). The ONE
- *  builder: the Journal's '/slippage' route, the leak scan's entry slippage and
- *  the per-symbol exclusion below all read these rows, so they cannot disagree
- *  about which fills count. The route used to walk positions itself, reading
- *  only source_intent_id, and kept doing so after this builder learned the
- *  adopted link. */
+ *  builder: the Journal's '/slippage' route, the leak scan's entry slippage,
+ *  the per-symbol exclusion below and the replay's entry concession all read
+ *  these rows, so none of them can find a fill the others miss. Each then keeps
+ *  the rows its own question needs: the concession, only the loop's own first
+ *  stock entries (declinedEntryShadowData.ts, isLoopFirstEntry); the route and
+ *  the exclusion still pool every asset and both sides. The route used to walk
+ *  positions itself, reading only source_intent_id, and kept doing so after
+ *  this builder learned the adopted link. */
 export function buildLiveSlippageRows(): SlippageRow[] {
   const positions = listPositions();
   // The ENTRY order behind each position, by EITHER link (2026-09-23). This read
@@ -95,6 +98,7 @@ export function buildLiveSlippageRows(): SlippageRow[] {
           computeSlippage({
             positionId: p.id,
             symbol: p.symbol,
+            assetType: p.assetType,
             kind: 'entry',
             side: intent.side,
             date: entryDate,
@@ -114,6 +118,7 @@ export function buildLiveSlippageRows(): SlippageRow[] {
         computeSlippage({
           positionId: p.id,
           symbol: p.symbol,
+          assetType: p.assetType,
           kind: 'exit',
           side: intent.side,
           date: e.exitDate,

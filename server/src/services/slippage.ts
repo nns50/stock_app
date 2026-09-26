@@ -20,6 +20,10 @@ function round2(n: number): number {
 export interface SlippageInput {
   positionId: number;
   symbol: string;
+  /** The position's asset (2026-09-24): a stock limit and an option limit sit
+   *  against different buffers (the stock's marketable 0.5%, an option's ask
+   *  x 1.05), so a reader of the stock buffer reads stock rows only. */
+  assetType: 'stock' | 'option';
   kind: 'entry' | 'exit';
   /** The order's side (buy/sell) — not the resulting position's side. */
   side: 'buy' | 'sell';
@@ -28,6 +32,14 @@ export interface SlippageInput {
   fillPrice: number;
   quantity: number;
   multiplier: number;
+}
+
+/** A stock ENTRY row: the rows the stock marketable-limit buffer measures.
+ *  One predicate for every reader of that buffer (the leak scan's entry
+ *  slippage and the replay's entry concession), so neither can average in an
+ *  option fill measured against a different buffer. */
+export function isStockEntrySlippage(r: Pick<SlippageInput, 'kind' | 'assetType'>): boolean {
+  return r.kind === 'entry' && r.assetType === 'stock';
 }
 
 export interface SlippageRow extends SlippageInput {

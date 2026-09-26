@@ -53,8 +53,10 @@ const sourceOf = (bars: Record<string, Candle[]>) => ({
 
 describe('buildDeclinedEntryShadow — a declined LONG', () => {
   it('replays a winner to its target', async () => {
+    // Enters at the signal's price, 100, with no concession asked for, so 1R
+    // is $2 and the 102 target is traded through by the 102.5 bar.
     const src = sourceOf({ MSFT: [bar(0, 100.5, 99.5), bar(5, 102.5, 101)] });
-    const out = await buildDeclinedEntryShadow(src, [longAt100()], cfg());
+    const out = await buildDeclinedEntryShadow(src, [longAt100()], cfg(), { entryConcessionPct: 0 });
     expect(out.n).toBe(1);
     expect(out.trades[0].exitR).toBeCloseTo(1, 5);
     expect(out.winRatePct).toBe(100);
@@ -198,11 +200,15 @@ describe('buildDeclinedEntryShadow — minMinutesSinceExit', () => {
     sourceOf({ MSFT: [bar(0, 100.4, 99.8), bar(60, 101.4, 100.6), bar(120, 102.4, 101.6), bar(125, 105, 102)] });
 
   it('replays the first refusal at or past the gap, at THAT tick’s entry and stop', async () => {
-    const out = await buildDeclinedEntryShadow(bars(), series, cfg(), { minMinutesSinceExit: 120 });
+    const out = await buildDeclinedEntryShadow(bars(), series, cfg(), {
+      minMinutesSinceExit: 120,
+      entryConcessionPct: 0,
+    });
     expect(out.n).toBe(1);
     expect(out.minMinutesSinceExit).toBe(120);
     expect(out.trades[0]).toMatchObject({ at: T0 + 120 * MIN, entry: 102, stop: 100, minutesSinceExit: 121 });
-    // 1R = $2 from 102: the 105 bar reaches the 104 target.
+    // Entered at the 120-minute refusal's price, 102: 1R = $2, and the 105 bar
+    // trades through the 104 target.
     expect(out.trades[0].exitR).toBeCloseTo(1, 5);
     expect(out.excluded).toMatchObject({ before_min_gap: 2, duplicate_same_day: 0, no_exit_gap: 0 });
   });
@@ -261,5 +267,101 @@ describe('memoCandleSource', () => {
     const second = await buildDeclinedEntryShadow(memo, [longAt100()], cfg());
     expect(second.n).toBe(1);
     expect(inner.getCandles).toHaveBeenCalledTimes(2);
+  });
+});
+
+// REPLAY VERSION 2 (2026-09-26). The entry a live order could have had, the
+// gates live would have applied, and a record that says which replay built it.
+describe('buildDeclinedEntryShadow — the honest fill (replay version 2)', () => {
+  /** A bar with its open given, for the gap and next-bar cases. */
+  const opened = (offsetMin: number, open: number, high: number, low: number, close: number): Candle => ({
+    time: T0 + offsetMin * MIN,
+    open,
+    high,
+    low,
+    close,
+    volume: 1000,
+  });
+
+  it('enters at the signal’s price plus the concession, not at the next bar’s open', async () => {
+    // Live places against the signal's quote seconds after it; the next bar
+    // opens up to five minutes later, 101 here.
+    const src = sourceOf({ MSFT: [opened(0, 101, 101.5, 100.5, 101), bar(5, 103.5, 102)] });
+    const out = await buildDeclinedEntryShadow(src, [longAt100()], cfg(), { entryConcessionPct: 0.1 });
+    expect(out.trades[0].entry).toBe(100);
+    expect(out.trades[0].entryFill).toBeCloseTo(100.1, 6);
+    // 1R is $2.10 to the 98 stop, so the target is 102.20, which the second
+    // bar trades through. Entered at the next bar's 101.101 instead, 1R would
+    // be $3.10 and the 104.20 target out of reach: +0.53R at the last close.
+    expect(out.trades[0]).toMatchObject({ reason: 'target', exitR: 1 });
+    expect(out).toMatchObject({ replayVersion: 2, entryConcessionPct: 0.1 });
+  });
+
+  it('exits under the honest model: a stop the bar opens through fills at the open', async () => {
+    const src = sourceOf({ MSFT: [opened(0, 100, 100.5, 99.5, 100), opened(5, 97, 97.5, 96.5, 97)] });
+    const out = await buildDeclinedEntryShadow(src, [longAt100()], cfg(), { entryConcessionPct: 0 });
+    // Opened at 97 against the 98 stop: -3/2 = -1.5R, not the stop's -1R.
+    expect(out.trades[0]).toMatchObject({ reason: 'stop', exitR: -1.5 });
+  });
+
+  it('charges a short the concession downward', async () => {
+    const src = sourceOf({ MSFT: [opened(0, 100, 100.5, 99.5, 100), bar(5, 99, 96)] });
+    const out = await buildDeclinedEntryShadow(src, [longAt100({ side: 'short', stop: 102 })], cfg(), {
+      entryConcessionPct: 0.2,
+    });
+    expect(out.trades[0].entryFill).toBeCloseTo(99.8, 6);
+  });
+
+  it('charges the whole buffer when no concession was measured', async () => {
+    const src = sourceOf({ MSFT: [opened(0, 100, 100.5, 99.5, 100), bar(5, 106, 103)] });
+    const out = await buildDeclinedEntryShadow(src, [longAt100()], cfg());
+    expect(out.entryConcessionPct).toBe(0.5);
+    expect(out.trades[0].entryFill).toBeCloseTo(100.5, 6);
+  });
+
+  it('takes a first bar that opens through the stop as a stop-out at that open, not a refusal', async () => {
+    const src = sourceOf({ MSFT: [opened(0, 97.9, 98.5, 97, 98), bar(5, 106, 103)] });
+    const out = await buildDeclinedEntryShadow(src, [longAt100()], cfg(), { entryConcessionPct: 0 });
+    // Filled at the signal's 100; the next bar opens at 97.9, past the 98 stop:
+    // -2.1 / 2 = -1.05R, as a live stop order fills through a gap.
+    expect(out.n).toBe(1);
+    expect(out.trades[0]).toMatchObject({ reason: 'stop', exitR: -1.05 });
+  });
+
+  it('counts a stop on the wrong side of the signal as unusable, for either side', async () => {
+    const src = sourceOf({ MSFT: [bar(0, 100.5, 99.5), bar(5, 106, 103)] });
+    const out = await buildDeclinedEntryShadow(
+      src,
+      [longAt100({ stop: 101 }), longAt100({ symbol: 'NVDA', side: 'short', stop: 99 })],
+      cfg(),
+      { entryConcessionPct: 0 },
+    );
+    expect(out.n).toBe(0);
+    expect(out.excluded.unusable_signal).toBe(2);
+  });
+
+  it('replays the market-direction gate when it is on and readings are given', async () => {
+    const src = sourceOf({ MSFT: [bar(0, 100.5, 99.5), bar(5, 106, 103)] });
+    const red = () => 'red' as const;
+    const on = await buildDeclinedEntryShadow(src, [longAt100()], cfg({ marketDirectionGateEnabled: true }), {
+      directionAt: red,
+    });
+    expect(on).toMatchObject({ n: 0, directionGateReplayed: true });
+    expect(on.excluded.refused_by_direction).toBe(1);
+    // A short on the same red tape leans with it and is kept.
+    const short = await buildDeclinedEntryShadow(
+      src,
+      [longAt100({ side: 'short', stop: 102 })],
+      cfg({ marketDirectionGateEnabled: true }),
+      { directionAt: red },
+    );
+    expect(short.excluded.refused_by_direction).toBe(0);
+    // The gate off, or no readings: nothing replayed.
+    const off = await buildDeclinedEntryShadow(src, [longAt100()], cfg({ marketDirectionGateEnabled: false }), {
+      directionAt: red,
+    });
+    expect(off).toMatchObject({ n: 1, directionGateReplayed: false });
+    const blind = await buildDeclinedEntryShadow(src, [longAt100()], cfg({ marketDirectionGateEnabled: true }));
+    expect(blind.directionGateReplayed).toBe(false);
   });
 });

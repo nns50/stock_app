@@ -152,21 +152,27 @@ const declined = (symbol: string, etDateTime: string): DeclinedEntry => ({
 
 describe('the declined-entry shadow on past-day bars', () => {
   it('replays a signal on a day served by the fallback from the signal, not from 10:00', async () => {
-    const out = await buildDeclinedEntryShadow(productionSource(), [declined('OLD', '2026-09-01T09:37')], cfg);
+    const out = await buildDeclinedEntryShadow(productionSource(), [declined('OLD', '2026-09-01T09:37')], cfg, {
+      entryConcessionPct: 0,
+    });
     expect(out.n).toBe(1);
     expect(out.trades[0].reason).toBe('target');
     expect(out.trades[0].exitR).toBeCloseTo(1, 5);
   });
 
   it('ends the session at the close, not on after-hours prints', async () => {
-    const out = await buildDeclinedEntryShadow(productionSource(), [declined('LATE', '2026-09-01T15:37')], cfg);
+    const out = await buildDeclinedEntryShadow(productionSource(), [declined('LATE', '2026-09-01T15:37')], cfg, {
+      entryConcessionPct: 0,
+    });
     expect(out.n).toBe(1);
     expect(out.trades[0].reason).toBe('time_exit');
     expect(out.trades[0].exitR).toBeCloseTo(0, 5);
   });
 
   it("reads the whole session on the day Webull's reach runs out partway through", async () => {
-    const out = await buildDeclinedEntryShadow(productionSource(), [declined('EDGE', '2026-09-02T09:37')], cfg);
+    const out = await buildDeclinedEntryShadow(productionSource(), [declined('EDGE', '2026-09-02T09:37')], cfg, {
+      entryConcessionPct: 0,
+    });
     expect(out.n).toBe(1);
     expect(out.trades[0].reason).toBe('target');
     expect(out.trades[0].exitR).toBeCloseTo(1, 5);

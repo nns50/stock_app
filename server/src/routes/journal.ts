@@ -32,10 +32,15 @@ import {
 } from '../services/autotrading/exitTuneValidation';
 import { computeShortShadowReport, SHORT_SHADOW_SINCE_MS } from '../services/autotrading/shortShadowRecordData';
 import { getLastReentryShadowRecord } from '../db/reentryShadowRecords';
-import { parseDeclinedEntry, type DeclinedEntry } from '../services/autotrading/declinedEntry';
+import { parseDeclinedEntryFor, type DeclinedEntry } from '../services/autotrading/declinedEntry';
 import { readDay } from '../services/autotrading/dayMarks';
 import { listDayMarkDates } from '../db/dayMarks';
-import { buildDeclinedEntryShadow, SCORE_FLOOR_ACTIONS } from '../services/autotrading/declinedEntryShadow';
+import {
+  buildDeclinedEntryShadow,
+  DIRECTION_GATE_ACTIONS,
+  SCORE_FLOOR_ACTIONS,
+} from '../services/autotrading/declinedEntryShadow';
+import { shadowFillInputs } from '../services/autotrading/declinedEntryShadowData';
 import { listAutotradeEventsInWindow } from '../db/autotradeEvents';
 import type { Candle } from '../providers/types';
 import {
@@ -1065,7 +1070,8 @@ journalRouter.get(
     const rows: DeclinedEntry[] = [];
     let unscorableRows = 0;
     for (const e of journaled) {
-      const parsed = parseDeclinedEntry(e);
+      // A short skip's row carries no side: read under its action, it is a short.
+      const parsed = parseDeclinedEntryFor(action, e);
       if (parsed) rows.push(parsed);
       else unscorableRows += 1;
     }
@@ -1075,7 +1081,15 @@ journalRouter.get(
     // constitute the evidence and return an empty record that reads as "no
     // signal" instead of "wrong question".
     const applyScoreFloor = !SCORE_FLOOR_ACTIONS.has(action);
-    const record = await buildDeclinedEntryShadow(getProvider(), rows, cfg, { applyScoreFloor, minMinutesSinceExit });
+    // The direction gate's own refusals, likewise: the reading in force at each
+    // is the one that refused it, so replaying the gate empties the record.
+    const fill = shadowFillInputs(from);
+    const record = await buildDeclinedEntryShadow(getProvider(), rows, cfg, {
+      applyScoreFloor,
+      minMinutesSinceExit,
+      entryConcessionPct: fill.entryConcessionPct,
+      directionAt: DIRECTION_GATE_ACTIONS.has(action) ? undefined : fill.directionAt,
+    });
     res.json({
       action,
       since: from,

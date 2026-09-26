@@ -3,6 +3,8 @@ import { CandleSource, INTRADAY_TIMEFRAME } from '../excursion';
 import { ExitRules, liveExitRules, replayExit } from '../exitReplay';
 import { Candle } from '../../providers/types';
 import { DeclinedEntry } from './declinedEntry';
+import { MARKETABLE_LIMIT_BUFFER_PCT } from './marketableLimit';
+import { MarketDirection, tapeAlignment } from './marketDirection';
 
 // ---------------------------------------------------------------------------
 // What the live book WOULD have made on the entries it refused (2026-09-14).
@@ -37,20 +39,46 @@ import { DeclinedEntry } from './declinedEntry';
 // So the refused signals have to be replayed on their own bars, which is what
 // this does.
 //
-// THE SAME THREE CAVEATS APPLY, and they are not softened by generalising:
+// THE CAVEATS, and they are not softened by generalising:
 //
 //   NOT A P&L. Slots, aggregate-risk room and cooldowns are ignored, so this is
 //   per-trade expectancy and not money the book could have banked.
 //
-//   NOT A FILL. The entry is the signal's price. No slippage, and no claim the
-//   size would have funded.
+//   A FILL THE LIVE BOOK COULD HAVE HAD (replay version 2, 2026-09-26). Version
+//   1 entered at the signal's exact price and let every exit fill the way the
+//   `touch` model fills: stops at their price through gaps, breakeven and the
+//   trail on bar highs, targets on a touch. Each favoured the trade, and these
+//   records feed rules that ADD exposure (red-day shorts, a shorter re-entry
+//   cooldown). Version 2:
+//     - enters at the signal's price plus the share of the marketable-limit
+//       buffer live entries actually pay (`entryConcessionPct`, measured from
+//       the live fills; the whole buffer when nothing is measured). The
+//       signal's price is the quote live places against: a median 2 seconds
+//       before the order. Calibrated on 2026-09-24 against 109 live stock
+//       fills since 07-27. The signal's price missed the fill by 0.075R on
+//       average (bias +0.009R). The open of the next 5-minute bar missed by
+//       0.136R: it prices a trade up to five minutes after live would have
+//       filled, and on the 27 declined red-open shorts that move alone cost
+//       0.15R a trade;
+//     - a first bar that gaps THROUGH the stop is a stop-out, not a refusal:
+//       the honest exit fills it at that bar's open, past 1R, as a live stop
+//       would;
+//     - replays the market-direction gate when it is on, from the readings in
+//       force at the decision (`refused_by_direction`);
+//     - exits under replayExit's `honest` model.
+//   Still not claimed: that a short was borrowable, or that the size funds.
 //
-//   NOT NEUTRAL ABOUT AMBIGUITY, deliberately. It reuses `replayExit`, which
-//   resolves every intrabar stop-and-target collision AGAINST the trade, so it
-//   understates. A gate that looks worth loosening on this reading looks so
-//   pessimistically, which is the only direction worth being wrong in when the
-//   change ADDS exposure.
+//   NOT NEUTRAL ABOUT AMBIGUITY, deliberately. `replayExit` resolves every
+//   intrabar stop-and-target collision AGAINST the trade, so it understates. A
+//   gate that looks worth loosening on this reading looks so pessimistically,
+//   which is the only direction worth being wrong in when the change ADDS
+//   exposure.
 // ---------------------------------------------------------------------------
+
+/** Which replay a record was built by: 1 filled at the signal's price under the
+ *  touch model; 2 is the honest fill (the header). A record says which, so
+ *  numbers from the two are never read as one series. */
+export const DECLINED_SHADOW_REPLAY_VERSION = 2;
 
 export type ShadowSkipReason =
   | 'below_live_floor'
@@ -62,9 +90,15 @@ export type ShadowSkipReason =
   /** Under `minMinutesSinceExit`: a row that carries no exit gap at all — a
    *  gate other than the re-entry cooldown, whose rows cannot answer a gap
    *  question and are counted rather than silently passed. */
-  | 'no_exit_gap';
+  | 'no_exit_gap'
+  /** The market-direction gate, replayed: the reading in force at the decision
+   *  leaned against the side, and the gate is on. */
+  | 'refused_by_direction';
 
 export interface ShadowTrade extends DeclinedEntry {
+  /** The price the replay entered at: the signal's price (`entry`, from the
+   *  row) plus the entry concession. */
+  entryFill: number;
   exitR: number;
   reason: string;
   bestR: number;
@@ -98,6 +132,14 @@ export interface DeclinedEntryShadow {
    * differ and nothing says whether the trades changed or a knob did.
    */
   exitRules: ExitRules;
+  /** DECLINED_SHADOW_REPLAY_VERSION: which replay built these numbers. */
+  replayVersion: number;
+  /** The percent charged against each signal's price, in the trade's
+   *  disfavour (ShadowOptions.entryConcessionPct). */
+  entryConcessionPct: number;
+  /** Whether the market-direction gate was replayed (it is on, and readings
+   *  were supplied). */
+  directionGateReplayed: boolean;
 }
 
 // The live book's exit geometry lives in exitReplay.ts, beside the rules type,
@@ -155,6 +197,16 @@ export const SCORE_FLOOR_ACTIONS = new Set([
   'regime_score_floor_skipped',
 ]);
 
+/**
+ * The gate refusals the DIRECTION replay must not be applied to (2026-09-24,
+ * on review): the market-direction gate's own. The loop journals the tick's
+ * reading before it places, so the reading in force at each of these rows is
+ * the one that refused it, and replaying the gate over them refuses every one:
+ * the route came back n 0 for the question it was asked. The same mistake
+ * SCORE_FLOOR_ACTIONS exists to prevent, one gate over.
+ */
+export const DIRECTION_GATE_ACTIONS = new Set(['live_market_direction_skipped']);
+
 export interface ShadowOptions {
   /**
    * Whether to drop rows below the floor that judged them. True for a gate that
@@ -177,6 +229,27 @@ export interface ShadowOptions {
    * unset: no gap requirement.
    */
   minMinutesSinceExit?: number;
+  /**
+   * The percent of the signal's price charged against the trade: the share
+   * of the marketable-limit buffer live entries pay (meanBufferConsumedPct over
+   * the live fills). Unset: the whole buffer, MARKETABLE_LIMIT_BUFFER_PCT —
+   * the most a live entry can pay, and the right default for a caller that
+   * measured nothing.
+   */
+  entryConcessionPct?: number;
+  /**
+   * The market-direction reading in force at a moment (the journal's
+   * `market_direction_read` rows). When given and the gate is on, an entry the
+   * gate would have refused is excluded. Unset: the gate is not replayed.
+   */
+  directionAt?: (at: number) => MarketDirection | null;
+}
+
+/** The price a live entry pays against the quote it placed at: through it by
+ *  the concession, up for a long and down for a short. */
+export function entryFillPrice(quote: number, side: 'long' | 'short', concessionPct: number): number {
+  const sign = side === 'long' ? 1 : -1;
+  return quote * (1 + (sign * concessionPct) / 100);
 }
 
 /**
@@ -227,7 +300,10 @@ export async function buildDeclinedEntryShadow(
     unusable_signal: 0,
     before_min_gap: 0,
     no_exit_gap: 0,
+    refused_by_direction: 0,
   };
+  const concessionPct = Math.max(0, options.entryConcessionPct ?? MARKETABLE_LIMIT_BUFFER_PCT);
+  const directionAt = cfg.marketDirectionGateEnabled ? (options.directionAt ?? null) : null;
 
   const eligible = rows.filter((r) => {
     const floor = r.floorAtSkip ?? cfg.liveMinSignalScore;
@@ -235,8 +311,11 @@ export async function buildDeclinedEntryShadow(
       excluded.below_live_floor += 1;
       return false;
     }
-    // A signal whose stop sits at or through its entry has no 1R to measure.
-    if (!Number.isFinite(r.entry) || !Number.isFinite(r.stop) || !(Math.abs(r.entry - r.stop) > 0)) {
+    // A signal whose stop sits at or through its entry has no 1R to measure:
+    // equal, or on the wrong side for the trade (a long's stop at or above its
+    // entry, a short's at or below).
+    const stopBelow = r.side === 'long' ? r.entry - r.stop : r.stop - r.entry;
+    if (!Number.isFinite(r.entry) || !Number.isFinite(r.stop) || !(stopBelow > 0)) {
       excluded.unusable_signal += 1;
       return false;
     }
@@ -255,7 +334,19 @@ export async function buildDeclinedEntryShadow(
     return true;
   });
 
-  const { kept, dropped } = dedupeBySymbolDay(eligible);
+  // The gate is replayed BEFORE the dedupe, as the gap filter is, so the
+  // record keeps the first refusal of the day the gate would have let through.
+  const admitted = directionAt
+    ? eligible.filter((r) => {
+        if (tapeAlignment(directionAt(r.at), r.side) === 'against') {
+          excluded.refused_by_direction += 1;
+          return false;
+        }
+        return true;
+      })
+    : eligible;
+
+  const { kept, dropped } = dedupeBySymbolDay(admitted);
   excluded.duplicate_same_day = dropped;
 
   const rules = liveExitRules(cfg);
@@ -271,14 +362,22 @@ export async function buildDeclinedEntryShadow(
       continue;
     }
     const window = barsFromSignal(bars, r.at);
-    const out = window.length
-      ? replayExit({ side: r.side, entryPrice: r.entry, initialStopPrice: r.stop }, window, rules)
-      : null;
+    const first = window[0];
+    if (!first) {
+      excluded.no_bars += 1;
+      continue;
+    }
+    // The concession moves the fill AWAY from the stop (a long pays up, a short
+    // sells lower), so a usable signal always keeps its 1R. A first bar that
+    // opens through the stop is a stop-out, which the honest exit fills at
+    // that open.
+    const entryFill = entryFillPrice(r.entry, r.side, concessionPct);
+    const out = replayExit({ side: r.side, entryPrice: entryFill, initialStopPrice: r.stop }, window, rules, 'honest');
     if (!out) {
       excluded.no_bars += 1;
       continue;
     }
-    trades.push({ ...r, exitR: out.exitR, reason: out.reason, bestR: out.bestR, barsHeld: out.barsHeld });
+    trades.push({ ...r, entryFill, exitR: out.exitR, reason: out.reason, bestR: out.bestR, barsHeld: out.barsHeld });
   }
 
   const rs = trades.map((t) => t.exitR);
@@ -296,5 +395,8 @@ export async function buildDeclinedEntryShadow(
     excluded,
     minMinutesSinceExit: minGap,
     exitRules: rules,
+    replayVersion: DECLINED_SHADOW_REPLAY_VERSION,
+    entryConcessionPct: concessionPct,
+    directionGateReplayed: directionAt !== null,
   };
 }

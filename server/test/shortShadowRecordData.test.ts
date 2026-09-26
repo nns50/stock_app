@@ -34,8 +34,11 @@ const IN_SESSION = Date.parse('2026-09-10T18:00:00Z');
 function bar(offsetMin: number, high: number, low: number): Candle {
   return { time: T0 + offsetMin * 60_000, open: (high + low) / 2, high, low, close: (high + low) / 2, volume: 1000 };
 }
-/** Falls to 96 = the 2R target for a short entered at 100 with a 102 stop. */
-const winning = [bar(0, 100, 99), bar(5, 99, 97), bar(10, 97, 95.5)];
+/** A short signalled at 100 with a 102 stop. The replay enters at the
+ *  signal's price, 100, less the whole 0.5% buffer (no live fills are measured
+ *  here): 99.5, so 1R is $2.5 and the 2R target is 94.5, which the 94 low
+ *  trades through. */
+const winning = [{ ...bar(0, 100, 99), open: 100 }, bar(5, 99, 97), bar(10, 97, 94)];
 const armProvider = () => mockGetProvider.mockReturnValue({ getCandles: vi.fn(async () => winning) } as never);
 
 function skip(symbol: string, detail: Record<string, unknown>, at: number = T0): void {
@@ -70,6 +73,33 @@ describe('loadSkippedShorts', () => {
     const { rows, truncated } = loadSkippedShorts();
     expect(rows).toEqual([{ symbol: 'KLAC', at: T0, score: 80, entry: 100, stop: 102, floorAtSkip: 72 }]);
     expect(truncated).toBe(false);
+  });
+});
+
+// THE REPLAY'S FILL INPUTS COME FROM THE DATABASE (2026-09-26): asserted on
+// the report the switch reads, not on the helper that reads them.
+describe('computeShortShadowReport — the honest fill inputs', () => {
+  it('replays the market-direction gate from the journaled readings, and stamps the replay', async () => {
+    db.prepare(
+      "INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) VALUES (NULL,'screen','market_direction_read',?,NULL,?)",
+    ).run(JSON.stringify({ direction: 'green' }), T0 - 60_000);
+    skip('KLAC', signal);
+
+    setAutotradeConfig({ marketDirectionGateEnabled: true });
+    const gated = await computeShortShadowReport();
+    // A short on a broad green tape: the gate would have refused it.
+    expect(gated).toMatchObject({ n: 0, directionGateReplayed: true, replayVersion: 2 });
+    expect(gated.excluded.refused_by_direction).toBe(1);
+
+    setAutotradeConfig({ marketDirectionGateEnabled: false });
+    expect(await computeShortShadowReport()).toMatchObject({ n: 1, directionGateReplayed: false });
+  });
+
+  it('charges the whole buffer while no live entry has been measured', async () => {
+    skip('KLAC', signal);
+    const report = await computeShortShadowReport();
+    expect(report.entryConcessionPct).toBe(0.5);
+    expect(report.trades[0].entryFill).toBeCloseTo(99.5, 6);
   });
 });
 
