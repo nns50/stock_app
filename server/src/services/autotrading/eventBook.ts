@@ -60,6 +60,9 @@ export const LIVE_ACTIONS = new Set([
   // liveExecute.ts — the equity entry path and its refusals
   'absorbed_price_skipped',
   'bracket_groups_observed',
+  // The day-protective stop's once-a-day mark (2026-09-26): the live loop's own
+  // realized P&L and its open positions' stops.
+  'day_protective_armed',
   'entry_filled',
   'entry_window_closed',
   'equity_moved_far_from_open',
