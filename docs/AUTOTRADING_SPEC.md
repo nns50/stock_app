@@ -16200,3 +16200,101 @@ The mutations:
   paper-only bucket read as the live verdict;
 - in the wiring: the pairing's gap sign flipped; the refresh never replaying; the
   snapshot dropping the book.
+
+## 2026-09-26 (fourth) — the tape at every entry since July, rebuilt (the reading)
+
+The tape plan's R: PR 3's backfill (2026-09-26 (second)), run once on a production copy
+taken after the 2026-09-25 close. 40 sessions, 2026-07-31 to 2026-09-25, breadth from the
+whole universe (559 of 560 names had bars; MMC had none). **Rebuilt readings never count
+toward any switch, and nothing here changes a setting.** It is the history the plan's
+question had none of: do shorts and puts pay on red days, and do longs lose there?
+
+**The rebuild is close enough to read.** On 2026-09-24, the one journaled session (the
+kill switch held the screen through all of 09-25, so that day has no live reading), the
+rebuild agreed with the loop's reading at 74 of 77 slots (96%). The plan's bar was to say
+so before any table if more than about 10% disagreed. No slot was unreadable; the
+smallest breadth sample was 547 names.
+
+**The tape.** Of 3,042 five-minute slots, 21.7% read red, 21.1% green and 57.2% mixed.
+15 of the 40 sessions had a red reading at some point and 11 a green one. Flips per
+session averaged 0.9; the most was 5 (2026-09-04), and three or more happened on four
+days (09-04, 09-17, 09-23, 09-24).
+
+**The book against the tape** (the edge-leak scan with the rebuilt index: 135 live and 204
+paper trades, every one with a reading; R is the collector's). No live bucket with more
+than one trade has an interval that excludes zero, and the scan calls none of them a leak.
+
+| Bucket | Live n | Live mean R [95% CI] | Paper n | Paper mean R [95% CI] |
+|---|---|---|---|---|
+| Stock long, red | 36 | +0.00 [−0.20, +0.18] | 29 | +0.16 [−0.05, +0.37] |
+| Stock long, mixed | 50 | −0.08 [−0.22, +0.05] | 58 | +0.01 [−0.19, +0.20] |
+| Stock long, green | 23 | +0.13 [−0.10, +0.42] | 20 | +0.16 [−0.18, +0.47] |
+| Stock short, red | 0 | — | 20 | +0.10 [−0.15, +0.38] |
+| Stock short, mixed | 0 | — | 27 | +0.16 [−0.07, +0.38] |
+| Call, red | 4 | +0.27 [−0.28, +0.82] | 9 | −0.27 [−0.51, −0.04] |
+| Call, mixed | 11 | +0.24 [−0.40, +1.17] | 19 | +0.00 [−0.26, +0.29] |
+| Call, green | 1 | −1.50 | 7 | +0.44 [+0.01, +0.87] |
+| Put, red | 0 | — | 3 | −0.28 [−0.57, −0.09] |
+| Put, mixed | 9 | −0.14 [−0.32, +0.05] | 12 | −0.01 [−0.29, +0.27] |
+| Put, green | 1 | −0.87 | 0 | — |
+
+Cut by whether the entry leaned with the tape: live with 24 at +0.07R, against 41 at
++0.00R, mixed 70 at −0.04R; paper +0.15R (50), +0.06R (38) and +0.04R (116). That ordering is the plan's
+premise, and every interval spans zero.
+
+- **The longs the market-direction gate now refuses were flat, not losing.** Live stock
+  longs on a red tape: 36 at +0.00R. Paper's: 29 at +0.16R. The gate was calibrated on
+  2026-09-23's losers; over 40 sessions the bucket it removes is not a losing one, and
+  the live bucket that lost the most is longs on a mixed tape (50 at −0.08R, −4.0R in
+  all), which it does not touch.
+  Nothing changes on this: the gate's own review (rule E) reads its live refusals. As a
+  first historical read, it leans against the gate's premise rather than for it.
+- **Calls and puts.** Calls on a red tape: live 4 at +0.27R, paper 9 at −0.27R. No live
+  put was entered on a red tape in the 40 sessions, and paper's 3 lost (−0.28R). Rule A
+  has nothing to read yet.
+- **The index leg alone** (the same readings with no breadth bar) moves the counts but
+  not the story: live stock longs on an index-red tape 55 at −0.01R, paper's 40 at +0.24R
+  [+0.08, +0.42]. Paper stock shorts on an index-red tape: 35 at +0.12R [−0.07, +0.31].
+
+**Shorts.**
+- **The declined live shorts** (the `shorts` switch's own record: replay version 2, entry
+  concession 0.05%, 814 journaled rows): 38 at +0.22R [+0.03, +0.40], 55.3% winners. By
+  tape: red 5 at +0.30R (60.0%), mixed 32 at +0.21R (56.3%), green 1. After the ATR
+  reachability gate: 31 at +0.22R, red 4 at +0.51R.
+- **The red-tape bar (PR 4) is far off.** It wants 20 red-tape trades at +0.15R, 50%
+  winners and +0.10R over the other tapes; this history has 5, at +0.09R over the rest.
+  And the bar counts live-labeled rows only, so none of these 5 counts.
+- **Every short signal that cleared the live floor** (the counterfactual, from 53,871
+  signals). Each tape keeps its own first signal per symbol-day, so a symbol-day first
+  signalled on a mixed tape and later on a red one counts on both; All keeps the first
+  per symbol-day on any tape, which is why the rows add up to more than it:
+
+| Tape | n | Mean R [95% CI] | Win % | After the ATR gate |
+|---|---|---|---|---|
+| Red | 165 | +0.03 [−0.03, +0.10] | 52.1% | 106 at +0.03R, 50.9% |
+| Mixed | 219 | +0.02 [−0.05, +0.08] | 44.7% | 147 at +0.00R, 42.9% |
+| Green | 68 | −0.14 [−0.25, −0.03] | 35.3% | 31 at −0.23R, 29.0% |
+| All | 363 | −0.01 [−0.06, +0.04] | 45.7% | 214 at −0.03R, 44.4% |
+
+  Another 11 came before their day's first reading and carry no label (−0.24R).
+
+**What it says.**
+- **"Shorts pay on red days" does not hold as a population.** A short on a red tape is
+  flat (+0.03R over 165); only a short on a green tape reliably loses. The declined-short
+  record's +0.22R is a selected subset: the signals that got as far as the live path's
+  shorts-off skip, past its earlier gates. It is 38 trades, 5 of them on a red tape.
+- **So the operator's hold on live shorts stands on this history too.** Rule B's bar is
+  unchanged and reads live rows only. PR 8's switch waits for the red-tape bar and the
+  paper `equity_short_red` control; the rebuilt paper control (20 at +0.10R) would pass
+  its n ≥ 10, mean > 0 test, but rebuilt labels never count.
+- **The tape score's scales are not in this run.** PR 3's script rebuilds the label, not
+  the score's legs, so R cannot freeze the legs' 90th percentiles as the plan said. PR 6
+  computes them from the same cached bars once the legs exist, and freezes them there.
+
+**Caveats** (PR 3's, and they apply to every number above): the universe is today's
+(survivorship); paper shorts compete for the paper book's three slots; none of the
+replays is a P&L (slots, cooldowns and the risk check are not applied); the rebuild's
+clock is 5-minute bars, and its parity was measured on one session.
+
+**Reproduce.** `npm run backfill:tape -- --db <copy>` on a copy taken after 2026-09-25's
+close; the whole-universe run took about 20 minutes cold.

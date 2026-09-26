@@ -867,6 +867,14 @@ broad red day; `equity_long_red` a stock long on one; `options_short_red` a put;
   gate as its lever. The others have none: a losing short on a red day is a finding, and no
   setting refuses it.
 
+**What 40 rebuilt sessions say (the 2026-09-26 reading).** The tape was rebuilt for every
+session since 2026-07-31 (AUTOTRADING_SPEC, "the tape at every entry since July"). A red day
+is not a short signal by itself. Every short signal that cleared the live floor on a red
+tape read +0.03R over 165, which is flat; on a green tape it lost (−0.14R over 68). The live
+longs the direction gate now refuses (red tape) were flat too, at +0.00R over 36. The live
+bucket that lost the most was longs on a mixed tape: −4.0R over 50 trades. None of it counts
+toward a switch: rebuilt labels are history, and the rules read the live journal.
+
 One mechanical thing worth knowing, because it decides whether an exit is placeable at
 all: **an option under $3 of premium can only be priced in nickels.** Webull rejects
 anything else outright, so the live path snaps every option limit onto that grid — a buy
