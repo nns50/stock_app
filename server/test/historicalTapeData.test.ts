@@ -33,11 +33,12 @@ function weekdays(from: string, to: string): string[] {
 /**
  * A red session, as Polygon would serve it: every name 2% under its prior
  * close from the 09:35 bar and 9% under from 10:30 (so a short taken at 10:30
- * pays), SPY 0.1% down in the first bar and 0.5% from the next. A premarket
- * bar at 04:00 prints green on everything, and must move nothing.
+ * pays), SPY (and QQQ, the tape score's other index) 0.1% down in the first
+ * bar and 0.5% from the next. A premarket bar at 04:00 prints green on
+ * everything, and must move nothing.
  */
 async function redSession(symbol: string, timeframe: Timeframe, from: string, to: string): Promise<Candle[]> {
-  const isIndex = symbol === 'SPY';
+  const isIndex = symbol === 'SPY' || symbol === 'QQQ';
   const base = isIndex ? 100 : 50;
   if (timeframe === 'daily') {
     return weekdays(from, to).map((d) => ({
@@ -202,6 +203,52 @@ describe('runTapeBackfill — the rebuilt tape, read by the app’s own readers'
     expect(bucket(r, 'red', true)?.n).toBe(1);
     expect(bucket(r, 'all', true)?.n).toBe(3);
     expect(r.counterfactual.atrUnknown).toBe(0);
+  });
+
+  it('scores every rebuilt slot, and files the book by the score in force at each entry', async () => {
+    paperTrade('TPB001', 'sell', at('10:30'), 47);
+    const r = await run();
+    expect(r.score.indexes).toEqual(['SPY', 'QQQ']);
+    expect(r.score.failedIndexes).toEqual([]);
+    expect(r.score.liveDays).toEqual([]);
+    // 10:30's score, from the 10:25 bars: both indexes -0.5% on the day and
+    // -0.40% from the 09:30 open, a hair under VWAP, flat over 30 minutes;
+    // every name red, and steady. (25 x -0.427 + 25 x -1 + 15 x -0.52
+    // + 15 x -0.086) / 100 = -45: the deepest band.
+    expect(r.leakScan.scoreBySide!.buckets.map((b) => [b.bucket, b.n, b.control?.n ?? 0])).toEqual([
+      ['equity_short_tape_le-40', 0, 1],
+    ]);
+    // All 78 slots scored, none unknown.
+    expect(Object.values(r.score.bands).reduce((s, v) => s + v, 0)).toBe(78);
+    expect(r.score.bands.unscored).toBe(0);
+    // The legs' P90 is of |value|: the day sits 0.5% under its close.
+    expect(r.score.legs.find((l) => l.leg === 'indexVsPrevClose')).toMatchObject({
+      frozenScale: 1.17,
+      p90: 0.5,
+      n: 78,
+    });
+  });
+
+  it('takes a day the loop scored from the journal, and measures the rebuilt score against it', async () => {
+    // The loop scored this day +50 from 09:31: that is the score of record.
+    insertEvent(
+      null,
+      'screen',
+      'market_tape_read',
+      { direction: 'green', score: 50, readAt: at('09:31') },
+      at('09:33'),
+    );
+    paperTrade('TPB001', 'sell', at('10:30'), 47);
+    const r = await run();
+    expect(r.score.liveDays).toEqual([DAY]);
+    expect(r.leakScan.scoreBySide!.buckets.map((b) => [b.bucket, b.control?.n ?? 0])).toEqual([
+      ['equity_short_tape_ge40', 1],
+    ]);
+    // Every rebuilt slot read red, far from the loop's +50, and none in its band.
+    expect(r.score.parity).toEqual([{ day: DAY, compared: 78, meanAbsDiff: expect.any(Number), sameBand: 0 }]);
+    expect(r.score.parity[0].meanAbsDiff!).toBeGreaterThan(50);
+    // A day taken from the journal is not in the rebuilt band mix.
+    expect(Object.values(r.score.bands).reduce((s, v) => s + v, 0)).toBe(0);
   });
 
   it("reads the floor from the floor's own refusal where the row predates liveMinSignalScore", async () => {

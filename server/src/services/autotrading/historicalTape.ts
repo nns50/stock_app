@@ -9,10 +9,22 @@ import {
   directionJournalKey,
   HeldDirection,
   holdMarketDirection,
+  MarketBreadth,
   MarketDirection,
   MarketDirectionReading,
 } from './marketDirection';
 import type { DirectionIndex } from './marketDirectionIndex';
+import {
+  breadthNetOf,
+  IndexLegReading,
+  indexLegsOf,
+  momentumFromSamples,
+  pctFrom,
+  scoreMarketTape,
+  TapeScore,
+} from './marketTape';
+import type { TapeScoreIndex } from './marketTapeIndex';
+import { indexLegsFromBars } from './vwap';
 
 // ---------------------------------------------------------------------------
 // The market-direction tape, rebuilt for sessions before the loop journaled it
@@ -71,6 +83,9 @@ export interface TapeReading {
   /** The ET session it belongs to. */
   day: string;
   reading: MarketDirectionReading;
+  /** The breadth counts the reading was taken from: the tape score's breadth
+   *  legs read them, as the loop's do (scoresFromBars). */
+  breadth: MarketBreadth;
 }
 
 /** Minutes per slot: the loop's 5-minute bars, the finest the rebuild reads. */
@@ -163,19 +178,15 @@ export function readingsFromBars(
     // Known at the END of the slot: a bar's close is its last trade before the
     // next bar opens.
     const at = start + step;
+    const breadth = breadthOf(series.map((s) => changePct(s.at.get(start), s.prev)));
     const next = holdMarketDirection(
-      {
-        indexSymbol: index.symbol,
-        indexChangePct: changePct(indexAt.get(start), indexPrev),
-        breadth: breadthOf(series.map((s) => changePct(s.at.get(start), s.prev))),
-        ...thresholds,
-      },
+      { indexSymbol: index.symbol, indexChangePct: changePct(indexAt.get(start), indexPrev), breadth, ...thresholds },
       held,
       at,
       day,
     );
     held = next.held;
-    out.push({ at, day, reading: next.reading });
+    out.push({ at, day, reading: next.reading, breadth });
   }
   return out;
 }
@@ -234,6 +245,104 @@ export function flipsPerSession(index: DirectionIndex): { day: string; rows: num
 export function directionSlots(readings: TapeReading[]): Record<MarketDirection, number> {
   const out: Record<MarketDirection, number> = { red: 0, green: 0, mixed: 0, unknown: 0 };
   for (const r of readings) out[r.reading.direction] += 1;
+  return out;
+}
+
+// --- the tape score, rebuilt (2026-09-26, the tape plan's PR 7) --------------
+
+/** A rebuilt reading, scored. */
+export interface TapeScoreRow extends TapeScore {
+  /** The reading's moment: the END of its slot. */
+  at: number;
+  day: string;
+  direction: MarketDirection;
+}
+
+/**
+ * The tape score at each of a session's rebuilt readings, from the functions
+ * the loop's readMarketTape calls: indexLegsFromBars for each index's VWAP,
+ * opening price and 30-minute reference, indexLegsOf to average the indexes,
+ * breadthNetOf and the ring's momentumFromSamples for the breadth legs, then
+ * scoreMarketTape on the reading's label, hold and all.
+ *
+ * A reading stamped at `at` is scored only from the bars that STARTED before
+ * `at`, the ones that had closed by then, so no slot sees a price printed
+ * after it. (indexLegsFromBars keeps a bar that starts AT its `now`: live,
+ * that is the forming bar; handed one here, it would read the next five
+ * minutes.) Where the rebuild's inputs differ from the loop's:
+ *
+ *   last      the slot's close; live, the quote's last trade.
+ *   open      the first regular bar's open; live, the quote's open (the bar's
+ *             when the quote has none).
+ *   VWAP      over the closed bars; live, over the forming bar too.
+ *   momentum  from the slot exactly 30 minutes earlier; live, from the ring's
+ *             reading closest to that mark, within 5 minutes.
+ *
+ * The reading's own index (SPY) is measured against the previous close by the
+ * READING's figure, as live, so the score's first leg and the label cannot
+ * disagree; another index by its own slot close against its own previous
+ * daily close. An index with no bar in the slot answers no price leg, and the
+ * legs average over whichever did.
+ */
+export function scoresFromBars(day: string, readings: TapeReading[], indexes: TapeSeries[]): TapeScoreRow[] {
+  const step = TAPE_SLOT_MINUTES * 60_000;
+  const sessions = indexes.map((s) => ({
+    symbol: s.symbol,
+    bars: [...(regularSessionByDay(s.intraday).get(day) ?? [])].sort((a, b) => a.time - b.time),
+    prev: priorClose(s.daily, day),
+  }));
+  // The day's net breadth so far, oldest first: the rebuild's ring.
+  const ring: { at: number; value: number }[] = [];
+  const out: TapeScoreRow[] = [];
+  for (const r of readings.filter((x) => x.day === day).sort((a, b) => a.at - b.at)) {
+    const legs: IndexLegReading[] = sessions.map((s) => {
+      const closed = s.bars.filter((b) => b.time < r.at);
+      const slotBar = closed.length > 0 ? closed[closed.length - 1] : undefined;
+      const last = slotBar !== undefined && slotBar.time === r.at - step && slotBar.close > 0 ? slotBar.close : null;
+      const ctx = indexLegsFromBars(closed, r.at);
+      return {
+        symbol: s.symbol,
+        vsPrevClose: s.symbol === r.reading.indexSymbol ? r.reading.indexChangePct : pctFrom(last, s.prev),
+        last,
+        open: ctx.sessionOpen,
+        vwap: ctx.vwap,
+        closeThirtyMinAgo: ctx.closeThirtyMinAgo,
+      };
+    });
+    // Read the momentum BEFORE this slot joins the ring, as the loop does.
+    const breadthNet = breadthNetOf(r.breadth);
+    const tape = scoreMarketTape(r.reading.direction, {
+      ...indexLegsOf(legs),
+      breadthNet,
+      breadthMomentum30: momentumFromSamples(ring, r.at, breadthNet),
+    });
+    if (breadthNet !== null) ring.push({ at: r.at, value: breadthNet });
+    out.push({ ...tape, at: r.at, day, direction: r.reading.direction });
+  }
+  return out;
+}
+
+/** Scored rows as the index the edge-leak scan reads (marketTapeIndex.ts): by
+ *  ET day, oldest first. Every slot: the loop journals a row only on a change
+ *  of label, a 5-point move or a 10-minute heartbeat, which saves rows at the
+ *  cost of up to 4 points of staleness, and a rebuilt session has no rows to
+ *  save. */
+export function toTapeScoreIndex(rows: TapeScoreRow[]): TapeScoreIndex {
+  const out: TapeScoreIndex = new Map();
+  for (const r of [...rows].sort((a, b) => a.at - b.at)) {
+    const day = out.get(r.day) ?? [];
+    day.push({ at: r.at, score: r.score });
+    out.set(r.day, day);
+  }
+  return out;
+}
+
+/** The rebuilt scores with the journal's own laid over them: a day the loop
+ *  scored is taken whole from the journal, never from the rebuild
+ *  (mergeDirectionIndex's rule). */
+export function mergeTapeScoreIndex(rebuilt: TapeScoreIndex, live: TapeScoreIndex): TapeScoreIndex {
+  const out: TapeScoreIndex = new Map(rebuilt);
+  for (const [day, rows] of live) if (rows.length > 0) out.set(day, rows);
   return out;
 }
 
