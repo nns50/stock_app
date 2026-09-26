@@ -15,6 +15,8 @@ import { setAutotradeConfig } from '../src/db/autotradeConfig';
 import { REGIME_FIXTURE_FILE, RegimeModel, loadRegimeModel } from '../src/services/regimeModel';
 import { FRED_SP500, FRED_VIX } from '../src/services/fredSeries';
 import { buildFeatures } from '../src/services/hmmForward';
+import { CBOE_VIX_CSV_URL } from '../src/services/cboeVix';
+import { getMlRegimeReadiness } from '../src/services/mlRegimeReadiness';
 import {
   ML_REGIME_CHANGED_ACTION,
   ML_REGIME_DRIFT_ACTION,
@@ -76,9 +78,12 @@ function warmedSeries() {
 const csv = (id: string, rows: { date: string; value: number }[]) =>
   `observation_date,${id}\n${rows.map((r) => `${r.date},${r.value}`).join('\n')}\n2026-09-07,.\n`;
 
+/** FRED as the fixture has it. CBOE's file is not served (404, final): a test
+ *  about the fill uses lateVixStub. */
 function fredStub(opts: { fail?: boolean } = {}) {
   const { sp500, vix } = warmedSeries();
   const fn = vi.fn(async (url: string) => {
+    if (url.startsWith(CBOE_VIX_CSV_URL)) return new Response('not found', { status: 404 });
     if (opts.fail) return new Response('down', { status: 503 });
     const id = url.includes('id=SP500') ? FRED_SP500 : FRED_VIX;
     return new Response(csv(id, id === FRED_SP500 ? sp500 : vix), { status: 200 });
@@ -369,5 +374,110 @@ describe('getMarketRegime', () => {
     expect(dev.config.mlRegime.devOverride).toBe('sideways');
     vi.unstubAllEnvs();
     vi.resetModules();
+  });
+});
+
+describe('a late VIXCLS is filled from CBOE (2026-09-26)', () => {
+  const FRED_LAG = 3; // FRED's VIX ends 08-31; the fixture's S&P 500 has 09-04
+  const US = (date: string) => `${date.slice(5, 7)}/${date.slice(8, 10)}/${date.slice(0, 4)}`;
+  const cboeCsv = (rows: { date: string; value: number }[]) =>
+    `DATE,OPEN,HIGH,LOW,CLOSE\n${rows.map((r) => `${US(r.date)},${r.value},${r.value},${r.value},${r.value}`).join('\n')}\n`;
+
+  /** FRED with VIX `FRED_LAG` sessions behind its S&P 500, and CBOE's file with
+   *  every VIX day, plus a row dated today (09-04) that must never be read.
+   *  `behind`: CBOE's file ends where FRED's VIX does. */
+  function lateVixStub(cboe: 'ok' | 'down' | 'differs' | 'behind') {
+    const { sp500, vix } = warmedSeries();
+    const fredVix = vix.slice(0, vix.length - FRED_LAG);
+    const fredLast = fredVix[fredVix.length - 1].date;
+    const cboeRows =
+      cboe === 'behind'
+        ? fredVix
+        : [...vix, { date: '2026-09-04', value: 99 }].map((p) =>
+            cboe === 'differs' && p.date === fredLast ? { ...p, value: p.value + 0.01 } : p,
+          );
+    const fn = vi.fn(async (url: string) => {
+      if (url.startsWith(CBOE_VIX_CSV_URL)) {
+        return cboe === 'down' ? new Response('down', { status: 503 }) : new Response(cboeCsv(cboeRows));
+      }
+      const id = url.includes('id=SP500') ? FRED_SP500 : FRED_VIX;
+      return new Response(csv(id, id === FRED_SP500 ? sp500 : fredVix), { status: 200 });
+    });
+    return fn as unknown as typeof fetch & typeof fn;
+  }
+  const cboeCalls = (fn: ReturnType<typeof lateVixStub>) =>
+    fn.mock.calls.filter(([url]) => String(url).startsWith(CBOE_VIX_CSV_URL)).length;
+  const detailOf = (e: { detail: string | null }) => JSON.parse(e.detail ?? '{}') as Record<string, unknown>;
+
+  it('reads exactly what a current FRED reads, says which days came from CBOE, and caches FRED only', async () => {
+    const full = await read({ fetchImpl: fredStub() });
+    db.exec('DELETE FROM daily_series; DELETE FROM ml_regime_readings; DELETE FROM autotrade_events;');
+    resetMlRegimeCache();
+
+    const fetchImpl = lateVixStub('ok');
+    const r = await read({ fetchImpl });
+    expect(r.stale).toBe(false);
+    expect(r.regime).toBe(argmaxLabel);
+    expect(r.asOf).toBe('2026-09-03');
+    expect(r.source).toBe('fred');
+    expect(r.probabilities).toEqual(full.probabilities);
+    expect(r.features).toEqual(full.features);
+    // Never today's row: 09-04's session is not over at 14:00 ET.
+    expect(r.vixFill).toEqual({ source: 'cboe', dates: ['2026-09-01', '2026-09-02', '2026-09-03'] });
+    expect(cboeCalls(fetchImpl)).toBe(1);
+    const cached = getDailySeries(FRED_VIX);
+    expect(cached[cached.length - 1].date).toBe('2026-08-31');
+    expect(detailOf(events(ML_REGIME_READ_ACTION)[0])).toMatchObject({ vixFill: r.vixFill });
+    expect(getMlRegimeReading<typeof r>('2026-09-04')?.reading.vixFill).toEqual(r.vixFill);
+
+    // Complete for the day: no refetch an hour on, and a restart reuses the row.
+    const later = await read({ now: FRIDAY + 2 * 3_600_000, fetchImpl });
+    expect(later).toBe(r);
+    resetMlRegimeCache();
+    const restarted = await read({ now: FRIDAY + 3 * 3_600_000, fetchImpl });
+    expect(restarted.vixFill).toEqual(r.vixFill);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([
+    ['differs', /2026-08-31 close .* differs from FRED's/],
+    ['down', /upstream 503/],
+    ['behind', /no close after 2026-08-31 either/],
+  ] as const)('CBOE %s: FRED rows only, stale as before, journaled once a day', async (cboe, error) => {
+    const fetchImpl = lateVixStub(cboe);
+    const r = await read({ fetchImpl });
+    expect(r.regime).toBe('unknown');
+    expect(r.stale).toBe(true);
+    expect(r.asOf).toBe('2026-08-31');
+    expect(r.vixFill).toBeUndefined();
+    const failed = events(ML_REGIME_FETCH_FAILED_ACTION);
+    expect(failed).toHaveLength(1);
+    expect(detailOf(failed[0])).toMatchObject({ source: 'cboe', key: 'cboe' });
+    expect(String(detailOf(failed[0]).error)).toMatch(error);
+
+    // Not complete, so the next hour tries again; the day keeps its one row.
+    await read({ now: FRIDAY + 2 * 3_600_000, fetchImpl });
+    expect(cboeCalls(fetchImpl)).toBe(cboe === 'down' ? 4 : 2);
+    expect(events(ML_REGIME_FETCH_FAILED_ACTION)).toHaveLength(1);
+  });
+
+  it("the overlay's inert streak counts a filled day as usable, and an unfilled one as inert", async () => {
+    const seedYesterday = () =>
+      saveMlRegimeReading({
+        etDate: '2026-09-03',
+        regime: argmaxLabel,
+        asOf: '2026-09-02',
+        reading: { stale: false },
+        modelVersion: model.version,
+      });
+    seedYesterday();
+    await read({ fetchImpl: lateVixStub('ok') });
+    expect(getMlRegimeReadiness(FRIDAY).inertStreak).toBe(0);
+
+    db.exec('DELETE FROM ml_regime_readings; DELETE FROM autotrade_events;');
+    resetMlRegimeCache();
+    seedYesterday();
+    await read({ fetchImpl: lateVixStub('down') });
+    expect(getMlRegimeReadiness(FRIDAY).inertStreak).toBe(1);
   });
 });

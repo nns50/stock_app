@@ -16951,3 +16951,81 @@ Seven mutations, all caught: the test ignoring the day; the calendar ignoring ea
 closes by day; `sessionCloseMinute` no longer reading that table; and an ordinary day's
 close at each of the four call sites (Yahoo, the rebuild's per-day buckets, the Polygon
 source, `regularSessionBars`).
+
+## 2026-09-26 (sixteenth) — FRED's late VIX is filled from CBOE
+
+**Why.** The regime reading needs the S&P 500 and the VIX on the same date, and it reads
+`stale`, so `unknown`, once that date is older than the third most recent session. FRED
+republishes CBOE's VIX close as `VIXCLS`, and its lag ran to days: on 2026-09-26 `VIXCLS`
+ended 09-22 while FRED's `SP500` had 09-25. The 09-25 reading was the first to go stale.
+Production's readiness on 09-26 read an inert streak of 1 of 5, and at 5 the spec reverts
+the overlay to OFF (`overlay_revert`). A stale reading also means no ML size cut and no
+target tighten, whatever the tape. The 09-25 evening review raised it as a spec question:
+should a VIX publication lag count as inert?
+
+**The measurement.** CBOE's own history file
+(`https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv`) had 09-23
+15.18, 09-24 15.67 and 09-25 14.87 the same day. Over the 9,278 dates both sources carry
+since 1990-01-02, its `CLOSE` equals `VIXCLS` exactly on every one: the same double, not
+merely within a tolerance. The only date in one and not the other is FRED's 1999-12-31.
+
+**The fix.** For a reading, when FRED's VIX ends before its S&P 500, the days between are
+read from CBOE (`fillVixTail` in `server/src/services/cboeVix.ts`):
+- only the days after FRED's last VIX day, through FRED's last S&P 500 day, and never
+  today, whose close is final only once its session is over;
+- no FRED value is replaced and no gap inside FRED's range is filled;
+- refused when CBOE does not carry FRED's latest five VIX days at exactly FRED's close,
+  or has no day after FRED's last one either. A refusal or a failed fetch keeps FRED's
+  rows, so the reading reads stale exactly as before, and writes `ml_regime_fetch_failed`
+  once a day with `source: 'cboe'` and the reason;
+- only the rows handed to the model gain the days. The `daily_series` cache stays FRED's
+  own, and training never reads the fill;
+- the reading says what it filled (`vixFill: { source: 'cboe', dates }`), on
+  `GET /api/market/regime-ml` and in its `ml_regime_read` row;
+- a filled reading that reaches the previous session holds for the day, and is reused
+  after a restart, as a complete FRED one is. So a later CBOE failure cannot turn the
+  day's persisted reading, the one readiness counts, `unknown`.
+
+`regime:predict` applies the same rule (`fill_vix_tail` in `ml/regime/data.py`, asked for
+by `get_market_regime`), so the rule-3 parity check reads the same numbers. It fetches a
+cached CBOE file again when that file ends before the days it needs.
+
+**The answer to the spec question.** A VIX publication lag no longer makes a session
+inert while CBOE carries the missing days. The inert rule itself is unchanged: a session
+with no usable reading still counts, including one where both FRED and CBOE fail.
+
+**What it changes.** On 2026-09-26, read against live data with this code: `asOf`
+2026-09-25 with 09-23..09-25 filled, `low_vol_bullish` at 0.9993983856874081, not stale.
+`regime:predict --as-of 2026-09-25` read the same regime, and every probability within
+1e-17. Monday's first reading should therefore be actionable, ending the inert streak at
+1, unless CBOE is also unavailable.
+
+**Operations.** The daily routine's parity step runs `regime:predict` from a checkout.
+That checkout must carry this change. An older one reads FRED's days only, reports an
+older `asOf`, and the check disagrees, which counts against rule 3.
+
+**Tests.**
+- `cboeVix.test.ts`: the parser, including every refusal; the fetch's retry and final
+  failures; and the fill: the tail only, through its bound, never a FRED value, refused
+  on a one-cent disagreement, a missing overlap day, or nothing newer than FRED.
+- `mlRegime.test.ts`, at the consumer:
+  - a FRED VIX three sessions late reads exactly what a current FRED reads (the same
+    probabilities and features), lists the filled days, never reads CBOE's row for today,
+    and leaves `daily_series` at FRED's last day;
+  - the filled reading holds for the day and survives a restart;
+  - a CBOE disagreement, an outage, or a CBOE file as late as FRED's keeps FRED's rows
+    and journals once;
+  - the overlay's inert streak reads 0 for a filled day and 1 without CBOE.
+- `ml/tests/test_data.py`: the same rule in Python, the refetch of a cache that ends
+  early, and that a reading asks for the fill while training does not.
+
+Mutations, all caught: no overlap check, CBOE replacing FRED, the tail ignoring its
+bound, the fill reaching today, month and day swapped in the parser, the fill not wired
+in, `vixFill` left off the reading or the journal row, a filled reading not held or not
+reused after a restart, a refusal or a failed fetch not journaled, CBOE having nothing
+newer passing silently, one fetch attempt, a 4xx or a parse failure retried. In Python: the reading not asking for the fill, the fill
+reaching today, no refetch of an early cache, no overlap check, the tail ignoring its
+bound, month and day swapped, and CBOE errors not caught. Two more changed nothing, by
+construction: dropping the explicit 5xx branch (the error path retries a 5xx anyway) and
+filling after the `end` truncation (the fill's bound already stops at FRED's last S&P 500
+day on or before `end`).

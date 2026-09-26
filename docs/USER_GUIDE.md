@@ -149,7 +149,9 @@ Your at-a-glance morning screen.
   VIX and 20-day realized volatility: **High Volatility/Bearish**, **Low Volatility/Bullish**
   or **Sideways**, with the filtered probability (`p=0.83`), the data date it is _as of_
   (FRED publishes the prior close the next morning, so the reading runs one to two sessions
-  behind), and the caveats that matter: **stale** (data older than the third most recent
+  behind; since 2026-09-26, VIX days FRED has not published yet are read from CBOE's own
+  file, the same numbers FRED republishes, and `GET /api/market/regime-ml` lists them under
+  `vixFill`), and the caveats that matter: **stale** (data older than the third most recent
   session — never acted on), **held** (the model prefers another state but not by enough to
   switch — a regime changes only when the new state's probability clears 0.6), **unknown**
   with its reason, and **model drift** (the tape has left the model's distribution; retrain).

@@ -7,6 +7,7 @@ import { getMlRegimeReading, getPreviousKnownMlRegime, saveMlRegimeReading } fro
 import { etToday } from '../util/marketDate';
 import { previousTradingSession, sessionDatesEndingAt } from './trading/marketCalendar';
 import { FRED_SP500, FRED_VIX, fetchFredSeries } from './fredSeries';
+import { fetchCboeVix, fillVixTail } from './cboeVix';
 import {
   FeatureRow,
   SeriesPoint,
@@ -46,10 +47,25 @@ import {
 // ET) rarely has yesterday. The service refetches at most hourly until both
 // series carry the previous session's close, re-classifying each time (the
 // sticky switch keeps that from flapping), and then holds for the day.
+//
+// The VIX lag can also run to days (2026-09-26: VIXCLS ended 09-22 with SP500
+// at 09-25), which staled the whole reading. When FRED's VIX ends before its
+// S&P 500, the days between are read from CBOE's own VIX file, the series
+// FRED republishes (cboeVix.ts), and the reading says so (`vixFill`). A filled
+// reading that reaches the previous session holds for the day like a complete
+// FRED one, so a later CBOE hiccup cannot turn the day's reading unknown.
 // ---------------------------------------------------------------------------
 
 export type MlRegimeSource = 'fred' | 'provider' | 'cache' | 'override' | 'off' | 'none';
 export type MlRegimeReason = 'no_model' | 'source_off' | 'no_data' | 'stale' | 'synthetic_provider' | 'fetch_failed';
+
+/** The VIX days FRED had not published yet, read from CBOE's own file
+ *  (cboeVix.ts). Their closes are what FRED will publish for them. */
+export interface MlRegimeVixFill {
+  source: 'cboe';
+  /** The days filled, oldest first. */
+  dates: string[];
+}
 
 export interface MlRegimeProbabilities {
   high_vol_bearish: number;
@@ -93,6 +109,8 @@ export interface MlRegimeReading {
   rows: number;
   logLikelihood: number | null;
   reason?: MlRegimeReason;
+  /** Present when VIX days FRED had not published were read from CBOE. */
+  vixFill?: MlRegimeVixFill;
   /** Epoch ms this reading was computed. */
   computedAt: number;
 }
@@ -326,6 +344,14 @@ function seriesComplete(today: string): boolean {
   return sp !== null && vix !== null && sp >= needed && vix >= needed;
 }
 
+/** Nothing newer is due today: FRED's own rows reach the previous session, or
+ *  this reading does with CBOE's VIX days (the daily_series cache stays FRED's
+ *  own, so seriesComplete alone would refetch a filled reading every hour). */
+function readingComplete(reading: MlRegimeReading, today: string): boolean {
+  if (seriesComplete(today)) return true;
+  return reading.vixFill !== undefined && reading.asOf !== null && reading.asOf >= previousTradingSession(today);
+}
+
 function shiftDays(etDate: string, n: number): string {
   const [y, m, d] = etDate.split('-').map(Number);
   return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
@@ -352,6 +378,47 @@ interface SeriesResult {
   vix: SeriesPoint[];
   source: MlRegimeSource;
   reason?: MlRegimeReason;
+  vixFill?: MlRegimeVixFill;
+}
+
+/**
+ * FRED's VIX extended from CBOE through FRED's last S&P 500 day, when VIX alone
+ * lags (cboeVix.ts), and never through today: a day's close is final only once
+ * its session is over. Only the rows handed to the model gain the days: the
+ * daily_series cache stays FRED's own. Never throws: a failed fetch or a
+ * refused fill keeps FRED's rows, which read stale exactly as before, and is
+ * journaled once a day.
+ */
+async function withVixTail(
+  sp500: SeriesPoint[],
+  vix: SeriesPoint[],
+  today: string,
+  fetchImpl: typeof fetch | undefined,
+): Promise<{ vix: SeriesPoint[]; vixFill?: MlRegimeVixFill }> {
+  if (sp500.length === 0 || vix.length === 0) return { vix };
+  const spLast = sp500[sp500.length - 1].date;
+  const yesterday = shiftDays(today, -1);
+  const through = spLast < yesterday ? spLast : yesterday;
+  const last = vix[vix.length - 1].date;
+  if (last >= through) return { vix };
+  const note = `FRED's VIX ends ${last} and its S&P 500 ${spLast}; the reading keeps FRED's days only`;
+  let fill;
+  try {
+    fill = fillVixTail(vix, await fetchCboeVix({ fetchImpl }), through);
+  } catch (err) {
+    journalOncePerDay(
+      ML_REGIME_FETCH_FAILED_ACTION,
+      today,
+      { source: 'cboe', error: err instanceof Error ? err.message : String(err), note },
+      'cboe',
+    );
+    return { vix };
+  }
+  if (fill.refused !== null) {
+    journalOncePerDay(ML_REGIME_FETCH_FAILED_ACTION, today, { source: 'cboe', error: fill.refused, note }, 'cboe');
+    return { vix };
+  }
+  return { vix: fill.vix, vixFill: { source: 'cboe', dates: fill.filled } };
 }
 
 /** FRED (persisted) → the cached rows → the provider (never persisted). */
@@ -370,7 +437,8 @@ async function loadSeries(
       ]);
       upsertDailySeries(FRED_SP500, sp500, now);
       upsertDailySeries(FRED_VIX, vix, now);
-      return { sp500, vix, source: 'fred' };
+      const tail = await withVixTail(sp500, vix, today, fetchImpl);
+      return { sp500, vix: tail.vix, source: 'fred', ...(tail.vixFill ? { vixFill: tail.vixFill } : {}) };
     } catch (err) {
       journalOncePerDay(ML_REGIME_FETCH_FAILED_ACTION, today, {
         error: err instanceof Error ? err.message : String(err),
@@ -408,8 +476,9 @@ function minDate(a: readonly SeriesPoint[], b: readonly SeriesPoint[]): string {
 
 /**
  * Today's regime reading. Cached per ET day; refetches at most hourly while
- * either series still lacks the previous session's close; `force` refetches
- * now. Never throws — every failure is an `unknown` reading with a reason.
+ * either series still lacks the previous session's close (a VIX filled from
+ * CBOE counts: readingComplete); `force` refetches now. Never throws — every
+ * failure is an `unknown` reading with a reason.
  */
 export async function getMarketRegime(opts: GetMarketRegimeOptions = {}): Promise<MlRegimeReading> {
   const now = opts.now ?? Date.now();
@@ -438,12 +507,12 @@ export async function getMarketRegime(opts: GetMarketRegimeOptions = {}): Promis
   if (!model) return unknownReading(today, 'no_model', 'none', now, null);
 
   if (!opts.force) {
-    if (cache?.etDate === today && (seriesComplete(today) || now - lastFetchAt < REFRESH_INTERVAL_MS)) {
+    if (cache?.etDate === today && (readingComplete(cache.reading, today) || now - lastFetchAt < REFRESH_INTERVAL_MS)) {
       return cache.reading;
     }
-    if (!cache && seriesComplete(today)) {
+    if (!cache) {
       const persisted = getMlRegimeReading<MlRegimeReading>(today);
-      if (persisted && persisted.modelVersion === model.version) {
+      if (persisted && persisted.modelVersion === model.version && readingComplete(persisted.reading, today)) {
         cache = { etDate: today, reading: persisted.reading };
         return persisted.reading;
       }
@@ -497,6 +566,7 @@ export async function getMarketRegime(opts: GetMarketRegimeOptions = {}): Promis
       logLikelihood: classification.logLikelihood,
       computedAt: now,
       ...(stale ? { reason: 'stale' as const } : series.reason ? { reason: series.reason } : {}),
+      ...(series.vixFill ? { vixFill: series.vixFill } : {}),
     };
   }
   persistAndJournal(reading, today, now);
@@ -525,6 +595,7 @@ function persistAndJournal(reading: MlRegimeReading, today: string, now: number)
       source: reading.source,
       drift: reading.drift,
       previous: reading.previous,
+      ...(reading.vixFill ? { vixFill: reading.vixFill } : {}),
     });
   }
   if (reading.switched && reading.regime !== 'unknown') {

@@ -64,6 +64,22 @@ often a day after that. The reading's `asOf` is the last date with **both** seri
 reading therefore describes the tape as of one to two sessions ago; a shock day itself is
 never in the data (section 7).
 
+**The VIX's own lag, filled from CBOE (2026-09-26).** `VIXCLS` is CBOE's daily VIX close,
+republished, and its lag can run to days: on 2026-09-26 it ended 09-22 while FRED's S&P 500
+had 09-25, so the reading had no common date newer than 09-22 and read `stale` from 09-25.
+For a **reading** (never for training), when FRED's VIX ends before its S&P 500 the days
+between are read from CBOE's own history file
+(`https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv`, its `CLOSE`
+column; header `DATE,OPEN,HIGH,LOW,CLOSE`, dates `MM/DD/YYYY`). The fill adds only the days
+after FRED's last one, through FRED's last S&P 500 day and never today (a day's close is
+final only once its session is over). It replaces no FRED value and fills no gap inside
+FRED's range. It is refused, and FRED's rows are read alone, when CBOE does not carry FRED's
+latest five VIX days at exactly FRED's close, or has no day after FRED's last one either. Measured on 2026-09-26: over the 9,278 dates
+both sources carry since 1990-01-02, CBOE's close equals `VIXCLS` exactly on every one (the
+only date in one and not the other is FRED's 1999-12-31). What the fill adds is the number
+FRED will publish. The rule is `fillVixTail` in `server/src/services/cboeVix.ts` and
+`fill_vix_tail` in `ml/regime/data.py`.
+
 ## 3. Features, in the one order every implementation shares
 
 Computed on the S&P 500 series **alone** before the join with the VIX (a VIX holiday never
@@ -175,10 +191,19 @@ and `server/test/regimeModelParity.test.ts` holds the port to it (section 8).
   provider's `^GSPC`/`^VIX` daily candles (`source: provider`, never persisted, never the
   mock provider). `provider` skips FRED; `off` skips every fetch and reads `unknown` — the
   test suite runs that way.
+- **The VIX fill (2026-09-26).** When FRED's VIX ends before its S&P 500, the days between
+  come from CBOE (section 2). Only the rows handed to the model gain them: `daily_series`
+  stays FRED's own. The reading carries `vixFill: { source: 'cboe', dates }`, and so does its
+  `ml_regime_read` row. A failed CBOE fetch or a refused fill keeps FRED's rows (the reading
+  reads stale exactly as before) and writes `ml_regime_fetch_failed` once a day with
+  `source: 'cboe'` and the reason. The cached-rows and provider fallbacks are not filled.
 - **Refresh.** The loop reads once per tick, in or out of session. A day's first tick is just
   after midnight ET, before FRED has posted the prior close, so the service refetches at most
   hourly until both series carry the previous session's close and then holds for the day. A
   reading can therefore update once mid-morning; the sticky switch keeps that from flapping.
+  A filled reading whose data date reaches the previous session holds for the day the same
+  way, and is reused after a restart, so a later CBOE failure cannot turn the day's persisted
+  reading `unknown`.
 - **Persistence.** Every reading (including `unknown`) is stored in `ml_regime_readings`,
   keyed by ET day, with the label — never a state index, so a retrain cannot corrupt the
   sticky switch's "previous regime", which is the newest **known** day before today.
@@ -310,8 +335,9 @@ sets the values that row implies.
 
 - **It is not a direction forecast.** "Bearish" is fitted drift over the training window;
   section 6 shows positive forward returns after High Vol readings out of sample.
-- **It cannot see today.** FRED's lag puts the reading one to two sessions behind, and a
-  one-day shock is not in the data until the next morning. Day one of a spike is missed.
+- **It cannot see today.** FRED's lag puts the reading one to two sessions behind (the VIX's
+  own, longer lag is filled from CBOE, section 2), and a one-day shock is not in the data
+  until the next morning. Day one of a spike is missed.
 - **It cannot see intraday.** The features are daily closes; a spike shorter than 20 sessions
   is smoothed away (Aug-2024).
 - **It is not a trading signal.** It does not know the book, the strategy, or the symbol. Any
@@ -352,6 +378,15 @@ sets the values that row implies.
   Because the loop overwrites a day's reading on each refresh, agreement is re-derived from
   that stored vector against the row's current one on every read: a reading refreshed after
   its check shows as unchecked again, never as agreed.
+- **Both sides fill the VIX the same way (2026-09-26).** `regime:predict` reads through
+  `get_market_regime`, which asks `load_series` for the CBOE fill (`vix_tail_from_cboe=True`)
+  under the runtime's rule (`fill_vix_tail`, `vix_fill_through`). A cached CBOE file that ends
+  before the days needed is fetched again, so the Python reading never misses a day the
+  server filled. Training calls `load_series` without the flag. Checked on 2026-09-26 against
+  live data: both read `asOf` 2026-09-25 with 09-23..09-25 filled, `low_vol_bullish` at
+  0.9993983856874081, every probability within 1e-17. The check runs `regime:predict` from a
+  checkout, so that checkout must carry this change: an older one reads FRED's days only,
+  reports an older `asOf`, and disagrees.
 
 ## 9. The artifact
 
@@ -391,7 +426,7 @@ is not shipped; the previous artifact stays.
 
 | path                                        | role                                                     |
 | ------------------------------------------- | -------------------------------------------------------- |
-| `ml/regime/data.py`                         | FRED fetch, parse, cache (`ml/data/cache/`, gitignored)  |
+| `ml/regime/data.py`                         | FRED fetch, parse, cache (`ml/data/cache/`, gitignored); the CBOE VIX fill for a reading |
 | `ml/regime/features.py`                     | the three features, in order                             |
 | `ml/regime/model.py`                        | fit, labeling rule, export                               |
 | `ml/regime/infer.py`                        | the numpy reference filter and `get_market_regime()`     |
@@ -404,4 +439,5 @@ is not shipped; the previous artifact stays.
 | `server/data/regimeHistory.json`            | the walk-forward out-of-sample path                      |
 | `server/src/services/hmmForward.ts`         | the TypeScript filter and feature builder                |
 | `server/src/services/regimeModel.ts`        | artifact loading and validation                          |
+| `server/src/services/cboeVix.ts`            | the CBOE VIX fetch and the fill rule                     |
 | `server/test/hmmForward.test.ts`, `server/test/regimeModelParity.test.ts` | the tests            |
