@@ -1,3 +1,4 @@
+import type { ExitRules } from '../exitReplay';
 import { TradeSignal } from './decide';
 import type { MarketDirection } from './marketDirection';
 import { journalEntrySkipOncePerDay } from './symbolCooldown';
@@ -60,6 +61,24 @@ export interface DeclinedEntry {
    *  rows predating the field; a reader falls back to the current floor, which
    *  is the old behaviour and the best available. */
   floorAtSkip?: number;
+  /**
+   * The bracket's own take-profit price, for an entry that was TAKEN (the live
+   * shorts' replay, 2026-09-24): a live bracket's target can differ from the
+   * config's `targetRMultiple` (the regime tighten, a level cap, a per-lot
+   * split), and that comparison is of live against the same trade. Undefined on
+   * a declined row, which the replay gives the config's target.
+   */
+  target?: number;
+  /**
+   * The exit rules a TAKEN entry was placed under (2026-09-25, second review),
+   * from its `live_order_placed` row. Every other rule of the replay is read
+   * from the config at replay time, and the records are rebuilt every night:
+   * a mid-window change (the sizing revert switching the scale-out on) would
+   * re-replay earlier shorts under a scale-out they never had. Undefined on a
+   * declined row and on a placement row written before the field existed,
+   * which replay under the config's rules as before.
+   */
+  exitRules?: ExitRules;
   /**
    * A re-entry cooldown refusal only (2026-09-19): minutes between the
    * symbol's last closed live exit and this refusal, as the gate itself

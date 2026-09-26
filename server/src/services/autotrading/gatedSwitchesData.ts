@@ -11,6 +11,7 @@ import { isAfterSessionClose } from '../trading/marketHours';
 import { buildCapsCoherence } from './dashboard';
 import { dispatchAutotradeNotification } from './notify';
 import { shortShadowEvidenceOf } from './shortShadowRecordData';
+import { buildLiveShortsEvidence } from './liveShortsEvidence';
 import {
   assertWritable,
   evaluateGatedSwitches,
@@ -192,11 +193,13 @@ function meanOf(xs: number[]): number | null {
 export function buildGatedSwitchSnapshot(now: number): GatedSwitchSnapshot {
   const config = getAutotradeConfig();
   const changedOn = sizingChangedOn(now);
+  const leakScan = getLastEdgeLeakScan()?.result ?? null;
+  const shortShadow = shortShadowEvidenceOf(getLastShortShadowRecord());
   return {
     etDate: etToday(now),
     config,
     readiness: getMlRegimeReadiness(now),
-    leakScan: getLastEdgeLeakScan()?.result ?? null,
+    leakScan,
     review: buildSizingReview(listDailyResults(), changedOn, config.riskPerTradePct),
     capsCoherence: buildCapsCoherence(config).map((c) => ({
       key: c.key,
@@ -207,7 +210,10 @@ export function buildGatedSwitchSnapshot(now: number): GatedSwitchSnapshot {
     // Persisted by the loop's after-close hook (shortShadowRecordData.ts),
     // which runs right before this engine on the same tick, so today's record
     // is what the `shorts` rule reads tonight.
-    shortShadow: shortShadowEvidenceOf(getLastShortShadowRecord()),
+    shortShadow,
+    // The live short book since shorts were last switched on, for the
+    // shorts_revert tripwires (2026-09-24). Null while they never have been.
+    liveShorts: buildLiveShortsEvidence(config, now, shortShadow, leakScan),
   };
 }
 

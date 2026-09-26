@@ -1,3 +1,4 @@
+import type { ExitRules } from '../exitReplay';
 import { getAutotradeConfig } from '../../db/autotradeConfig';
 import { listAutotradeEventsInWindow } from '../../db/autotradeEvents';
 import { getLastShortShadowRecord, saveShortShadowRecord, ShortShadowRecordRow } from '../../db/shortShadowRecords';
@@ -6,7 +7,18 @@ import { etToday } from '../../util/marketDate';
 import { isTradingSession } from '../trading/marketCalendar';
 import { isAfterSessionClose } from '../trading/marketHours';
 import type { ShortShadowEvidence } from './gatedSwitches';
-import { buildShortShadowRecord, ShortShadowRecord, SkippedShort } from './shortShadowRecord';
+import {
+  buildShortShadowRecord,
+  LiveShortReplay,
+  pairLiveWithReplay,
+  ShortShadowRecord,
+  SkippedShort,
+} from './shortShadowRecord';
+import { buildDeclinedEntryShadow } from './declinedEntryShadow';
+import type { DeclinedEntry } from './declinedEntry';
+import { liveShortTradesSince } from './liveShortsEvidence';
+import type { CandleSource } from '../excursion';
+import type { AutotradeConfig } from '../../db/autotradeConfig';
 import { shadowFillInputs } from './declinedEntryShadowData';
 import type { MarketDirection } from './marketDirection';
 
@@ -42,6 +54,10 @@ export interface ShortShadowReport extends ShortShadowRecord {
   /** True when the journal read hit its hard ceiling, so the window is NOT
    *  complete and `journaledRows` understates it. */
   journalTruncated: boolean;
+  /** The live shorts since they were last switched on, each against the
+   *  replay of its own signal (2026-09-24, the tape plan's PR 10); null while
+   *  shorts have never been switched on. */
+  liveReplay: LiveShortReplay | null;
 }
 
 /**
@@ -94,12 +110,98 @@ export function loadSkippedShorts(since: number = SHORT_SHADOW_SINCE_MS): {
   return { rows, truncated };
 }
 
+/** The exit rules a placement row carries, when every one of them is there
+ *  as a finite number; null otherwise (an older row, or a malformed one). */
+function exitRulesOf(v: unknown): ExitRules | null {
+  if (typeof v !== 'object' || v === null) return null;
+  const o = v as Record<string, unknown>;
+  const keys: (keyof ExitRules)[] = [
+    'breakevenTriggerR',
+    'trailStartR',
+    'trailStopR',
+    'targetR',
+    'scaleOutR',
+    'scaleOutFraction',
+    'stagnationMinutes',
+    'stagnationMinR',
+  ];
+  if (!keys.every((k) => typeof o[k] === 'number' && Number.isFinite(o[k]))) return null;
+  return Object.fromEntries(keys.map((k) => [k, o[k]])) as unknown as ExitRules;
+}
+
+/**
+ * Each live short's own signal since `since`, from the `live_order_placed` row
+ * its entry wrote: the signal's price, its stop, and when it went out. The
+ * replay input for rule C's comparison (LiveShortReplay). Only a sell counts;
+ * a row without a usable price or stop is left for the replay to count.
+ */
+export function loadLiveShortEntries(since: number): DeclinedEntry[] {
+  const { events } = listAutotradeEventsInWindow({ actions: ['live_order_placed'], since });
+  const out: DeclinedEntry[] = [];
+  for (const e of events) {
+    if (!e.symbol || !e.detail) continue;
+    try {
+      const d = JSON.parse(e.detail) as {
+        side?: unknown;
+        signalEntry?: unknown;
+        stop?: unknown;
+        target?: unknown;
+        exitRules?: unknown;
+      };
+      if (d.side !== 'sell' || typeof d.signalEntry !== 'number' || typeof d.stop !== 'number') continue;
+      const exitRules = exitRulesOf(d.exitRules);
+      out.push({
+        symbol: e.symbol,
+        at: e.createdAt,
+        score: 0,
+        entry: d.signalEntry,
+        stop: d.stop,
+        side: 'short',
+        // The bracket's own target (2026-09-24, on review): the live target can
+        // be tightened by the regime overlay or capped by a level, and a replay
+        // at the config's target would call that difference an execution gap.
+        ...(typeof d.target === 'number' ? { target: d.target } : {}),
+        // And the rest of its exits as placed (2026-09-25, second review).
+        ...(exitRules ? { exitRules } : {}),
+      });
+    } catch {
+      continue;
+    }
+  }
+  return out;
+}
+
+/**
+ * The live shorts since `since` against the replay of their own signals, on
+ * the same replay the declined shorts get (the same exit rules and fill model).
+ * Nothing is filtered the way a declined row is: each of these was TAKEN, so
+ * it already passed the score floor, the direction gate and the ATR gate.
+ */
+export async function replayLiveShorts(
+  source: CandleSource,
+  cfg: AutotradeConfig,
+  since: number,
+  entryConcessionPct: number | undefined,
+): Promise<LiveShortReplay> {
+  const shadow = await buildDeclinedEntryShadow(source, loadLiveShortEntries(since), cfg, {
+    applyScoreFloor: false,
+    entryConcessionPct,
+  });
+  return pairLiveWithReplay(since, liveShortTradesSince(since), shadow.trades);
+}
+
 /** The one compute path: the route's answer and the hook's record. */
 export async function computeShortShadowReport(since: number = SHORT_SHADOW_SINCE_MS): Promise<ShortShadowReport> {
   const cfg = getAutotradeConfig();
   const { rows, truncated } = loadSkippedShorts(since);
-  const record = await buildShortShadowRecord(getProvider(), rows, cfg, shadowFillInputs(since));
-  return { since, journaledRows: rows.length, journalTruncated: truncated, ...record };
+  const fill = shadowFillInputs(since);
+  const source = getProvider();
+  const record = await buildShortShadowRecord(source, rows, cfg, fill);
+  const liveReplay =
+    cfg.liveShortsEnabledAt !== null
+      ? await replayLiveShorts(source, cfg, cfg.liveShortsEnabledAt, fill.entryConcessionPct)
+      : null;
+  return { since, journaledRows: rows.length, journalTruncated: truncated, ...record, liveReplay };
 }
 
 /** What the gated-switch snapshot carries: the three numbers, the gate's own
@@ -116,6 +218,8 @@ export function shortShadowEvidenceOf(row: ShortShadowRecordRow | null): ShortSh
     gate: r.gate,
     // A record persisted before 2026-09-24 has no tape split.
     redTapeGate: r.redTapeGate ?? null,
+    // …and none persisted before the live comparison existed has this.
+    liveReplay: r.liveReplay ?? null,
   };
 }
 

@@ -154,6 +154,13 @@ export function intentExistsForKey(idempotencyKey: string): boolean {
   return !!db.prepare('SELECT 1 FROM order_intents WHERE idempotency_key = ? LIMIT 1').get(idempotencyKey);
 }
 
+/** The intent a client order id names (its idempotency key), or null. */
+export function intentIdForKey(idempotencyKey: string): number | null {
+  const row = db.prepare('SELECT id FROM order_intents WHERE idempotency_key = ? LIMIT 1').get(idempotencyKey) as
+    { id: number } | undefined;
+  return row?.id ?? null;
+}
+
 export function createIntent(input: OrderIntent, idempotencyKey: string): OrderIntentRecord {
   const existing = db.prepare('SELECT * FROM order_intents WHERE idempotency_key = ?').get(idempotencyKey) as
     IntentRow | undefined;
