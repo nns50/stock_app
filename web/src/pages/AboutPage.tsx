@@ -318,9 +318,11 @@ export default function AboutPage() {
           (highest VIX and realized vol → High Vol; lowest → Low Vol; the third → Sideways). The label is{' '}
           <strong className="text-slate-200">sticky</strong>: it changes only when the new state’s probability reaches{' '}
           <span className="tabular-nums">0.6</span>. Data older than the third most recent session reads{' '}
-          <strong className="text-slate-200">unknown (stale)</strong>; a trailing likelihood below the training 5th
-          percentile raises a <strong className="text-slate-200">drift</strong> flag — a retrain signal, not a gate.
-          “Bearish” and “Bullish” describe fitted drift, not a forecast. With the auto-trade config’s{' '}
+          <strong className="text-slate-200">unknown (stale)</strong>. VIX days FRED has not published yet are read from
+          CBOE’s own file, the numbers FRED republishes, so a late VIX series alone does not stale the reading (since
+          2026-09-26). A trailing likelihood below the training 5th percentile raises a{' '}
+          <strong className="text-slate-200">drift</strong> flag — a retrain signal, not a gate. “Bearish” and “Bullish”
+          describe fitted drift, not a forecast. With the auto-trade config’s{' '}
           <strong className="text-slate-200">ML regime overlay</strong> on (off by default) the sizing regime cut above
           reads it: new positions size down by the ML regime size cut while the reading is High Volatility/Bearish, and
           an intraday <strong className="text-slate-200">shock day</strong> (SPY’s range so far today at or above a set

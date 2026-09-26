@@ -538,6 +538,9 @@ export interface MlRegimeReading {
   rows: number;
   logLikelihood: number | null;
   reason?: MlRegimeReason;
+  /** Present when VIX days FRED had not published were read from CBOE's own file
+   *  (2026-09-26): the days filled, oldest first. */
+  vixFill?: { source: 'cboe'; dates: string[] };
   computedAt: number;
 }
 

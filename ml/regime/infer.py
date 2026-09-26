@@ -366,7 +366,9 @@ def get_market_regime(
 
         end = pd.Timestamp(as_of) if as_of else pd.Timestamp.today().normalize()
         start = (end - pd.Timedelta(days=LOOKBACK_CALENDAR_DAYS)).date().isoformat()
-        sp500, vix = load_series(start, end=end.date().isoformat())
+        # The runtime's rule: VIX days FRED has not published come from CBOE,
+        # so a reading here matches the server's for the same asOf (parity).
+        sp500, vix = load_series(start, end=end.date().isoformat(), vix_tail_from_cboe=True)
     elif as_of is not None:
         end = pd.Timestamp(as_of)
         sp500 = sp500[sp500.index <= end]
