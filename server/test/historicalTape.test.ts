@@ -10,6 +10,7 @@ import {
   mergeDirectionIndex,
   mergeTapeScoreIndex,
   readingsFromBars,
+  regularSessionBars,
   scoresFromBars,
   scoreSignals,
   seededSample,
@@ -124,6 +125,25 @@ describe('readingsFromBars — the loop’s reading, rebuilt from bars', () => {
     });
     const extended = readingsFromBars(DAY, withExtended(spy(-0.5)), redNames(100).map(withExtended), THRESHOLDS);
     expect(extended.map((r) => [r.at, r.reading.direction])).toEqual(plain.map((r) => [r.at, r.reading.direction]));
+  });
+
+  it("ends a half-day's readings at its 13:00 close: a post-market bar neither moves one nor adds one (2026-09-26)", () => {
+    // 2026-11-27 as Polygon serves it: red through the 13:00 close, then a
+    // post-market rally that would read green on every name.
+    const HALF = '2026-11-27';
+    const halfDay = (symbol: string, prevClose: number, sessionPct: number): TapeSeries => {
+      const intraday: Candle[] = [];
+      for (let m = 9 * 60 + 30; m < 16 * 60; m += 5) {
+        const hhmm = `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+        intraday.push(bar(at(hhmm, HALF), prevClose * (1 + (m < 13 * 60 ? sessionPct : 4) / 100)));
+      }
+      return { symbol, intraday, daily: [dailyBar('2026-11-25', prevClose)] };
+    };
+    const names = Array.from({ length: 100 }, (_, i) => halfDay(`H${i}`, 50, -2));
+    const readings = readingsFromBars(HALF, halfDay('SPY', 100, -0.5), names, THRESHOLDS);
+    expect(readings).toHaveLength(42);
+    expect(readings[readings.length - 1].at).toBe(at('13:00', HALF));
+    expect(readings.every((r) => r.reading.direction === 'red')).toBe(true);
   });
 
   it("leaves a name with no bar in a slot out of that slot's sample, rather than counting it flat", () => {
@@ -376,6 +396,17 @@ describe('windowCandleSource — the provider contract, over one fetch per symbo
     // A query outside the window is fetched on its own.
     await source.getCandles('AAA', '5min', { start: '2026-08-20', end: '2026-08-20' });
     expect(calls[calls.length - 1]).toBe('AAA|5min|2026-08-20|2026-08-20');
+  });
+
+  it("serves a half-day to its 13:00 close: Polygon's post-market bars are not the session (2026-09-26)", async () => {
+    const HALF = '2026-11-27';
+    const source = windowCandleSource(async () => extendedDay(HALF), { from: HALF, to: HALF });
+    const day = await source.getCandles('AAA', '5min', { start: HALF, end: HALF });
+    expect(day).toHaveLength(42);
+    expect(day[0].time).toBe(at('09:30', HALF));
+    expect(day[day.length - 1].time).toBe(at('12:55', HALF));
+    // The same bound, asked of the bars directly.
+    expect(regularSessionBars(extendedDay(HALF), HALF)).toEqual(day);
   });
 
   it('does not remember a failed fetch', async () => {

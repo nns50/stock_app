@@ -52,9 +52,11 @@ import { indexLegsFromBars } from './vwap';
 //                 the live quote would carry its last trade, and leaving it out
 //                 only shrinks the sample, never tilts it. Fewer than
 //                 MIN_BREADTH_SAMPLE names is no reading, exactly as live.
-//   the session   REGULAR-session bars only (09:30-16:00 ET). Polygon's minute
-//                 aggregates run 04:00-20:00 ET, and a premarket print must not
-//                 move a reading of the session, or be replayed as a fill.
+//   the session   REGULAR-session bars only: 09:30 ET to the day's own close,
+//                 16:00 or a half-day's 13:00 (isRegularSessionMinute). Polygon's
+//                 minute aggregates run 04:00-20:00 ET, and a premarket or
+//                 post-market print must not move a reading of the session, or
+//                 be replayed as a fill.
 //
 // Pure: the bars come in, readings and rows go out. The script that fetches the
 // bars and reads the database is scripts/tapeBackfill.ts, through
@@ -99,12 +101,13 @@ export function dailyBarDate(bar: Candle): string {
   return new Date(bar.time).toISOString().slice(0, 10);
 }
 
-/** The bars that START inside the regular session, 09:30-16:00 ET, and, when
- *  `day` is given, on that ET day. */
+/** The bars that START inside the regular session, 09:30 ET to the day's own
+ *  close (16:00, or 13:00 on a half-day), and, when `day` is given, on that ET
+ *  day. */
 export function regularSessionBars(bars: Candle[], day?: string): Candle[] {
   return bars.filter((b) => {
     const t = etDayAndMinute(b.time);
-    return (day === undefined || t.day === day) && isRegularSessionMinute(t.minute);
+    return (day === undefined || t.day === day) && isRegularSessionMinute(t.day, t.minute);
   });
 }
 
@@ -119,7 +122,7 @@ function regularSessionByDay(bars: Candle[]): Map<string, Candle[]> {
     byDay = new Map();
     for (const b of bars) {
       const t = etDayAndMinute(b.time);
-      if (!isRegularSessionMinute(t.minute)) continue;
+      if (!isRegularSessionMinute(t.day, t.minute)) continue;
       const list = byDay.get(t.day) ?? [];
       list.push(b);
       byDay.set(t.day, list);
@@ -387,7 +390,7 @@ export function windowCandleSource(fetch: WindowBarFetch, window: { from: string
           return d >= start && d <= end;
         }
         const t = etDayAndMinute(b.time);
-        return t.day >= start && t.day <= end && isRegularSessionMinute(t.minute);
+        return t.day >= start && t.day <= end && isRegularSessionMinute(t.day, t.minute);
       });
       return query?.limit != null ? kept.slice(-query.limit) : kept;
     },

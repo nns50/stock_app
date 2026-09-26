@@ -98,7 +98,16 @@ export function isMarketHoliday(now: Date | number = new Date()): boolean {
  * ask isMarketHoliday and the weekday separately.
  */
 export function sessionCloseMinute(now: Date | number = new Date()): number {
-  return EARLY_CLOSES.has(etCalendarDate(now)) ? EARLY_CLOSE_MINUTES : 16 * 60;
+  return sessionCloseMinuteOn(etCalendarDate(now));
+}
+
+/**
+ * sessionCloseMinute for an ET `YYYY-MM-DD` day. A reader of PAST bars asks by
+ * the bar's own day, not by the moment it is running
+ * (util/marketDate.ts's isRegularSessionMinute). One table answers both.
+ */
+export function sessionCloseMinuteOn(day: string): number {
+  return EARLY_CLOSES.has(day) ? EARLY_CLOSE_MINUTES : 16 * 60;
 }
 
 /** `etDate` + n calendar days, in pure date arithmetic — the inputs are

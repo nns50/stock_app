@@ -96,8 +96,9 @@ export interface Fundamentals {
  *   `limit` the WHOLE window comes back: a default cap used to cut the head off
  *   an explicit window without a trace (a 1-minute session is 390 bars, and
  *   Yahoo's padded 5-minute day was 192 — both past the old default of 120).
- * - Intraday bars cover the REGULAR session, 09:30–16:00 ET: what Webull's RTH
- *   bars and Tradier's `session_filter: 'open'` serve, and all the loop trades.
+ * - Intraday bars cover the REGULAR session, 09:30–16:00 ET (13:00 on a
+ *   half-day): what Webull's RTH bars and Tradier's `session_filter: 'open'`
+ *   serve, and all the loop trades.
  */
 export interface CandleQuery {
   start?: string; // YYYY-MM-DD

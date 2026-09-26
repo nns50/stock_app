@@ -180,6 +180,58 @@ describe('runTapeBackfill — the rebuilt tape, read by the app’s own readers'
     expect(r.shortShadow.byTape.find((b) => b.tape === 'all')?.n).toBe(1);
   });
 
+  it('reads a half-day to its 13:00 close: the post-market neither labels the tape nor fills a replay (2026-09-26)', async () => {
+    // 2026-11-27, the day after Thanksgiving, as Polygon serves it: red through
+    // the 13:00 close, then a post-market rally 4% over every prior close. A
+    // short declined at 10:30 (entry 49, stop 50, target 47) sits at 48.50
+    // between its stop and its target for the rest of the session.
+    const HALF = '2026-11-27';
+    const atHalf = (hhmm: string) => etDateTimeToMs(HALF, hhmm) as number;
+    const halfDay = async (symbol: string, timeframe: Timeframe, from: string, to: string): Promise<Candle[]> => {
+      const isIndex = symbol === 'SPY' || symbol === 'QQQ';
+      const base = isIndex ? 100 : 50;
+      if (timeframe === 'daily') {
+        return weekdays(from, to)
+          .filter((d) => d !== '2026-11-26')
+          .map((d) => ({
+            time: Date.parse(`${d}T00:00:00Z`),
+            open: base,
+            high: base + 2,
+            low: base - 2,
+            close: base,
+            volume: 1e6,
+          }));
+      }
+      const bars: Candle[] = [];
+      for (let m = 9 * 60 + 30; m < 17 * 60; m += 5) {
+        const hhmm = `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+        const pct = m >= 13 * 60 ? 4 : isIndex ? -0.5 : -3;
+        const close = base * (1 + pct / 100);
+        bars.push({ time: atHalf(hhmm), open: close, high: close + 0.05, low: close - 0.05, close, volume: 1_000 });
+      }
+      return bars;
+    };
+    insertEvent(
+      'TPB003',
+      'execution',
+      'live_short_skipped',
+      { score: 85, entry: 49, stop: 50, target: 47, liveEligible: true, liveMinSignalScore: 81 },
+      atHalf('10:30'),
+    );
+    const r = await runTapeBackfill({ fetch: halfDay, sessions: 1, now: Date.parse('2026-11-27T22:00:00Z') });
+    expect(r.sessions).toEqual([HALF]);
+    // 42 slots, 09:30-12:55; the tape is red all session and never reads the
+    // post-market's green.
+    expect(r.coverage).toEqual([expect.objectContaining({ day: HALF, slots: 42, unknownSlots: 0 })]);
+    expect(r.rows.map((x) => x.direction)).not.toContain('green');
+    // The short is still open at the close, so it is booked there, at 12:55's
+    // 48.50: +0.2R once the entry concession is paid. Through the post-market,
+    // the 13:00 bar would have opened through its stop and filled at 52, -2.6R.
+    const red = r.shortShadow.byTape.find((b) => b.tape === 'red');
+    expect(red?.n).toBe(1);
+    expect(red!.avgR!).toBeGreaterThan(0);
+  });
+
   it('replays every short signal by the tape it met, under the floor in force and the ATR gate', async () => {
     // The floor in force on the day, as a refusal recorded it: 81.
     insertEvent('ZZZ', 'execution', 'live_score_floor_skipped', { liveMinSignalScore: 81 }, at('09:40'));

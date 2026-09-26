@@ -17,6 +17,8 @@
 // own UTC one-liner. Shared here so there is one definition to be right.
 // ---------------------------------------------------------------------------
 
+import { sessionCloseMinuteOn } from '../services/trading/marketCalendar';
+
 /** Today (YYYY-MM-DD) on the US market calendar, regardless of server TZ. */
 export function etToday(now: number = Date.now()): string {
   const parts = new Intl.DateTimeFormat('en-US', {
@@ -99,14 +101,22 @@ export function etDayAndMinute(ms: number): { day: string; minute: number } {
   };
 }
 
-/** Regular US session, 09:30–16:00 ET, as minutes of the ET day. A bar STARTING
- *  at 16:00 is not a regular-session bar. */
+/** The regular US session opens at 09:30 ET, as a minute of the ET day. It
+ *  closes at 16:00, or 13:00 on an early close: the day's own close is
+ *  marketCalendar.ts's sessionCloseMinuteOn. */
 export const REGULAR_SESSION_OPEN_MINUTE = 9 * 60 + 30;
-export const REGULAR_SESSION_CLOSE_MINUTE = 16 * 60;
 
-/** Whether a bar starting at this minute of the ET day (etDayAndMinute) is a
- *  regular-session bar. The one test every reader of intraday bars applies:
- *  Yahoo's candles and the tape rebuild's Polygon bars (historicalTape.ts). */
-export function isRegularSessionMinute(minute: number): boolean {
-  return minute >= REGULAR_SESSION_OPEN_MINUTE && minute < REGULAR_SESSION_CLOSE_MINUTE;
+/**
+ * Whether a bar starting at this minute of this ET day (etDayAndMinute) is a
+ * regular-session bar. The one test every reader of intraday bars applies:
+ * Yahoo's candles and the tape rebuild's Polygon bars (historicalTape.ts). A bar
+ * STARTING at the close is not a regular-session bar.
+ *
+ * The day is required (2026-09-26). The close used to be a fixed 16:00, so on a
+ * half-day (2026-11-27, 2026-12-24) Polygon's post-market bars from 13:00 read as
+ * the session: the tape rebuild took readings from them, and a replayed short
+ * walked on through thin after-hours prints to a 15:55 time exit.
+ */
+export function isRegularSessionMinute(day: string, minute: number): boolean {
+  return minute >= REGULAR_SESSION_OPEN_MINUTE && minute < sessionCloseMinuteOn(day);
 }

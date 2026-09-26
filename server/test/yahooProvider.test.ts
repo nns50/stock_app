@@ -63,6 +63,23 @@ vi.mock('yahoo-finance2', () => {
           }
           return { quotes };
         }
+        if (symbol === 'HALFDAY') {
+          // 2026-11-27, the day after Thanksgiving: the session closes at 13:00.
+          // Pre- and post-market come back anyway, as PREPOST's do.
+          const midnight = Date.parse('2026-11-27T00:00:00-05:00');
+          const quotes: Array<Record<string, unknown>> = [];
+          for (let m = 4 * 60; m < 20 * 60; m += 5) {
+            quotes.push({
+              date: new Date(midnight + m * 60_000),
+              open: 100,
+              high: 101,
+              low: 99,
+              close: 100,
+              volume: 10,
+            });
+          }
+          return { quotes };
+        }
         if (symbol === 'SPLIT') {
           // A 2:1 split on the second (later) day: adjclose is HALF of the
           // raw close, same ratio a real Yahoo response carries for every
@@ -279,6 +296,13 @@ describe('YahooProvider intraday windows', () => {
     expect(c).toHaveLength(78);
     expect(etTime(c[0].time)).toBe('09:30');
     expect(etTime(c[c.length - 1].time)).toBe('15:55');
+  });
+
+  it("ends a half-day at its 13:00 close: that afternoon's bars are post-market (2026-09-26)", async () => {
+    const c = await p.getCandles('HALFDAY', '5min', { start: '2026-11-27', end: '2026-11-27' });
+    expect(c).toHaveLength(42);
+    expect(etTime(c[0].time)).toBe('09:30');
+    expect(etTime(c[c.length - 1].time)).toBe('12:55');
   });
 
   it('returns an explicit window whole: a 1-minute session is 390 bars, past the old default of 120', async () => {
