@@ -204,6 +204,19 @@ and `server/test/regimeModelParity.test.ts` holds the port to it (section 8).
   A filled reading whose data date reaches the previous session holds for the day the same
   way, and is reused after a restart, so a later CBOE failure cannot turn the day's persisted
   reading `unknown`.
+- **The shock nowcast, measured (2026-09-26).** The overlay's third trigger reads SPY's
+  range so far ÷ its 14-day ATR, and ships at `regimeShockRangeRatio` 0, where it never fires
+  and so never journaled the `market_shock_detected` days its own gate asks for. Every
+  in-session tick now reads that ratio anyway, through the same two functions, whatever the
+  trigger's setting, the overlay flag, the kill switch or the session buffer
+  (`server/src/services/autotrading/shockShadow.ts`), and journals `market_shock_shadow` the
+  first time each day it reaches 0 (the session's first reading), 1, 1.5, 2, 2.5 and 3.
+  `server/src/services/shockNowcast.ts` pairs every day that reached a level with the first
+  known reading, within a week, that has seen it (its `asOf` on or after the day). A level is
+  met on at least 3 such days with the model reading High Volatility/Bearish on more than half.
+  The lowest met level from 1.5 is the proposal. `GET /api/market/regime-ml/shock-evidence`
+  serves it, the readiness object carries it as `shockNowcast` (never a blocker), and the Auto
+  page prints one line. Nothing sizes on it; setting the ratio stays the operator's.
 - **Persistence.** Every reading (including `unknown`) is stored in `ml_regime_readings`,
   keyed by ET day, with the label — never a state index, so a retrain cannot corrupt the
   sticky switch's "previous regime", which is the newest **known** day before today.
@@ -296,6 +309,8 @@ realized-vol window (VIX 38 → 23 within three sessions) is read as Sideways by
 model. A grind (2022) or a crash (2020) that outlasts the window reads High Vol. The case a
 daily model cannot see — day one of a shock — is what the intraday range nowcast trigger is
 for when the overlay lands; until then this row stays in the report as the standing reminder.
+The trigger ships at ratio 0, and since 2026-09-26 its evidence is measured with it off
+(section 5a, "The shock nowcast, measured").
 
 Drift inside the episodes: 94% of COVID-crash sessions (as it must — the tape left every calm
 model's distribution) and 5% of 2022 sessions.
@@ -440,4 +455,5 @@ is not shipped; the previous artifact stays.
 | `server/src/services/hmmForward.ts`         | the TypeScript filter and feature builder                |
 | `server/src/services/regimeModel.ts`        | artifact loading and validation                          |
 | `server/src/services/cboeVix.ts`            | the CBOE VIX fetch and the fill rule                     |
+| `server/src/services/autotrading/shockShadow.ts`, `server/src/services/shockNowcast.ts` | the shock nowcast's measurement and its evidence |
 | `server/test/hmmForward.test.ts`, `server/test/regimeModelParity.test.ts` | the tests            |

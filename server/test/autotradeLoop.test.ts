@@ -62,6 +62,11 @@ vi.mock('../src/services/mlRegime', async (importOriginal) => {
   return { ...actual, getMarketRegime: vi.fn(async () => actual.getMarketRegime({ source: 'off' })) };
 });
 vi.mock('../src/services/autotrading/moversPromotion', () => ({ processMoversForPromotion: vi.fn() }));
+// The shock nowcast's measurement (shockShadow.ts) has its own coverage on a
+// pinned clock (shockShadow.test.ts, shockNowcast.test.ts). It reads the
+// session off the time it runs, so it is a stub here — no test below may pass
+// or fail by the hour — and the tick is asserted to call it.
+vi.mock('../src/services/autotrading/shockShadow', () => ({ recordShockShadow: vi.fn(async () => null) }));
 vi.mock('../src/services/autotrading/executionGuards', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/services/autotrading/executionGuards')>();
   return {
@@ -123,6 +128,7 @@ import {
 import { runWebullPositionsSync } from '../src/providers/webull/positions';
 import { correctEstimatedHandExits } from '../src/services/autotrading/handExitCorrection';
 import { processMoversForPromotion } from '../src/services/autotrading/moversPromotion';
+import { recordShockShadow } from '../src/services/autotrading/shockShadow';
 import {
   checkSessionWindow,
   getMarketAtrPct,
@@ -187,6 +193,7 @@ const mockQuoteLegs = vi.mocked(getMarketQuoteLegs);
 const mockIndexContext = vi.mocked(fetchTodayIndexContext);
 const mockLogEvent = vi.mocked(logAutotradeEvent);
 const mockGetMarketRegime = vi.mocked(getMarketRegime);
+const mockShockShadow = vi.mocked(recordShockShadow);
 
 function candidate(symbol: string, atrPct: number | null): ScreenCandidate {
   return {
@@ -289,6 +296,7 @@ beforeEach(() => {
   // test below marks it reached — sticky by design. Without this every test
   // after it would inherit a halted day and see no entries at all.
   db.exec('DELETE FROM autotrade_daily_baseline');
+  mockShockShadow.mockClear();
   mockScreen.mockReset();
   mockDecide.mockReset();
   mockOptionsDecide.mockReset().mockResolvedValue({ signals: [], skipped: [] });
@@ -1216,6 +1224,38 @@ describe('runAutotradeLoopTick', () => {
     await runAutotradeLoopTick();
     expect(mockMarketRange).not.toHaveBeenCalled();
     expect(mockExecute).toHaveBeenLastCalledWith([{ signal: signal('AAPL') }], emptySeed, 1, 'neutral', noRegime);
+  });
+
+  it("measures the shock nowcast every tick, the kill switch on and the trigger off, with the tick's reading (2026-09-26)", async () => {
+    // The kill switch returns the tick before its screen, and the trigger's own
+    // range read with it: the measurement must run anyway, or the trigger's gate
+    // gets no evidence on exactly the days entries are halted.
+    setAutotradeConfig({ enabled: true, killSwitch: true, regimeShockRangeRatio: 0 });
+    const summary = await runAutotradeLoopTick();
+    expect(summary.skippedReason).toMatch(/kill switch/i);
+    expect(mockShockShadow).toHaveBeenCalledTimes(1);
+    expect(mockShockShadow).toHaveBeenCalledWith(null);
+
+    // It is handed the tick's actionable reading, never a stale one.
+    const fresh = await getMarketRegime({ source: 'off' });
+    mockGetMarketRegime.mockResolvedValueOnce({ ...fresh, regime: 'high_vol_bearish', stale: false });
+    await runAutotradeLoopTick();
+    expect(mockShockShadow).toHaveBeenLastCalledWith('high_vol_bearish');
+    mockGetMarketRegime.mockResolvedValueOnce({ ...fresh, regime: 'high_vol_bearish', stale: true });
+    await runAutotradeLoopTick();
+    expect(mockShockShadow).toHaveBeenLastCalledWith(null);
+
+    // A failed measurement costs the tick a journaled stage failure, nothing more.
+    mockShockShadow.mockRejectedValueOnce(new Error('quote timeout'));
+    await expect(runAutotradeLoopTick()).resolves.toBeDefined();
+    expect(mockShockShadow).toHaveBeenCalledTimes(4);
+    expect(mockLogEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'loop_stage_failed',
+        detail: { loopStage: 'shock shadow', reason: 'quote timeout' },
+      }),
+    );
+    setAutotradeConfig({ killSwitch: false });
   });
 
   it('hands decide the regime-tightened target under a fresh High-Vol reading with the overlay on, and the full one otherwise (2026-09-08)', async () => {

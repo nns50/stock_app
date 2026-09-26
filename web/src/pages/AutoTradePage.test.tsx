@@ -11,6 +11,7 @@ import type {
   AutotradeDashboard,
   AutotradeGatedSwitch,
   MlRegimeReadiness,
+  ShockNowcastEvidence,
   AutotradeDecideResponse,
   AutotradeEvent,
   AutotradeEventsResponse,
@@ -293,6 +294,35 @@ function readinessFixture(overrides: Partial<MlRegimeReadiness> = {}): MlRegimeR
     ready: false,
     blockers: ['1 of 20 sessions have a counted reading', '1 counted session(s) have no parity check yet'],
     gridDecision: 'rule 1 (the grid) is recorded by hand in docs/AUTOTRADING_SPEC.md — not tracked here',
+    shockNowcast: null,
+    ...overrides,
+  };
+}
+
+/** The shock nowcast's evidence (2026-09-26): measured sessions, and per level
+ *  the shock days and the model's label once it had seen each. Every field, so
+ *  a test cannot pass on a shape the API never returns. */
+function shockNowcastFixture(overrides: Partial<ShockNowcastEvidence> = {}): ShockNowcastEvidence {
+  const level = (l: number, days: number, decided: number, highVolNext: number) => ({
+    level: l,
+    candidate: l >= 1.5,
+    days,
+    decided,
+    highVolNext,
+    highVolSameDay: 0,
+    meets: decided >= 3 && highVolNext * 2 > decided,
+    shockDays: [],
+  });
+  return {
+    proxy: 'SPY',
+    measuredSessions: 12,
+    firstMeasured: '2026-09-28',
+    lastMeasured: '2026-10-13',
+    levels: [level(1, 7, 7, 1), level(1.5, 3, 3, 1), level(2, 1, 1, 1), level(2.5, 0, 0, 0), level(3, 0, 0, 0)],
+    proposal: null,
+    triggerRatio: 0,
+    rule: 'A level is met once at least 3 sessions reached it and the model read High Volatility/Bearish on most of them.',
+    journalTruncated: false,
     ...overrides,
   };
 }
@@ -3947,6 +3977,43 @@ describe('AutoTradePage', () => {
         /1 of 20 sessions with a reading · 0 switches in any 5 sessions \(limit 2\) · inert streak 0 · parity 0 of 1 agreed · model 2026\.09\.1, retrain by 2027-01-01 · grid: see the decision log\./,
       );
       expect(line).toHaveTextContent(/Not ready — 1 of 20 sessions have a counted reading\./);
+    });
+
+    it('shows the shock nowcast under the enabling rules: shock days per ratio and any proposal (2026-09-26)', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({ mlRegimeReadiness: readinessFixture({ shockNowcast: shockNowcastFixture() }) }),
+      );
+      renderDashboard();
+      const line = await screen.findByTestId('shock-nowcast');
+      expect(line).toHaveTextContent(
+        /Shock nowcast \(trigger off, measured every session\): 12 sessions measured · 1\.5×: 3 days, High Vol next on 1 of 3 · 2×: 1 day, High Vol next on 1 of 1 · 2\.5×: 0 days · 3×: 0 days\. No ratio met yet\./,
+      );
+      // The 1× base rate is not a candidate and is not shown.
+      expect(line).not.toHaveTextContent(/ 1×/);
+    });
+
+    it('names a met ratio as a proposal, never as applied, and says when the trigger is on (2026-09-26)', async () => {
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({
+          mlRegimeReadiness: readinessFixture({
+            shockNowcast: shockNowcastFixture({ proposal: { regimeShockRangeRatio: 2 } }),
+          }),
+        }),
+      );
+      const { unmount } = renderDashboard();
+      expect(await screen.findByTestId('shock-nowcast')).toHaveTextContent(/Proposed: shock ratio 2× — your call\./);
+      unmount();
+      vi.spyOn(client, 'autotradeDashboard').mockResolvedValue(
+        dashboardFixture({
+          mlRegimeReadiness: readinessFixture({
+            shockNowcast: shockNowcastFixture({ triggerRatio: 2.5, measuredSessions: 0 }),
+          }),
+        }),
+      );
+      renderDashboard();
+      expect(await screen.findByTestId('shock-nowcast')).toHaveTextContent(
+        /trigger on at 2\.5×, measured every session\): no session measured yet\./,
+      );
     });
 
     it('says ready once rules 2–4 hold, and still sends the operator to the decision log for the grid', async () => {

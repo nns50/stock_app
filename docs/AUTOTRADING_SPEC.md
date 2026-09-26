@@ -6323,6 +6323,8 @@ one of them. Then set `mlRegimeSizeCutPct` to the grid's cell — not to 35, not
 switch `mlRegimeEnabled` on; revert to OFF after 5 stale sessions; retrain quarterly and re-run
 the grid. The nowcast has its own gate: `regimeShockRangeRatio` stays 0 until three
 `market_shock_detected` days have been compared with the model's next-session label.
+(2026-09-26: at 0 the trigger never fires, so those rows could never be written. The gate
+now reads a measurement taken with the trigger off; see "2026-09-26 (seventeenth)".)
 
 ## 2026-09-08 — the ML regime target tighten, built and left OFF
 
@@ -8419,7 +8421,9 @@ same thing every session forever is a rule nobody reads.
 **Not implemented, and why:** the plan's shock-nowcast rule (`regimeShockRangeRatio` once
 the nowcast has anticipated the model's High-Vol reads on a majority of ≥3 shock days).
 Its evidence is not computable from what is journaled today, and a rule that guesses at
-its own criterion is worse than one that says it cannot read it yet. `shorts` was in the
+its own criterion is worse than one that says it cannot read it yet. (2026-09-26: it is
+computable now, from the shadow measurement in "2026-09-26 (seventeenth)". The rule is
+still not a gated switch: the evening review reports the proposal and the operator sets it.) `shorts` was in the
 table evaluating to null "for the same reason — its three numbers are not in one place";
 that claim was wrong, and the dated section of 2026-09-19 says how (the numbers were in
 one place, the short-shadow route, and nothing read it). It reads the persisted record now.
@@ -17029,3 +17033,112 @@ bound, month and day swapped, and CBOE errors not caught. Two more changed nothi
 construction: dropping the explicit 5xx branch (the error path retries a 5xx anyway) and
 filling after the `end` truncation (the fill's bound already stops at FRED's last S&P 500
 day on or before `end`).
+
+## 2026-09-26 (seventeenth) — the shock nowcast is measured with its trigger off
+
+**Why.** The regime cut's third trigger treats a tick as High Volatility/Bearish once
+SPY's range so far today reaches `regimeShockRangeRatio` × its 14-day ATR. It is the only
+trigger that can see day one of a shock: the model reads yesterday's close. The ratio
+ships at 0, and the gate for setting it (2026-09-08) reads "three `market_shock_detected`
+days compared with the model's next-session label". That row is written only when the
+trigger fires, and at 0 it never fires. So the gate's evidence could never exist, and
+the trigger could never qualify. Production reads 0 today.
+
+**What is built.** A measurement, with no effect on trading.
+- Every in-session tick reads SPY's range so far ÷ its ATR through the same two
+  functions the trigger reads (`getMarketRangePct`, `getMarketAtrPct`), so the number is
+  what the trigger would have seen (`autotrading/shockShadow.ts`).
+- It runs whatever the trigger's setting, the overlay flag, the kill switch or the
+  session buffer: it sits right after the tick's ML reading, before any early return.
+  Outside a regular session (weekends, full holidays, before 09:30, from the day's own
+  close, 13:00 on a half day) it reads nothing.
+- It journals `market_shock_shadow` (stage `screen`, shared book) the first time each ET
+  day the ratio reaches each level: 0 (the session's first reading, so a measured calm
+  day is not mistaken for a missing one), 1 (the base rate), and the candidate ratios
+  1.5, 2, 2.5 and 3. The range so far only grows through a session, so a day's highest
+  level is its peak. A restart can repeat a level later in the day, and the reader keeps
+  the earliest.
+- The quote and the candles come through the provider's 15-second and 60-second caches,
+  which the tick's own SPY reads share. While trading runs that is no extra candle read
+  and at most one extra SPY quote a tick (the screen can outlast the quote cache); while
+  the kill switch holds, one SPY quote and one SPY daily-candle read a tick.
+
+**The evidence** (`services/shockNowcast.ts`). Each day that reached a level is paired
+with the first known model reading, within a week, whose data date is on or after the
+day: the model's label once it has seen the shock. The day's own reading is never used,
+even one refreshed after the close. A level is **met** once at least 3 such days have a
+reading and the model read High Volatility/Bearish on more than half of them. The
+lowest met level from 1.5 is the **proposal** for `regimeShockRangeRatio`; there is none
+while the trigger is already on. Each level also counts the days the model already read
+High Vol on the day itself: the ML trigger was cutting on those anyway, so the nowcast
+adds nothing there.
+
+**Where it is read.**
+- `GET /api/market/regime-ml/shock-evidence`.
+- The readiness object's `shockNowcast`, on the readiness route and the dashboard. It is
+  never a blocker: the overlay's readiness does not wait on the nowcast.
+- One line on the Auto page under the enabling rules: sessions measured, and per
+  candidate ratio its shock days and how many read High Vol next. A met ratio reads
+  "Proposed: shock ratio N× — your call".
+
+**What does not change.** The trigger stays at 0. Nothing sizes, gates or stamps on the
+measurement. The proposal is the operator's to set; it is not a gated switch. That rule
+(2026-09-12) stays unbuilt: the ratio is new, and its first setting should be a
+decision, not a graduation. Setting it would be safe direction, since it only cuts size
+on shock days.
+
+**Pre-committed check.** Monday 2026-09-28, the first session after the deploy:
+- a level-0 `market_shock_shadow` row within the first ticks after 09:30;
+- `measuredSessions` 1 on the shock-evidence route after the close;
+- the Auto page line reading "1 session measured";
+- no `loop_stage_failed` row naming `shock shadow`.
+
+A day with no level-0 row while the loop ran is a finding.
+
+**Tests.**
+- `shockShadow.test.ts`, on pinned instants:
+  - each level is journaled once a day, the first time it is reached, with the trigger
+    off;
+  - a later, larger range adds only the next level, and the next session starts again;
+  - nothing is read before the open, at the close, on a Saturday, on Thanksgiving, or
+    after a half day's 13:00 close;
+  - a missing range or ATR records nothing.
+- `shockNowcast.test.ts`:
+  - pairing skips a reading that has not yet seen the day (FRED's lag), an unknown
+    reading, anything more than a week later, and the day's own reading;
+  - half is not most, and two agreeing days are not three;
+  - the lowest met ratio is proposed, and none while the trigger is on;
+  - end to end through the real recorder, the journal and the stored readings; the
+    readiness object carries the same object.
+- `autotradeLoop.test.ts`: the tick calls the measurement with the kill switch on,
+  hands it the tick's actionable reading (never a stale one), and a failure costs only
+  a journaled stage failure.
+- `routes.integration.test.ts`: the route, the readiness route and the dashboard serve
+  one object.
+- `AutoTradePage.test.tsx`: the line, the proposal wording, and the trigger-on wording.
+
+22 mutations, all caught: 19 on the server (the session and holiday tests; one claim per
+level; the level boundary; the loop's call and the regime it hands over; pairing with the
+day's own reading, without the data-date test, with unknown readings, without the week's
+bound; half as most; two days as enough; the highest met ratio; a proposal with the
+trigger on; the base rate as a candidate; the latest time kept; the action filter; the
+readiness dropping the object; the measured count) and 3 on the page.
+
+**The journal guard, fixed on the way.** `journalActionsReachability.test.ts` failed on
+this change with a false dead filter. `shockNowcast.ts` filters on `market_shock_shadow`
+through its own constant, and its one writer imports that constant. The guard resolved
+only a file's own constants, so it saw the read and not the write. Three fixes:
+- **Imports are followed.** The guard now follows a file's imports to the module each
+  one names. So `market_direction_read` and `market_tape_read`, written and read only
+  through imported constants, are checked on both sides for the first time.
+- **Whole declarations are parsed.** Following imports exposed a second gap. Since #659
+  gave `EXECUTION_ACTIONS` an arrow-typed field, the guard had not parsed that catalog at
+  all. Its entries counted as their own writes again (the failure `catalogSpans` exists
+  to stop), and its readers were never checked. Declarations are now parsed whole.
+- **Missing names fail.** A filter constant that resolves to nothing now fails the guard
+  instead of dropping out of it. `journalOncePerDay`'s first argument is read as a write,
+  which is how every regime row is journaled.
+
+No dead action was hiding behind either gap: with both fixed, every filter resolves and
+every action a filter reads is written. The guard's new parts carry 8 mutations, all
+caught.

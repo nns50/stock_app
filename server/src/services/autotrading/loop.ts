@@ -74,6 +74,7 @@ import {
   seedMarketDirectionState,
 } from './marketDirection';
 import { claimTapeJournal, MARKET_TAPE_ACTION } from './marketTape';
+import { recordShockShadow } from './shockShadow';
 import { MarketTapeReading, MarketTapeRequest, readMarketTape } from './marketTapeData';
 import { listMacroEvents } from '../../db/macroEvents';
 import { runWebullPositionsSync } from '../../providers/webull/positions';
@@ -714,6 +715,17 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     // today it only records. A failed read is journaled by runStage and the
     // tick carries null — nothing downstream ever waits on it.
     const mlRegimeReading = await runStage('ml regime read', () => getMarketRegime(), null);
+    // The shock nowcast's evidence (2026-09-26, shockShadow.ts): SPY's range so
+    // far ÷ its ATR, read every in-session tick the way the trigger below reads
+    // it — whatever the trigger's own setting, the kill switch or the session
+    // buffer — and journaled the first time each day it reaches each level. The
+    // trigger's gate needs shock days it cannot record while it is off.
+    // Measurement only; caught so it can never take down the tick.
+    try {
+      await recordShockShadow(actionableRegime(mlRegimeReading));
+    } catch (e) {
+      journalStageFailure('shock shadow', e);
+    }
     // Re-measure the daily-gain goal with THIS tick's just-synced equity, so
     // the entry gates below see the freshest number (the first measurement
     // above ran before the sync, for the scale-in gate). Second call is safe:
@@ -794,9 +806,10 @@ export async function runAutotradeLoopTick(): Promise<LoopTickSummary> {
     const marketAtrPct = await getMarketAtrPct(volCfg.marketProxySymbol);
     // THE tick's regime, derived ONCE (2026-09-08; effectiveRisk.ts's header).
     // The ML reading's regime when known and fresh (null otherwise — never a
-    // guess), SPY's range so far today for the shock nowcast (fetched only when
-    // the nowcast is on, so an untouched config makes no extra quote call),
-    // and the one effective regime regimeTriggers derives from them. Every
+    // guess), SPY's range so far today for the shock nowcast (handed to the
+    // trigger only when the nowcast is on; the shadow measurement above reads
+    // the same quote every in-session tick, through the provider's 15-second
+    // cache), and the one effective regime regimeTriggers derives from them. Every
     // executor gets all three: the two inputs feed its risk check, which calls
     // regimeTriggers again from the SAME inputs for the sizing line, and the
     // effective regime is what it stamps on what it opens — so a shock day is

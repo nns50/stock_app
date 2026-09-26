@@ -245,6 +245,18 @@ every shock day journals `market_shock_detected` once (range, ATR, ratio, what t
 read); after the first three, compare them with the model's next-session label before
 trusting the ratio.
 
+*…but a trigger at 0 never fires, so that row can never be written.* Since 2026-09-26
+the app measures the same ratio every session **with the trigger off**: SPY's range so
+far ÷ its ATR, read exactly as the trigger reads it, journaled as `market_shock_shadow`
+the first time each day it reaches 1, 1.5, 2, 2.5 and 3× (plus the session's first
+reading, so a measured calm day is not mistaken for a missing one). Each day that
+reached a ratio is paired with the first model reading that had **seen** that day. A
+ratio is proposed once at least three sessions reached it and the model read High
+Volatility/Bearish on more than half of them; the lowest such ratio from 1.5 is the
+proposal. The Auto page's **Shock nowcast** line shows the tally, and
+`GET /api/market/regime-ml/shock-evidence` serves it in full. Setting the ratio stays
+your call; nothing here trades.
+
 **ML regime switch threshold** (0–1, default 0.6) is not a cut — it is the reading's
 own sticky rule: the regime changes only when the new state's filtered probability
 reaches this. Higher = calmer, later switches. It applies whether or not the overlay is

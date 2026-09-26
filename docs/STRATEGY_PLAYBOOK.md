@@ -1142,7 +1142,9 @@ size down by the ML regime size cut (35% by default, deliberately _below_ the 40
 extreme SPY-ATR trigger carries — a broad condition must never cut deeper than a rare one),
 and a shock day (SPY's range so far today already 1.5× a normal full day, if you set the
 ratio) is treated the same way on day one, which a model read from yesterday's close cannot
-see. It is a second layer on _dollar_ risk for what the per-trade ATR stop cannot price —
+see. Don't pick that ratio by feel: it ships at 0, and since 2026-09-26 the app measures it
+every session with the trigger off and proposes the lowest ratio whose shock days (three or
+more) the model then read High Vol on most of (the Auto page's Shock nowcast line). It is a second layer on _dollar_ risk for what the per-trade ATR stop cannot price —
 gaps through stops, correlations going to one, a long-biased edge that weakens in bear tape
 — so the cut is moderate, applied once (the deeper of the triggers, never both), and a cut
 of 100% simply skips that regime. The daily goal follows the cut: on a regime day the goal,
