@@ -2675,6 +2675,50 @@ export interface LoopTickSummary {
    *  server seeds its market-direction hold from it. Ticks persisted before
    *  2026-09-26 lack the field. */
   marketDirectionAt?: number | null;
+  /** The tape score for that reading (server services/autotrading/marketTape.ts,
+   *  2026-09-26): -100..+100 from six legs. Measurement only; nothing gates or
+   *  sizes on it. Null when the tick did not read the direction; older ticks
+   *  lack the field. */
+  marketTape?: MarketTapeReading | null;
+}
+
+export type TapeLeg =
+  'indexVsPrevClose' | 'breadthNet' | 'indexVsOpen' | 'indexVsVwap' | 'indexSlope30' | 'breadthMomentum30';
+
+/** One leg of the tape score: its measured value, its sub-score (value over
+ *  its frozen scale, clamped to -1..+1), and its weight of the 100. */
+export interface TapeComponent {
+  leg: TapeLeg;
+  value: number | null;
+  sub: number | null;
+  weight: number;
+  scale: number;
+}
+
+/** What one index (SPY, QQQ) answered for the tape score's price legs. */
+export interface TapeIndexReading {
+  symbol: string;
+  vsPrevClose: number | null;
+  last: number | null;
+  open: number | null;
+  vwap: number | null;
+  closeThirtyMinAgo: number | null;
+}
+
+/** The tape score for one tick's market-direction reading. */
+export interface MarketTapeReading {
+  /** -100..+100; null when the direction is unknown. */
+  score: number | null;
+  /** Percent of the legs' weight that was measured. */
+  coverage: number;
+  components: TapeComponent[];
+  direction: 'red' | 'green' | 'mixed' | 'unknown';
+  /** When the reading it scores was taken (epoch ms). */
+  readAt: number;
+  /** When the index quotes and bars were read (epoch ms). */
+  quotedAt: number;
+  indexes: TapeIndexReading[];
+  detail: string;
 }
 
 /** The market-direction reading: SPY's move and the universe's breadth, and the

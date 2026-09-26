@@ -70,7 +70,14 @@ vi.mock('../src/services/autotrading/executionGuards', async (importOriginal) =>
     getMarketAtrPct: vi.fn(),
     getMarketRangePct: vi.fn(),
     getMarketChangePct: vi.fn(),
+    getMarketQuoteLegs: vi.fn(),
   };
+});
+// The tape score's bar references (vwap.ts): a stub, so the tape reads what
+// each test hands it rather than the synthetic provider's random bars.
+vi.mock('../src/services/autotrading/vwap', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/services/autotrading/vwap')>();
+  return { ...actual, fetchTodayIndexContext: vi.fn() };
 });
 vi.mock('../src/db/autotradeEvents', () => ({
   logAutotradeEvent: vi.fn(),
@@ -120,11 +127,19 @@ import {
   checkSessionWindow,
   getMarketAtrPct,
   getMarketChangePct,
+  getMarketQuoteLegs,
   getMarketRangePct,
 } from '../src/services/autotrading/executionGuards';
+import { fetchTodayIndexContext } from '../src/services/autotrading/vwap';
+import { scoreMarketTape } from '../src/services/autotrading/marketTape';
 import { EMPTY_BREADTH, resetMarketDirectionState } from '../src/services/autotrading/marketDirection';
 import { logAutotradeEvent } from '../src/db/autotradeEvents';
-import { runAutotradeLoopTick, startAutotradeLoop, stopAutotradeLoop } from '../src/services/autotrading/loop';
+import {
+  MARKET_TAPE_TIMEOUT_MS,
+  runAutotradeLoopTick,
+  startAutotradeLoop,
+  stopAutotradeLoop,
+} from '../src/services/autotrading/loop';
 import { getLastTick, saveLastTick } from '../src/db/autotradeLastTick';
 import { getMarketRegime, MlRegimeReading } from '../src/services/mlRegime';
 import { ScreenCandidate } from '../src/services/autotrading/screen';
@@ -168,6 +183,8 @@ const mockSessionWindow = vi.mocked(checkSessionWindow);
 const mockMarketAtr = vi.mocked(getMarketAtrPct);
 const mockMarketRange = vi.mocked(getMarketRangePct);
 const mockMarketChange = vi.mocked(getMarketChangePct);
+const mockQuoteLegs = vi.mocked(getMarketQuoteLegs);
+const mockIndexContext = vi.mocked(fetchTodayIndexContext);
 const mockLogEvent = vi.mocked(logAutotradeEvent);
 const mockGetMarketRegime = vi.mocked(getMarketRegime);
 
@@ -306,6 +323,8 @@ beforeEach(() => {
   mockMarketAtr.mockReset().mockResolvedValue(2);
   mockMarketRange.mockReset().mockResolvedValue(null);
   mockMarketChange.mockReset().mockResolvedValue(null);
+  mockQuoteLegs.mockReset().mockResolvedValue(null);
+  mockIndexContext.mockReset().mockResolvedValue({ vwap: null, sessionOpen: null, closeThirtyMinAgo: null });
   mockLogEvent.mockReset();
   // runAutotradeLoopTick's own gates (unlike everything else in this file)
   // hit the REAL db/autotradeConfig and db/trading, not a mock — default to
@@ -2234,6 +2253,143 @@ describe('runAutotradeLoopTick', () => {
       await runAutotradeLoopTick();
       expect(directionRows()).toHaveLength(2);
       expect(directionRows()[1][0]).toMatchObject({ detail: { direction: 'mixed' } });
+    });
+
+    // THE TAPE SCORE (2026-09-26; marketTape.ts). Measurement only, so the
+    // consumer is the tick's summary and its journal row, and what matters
+    // most is what it must NOT do: fetch before the entries, disagree with the
+    // label about SPY, or cost the tick anything when it fails.
+    describe('the tape score (measurement only)', () => {
+      const redScreen = () => ({
+        generatedAt: Date.now(),
+        candidates: [candidate('AAPL', 2)],
+        excluded: [],
+        skipped: [],
+        errors: [],
+        rejected: [],
+        relVolMedian: null,
+        breadth: { red: 365, green: 135, flat: 0, sample: 500 },
+        indexChangePct: null,
+        discovery: { universeCount: 500, moversCount: 0, scannedCount: 500, moversError: null },
+      });
+      const tapeRows = () => mockLogEvent.mock.calls.filter((c) => c[0].action === 'market_tape_read');
+
+      it('scores the reading after the entries, with SPY’s leg the reading’s own figure, and journals it once', async () => {
+        armLive();
+        setAutotradeConfig({ liveOptionsEnabled: true, marketDirectionGateEnabled: true });
+        armScreenAndDecide();
+        mockScreen.mockResolvedValue(redScreen());
+        mockMarketChange.mockResolvedValue(-0.35);
+        mockLiveExecute.mockResolvedValue([]);
+        mockLiveOptionsExecute.mockResolvedValue([]);
+        // SPY's own quote says -0.40%: the score must still read the reading's
+        // -0.35, the figure the label was judged on.
+        mockQuoteLegs.mockImplementation(async (symbol: string) =>
+          symbol === 'SPY' ? { last: 498, open: 500, changePct: -0.4 } : { last: 396, open: 400, changePct: -0.8 },
+        );
+        mockIndexContext.mockImplementation(async (symbol: string) =>
+          symbol === 'SPY'
+            ? { vwap: 499, sessionOpen: 500, closeThirtyMinAgo: 499 }
+            : { vwap: 398, sessionOpen: 400, closeThirtyMinAgo: 397 },
+        );
+
+        const summary = await runAutotradeLoopTick();
+
+        const tape = summary.marketTape!;
+        expect(tape.direction).toBe('red');
+        expect(tape.readAt).toBe(summary.marketDirectionAt);
+        expect(tape.indexes.map((i) => [i.symbol, i.vsPrevClose])).toEqual([
+          ['SPY', -0.35],
+          ['QQQ', -0.8],
+        ]);
+        const pct = (a: number, b: number) => ((a - b) / b) * 100;
+        const expected = scoreMarketTape('red', {
+          indexVsPrevClose: (-0.35 + -0.8) / 2,
+          breadthNet: (135 - 365) / 500,
+          indexVsOpen: (pct(498, 500) + pct(396, 400)) / 2,
+          indexVsVwap: (pct(498, 499) + pct(396, 398)) / 2,
+          indexSlope30: (pct(498, 499) + pct(396, 397)) / 2,
+          // The first tick of the day: nothing to measure momentum from.
+          breadthMomentum30: null,
+        });
+        expect(tape.score).toBe(expected.score);
+        expect(tape.coverage).toBe(90);
+        expect(tape.score).toBeLessThan(-60);
+
+        // Fetched AFTER both live books placed this tick's entries.
+        const firstTapeFetch = mockQuoteLegs.mock.invocationCallOrder[0];
+        expect(firstTapeFetch).toBeGreaterThan(mockLiveExecute.mock.invocationCallOrder[0]);
+        expect(firstTapeFetch).toBeGreaterThan(mockLiveOptionsExecute.mock.invocationCallOrder[0]);
+
+        expect(tapeRows()).toHaveLength(1);
+        expect(tapeRows()[0][0]).toMatchObject({
+          stage: 'screen',
+          detail: { direction: 'red', score: expected.score, readAt: summary.marketDirectionAt },
+        });
+        // The same tape a tick later writes no second row.
+        await runAutotradeLoopTick();
+        expect(tapeRows()).toHaveLength(1);
+      });
+
+      it('costs the tick nothing when it fails', async () => {
+        armLive();
+        setAutotradeConfig({ marketDirectionGateEnabled: true });
+        armScreenAndDecide();
+        mockScreen.mockResolvedValue(redScreen());
+        mockMarketChange.mockResolvedValue(-0.35);
+        mockLiveExecute.mockResolvedValue([]);
+        mockIndexContext.mockRejectedValue(new Error('bars down'));
+
+        const summary = await runAutotradeLoopTick();
+
+        expect(summary.marketDirection?.direction).toBe('red');
+        expect(mockLiveExecute).toHaveBeenCalledTimes(1);
+        expect(summary.marketTape).toBeNull();
+        expect(tapeRows()).toHaveLength(0);
+        const failures = mockLogEvent.mock.calls.filter((c) => c[0].action === 'loop_stage_failed');
+        expect(failures.map((c) => (c[0].detail as { loopStage: string }).loopStage)).toContain('market tape');
+      });
+
+      // A slow provider must never hold the end of a tick: the loop's next
+      // exits wait on it, and the score gates nothing.
+      it('gives up on a tape that does not answer within MARKET_TAPE_TIMEOUT_MS', async () => {
+        armLive();
+        setAutotradeConfig({ marketDirectionGateEnabled: true });
+        armScreenAndDecide();
+        mockScreen.mockResolvedValue(redScreen());
+        mockMarketChange.mockResolvedValue(-0.35);
+        mockLiveExecute.mockResolvedValue([]);
+        mockIndexContext.mockReturnValue(new Promise(() => {}));
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        try {
+          const tick = runAutotradeLoopTick();
+          await vi.advanceTimersByTimeAsync(MARKET_TAPE_TIMEOUT_MS);
+          const summary = await tick;
+          expect(summary.marketDirection?.direction).toBe('red');
+          expect(summary.marketTape).toBeNull();
+          const failure = mockLogEvent.mock.calls.find(
+            (c) =>
+              c[0].action === 'loop_stage_failed' && (c[0].detail as { loopStage: string }).loopStage === 'market tape',
+          );
+          expect((failure?.[0].detail as { reason: string }).reason).toMatch(/timed out/);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('scores nothing on a tick that never read the direction', async () => {
+        setAutotradeConfig({ killSwitch: true });
+        const summary = await runAutotradeLoopTick();
+        expect(summary.marketTape).toBeNull();
+        expect(mockQuoteLegs).not.toHaveBeenCalled();
+        expect(tapeRows()).toHaveLength(0);
+        // Not attempted and failed: never attempted.
+        const tapeFailures = mockLogEvent.mock.calls.filter(
+          (c) =>
+            c[0].action === 'loop_stage_failed' && (c[0].detail as { loopStage: string }).loopStage === 'market tape',
+        );
+        expect(tapeFailures).toHaveLength(0);
+      });
     });
 
     // THE HOLD (2026-09-24; marketDirection.ts holdMarketDirection). The exit

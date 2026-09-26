@@ -1572,6 +1572,20 @@ equally-weighted cards in the order they happened to be built:
   refused under their own class, so what the gate costs or saves is measured on paper
   rather than assumed. The thresholds and the record they were chosen from are in the
   [Strategy Playbook](STRATEGY_PLAYBOOK.md).
+
+  **The tape score** (since 2026-09-26) grades the same reading from −100 (every leg at
+  its red extreme) to +100. Six legs go into it: SPY and QQQ against their previous
+  close, their open, their session VWAP and their price 30 minutes ago; breadth as
+  green minus red over the names measured; and breadth's change over 30 minutes. The
+  About page has the weights and the scales. It shows on the Last cycle line under the
+  market reading, for example "Tape −62 · SPY −0.45% · 73% red · breadth falling ·
+  measured, not acted on". A leg it could not measure is left out and the line says
+  how much it read ("85% of legs"). It is blank when the market reading is unknown. It
+  is journaled as `market_tape_read` on the first tick of the day, on a change of the
+  label, when the score moves 5 points from the last row, and at least every 10
+  minutes. It is scored after each tick's entries, from the moment the reading was
+  taken (`readAt`). **Nothing acts on it**: no entry is refused, sized or tightened by
+  it.
   Separately, a **symbol loss cooldown** (also 2026-08-22, off by default) gives the
   loop a memory of losing on a name: once a symbol takes the configured number of
   losing live trades (2+) within a rolling window of calendar days, its new live

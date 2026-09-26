@@ -370,6 +370,64 @@ export default function AboutPage() {
           red reading, a short or a put on a green one — and a scale-in or per-lot second lot the same way, while paper
           keeps taking every signal as the control. It sizes nothing and never refuses on a mixed or unknown reading.
         </p>
+        <p className="mt-2">
+          The <strong className="text-slate-200">tape score</strong> (2026-09-26) grades the same reading on a{' '}
+          <span className="tabular-nums">−100..+100</span> scale, so it can say how red a red day is, which way a mixed
+          one leans, and whether the lean is growing. It has six legs; each leg’s value is divided by its scale and
+          clamped to <span className="tabular-nums">±1</span>, and the score is{' '}
+          <span className="tabular-nums">100</span> × the weighted mean of the legs that could be measured (the weights
+          renormalize over what is present, and the reading reports that coverage). The SPY+QQQ legs average the two
+          indexes, and SPY’s move against its prior close is the reading’s own figure.
+        </p>
+        <table className="mt-2 text-sm">
+          <thead>
+            <tr className="text-left text-slate-400">
+              <th className="pr-4 font-normal">Leg</th>
+              <th className="pr-4 font-normal">Weight</th>
+              <th className="font-normal">Scale (±1 at)</th>
+            </tr>
+          </thead>
+          <tbody className="tabular-nums">
+            <tr>
+              <td className="pr-4">SPY+QQQ vs the previous close</td>
+              <td className="pr-4">25</td>
+              <td>1.17%</td>
+            </tr>
+            <tr>
+              <td className="pr-4">Breadth, (green − red) ÷ names measured</td>
+              <td className="pr-4">25</td>
+              <td>0.42</td>
+            </tr>
+            <tr>
+              <td className="pr-4">SPY+QQQ vs today’s open</td>
+              <td className="pr-4">15</td>
+              <td>0.77%</td>
+            </tr>
+            <tr>
+              <td className="pr-4">SPY+QQQ vs the session VWAP</td>
+              <td className="pr-4">15</td>
+              <td>0.39%</td>
+            </tr>
+            <tr>
+              <td className="pr-4">SPY+QQQ over the last 30 minutes</td>
+              <td className="pr-4">10</td>
+              <td>0.23%</td>
+            </tr>
+            <tr>
+              <td className="pr-4">Breadth’s change over 30 minutes</td>
+              <td className="pr-4">10</td>
+              <td>0.11</td>
+            </tr>
+          </tbody>
+        </table>
+        <p className="mt-2">
+          Each scale is that leg’s 90th percentile of absolute value over 40 sessions (2026-07-31 to 09-25) and is
+          frozen, not a setting. The score is blank exactly when the reading is unknown.{' '}
+          <strong className="text-slate-200">It gates nothing and sizes nothing</strong>: the loop records it after each
+          tick’s entries and journals it (<code>market_tape_read</code>) so every trade can be placed against it. It
+          gets a decision role only after 20 live-scored sessions, and only where the rebuilt history and the live
+          record agree.
+        </p>
       </Section>
 
       <Section id="sectorRotation" title="How the sector-rotation board works">

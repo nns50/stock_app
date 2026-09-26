@@ -39,6 +39,7 @@ function summary(overrides: Partial<LoopTickSummary> = {}): LoopTickSummary {
     mlRegime: null,
     marketDirection: null,
     marketDirectionAt: null,
+    marketTape: null,
     ...overrides,
   };
 }

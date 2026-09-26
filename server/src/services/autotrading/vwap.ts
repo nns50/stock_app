@@ -112,3 +112,72 @@ export async function fetchTodaySessionContext(symbol: string, now: number = Dat
   vwapCache.set(key, ctx.vwap);
   return ctx;
 }
+
+// ---------------------------------------------------------------------------
+// The tape score's index legs (2026-09-26; marketTape.ts). The score reads
+// SPY's and QQQ's price against three references a quote does not carry: the
+// session VWAP, the session's opening bar (when the quote has no `open`), and
+// the price 30 minutes ago. All three come from ONE 5-minute fetch per index,
+// cached like the session context above, and the VWAP is computeSessionVwap's,
+// so an entry's stamped VWAP and the tape's are one derivation.
+// ---------------------------------------------------------------------------
+
+/** What the tape score reads off an index's 5-minute bars. */
+export interface IndexBarContext {
+  /** Today's session VWAP (computeSessionVwap); null when unmeasured. */
+  vwap: number | null;
+  /** The open of today's first regular-session bar: the reference when the
+   *  quote carries no `open`. */
+  sessionOpen: number | null;
+  /** The close of the latest session bar that had ENDED 30 minutes before
+   *  `now`: the price the 30-minute slope is measured from. Null until a bar
+   *  has (from 10:05 ET). */
+  closeThirtyMinAgo: number | null;
+}
+
+const BAR_MS = 5 * 60_000;
+const SLOPE_WINDOW_MS = 30 * 60_000;
+
+/**
+ * The tape's bar references from `candles`: today's regular-session bars only
+ * (the same session rule as computeSessionVwap), none of them from after
+ * `now`. Pure.
+ */
+export function indexLegsFromBars(candles: Candle[], now: number): IndexBarContext {
+  const today = etToday(now);
+  const session = candles
+    .filter((c) => {
+      if (etToday(c.time) !== today || c.time > now) return false;
+      const m = etMinutes(c.time);
+      return m >= SESSION_OPEN_MIN && m < SESSION_CLOSE_MIN;
+    })
+    .sort((a, b) => a.time - b.time);
+  const first = session[0];
+  let thirtyAgo: Candle | null = null;
+  for (const c of session) if (c.time + BAR_MS <= now - SLOPE_WINDOW_MS) thirtyAgo = c;
+  return {
+    vwap: computeSessionVwap(session, now),
+    sessionOpen: first !== undefined && first.open > 0 ? first.open : null,
+    closeThirtyMinAgo: thirtyAgo !== null && thirtyAgo.close > 0 ? thirtyAgo.close : null,
+  };
+}
+
+// Keyed by symbol and ET day; 5 minutes, the bar size, as for the contexts above.
+const indexContextCache = new TtlCache<IndexBarContext>(5 * 60 * 1000);
+
+/** The tape's bar references for an index, from one cached 5-minute fetch.
+ *  NEVER throws: a failed fetch reads as nulls (the legs go unmeasured). */
+export async function fetchTodayIndexContext(symbol: string, now: number = Date.now()): Promise<IndexBarContext> {
+  const key = `${symbol.toUpperCase()}:${etToday(now)}`;
+  const cached = indexContextCache.get(key);
+  if (cached !== undefined) return cached;
+  let ctx: IndexBarContext;
+  try {
+    const candles = await getProvider().getCandles(symbol, '5min', { limit: 90 });
+    ctx = indexLegsFromBars(candles, now);
+  } catch {
+    ctx = { vwap: null, sessionOpen: null, closeThirtyMinAgo: null };
+  }
+  indexContextCache.set(key, ctx);
+  return ctx;
+}

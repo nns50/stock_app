@@ -1826,6 +1826,7 @@ describe('health (integration)', () => {
       mlRegime: null,
       marketDirection: null,
       marketDirectionAt: null,
+      marketTape: null,
     });
     const after = (await getJson('/api/health')) as { loopLastTickAgeMs: number | null };
     expect(after.loopLastTickAgeMs).toBeGreaterThanOrEqual(0);
