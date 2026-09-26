@@ -19,6 +19,8 @@ import {
   reentryGapReadings,
   runEdgeLeakScan,
   tapeSideBucket,
+  tapeScoreBand,
+  tapeScoreBucket,
   SLIPPAGE_MIN_TRADES,
   ENTRY_DRIFT_MIN_TRADES,
   verdictFor,
@@ -69,6 +71,7 @@ function trade(over: Partial<LeakTrade> = {}): LeakTrade {
     marketTape: null,
     lean: 'long',
     tapeDirection: null,
+    tapeScore: null,
     ...over,
   };
 }
@@ -1178,6 +1181,48 @@ describe('the re-entry cooldown finding — what a shorter cooldown would have a
 // THE TAPE BY SIDE (2026-09-25). The `marketTape` cut pools a long on a red day
 // with a short on a green one, so it cannot say whether shorts pay on red days;
 // this one files by asset, side and the tape the entry met.
+// THE TAPE SCORE BY SIDE (2026-09-26; the tape plan's PR 7). The same entries
+// again, by the score band in force: a finding to read, never a lever.
+describe('tapeScoreBySide — side and tape score, both books', () => {
+  it('bands the score symmetrically at 15 and 40', () => {
+    const bands = [-100, -40, -39, -15, -14, 0, 14, 15, 39, 40, 100].map(tapeScoreBand);
+    expect(bands).toEqual([
+      'le-40',
+      'le-40',
+      '-40to-15',
+      '-40to-15',
+      '-15to15',
+      '-15to15',
+      '-15to15',
+      '15to40',
+      '15to40',
+      'ge40',
+      'ge40',
+    ]);
+    expect(tapeScoreBucket('equity', 'long', -62)).toBe('equity_long_tape_le-40');
+    expect(tapeScoreBucket('options', 'short', 20)).toBe('options_short_tape_15to40');
+    expect(tapeScoreBucket('equity', 'long', null)).toBeNull();
+  });
+
+  it('files each entry by its band in both books, and never names a lever', () => {
+    const live = Array.from({ length: 20 }, () => trade({ tapeScore: -62, r: -1 }));
+    const paper = [
+      ...Array.from({ length: 20 }, () => trade({ book: 'paper', tapeScore: -55, r: -0.8 })),
+      trade({ book: 'paper', lean: 'short', tapeScore: -70, r: 1 }),
+      trade({ book: 'paper', tapeScore: null, r: 0.5 }),
+    ];
+    const dim = scan(live, paper).dimensions.find((d) => d.id === 'tapeScoreBySide')!;
+    const deepRedLongs = dim.buckets.find((b) => b.bucket === 'equity_long_tape_le-40')!;
+    expect(deepRedLongs.n).toBe(20);
+    expect(deepRedLongs.control?.n).toBe(20);
+    // Losing in both books: a leak by the scan's bar, and still no lever,
+    // because the score gates nothing.
+    expect(deepRedLongs.verdict).toBe('leak');
+    expect(deepRedLongs.lever).toBeNull();
+    expect(dim.buckets.find((b) => b.bucket === 'equity_short_tape_le-40')).toMatchObject({ n: 0 });
+  });
+});
+
 describe('marketTapeBySide — side and tape, both books', () => {
   const bySide = (live: LeakTrade[], paper: LeakTrade[] = []) =>
     scan(live, paper).dimensions.find((d) => d.id === 'marketTapeBySide')!;
