@@ -927,9 +927,11 @@ describe('GET /journal/declined-entry-shadow (integration)', () => {
     row(61, 118);
     row(121, 119);
     // Bars from the moment of each signal: a winner to its 1R target either way.
+    // The replay enters at the refusal's price plus at most the whole 0.5% buffer
+    // (119 → 119.60, a 1R target of 122.19), and 124 trades through it.
     const candles = vi.spyOn(getProvider(), 'getCandles').mockImplementation(async () => [
       { time: t0, open: 117, high: 117.5, low: 116.8, close: 117.2, volume: 1000 },
-      { time: t0 + 125 * 60_000, open: 119, high: 121.5, low: 118.9, close: 121, volume: 1000 },
+      { time: t0 + 125 * 60_000, open: 119, high: 124, low: 118.9, close: 121, volume: 1000 },
     ]);
     const before = getAutotradeConfig();
     setAutotradeConfig({
@@ -946,10 +948,13 @@ describe('GET /journal/declined-entry-shadow (integration)', () => {
       )) as {
         n: number;
         minMinutesSinceExit: number;
+        replayVersion: number;
         trades: { at: number; entry: number; minutesSinceExit: number; exitR: number }[];
         excluded: Record<string, number>;
       };
       expect(out.minMinutesSinceExit).toBe(120);
+      // The route replays with the same fill inputs as the stored records.
+      expect(out).toMatchObject({ replayVersion: 2 });
       expect(out.n).toBe(1);
       expect(out.trades[0]).toMatchObject({ at: t0 + 120 * 60_000, entry: 119, minutesSinceExit: 121 });
       expect(out.trades[0].exitR).toBeCloseTo(1, 5);
@@ -961,6 +966,106 @@ describe('GET /journal/declined-entry-shadow (integration)', () => {
       )) as { trades: { entry: number; minutesSinceExit: number }[]; excluded: Record<string, number> };
       expect(first.trades[0]).toMatchObject({ entry: 117, minutesSinceExit: 1 });
       expect(first.excluded.duplicate_same_day).toBe(2);
+    } finally {
+      candles.mockRestore();
+      setAutotradeConfig(before);
+    }
+  });
+
+  it('replays a short skip as a short: its row carries no side (2026-09-25, on the second review)', async () => {
+    // `live_short_skipped` is written with no `side`: the action IS the side.
+    // Parsed as a long, W's side-aware checks marked every row unusable and the
+    // route read n 0; before W it replayed them as longs.
+    const t0 = Date.parse('2026-09-24T13:45:00Z'); // 09:45 ET
+    db.prepare(
+      'INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) VALUES (?,?,?,?,NULL,?)',
+    ).run(
+      'BEAM',
+      'execution',
+      'live_short_skipped',
+      JSON.stringify({
+        score: 94.9,
+        entry: 100,
+        stop: 102,
+        liveMinSignalScore: 81,
+        reason: 'liveAllowNakedShort is off',
+      }),
+      t0,
+    );
+    const candles = vi.spyOn(getProvider(), 'getCandles').mockImplementation(async () => [
+      { time: t0, open: 100, high: 100.2, low: 99.4, close: 99.5, volume: 1000 },
+      { time: t0 + 5 * 60_000, open: 99.5, high: 99.6, low: 95.5, close: 96, volume: 1000 },
+    ]);
+    const before = getAutotradeConfig();
+    setAutotradeConfig({
+      targetRMultiple: 1,
+      liveScaleOutEnabled: false,
+      stagnationExitMinutes: 0,
+      breakevenTriggerRMultiple: 0,
+      trailStartRMultiple: 0,
+      trailStopRMultiple: 0,
+    });
+    try {
+      const out = (await getJson(
+        `/api/journal/declined-entry-shadow?action=live_short_skipped&since=${t0 - 3_600_000}`,
+      )) as { n: number; excluded: Record<string, number>; trades: { side: string; exitR: number }[] };
+      expect(out.excluded.unusable_signal).toBe(0);
+      expect(out.n).toBe(1);
+      expect(out.trades[0].side).toBe('short');
+      expect(out.trades[0].exitR).toBeGreaterThan(0);
+    } finally {
+      candles.mockRestore();
+      setAutotradeConfig(before);
+    }
+  });
+
+  it('replays the direction gate’s own refusals instead of refusing them again', async () => {
+    // The loop journals the tick's reading before it places, so the reading in
+    // force at every `live_market_direction_skipped` row is the red that refused
+    // it. Replaying the gate over those rows refused all of them: the route read
+    // n 0 for the one question it was asked. Another gate's refusal on the same
+    // tape is still held to the reading, which is what the replay is for.
+    const t0 = Date.parse('2026-09-24T13:45:00Z'); // 09:45 ET
+    const event = db.prepare(
+      'INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) VALUES (?,?,?,?,NULL,?)',
+    );
+    event.run(null, 'screen', 'market_direction_read', JSON.stringify({ direction: 'red', redPct: 73 }), t0 - 60_000);
+    const refusal = { side: 'long', score: 88, entry: 100, stop: 98, liveMinSignalScore: 81 };
+    event.run(
+      'AMAT',
+      'execution',
+      'live_market_direction_skipped',
+      JSON.stringify({ ...refusal, direction: 'red' }),
+      t0,
+    );
+    event.run('AMAT', 'execution', 'risk_atr_unreachable_skipped', JSON.stringify({ ...refusal, ratio: 1.1 }), t0);
+    const candles = vi.spyOn(getProvider(), 'getCandles').mockImplementation(async () => [
+      { time: t0, open: 100, high: 101, low: 99.6, close: 100.8, volume: 1000 },
+      { time: t0 + 5 * 60_000, open: 100.8, high: 104.5, low: 100.5, close: 104, volume: 1000 },
+    ]);
+    const before = getAutotradeConfig();
+    setAutotradeConfig({
+      marketDirectionGateEnabled: true,
+      targetRMultiple: 1,
+      liveScaleOutEnabled: false,
+      stagnationExitMinutes: 0,
+      breakevenTriggerRMultiple: 0,
+      trailStartRMultiple: 0,
+      trailStopRMultiple: 0,
+    });
+    type Read = { n: number; directionGateReplayed: boolean; excluded: Record<string, number> };
+    try {
+      const own = (await getJson(
+        `/api/journal/declined-entry-shadow?action=live_market_direction_skipped&since=${t0 - 3_600_000}`,
+      )) as Read;
+      expect(own).toMatchObject({ n: 1, directionGateReplayed: false });
+      expect(own.excluded.refused_by_direction).toBe(0);
+
+      const other = (await getJson(
+        `/api/journal/declined-entry-shadow?action=risk_atr_unreachable_skipped&since=${t0 - 3_600_000}`,
+      )) as Read;
+      expect(other).toMatchObject({ n: 0, directionGateReplayed: true });
+      expect(other.excluded.refused_by_direction).toBe(1);
     } finally {
       candles.mockRestore();
       setAutotradeConfig(before);
@@ -1002,9 +1107,13 @@ describe('GET /journal/reentry-shadow-record (integration)', () => {
             unusable_signal: 0,
             before_min_gap: 0,
             no_exit_gap: 0,
+            refused_by_direction: 0,
           },
           minMinutesSinceExit,
           exitRules: liveExitRules(getAutotradeConfig()),
+          replayVersion: 2,
+          entryConcessionPct: 0.04,
+          directionGateReplayed: true,
         })),
       },
       Date.parse('2026-09-18T20:30:00Z'),

@@ -15419,3 +15419,149 @@ redundant by construction: a spent lever carries no estimate.
 **Pre-committed check.** After deploy, while the 60-69 band is in the scan's window,
 `GET /api/journal/tune-advice` shows `edge:scoreBand:60-69` with status `in_force` and a
 status reason naming `liveMinSignalScore` 81.
+
+## 2026-09-26 — the shadow replays fill the way a live order fills
+
+**What changed.** The declined-entry shadow replays every entry the live book refused on
+its own 5-minute bars. The short shadow record, the re-entry cooldown record and
+`GET /api/journal/declined-entry-shadow` all read it. Two of those feed rules that add
+exposure: red-day shorts, and a shorter re-entry cooldown. Version 1 favoured the trade
+at every step. It filled at the signal's exact price. A stop filled at its own price even
+when a bar opened through it. Breakeven and the trail armed on bar highs the live
+stop-adjust never saw. A target filled on a touch. Replay version 2
+(`DECLINED_SHADOW_REPLAY_VERSION = 2`, in `exitReplay.ts`'s new `honest` fill model):
+
+- **Entry: the signal's price plus the share of the buffer live entries pay.** The
+  concession (`entryConcessionPct`) is the live STOCK entries' mean buffer consumed,
+  clamped to 0–0.5%. It measures 0.05% on production. With nothing measured it is the
+  whole 0.5% buffer. It moves the fill away from the stop, so a usable signal keeps its
+  1R. Stock only (`isStockEntrySlippage`), because an option's entry limit is a
+  different buffer, the ask × 1.05. No option reached these rows on 2026-09-24 (0 of 142
+  entry rows), but a hand-placed option from the Trade page would. The leak scan's
+  entry-slippage reading uses the same predicate. Only the loop's own FIRST entries
+  count (`isLoopFirstEntry`, second review): not a hand order from the Trade page, whose
+  limit the user typed, and not a position with an add-on. Once a scale-in fills, the
+  position's entry price is a blend while the entry-order lookup returns the add-on's
+  row, so the pair read about −1.8%, and one such position among nine that paid 0.1%
+  took the concession to 0. The leak scan's figure reads its session window unclamped
+  and still pools those rows; the two are the same measure, not the same number.
+- **A stop the bar opens through fills at that bar's open**, past 1R, as a live stop
+  order fills through a gap. A first bar that opens through the stop is therefore a
+  stop-out, not a refusal.
+- **Breakeven, the trail and the scale-out arm on bar closes.** The close is the tick
+  the live stop-adjust reads; the high between ticks is not.
+- **A target fills only when a bar trades through it.** A resting limit at the level
+  is not filled by a touch.
+- **The market-direction gate is replayed** when it is on, from the
+  `market_direction_read` row in force at each decision (`refused_by_direction`). Rows
+  start 2026-09-24, so earlier decisions pass unreplayed.
+- **The gate is not replayed over its own refusals.** For
+  `?action=live_market_direction_skipped` (`DIRECTION_GATE_ACTIONS`) the route replays
+  with the gate off. The reading in force at each of those rows is the one that refused
+  it, so replaying the gate refused every row and the route read n 0. It is the reason
+  `SCORE_FLOOR_ACTIONS` skips the floor for the floor's own refusals.
+- **A stop on the wrong side of its signal is `unusable_signal`** for either side. It
+  used to count only a stop equal to the entry.
+- **A short skip replays as a short** (second review). `live_short_skipped` rows carry no
+  `side` (the action is the side), so the route read them as longs, and the side check
+  made every one unusable: `?action=live_short_skipped` read n 0. The route reads them
+  under their action (`parseDeclinedEntryFor`, `SHORT_SIDE_ACTIONS`), as the short
+  record always has.
+- **The readings start at the ET midnight of the window's first day** (second review).
+  A window is "now minus N days" at the time of day, so a reading journaled earlier on
+  that first day was missing and its rows replayed with no gate.
+
+The exit-tuning replays still default to `touch`, so their stored readings stay
+comparable. Its optimism does not cancel between two geometries. A closer target is
+touched more often than a farther one. On the live book, a no-scratch candidate read
++0.039R a trade under `touch` against +0.056R under `honest` (2026-09-24 (fifth)).
+Moving those comparisons to `honest` is a change of its own.
+
+**The entry is not the one the plan named.** The plan said "fill at the next bar plus the
+live buffer". Before building it, both proxies were checked against 109 live stock fills
+since 07-27, matched from `live_order_placed` to their positions. A live order goes out a
+median 2 seconds after its signal.
+
+| Proxy for the fill | Bias | Mean miss |
+|---|---|---|
+| The signal's price | +0.009R | 0.075R |
+| The next 5-minute bar's open | +0.007R | 0.136R |
+
+Both are unbiased on average, but the next bar misses by nearly twice as much. It prices
+the trade up to five minutes after live would have filled. On the 27 declined shorts,
+most taken at red opens, that lag alone cost 0.15R a trade: the drop kept running
+after 09:37, and live would not have waited for it.
+
+**Re-read on the production copy from the 09-23 close,** on regular-session bars (the
+past-day bar fix of 2026-09-24 (fourth)), concession 0.05%:
+
+| Record | Version 1 | Version 2 |
+|---|---|---|
+| Short shadow record | 27 trades, +0.21R, 55.6% win | 27 trades, **+0.14R, 48.1% win** |
+| Re-entry, first refusal | +0.07R | −0.01R (n 26) |
+| Re-entry, 60 minutes after the exit | 0.00R | −0.09R (n 22) |
+| Re-entry, 120 minutes | −0.13R | −0.17R (n 21) |
+| Re-entry, 180 minutes | −0.18R | −0.18R (n 16) |
+
+The two changes, taken one at a time on the short record, on the same 27 trades:
+
+| Exits | Signal price | Next bar's open |
+|---|---|---|
+| Touch | +0.21R (v1) | +0.05R |
+| Honest | +0.14R | +0.06R |
+
+The honest exits cost the shorts 0.07R a trade. The concession costs 0.006R. At the
+fallback 0.5% concession the record would read −0.06R, which is why it is measured rather
+than assumed.
+
+**What it changes.**
+- **The shorts switch no longer reads as close.** The `shorts` rule's bar is 30 trades,
+  +0.1R and a 50% win rate (`SHORT_ENABLE_GATE`). Version 2 reads 27, +0.14R and 48.1%,
+  under the win-rate bar as well as the count.
+- **No shorter cooldown pays.** Every gap is at or below zero, so the 390-minute cooldown
+  stands on the honest reading too.
+
+**Series boundary.** Every record carries `replayVersion`, `entryConcessionPct` and
+`directionGateReplayed`. Records persisted before this change have no `replayVersion` and
+are version 1. Compare readings only within a version. The records are rebuilt from the
+journal on every refresh, so every record written after this change is version 2
+throughout. That, not a check, is what keeps the red-tape shorts bar (the tape plan's
+rule B) on version 2: no reader checks `replayVersion` yet.
+
+**Tests (each mutation-checked):**
+- **The fill model** (`exitReplay.test.ts`, six tests): a gap through the stop fills at
+  the open, a touch is not a target, breakeven and the trail read closes, and the
+  scale-out arms on the close.
+- **The shadow** (`declinedEntryShadow.test.ts`):
+  - the entry is the signal's price plus the concession, not the next bar's open;
+  - a short pays the concession downward;
+  - the whole buffer is charged when nothing was measured;
+  - a first bar through the stop is a stop-out at its open;
+  - a wrong-side stop is unusable on both sides;
+  - the direction gate is replayed only when it is on and readings exist.
+- **The consumers:**
+  - the short and re-entry records read the measured concession and the journaled
+    readings from the database;
+  - the route stamps `replayVersion: 2`;
+  - the route replays the direction gate's own refusals (n 1, none refused by
+    direction) and still holds another gate's refusal on the same tape to the reading;
+  - the concession and the leak scan's entry slippage leave a hand-placed call out
+    (`declinedEntryShadowData.test.ts`, `edgeLeakScanData.test.ts`).
+
+Sixteen mutations were run, and each fails at least one test:
+- **Entry:** the entry at the next bar's open, no concession, the concession's sign
+  flipped, and a side-blind usable check.
+- **Exits:** a gap filled at the stop, a touch filling the target, the ratchet reading
+  extremes, the scale-out armed on the extreme, and the shadow replaying `touch`.
+- **Record:** the version stamped 1, and the direction gate not replayed.
+- **Review fixes:** the gate replayed over its own refusals, the gate dropped for every
+  action, the predicate's asset check removed, and each of its two readers filtering on
+  the entry kind alone.
+- **Second review (five more, each caught):** the first-entry filter dropped, a hand
+  order counted, the add-on checks dropped, a short skip read as a long, and the
+  readings starting at the window's time of day.
+
+**Not changed here (second review).** `live_short_skipped` is written once per symbol a
+day, so a symbol-day first refused on a green or mixed tape drops out of the direction
+replay even when the tape later turns red. The tape plan's PR 4 keys that row on the
+symbol and the reading, which fixes it for rows written after it ships.
