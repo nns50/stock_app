@@ -15565,3 +15565,168 @@ Sixteen mutations were run, and each fails at least one test:
 day, so a symbol-day first refused on a green or mixed tape drops out of the direction
 replay even when the tape later turns red. The tape plan's PR 4 keys that row on the
 symbol and the reading, which fixes it for rows written after it ships.
+
+## 2026-09-26 (second) — the tape can be rebuilt for past sessions
+
+**Why.** The loop has journaled the market-direction reading since 2026-09-24, one
+`market_direction_read` row per change. Nothing before that carries a tape label. So
+the edge-leak scan's by-side cut (2026-09-25 (second)) could place only the trades
+taken since, and the tape plan's question had no history to answer from: do shorts,
+and puts, pay on red days, and do longs lose there? `npm run backfill:tape` rebuilds the
+reading for past sessions and reads the record against it (README,
+`scripts/tapeBackfill.ts`).
+
+**The rebuild uses the loop's own functions.** `historicalTape.ts` turns bars into
+readings: `breadthOf`, then `holdMarketDirection` with the hold carried from slot to
+slot. Its rows are keyed by `directionJournalKey`, which the loop's
+`claimDirectionChange` now calls too. So a rebuilt session and a live one differ only in
+their inputs, never in the rule. The inputs differ in these ways:
+
+- **The clock.** One reading per 5-minute bar, stamped at the bar's END. The 09:30 bar's
+  close is known at 09:35, never earlier. An entry before 09:35 has no reading, as an
+  entry before the loop's first tick has none. The loop reads every ~2m10s.
+- **The index leg** is SPY's 5-minute close against the previous session's daily close:
+  what the live quote's change is measured from.
+- **Breadth** reads the whole universe by default, as the loop does. Each name is
+  measured against its own previous daily close. A name with no bar in a slot is left out
+  of that slot's sample. Under 100 names there is no reading, as live.
+  - `--sample N` reads a seeded sample instead, for a rate-limited key.
+  - Measured on the 2026-09-23 copy over 40 sessions (3,120 slots), a 120-name sample
+    agreed with the whole universe at 92.1% of slots.
+  - The sample read red more often: 24.8% of slots against 21.2%. 138 of the 245
+    disagreements were the sample reading red where the universe read mixed. The plan's
+    120 names were a concession to an assumed 5-calls-a-minute key, and this key is not
+    held to that.
+- **The session.** Regular-session bars only (the tape plan's F6). Polygon's minute bars
+  run 04:00–20:00 ET. The test for a session bar, `isRegularSessionMinute`, is now shared
+  with Yahoo's candle filter.
+- **A day the loop journaled is taken from the journal whole.** The rebuild is measured
+  against it at every slot (the report's parity line). That is the one place its error
+  can be measured rather than argued.
+
+**The readers are the app's own.**
+- **The book.** The edge-leak scan runs with the rebuilt index injected
+  (`EdgeLeakScanOptions.directions`), so every R is the collector's, never re-derived.
+  The report shows the by-side cut, the with/against cut, and the by-side cut again with
+  the index leg alone deciding (the same readings at a 0% breadth bar). A result that
+  holds there does not rest on the sample.
+- **The declined live shorts** (`live_short_skipped`, the shorts switch's own record) are
+  replayed by the tape they were declined on. They use replay version 2 on the Polygon
+  bars through a source that keeps the provider contract (`windowCandleSource`: ET days,
+  regular session, whole window). The replay does not re-apply the direction gate: the
+  tape is what is being read.
+- **Every short signal**, from `signal_generated` rows. Each is scored from its own tick's
+  `candidate_found` row (the signal row carries no score). It is kept when it cleared
+  the live floor in force at that moment. That floor is read from the journal's own
+  refusal rows, not from a list of dates: it moved 72 → 81 at 11:42 ET on 2026-09-14,
+  mid-session. Rows carry it as `liveMinSignalScore` from 09-11. Before that (09-08 to
+  09-10) only the floor's own refusals recorded it, as the `bar` of a `live_floor`
+  refusal, and those are read too; another source's bar (armed day, High-Vol) is not.
+  Before the first recorded floor there was none.
+  - Per tape, the first qualifying signal per symbol-day is replayed. That is what a
+    short book trading only on that tape would have taken.
+  - The declined-short record cannot say this. Its row is claimed once per symbol per day
+    at the first sighting, often below the floor, so a later qualifying signal the same day
+    is lost. The tape plan's PR 4 changes that claim going forward.
+
+**A gap in the short evidence, found building this (F7).** The live entry path checks a
+short against the ATR reachability gate straight after the shorts-off skip
+(`liveExecute.ts`). At today's 1.5 ATR / 2.5% / 0.7, that gate admits only names whose
+ATR is at least 3.57% of price. The short shadow record, which rule B and the `shorts`
+switch read, replays every declined row without it. Measured on the 27 honest-record
+trades, with each name's 14-day ATR from Polygon daily bars:
+
+| ATR used | Refused | Names | Remaining |
+|---|---|---|---|
+| As of the previous close | 5 | AVGO, ETN, BA, NFLX, PAYX | 22 |
+| Including the day's full bar | 3 | BA, NFLX, PAYX | 24 |
+
+- **Which ATR the live gate reads.** Its ATR comes from the provider's daily bars, which
+  may include the day so far, so it lies between those two readings.
+- **The effect.** The average barely moves. The count falls, and rule B's bars are
+  counts.
+- **In both short readings here,** a second table applies the gate, with the ATR as of the
+  previous close. The rule itself moved to `atrReach.ts`, and the live path calls it, so
+  the replay and the live gate are one function.
+- **The forward fix belongs to PR 4, which already changes the `live_short_skipped`
+  row:** stamp the signal's ATR on it, and have the replay apply the gate to rows that
+  carry one.
+
+**Caveats, stated in the report.**
+- The universe is today's (survivorship).
+- Paper shorts compete for the paper book's three slots.
+- None of the replays is a P&L: slots, cooldowns and the risk check are not applied.
+- **Rebuilt readings never count toward any switch.** The gated switches read the live
+  journal only.
+
+**Cost.** About 1,100 Polygon calls on a first run over 40 sessions:
+- 5-minute and daily bars for every universe name and SPY;
+- the few names the short replays need beyond them.
+
+The key in use is not held to 5 calls a minute (eight calls took 1.7 seconds). A
+whole-universe first run took about 20 minutes; a cached re-run takes about 1.5.
+
+**Checked on real data.** A dry run on the 2026-09-23 database copy reproduced the honest
+short record exactly: 27 trades, +0.14R, 48.1% win. That is the Polygon source against
+production's Webull bars. It rebuilt 2026-09-23 as red from 09:50 (SPY −0.29%, 69.4% of
+names red) until 10:10, when breadth fell to 59.3%, under the 60% exit band; mixed until
+13:05; red for most of the afternoon. The reading itself is recorded separately, from a
+copy that includes live journal days for parity.
+
+**Tests (each mutation-checked):**
+- **The rebuild** (`historicalTape.test.ts`):
+  - readings stamped at the bar's end, and none before 09:35;
+  - the index read against the previous daily close, not the day's open;
+  - premarket and after-hours bars move nothing and add no reading past 16:00;
+  - a name with a missing bar left out of that slot's sample;
+  - no reading from fewer than 100 names;
+  - the hold carried slot to slot, and tick-for-tick parity with the loop's own
+    `readMarketDirectionForTick`;
+  - rows per change of direction or hold, counted apart from flips;
+  - journal days win the merge.
+- **The window source:** regular session, one fetch per symbol, daily bars by their date,
+  a failed fetch not remembered.
+- **The helpers:** the seeded sample; the ATR as of the previous close; the floor in force
+  (including 09-14's mid-session change); a signal scored from its own tick only; the ATR
+  gate's rule.
+- **The consumers** (`historicalTapeData.test.ts`, end to end through a fake fetch and the
+  database):
+  - a rebuilt-red paper short lands in `equity_short_red` and a long in
+    `equity_long_red`;
+  - a journaled day overrides the rebuild and is measured against it;
+  - a declined short is replayed at its tape;
+  - every short signal is replayed by tape under the floor in force, with the ATR gate
+    removing the one wide stop.
+- **The guard** (`dbCopy.test.ts`): a missing path, and `DATABASE_PATH`'s file however it
+  is reached, are refused, including a path set only in `server/.env`, which the guard
+  reads itself because it runs before config loads that file. Since the second review
+  (2026-09-25) it also compares the file itself (device and inode), so a hard link to the
+  live file, which has a path of its own, is refused too. The script, spawned, reaches
+  its key check only with config pointing at the copy; its test sets the key empty
+  rather than deleting it, since config would fill a deleted key back in from
+  `server/.env` and the test would run a real backfill.
+
+Twenty mutations were run, and each fails at least one test:
+- **The rebuild:**
+  - a reading stamped at the bar's start;
+  - the day's open as the prior close;
+  - no session bound, in the rebuild and in the source;
+  - a missing bar counted flat;
+  - the hold not carried;
+  - rows blind to the hold;
+  - the rebuild preferred over the journal;
+  - the ATR read through the day.
+- **The joins:**
+  - no same-tick slack on the floor;
+  - no carry-over of the floor;
+  - no tick bound on the score join.
+- **The readers:**
+  - the scan run without the rebuilt tape;
+  - journal days not merged;
+  - the counterfactual at floor 0;
+  - the ATR gate not applied;
+  - one replay for all tapes.
+- **The guard:**
+  - `DATABASE_PATH`'s file not refused;
+  - the script's imports reordered;
+  - the file's identity not compared (second review).

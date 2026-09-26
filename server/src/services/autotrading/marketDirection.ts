@@ -410,11 +410,19 @@ export function tapeAlignment(direction: MarketDirection | null, lean: Lean): Ta
 
 let lastJournaled: { day: string; key: string } | null = null;
 
+/** What makes two readings the same row: the direction, and the hold that
+ *  kept it. The loop's change detector below and the tape rebuild
+ *  (historicalTape.ts) both key on this, so a rebuilt session writes the rows
+ *  the loop would have written. */
+export function directionJournalKey(direction: MarketDirection, heldBy?: DirectionHeldBy): string {
+  return heldBy === undefined ? direction : `${direction}|${heldBy}`;
+}
+
 /** True when a reading with this direction (and hold) is a change worth a
  *  journal row: the first of the ET day, or a direction or hold different from
  *  the last one journaled. */
 export function claimDirectionChange(day: string, direction: MarketDirection, heldBy?: DirectionHeldBy): boolean {
-  const key = heldBy === undefined ? direction : `${direction}|${heldBy}`;
+  const key = directionJournalKey(direction, heldBy);
   if (lastJournaled !== null && lastJournaled.day === day && lastJournaled.key === key) return false;
   lastJournaled = { day, key };
   return true;
