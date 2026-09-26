@@ -907,6 +907,12 @@ broad red day; `equity_long_red` a stock long on one; `options_short_red` a put;
 - **Levers.** A bucket that leans against the tape (`*_long_red`, `*_short_green`) carries the
   gate as its lever. The others have none: a losing short on a red day is a finding, and no
   setting refuses it.
+- **By score band (since 2026-09-26).** `tapeScoreBySide` files the same entries by the tape
+  score in force: `le-40`, `-40to-15`, `-15to15`, `15to40`, `ge40`. The question it answers
+  is the one the label cannot: whether the losing mixed-tape longs sat on a tape already
+  leaning red (`equity_long_tape_-40to-15`) or on a flat one. No bucket carries a lever.
+  The score gates nothing, and a losing band is evidence for rule D's review after 20
+  live-scored sessions, not a setting to change.
 
 **What 40 rebuilt sessions say (the 2026-09-26 reading).** The tape was rebuilt for every
 session since 2026-07-31 (AUTOTRADING_SPEC, "the tape at every entry since July"). A red day

@@ -50,6 +50,7 @@ import {
 import { liveDrawdownHaltRetracted } from './dailyHaltMarker';
 import { Lean, tapeAlignment } from './marketDirection';
 import { DirectionIndex, directionAt, directionIndex } from './marketDirectionIndex';
+import { TapeScoreIndex, tapeScoreAt, tapeScoreIndex } from './marketTapeIndex';
 
 // ---------------------------------------------------------------------------
 // The DB half of the edge-leak scan: turn both books' closed positions into
@@ -516,7 +517,7 @@ function attributesForLiveBook(
   liveOptionsClosed: LiveOptionsPosition[],
   sectorOf: (symbol: string) => string | null,
   extensions: Map<string, ExtensionRow>,
-  directions: DirectionIndex,
+  tape: ScanTape,
 ): Map<string, PartialLeakTrade> {
   const out = new Map<string, PartialLeakTrade>();
   for (const p of closed) {
@@ -553,7 +554,7 @@ function attributesForLiveBook(
       vwapExtPct: ext?.vwapExtPct ?? null,
       pctOfRange: ext?.pctOfRange ?? null,
       stopWidthUsd: liveStopWidthUsd(p),
-      ...tapeFieldsOf(directions, etDate, tapeAt, p.side),
+      ...tapeFieldsOf(tape, etDate, tapeAt, p.side),
     });
   }
   for (const p of liveOptionsClosed) {
@@ -584,7 +585,7 @@ function attributesForLiveBook(
       stopWidthUsd: null,
       // Placed against the reading in force when the order went out, not when
       // its fill was booked (which can be ticks later): see the stock twin.
-      ...tapeFieldsOf(directions, etDate, liveOptionsEntryPlacedAt(p.id) ?? p.entryAt, leanOfOption(p.side)),
+      ...tapeFieldsOf(tape, etDate, liveOptionsEntryPlacedAt(p.id) ?? p.entryAt, leanOfOption(p.side)),
     });
   }
   return out;
@@ -595,7 +596,7 @@ function attributesForPaperBook(
   optionsPaper: OptionsPaperPosition[],
   sectorOf: (symbol: string) => string | null,
   extensions: Map<string, ExtensionRow>,
-  directions: DirectionIndex,
+  tape: ScanTape,
 ): Map<string, PartialLeakTrade> {
   const out = new Map<string, PartialLeakTrade>();
   for (const p of paper) {
@@ -626,7 +627,7 @@ function attributesForPaperBook(
       vwapExtPct: ext?.vwapExtPct ?? null,
       pctOfRange: ext?.pctOfRange ?? null,
       stopWidthUsd: paperStopWidthUsd(p),
-      ...tapeFieldsOf(directions, etDate, p.entryAt, p.side === 'sell' ? 'short' : 'long'),
+      ...tapeFieldsOf(tape, etDate, p.entryAt, p.side === 'sell' ? 'short' : 'long'),
     });
   }
   for (const p of optionsPaper) {
@@ -650,7 +651,7 @@ function attributesForPaperBook(
       vwapExtPct: null,
       pctOfRange: null,
       stopWidthUsd: null,
-      ...tapeFieldsOf(directions, etDate, p.entryAt, leanOfOption(p.side)),
+      ...tapeFieldsOf(tape, etDate, p.entryAt, leanOfOption(p.side)),
     });
   }
   return out;
@@ -661,18 +662,31 @@ function leanOfOption(side: 'call' | 'put'): Lean {
   return side === 'call' ? 'long' : 'short';
 }
 
+/** What the scan places each entry against: the direction readings and the
+ *  tape scores, both from the journal unless a caller hands its own. */
+interface ScanTape {
+  directions: DirectionIndex;
+  scores: TapeScoreIndex;
+}
+
 /** One entry's tape fields, derived once for every collector: the reading in
- *  force at the entry, the side it leaned, and the alignment read from both
- *  (tapeAlignment), so the `marketTape` and `marketTapeBySide` cuts cannot
- *  disagree about a trade. */
+ *  force at the entry, the side it leaned, the alignment read from both
+ *  (tapeAlignment), and the score in force at the same moment, so the
+ *  `marketTape`, `marketTapeBySide` and `tapeScoreBySide` cuts cannot disagree
+ *  about a trade. */
 function tapeFieldsOf(
-  directions: DirectionIndex,
+  tape: ScanTape,
   etDate: string,
   at: number | null,
   lean: Lean,
-): Pick<LeakTrade, 'lean' | 'tapeDirection' | 'marketTape'> {
-  const tapeDirection = directionAt(directions, etDate, at);
-  return { lean, tapeDirection, marketTape: tapeAlignment(tapeDirection, lean) };
+): Pick<LeakTrade, 'lean' | 'tapeDirection' | 'marketTape' | 'tapeScore'> {
+  const tapeDirection = directionAt(tape.directions, etDate, at);
+  return {
+    lean,
+    tapeDirection,
+    marketTape: tapeAlignment(tapeDirection, lean),
+    tapeScore: tapeScoreAt(tape.scores, etDate, at),
+  };
 }
 
 /**
@@ -1549,6 +1563,9 @@ export interface EdgeLeakScanOptions {
    *  rebuilt the readings for sessions before those rows existed hands its own
    *  (the tape plan's backfill, run against a copy of the database). */
   directions?: DirectionIndex;
+  /** The tape scores to place each entry against (2026-09-26). Defaults to the
+   *  journal's `market_tape_read` rows over the window. */
+  tapeScores?: TapeScoreIndex;
 }
 
 /** The one call a route or the routine makes. */
@@ -1568,7 +1585,10 @@ export function runEdgeLeakScanFromDb(opts: EdgeLeakScanOptions = {}): EdgeLeakS
   // One scan of the journal, read by both books — the index is keyed by book,
   // so each takes its own rows out of it.
   const { rows: extensions, quality: extensionQuality } = extensionIndex(windowStart);
-  const directions = opts.directions ?? directionIndex(windowStart);
+  const tape: ScanTape = {
+    directions: opts.directions ?? directionIndex(windowStart),
+    scores: opts.tapeScores ?? tapeScoreIndex(windowStart),
+  };
   const live = joinLeakTrades(
     liveCollected,
     attributesForLiveBook(
@@ -1576,7 +1596,7 @@ export function runEdgeLeakScanFromDb(opts: EdgeLeakScanOptions = {}): EdgeLeakS
       listLiveOptionsPositions({ status: 'closed' }),
       sectorOf,
       extensions,
-      directions,
+      tape,
     ),
   );
   const paper = joinLeakTrades(
@@ -1586,7 +1606,7 @@ export function runEdgeLeakScanFromDb(opts: EdgeLeakScanOptions = {}): EdgeLeakS
       listOptionsPaperPositions({ status: 'closed' }),
       sectorOf,
       extensions,
-      directions,
+      tape,
     ),
   );
 

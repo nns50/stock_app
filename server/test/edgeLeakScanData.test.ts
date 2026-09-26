@@ -467,6 +467,43 @@ describe('the market’s direction at entry — each trade against the reading i
     ).toEqual([{ bucket: 'against', n: 2, control: 1 }]);
   });
 
+  // THE TAPE SCORE AT ENTRY (2026-09-26; the tape plan's PR 7). The loop
+  // journals `market_tape_read` at the END of a tick, after its entries, and
+  // stamps the reading's own moment as `readAt`. So a row is placed by
+  // `readAt`: by its write time, a tick's own entries would read the previous
+  // tick's score.
+  it('places each entry against the tape score whose reading was in force, keyed by readAt', () => {
+    const tapeRow = (score: number | null, readAt: number, writtenAt: number) =>
+      db
+        .prepare(
+          'INSERT INTO autotrade_events (symbol, stage, action, detail, risk_profile, created_at) ' +
+            "VALUES (NULL,'screen','market_tape_read',?,NULL,?)",
+        )
+        .run(JSON.stringify({ direction: score === null ? 'unknown' : 'red', score, readAt }), writtenAt);
+    // Yesterday's deep green must not carry into today.
+    tapeRow(70, at('15:00') - 24 * 60 * 60 * 1000, at('15:00') - 24 * 60 * 60 * 1000 + 5_000);
+    // A reading taken at 10:08:00 and written at 10:08:40, after the tick's
+    // own 10:08:20 entry.
+    tapeRow(-62, at('10:08'), at('10:08') + 40_000);
+    tapeRow(null, at('11:00'), at('11:00') + 30_000);
+    tapeRow(10, at('12:00'), at('12:00') + 30_000);
+    paperAt('EARLY', 'buy', at('09:50')); // before any reading today
+    paperAt('SHOP', 'buy', at('10:08') + 20_000); // the tick's own entry: -62
+    paperAt('XNDU', 'sell', at('10:30')); // still -62
+    paperAt('MU', 'buy', at('11:30')); // the direction was unknown: no score
+    paperAt('AMD', 'buy', at('12:30')); // +10
+
+    const dim = runEdgeLeakScanFromDb({ now: NOW }).dimensions.find((d) => d.id === 'tapeScoreBySide');
+    expect(Object.fromEntries(dim!.buckets.map((b) => [b.bucket, b.control?.n ?? 0]))).toEqual({
+      'equity_long_tape_le-40': 1,
+      'equity_short_tape_le-40': 1,
+      'equity_long_tape_-15to15': 1,
+    });
+    // The early entry and the unscored one are in no bucket: unplaced, not
+    // guessed (three of the five paper entries above).
+    expect(dim!.buckets.reduce((n, b) => n + (b.control?.n ?? 0), 0)).toBe(3);
+  });
+
   it('names the gate as the lever when trades against the tape lose', () => {
     reading('red', at('09:31'));
     seedClosedAutotradeSessions({

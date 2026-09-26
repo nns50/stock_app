@@ -16661,3 +16661,44 @@ Sixteen mutations, all caught:
 - the momentum tolerance ignored;
 - the quote legs' change not shared with the reading's;
 - the timeout never firing.
+
+## 2026-09-26 (eleventh) — the edge-leak scan reads the tape score
+
+**What.** The tape plan's PR 7, the scan half. Every entry of both books now carries the
+tape score in force when it was taken (`LeakTrade.tapeScore`), and a new cut,
+`tapeScoreBySide`, files the entries by asset, side and score band. It mirrors
+`marketTapeBySide`: `equity_long_tape_le-40` is a stock long taken into a score of −40 or
+lower. The bands split at ±15 and ±40 and are symmetric about 0. At the scales' medians
+(2026-09-26 (tenth)) the index and breadth legs sit at about a third to a half of their
+scales, so ±15 separates a tape leaning at all from one that is not, and ±40 one that
+leans hard.
+
+**Keyed by `readAt`, not by when the row was written** (`marketTapeIndex.ts`). The loop
+journals `market_tape_read` at the end of a tick, after the tick's entries. So a row
+keyed by its write time would hand the tick's own entries the PREVIOUS tick's score. The
+row carries the moment its reading was taken as `readAt`, and the index is built on that.
+A row with no score (the direction was unknown) puts the entries it covers in no band. A
+row from another day never reaches across.
+
+**No lever, on purpose.** The score gates nothing, so a losing band is a finding to
+read. Rule D gives the score its first decision role only after 20 live-scored sessions.
+The live window starts with the first session after PR 6 deploys, so the cut is empty
+until then.
+
+**Not in this change: the rebuilt history.** The backfill (PR 3) rebuilds the direction
+label from bars, not the score. Scoring past sessions needs QQQ's bars and each index's
+open, VWAP and 30-minute path per slot. `runEdgeLeakScanFromDb` takes an injected
+`tapeScores` index for that, the way it takes `directions`, but nothing passes one yet.
+
+**Tests.**
+- `edgeLeakScan.test.ts`: the bands at every boundary (−40, −39, −15, −14, 14, 15, 39,
+  40); the bucket names; a losing deep-red band in both books is a leak with no lever.
+- `edgeLeakScanData.test.ts`, through `runEdgeLeakScanFromDb`, over journaled rows:
+  - an entry placed at 10:08:20 on a reading taken at 10:08:00 but written at 10:08:40
+    reads that reading's −62;
+  - yesterday's +70 does not carry into today;
+  - an unknown reading and a pre-reading entry land in no band.
+
+Seven mutations, all caught: the index keyed by write time; a later row reaching back; a
+band edge made exclusive; the bucket ignoring the side; the cut offering a lever; an
+unknown reading scored 0; the scores not handed to the collectors.

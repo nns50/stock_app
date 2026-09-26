@@ -105,6 +105,11 @@ export interface LeakTrade {
    *  `market_direction_read` row at or before it, that day. Null before those
    *  rows existed; `unknown` when the reading could not see the tape. */
   tapeDirection: MarketDirection | null;
+  /** The tape score in force at the entry (2026-09-26, marketTape.ts), -100..
+   *  +100: the latest `market_tape_read` row whose reading was taken at or
+   *  before it, that day. Null before those rows existed and when the reading
+   *  in force was unknown. */
+  tapeScore: number | null;
 }
 
 // --- the bar ---------------------------------------------------------------
@@ -771,6 +776,22 @@ export const DIMENSIONS: Dimension[] = [
         : null;
     },
   },
+  // THE TAPE SCORE BY SIDE (2026-09-26; marketTape.ts, the tape plan's PR 7).
+  // The label above has three values, and the losing mixed-tape longs of the
+  // rebuilt record all share one. The score says how far the tape leaned and
+  // which way, so the same entries are filed again by the band it was in.
+  // Both books, the same bar. NO LEVER: the score gates nothing (rule D gives
+  // it a role only after 20 live-scored sessions), so a losing band is a
+  // finding to read, never a setting to apply.
+  {
+    id: 'tapeScoreBySide',
+    label: 'Side and tape score at entry',
+    bucketOf: (t) => tapeScoreBucket(t.assetKind, t.lean, t.tapeScore),
+    controlOnlyBuckets:
+      'The live book takes no stock shorts and few puts, so the short buckets are the paper book’s: reported with ' +
+      'live n = 0 rather than left out.',
+    lever: () => null,
+  },
   // STOP WIDTH, in dollars per share (2026-09-23). A stop fills a few cents
   // through its price whatever the stock, so the narrower it is, the more of R
   // one fill takes. Full-loss live stops on names under $20 filled 0.13-0.18R
@@ -807,6 +828,30 @@ export function tapeSideBucket(
 ): string | null {
   if (direction === null || direction === 'unknown') return null;
   return `${assetKind}_${lean}_${direction}`;
+}
+
+/** The tape score's bands (2026-09-26): deep red, red, flat, green, deep
+ *  green, split at +/-15 and +/-40 and symmetric about 0. A median slot's
+ *  index and breadth legs sit at roughly a third to a half of their scales, so
+ *  +/-15 separates a tape leaning at all from one that is not, and +/-40 one
+ *  that leans hard. */
+export const TAPE_SCORE_BANDS = ['le-40', '-40to-15', '-15to15', '15to40', 'ge40'] as const;
+export type TapeScoreBand = (typeof TAPE_SCORE_BANDS)[number];
+
+export function tapeScoreBand(score: number): TapeScoreBand {
+  if (score <= -40) return 'le-40';
+  if (score <= -15) return '-40to-15';
+  if (score < 15) return '-15to15';
+  if (score < 40) return '15to40';
+  return 'ge40';
+}
+
+/** An entry by what it was, which side it leaned and the score band it met:
+ *  `equity_long_tape_le-40` is a stock long taken into a deep red tape. Null
+ *  when no score was in force. */
+export function tapeScoreBucket(assetKind: 'equity' | 'options', lean: Lean, score: number | null): string | null {
+  if (score === null) return null;
+  return `${assetKind}_${lean}_tape_${tapeScoreBand(score)}`;
 }
 
 // --- the machinery ---------------------------------------------------------
