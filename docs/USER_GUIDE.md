@@ -1276,12 +1276,16 @@ equally-weighted cards in the order they happened to be built:
   positions · real money, no per-order confirmation", "Paper trading · simulated, never
   reaches a broker" — so a collapsed card still tells you which one it is, and each is
   split into an **Equity** and an **Options** half with the same one-line
-  open/closed/realized/unrealized ledger above each table. Each table shows the book's
-  newest 200 trades (the positions routes return up to 1,000 with `?limit=`). The reports
-  that read a book's history read every closed trade, not that page: the edge-leak scan,
-  the daily-target sweep, the results calendar and its backfill, the tune advice. Until
-  2026-09-23 they read only the newest 200 too, and the paper book (179 closed trades that
-  day) was a few sessions from passing it.
+  open/closed/realized/unrealized ledger above each table. Each table lists the book's
+  newest 100 positions, open ones first, in a box about ten rows tall that scrolls with
+  its header row pinned; click or tab into a box to scroll it with the keyboard. The
+  ledger above it counts those same rows. (Until 2026-09-27 every row was drawn, and the
+  two cards together ran to about eleven screens.) The positions routes return up to
+  1,000 with `?limit=`. The reports that read a book's history read every closed trade,
+  not that page: the edge-leak scan, the daily-target sweep, the results calendar and its
+  backfill, the tune advice. Until 2026-09-23 they read only one page too (the routes'
+  default 200), and the paper book (179 closed trades that day) was a few sessions from
+  passing it.
 - **History** — **Recent activity**, the journal of what the loop actually did, most
   recent first. Live **options** refusals appear here too (2026-09-02): a blocked risk
   check logs **options risk blocked** naming the rule that failed and the premium and

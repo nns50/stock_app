@@ -3494,6 +3494,20 @@ describe('AutoTradePage', () => {
     });
   });
 
+  /** A book table's scroll box (2026-09-27): labelled and focusable, about ten
+   *  rows tall, its header pinned, and the open position listed above the
+   *  closed one the server sent first. */
+  async function expectBookBox(label: string, open: string, closed: string) {
+    const box = await screen.findByRole('region', { name: label });
+    expect(box).toHaveAttribute('data-testid', 'book-table-scroll');
+    expect(box).toHaveClass('max-h-96', 'overflow-auto');
+    expect(box).toHaveAttribute('tabindex', '0');
+    expect(box.querySelector('thead')).toHaveClass('sticky-thead');
+    const openRow = within(box).getByText(open).closest('tr')!;
+    const closedRow = within(box).getByText(closed).closest('tr')!;
+    expect(openRow.compareDocumentPosition(closedRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  }
+
   describe('Dashboard layout', () => {
     it('groups the view into Now / History / Tools, in that order', async () => {
       // The view used to be six equally-weighted cards in the order they were
@@ -3542,6 +3556,28 @@ describe('AutoTradePage', () => {
       const header = await screen.findByRole('button', { name: /Live positions/ });
       expect(header).toHaveAttribute('aria-expanded', 'false');
       expect(header).toHaveTextContent(/real money/);
+    });
+
+    it('scrolls each paper table in its own box, header pinned and open positions first', async () => {
+      // Both book cards rendered every row the lists return (up to 100 a
+      // table), which ran them to ~4,700 and ~5,600 px (2026-09-27). The server
+      // sends newest first, so a position still open from an earlier session
+      // sat below a day of closed ones, out of sight once the table scrolls.
+      vi.spyOn(client, 'autotradePaperPositions').mockResolvedValue({
+        positions: [
+          paperPosition({ id: 3, symbol: 'MSFT', status: 'closed', exitPrice: 101, exitAt: Date.now() }),
+          paperPosition({ id: 1, symbol: 'AAPL', status: 'open' }),
+        ],
+      });
+      vi.spyOn(client, 'autotradeOptionsPaperPositions').mockResolvedValue({
+        positions: [
+          optionsPaperPosition({ id: 4, symbol: 'NVDA', status: 'closed', exitPrice: 2, exitAt: Date.now() }),
+          optionsPaperPosition({ id: 2, symbol: 'TSLA', status: 'open' }),
+        ],
+      });
+      renderDashboard();
+      await expectBookBox('Paper equity positions', 'AAPL', 'MSFT');
+      await expectBookBox('Paper options positions', 'TSLA', 'NVDA');
     });
   });
 
@@ -4722,6 +4758,17 @@ describe('AutoTradePage', () => {
       };
     }
 
+    it('scrolls the live equity table in its own box, open positions first', async () => {
+      vi.spyOn(client, 'autotradeLivePositions').mockResolvedValue({
+        positions: [
+          livePosition({ id: 2, symbol: 'MSFT', status: 'closed', remainingQuantity: 0 }),
+          livePosition({ id: 1, symbol: 'AAPL', status: 'open' }),
+        ],
+      });
+      renderDashboard();
+      await expectBookBox('Live equity positions', 'AAPL', 'MSFT');
+    });
+
     it('shows an empty state when there are no live positions', async () => {
       renderDashboard();
       expect(await screen.findByText('No live positions yet')).toBeInTheDocument();
@@ -4946,6 +4993,17 @@ describe('AutoTradePage', () => {
         ...overrides,
       };
     }
+
+    it('scrolls the live options table in its own box, open positions first', async () => {
+      vi.spyOn(client, 'autotradeLiveOptionsPositions').mockResolvedValue({
+        positions: [
+          liveOptionsPosition({ id: 2, symbol: 'NVDA', status: 'closed', exitPrice: 2, exitAt: Date.now() }),
+          liveOptionsPosition({ id: 1, symbol: 'TSLA', status: 'open' }),
+        ],
+      });
+      renderDashboard();
+      await expectBookBox('Live options positions', 'TSLA', 'NVDA');
+    });
 
     it('does not show the live options checkbox/caps until live trading itself is enabled', async () => {
       renderPage();
