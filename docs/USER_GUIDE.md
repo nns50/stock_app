@@ -1685,7 +1685,14 @@ equally-weighted cards in the order they happened to be built:
   deeper configured cut applies once (40% and 35% is 40%, not 61%); a cut of 100% skips
   new entries in that regime outright (the `regime_sizing` line in Recent activity's
   risk-check entries says so); a stale or unknown reading never cuts; a shock day
-  journals `market_shock_detected` once. The **ML regime switch threshold** (0–1,
+  journals `market_shock_detected` once. The shock ratio ships at 0 (off), and at 0
+  nothing fires, so since 2026-09-26 the app **measures** it every session anyway:
+  `market_shock_shadow` rows in Recent activity mark each day SPY's range reached 1,
+  1.5, 2, 2.5 or 3× its ATR, and the Auto page's **Shock nowcast** line, under the
+  enabling rules, counts those days per ratio with how many the model read High
+  Volatility/Bearish the session after. Once three sessions at a ratio read High Vol
+  next on most, the line says **Proposed: shock ratio N×** — a proposal for you to set,
+  never applied by the app. The **ML regime switch threshold** (0–1,
   default 0.6) is the reading's own sticky rule — the regime changes only when the new
   state's probability reaches it — and applies whether or not the overlay is on. The
   same switch also **tightens the profit target** in that regime by the **ML regime

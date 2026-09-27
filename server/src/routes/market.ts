@@ -11,6 +11,7 @@ import { computeIndicators, defaultScreenerConfig } from '../indicators/screener
 import { computeMarketRegime } from '../services/marketRegime';
 import { getMarketRegime } from '../services/mlRegime';
 import { getMlRegimeReadiness, recordMlRegimeParityCheck } from '../services/mlRegimeReadiness';
+import { readShockNowcastEvidence } from '../services/shockNowcast';
 import { ML_REGIMES } from '../services/regimeModel';
 
 export const marketRouter = Router();
@@ -61,6 +62,14 @@ marketRouter.get(
 // object rides on GET /api/autotrade/dashboard.
 marketRouter.get('/market/regime-ml/readiness', (_req, res) => {
   res.json(getMlRegimeReadiness());
+});
+
+// The shock trigger's own gate (2026-09-26): every session's measured SPY
+// range ÷ ATR levels paired with the model's next-session label, and the ratio
+// the rule would propose. Rows only — never a fetch. The same object rides on
+// the readiness above as `shockNowcast`.
+marketRouter.get('/market/regime-ml/shock-evidence', (_req, res) => {
+  res.json(readShockNowcastEvidence());
 });
 
 // Rule 3, recorded: the Python `regime:predict` reading for one ET day,

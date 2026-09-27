@@ -593,6 +593,44 @@ export interface MlRegimeReadiness {
   ready: boolean;
   blockers: string[];
   gridDecision: string;
+  /** The shock trigger's own gate (2026-09-26): never a blocker. */
+  shockNowcast: ShockNowcastEvidence | null;
+}
+
+/** One day the measured SPY range reached a level, with the model's reading
+ *  on the day and the first reading that had seen it. */
+export interface ShockDay {
+  date: string;
+  at: string | null;
+  dayRegime: MlRegime | null;
+  next: { etDate: string; asOf: string; regime: MlRegime } | null;
+}
+
+export interface ShockLevelEvidence {
+  level: number;
+  /** A ratio the evening review may propose (1.5 and up). */
+  candidate: boolean;
+  days: number;
+  decided: number;
+  highVolNext: number;
+  highVolSameDay: number;
+  meets: boolean;
+  shockDays: ShockDay[];
+}
+
+/** The shock nowcast measured with its trigger off (2026-09-26): SPY's range
+ *  so far ÷ its ATR every session, read against the model's next-session label. */
+export interface ShockNowcastEvidence {
+  proxy: string;
+  measuredSessions: number;
+  firstMeasured: string | null;
+  lastMeasured: string | null;
+  levels: ShockLevelEvidence[];
+  proposal: { regimeShockRangeRatio: number } | null;
+  /** regimeShockRangeRatio today; 0 = the trigger is off. */
+  triggerRatio: number;
+  rule: string;
+  journalTruncated: boolean;
 }
 
 export type RotationBasis = 'relative-to-benchmark' | 'absolute-return';

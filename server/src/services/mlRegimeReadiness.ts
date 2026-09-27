@@ -18,6 +18,7 @@ import {
   MlRegimeReading,
 } from './mlRegime';
 import { loadRegimeModel, MlRegime } from './regimeModel';
+import { readShockNowcastEvidence, ShockNowcastEvidence } from './shockNowcast';
 
 // ---------------------------------------------------------------------------
 // The enabling rules, counted by the app (2026-09-10; docs/AUTOTRADING_SPEC.md
@@ -93,6 +94,10 @@ export interface MlRegimeReadiness {
   ready: boolean;
   blockers: string[];
   gridDecision: string;
+  /** The shock trigger's own gate (2026-09-26, shockNowcast.ts): the measured
+   *  shock days against the model's next-session label. Never a blocker — the
+   *  overlay's readiness does not wait on it. Null when not supplied. */
+  shockNowcast: ShockNowcastEvidence | null;
 }
 
 export interface ReadinessModel {
@@ -106,6 +111,8 @@ export interface ReadinessInput {
   changedDates: string[];
   today: string;
   model: ReadinessModel | null;
+  /** Passed through to the output; the rules above never read it. */
+  shockNowcast?: ShockNowcastEvidence | null;
 }
 
 export interface ParityVerdict {
@@ -290,6 +297,7 @@ export function computeMlRegimeReadiness(input: ReadinessInput): MlRegimeReadine
     ready: blockers.length === 0,
     blockers,
     gridDecision: GRID_DECISION_NOTE,
+    shockNowcast: input.shockNowcast ?? null,
   };
 }
 
@@ -331,6 +339,7 @@ export function getMlRegimeReadiness(now: number = Date.now()): MlRegimeReadines
     changedDates: changedDatesSince(since, today),
     today,
     model: model ? { version: model.version, retrainBy: model.training.retrainBy } : null,
+    shockNowcast: readShockNowcastEvidence(now),
   });
 }
 

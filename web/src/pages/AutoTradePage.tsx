@@ -65,6 +65,7 @@ import type {
   TuneBasis,
   TuneEvidence,
   MlRegimeReadiness,
+  ShockNowcastEvidence,
   WalkForwardResponse,
   WalkForwardWindowResult,
 } from '../api/types';
@@ -2016,19 +2017,57 @@ function BookRow({ label, hint, cells }: { label: string; hint?: string; cells: 
 function RegimeReadinessLine({ r }: { r: MlRegimeReadiness }) {
   const checkedOf = r.sessionsWithReading;
   return (
-    <p className="text-[11px] text-slate-500" data-testid="ml-regime-readiness">
-      <span className="text-slate-400">Enabling rules:</span> {r.sessionsWithReading} of {r.sessionsRequired} sessions
-      with a reading · {r.switches.maxIn5Sessions} {r.switches.maxIn5Sessions === 1 ? 'switch' : 'switches'} in any 5
-      sessions (limit {r.switches.limitPerWeek}) · inert streak {r.inertStreak} · parity {r.parity.agreed} of{' '}
-      {checkedOf} agreed{r.parity.disagreed > 0 ? `, ${r.parity.disagreed} disagreeing` : ''} · model{' '}
-      {r.modelVersion ?? 'none'}
-      {r.retrainBy ? `, retrain by ${r.retrainBy}` : ''} · grid: see the decision log.{' '}
-      {r.ready ? (
-        <span className="text-emerald-400">
-          Ready — rules 2–4 hold; flip only with the grid's cell from the decision log.
-        </span>
+    <>
+      <p className="text-[11px] text-slate-500" data-testid="ml-regime-readiness">
+        <span className="text-slate-400">Enabling rules:</span> {r.sessionsWithReading} of {r.sessionsRequired} sessions
+        with a reading · {r.switches.maxIn5Sessions} {r.switches.maxIn5Sessions === 1 ? 'switch' : 'switches'} in any 5
+        sessions (limit {r.switches.limitPerWeek}) · inert streak {r.inertStreak} · parity {r.parity.agreed} of{' '}
+        {checkedOf} agreed{r.parity.disagreed > 0 ? `, ${r.parity.disagreed} disagreeing` : ''} · model{' '}
+        {r.modelVersion ?? 'none'}
+        {r.retrainBy ? `, retrain by ${r.retrainBy}` : ''} · grid: see the decision log.{' '}
+        {r.ready ? (
+          <span className="text-emerald-400">
+            Ready — rules 2–4 hold; flip only with the grid's cell from the decision log.
+          </span>
+        ) : (
+          <span className="text-amber-400">Not ready — {r.blockers[0]}.</span>
+        )}
+      </p>
+      {r.shockNowcast && <ShockNowcastLine e={r.shockNowcast} />}
+    </>
+  );
+}
+
+/** The shock trigger's own gate (2026-09-26): the sessions whose measured SPY
+ *  range reached each candidate ratio of its ATR, and how many the model read
+ *  High Vol the session after. A met ratio is a proposal, never applied here. */
+function ShockNowcastLine({ e }: { e: ShockNowcastEvidence }) {
+  const candidates = e.levels.filter((l) => l.candidate);
+  return (
+    <p className="text-[11px] text-slate-500" data-testid="shock-nowcast" title={e.rule}>
+      <span className="text-slate-400">Shock nowcast</span> (trigger{' '}
+      {e.triggerRatio > 0 ? `on at ${e.triggerRatio}×` : 'off'}, measured every session):{' '}
+      {e.measuredSessions === 0 ? (
+        'no session measured yet.'
       ) : (
-        <span className="text-amber-400">Not ready — {r.blockers[0]}.</span>
+        <>
+          {e.measuredSessions} {e.measuredSessions === 1 ? 'session' : 'sessions'} measured ·{' '}
+          {candidates
+            .map(
+              (l) =>
+                `${l.level}×: ${l.days} ${l.days === 1 ? 'day' : 'days'}` +
+                (l.decided > 0 ? `, High Vol next on ${l.highVolNext} of ${l.decided}` : ''),
+            )
+            .join(' · ')}
+          .{' '}
+          {e.proposal ? (
+            <span className="text-emerald-400">
+              Proposed: shock ratio {e.proposal.regimeShockRangeRatio}× — your call.
+            </span>
+          ) : (
+            'No ratio met yet.'
+          )}
+        </>
       )}
     </p>
   );

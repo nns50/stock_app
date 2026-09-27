@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { BATCH_REFUSAL_ACTIONS, SKIP_ACTIONS } from '../src/services/autotrading/edgeLeakScanData';
-import { join } from 'node:path';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { BATCH_REFUSAL_ACTIONS, EXECUTION_ACTIONS, SKIP_ACTIONS } from '../src/services/autotrading/edgeLeakScanData';
+import { dirname, join } from 'node:path';
 
 // ---------------------------------------------------------------------------
 // Every journal action a consumer FILTERS ON must be one some emitter actually
@@ -53,19 +53,112 @@ function code(path: string): string {
 const ACTION = /'([a-z0-9_]+)'/g;
 const files = tsFiles(SRC);
 
+/** A `const` declaration up to its `=`, type annotation included. The
+ *  annotation may hold an arrow (`=>`), and nothing else with an `=`. */
+const DECLARE = String.raw`const\s+([A-Za-z0-9_]+)\s*(?::(?:[^=]|=>)*?)?=\s*`;
+
+/** The index of the character that closes what opens at `i`: a quote, a
+ *  template, or a comment. */
+function skipped(src: string, i: number): number {
+  if (src.startsWith('//', i)) {
+    const end = src.indexOf('\n', i);
+    return end < 0 ? src.length : end;
+  }
+  if (src.startsWith('/*', i)) {
+    const end = src.indexOf('*/', i + 2);
+    return end < 0 ? src.length : end + 1;
+  }
+  for (let j = i + 1; j < src.length; j++) {
+    if (src[j] === '\\') j++;
+    else if (src[j] === src[i]) return j;
+  }
+  return src.length;
+}
+
+/**
+ * Every `const NAME = [...]` with its WHOLE body: brackets balanced, and
+ * strings and comments stepped over.
+ *
+ * Until 2026-09-26 the body was read up to its first `]` and the annotation up
+ * to its first `=`. #659 gave EXECUTION_ACTIONS an arrow-typed field
+ * (`countsIf?: (detail) => boolean`), and from then on it matched neither: the
+ * catalog stopped being a catalog, so its own `action:` entries vouched for
+ * themselves as writes again (the failure catalogSpans exists to stop), and
+ * its readers filtered on a name that resolved to nothing, so no dead entry
+ * could be reported. The guard stayed green throughout.
+ */
+function arrays(src: string): { name: string; start: number; end: number; body: string }[] {
+  const out: { name: string; start: number; end: number; body: string }[] = [];
+  for (const m of src.matchAll(new RegExp(`${DECLARE}\\[`, 'g'))) {
+    const open = m.index + m[0].length - 1;
+    let depth = 0;
+    let i = open;
+    for (; i < src.length; i++) {
+      const c = src[i];
+      if (c === "'" || c === '"' || c === '`' || src.startsWith('//', i) || src.startsWith('/*', i)) {
+        i = skipped(src, i);
+      } else if (c === '[') depth++;
+      else if (c === ']' && --depth === 0) break;
+    }
+    out.push({ name: m[1], start: m.index, end: i + 1, body: src.slice(open + 1, i) });
+  }
+  return out;
+}
+
 /** `const NAME = '...'` / `const NAME = [...]` per file — both call sites reach
  *  for actions through named constants as often as through literals. */
 function constants(src: string): Map<string, string | string[]> {
   const out = new Map<string, string | string[]>();
-  for (const m of src.matchAll(/const\s+([A-Za-z0-9_]+)\s*(?::[^=]*)?=\s*'([a-z0-9_]+)'/g)) out.set(m[1], m[2]);
-  for (const m of src.matchAll(/const\s+([A-Za-z0-9_]+)\s*(?::[^=]*)?=\s*\[([^\]]*)\]/g)) {
-    const body = m[2];
+  for (const m of src.matchAll(new RegExp(`${DECLARE}'([a-z0-9_]+)'`, 'g'))) out.set(m[1], m[2]);
+  for (const { name, body } of arrays(src)) {
     // An array of OBJECTS keyed by `action:` — EXECUTION_ACTIONS — must yield
     // only its action values. Taking every quoted string pulls in labels,
     // `splitOn` keys and split values, which then read as dead filters: the
     // first run of this rule reported `reason` as an unwritten action.
     const objects = [...body.matchAll(/\baction:\s*'([a-z0-9_]+)'/g)].map((x) => x[1]);
-    out.set(m[1], objects.length ? objects : [...body.matchAll(ACTION)].map((x) => x[1]));
+    out.set(name, objects.length ? objects : [...body.matchAll(ACTION)].map((x) => x[1]));
+  }
+  return out;
+}
+
+const constantsByFile = new Map<string, Map<string, string | string[]>>();
+const constantsOf = (path: string) => {
+  const hit = constantsByFile.get(path);
+  if (hit) return hit;
+  const found = constants(code(path));
+  constantsByFile.set(path, found);
+  return found;
+};
+
+/**
+ * A file's own constants plus the ones it IMPORTS from another module under
+ * src/, each under the name the file uses (`import { A as B }` → B).
+ *
+ * Until 2026-09-26 only a file's own `const` resolved, so an action constant
+ * imported from its defining module was invisible to BOTH scans: loop.ts writes
+ * `market_direction_read` and `market_tape_read` through imported constants and
+ * marketDirectionIndex.ts / marketTapeIndex.ts filter on them the same way, so
+ * neither side of either wire was checked. It surfaced as a false dead filter:
+ * shockNowcast.ts defines `market_shock_shadow` and filters on it, while its
+ * one writer, autotrading/shockShadow.ts, imports it. The resolution follows the
+ * file's own import to the module it names, never a name-match across src, so a
+ * name reused with another value elsewhere cannot vouch for anything.
+ */
+function resolvable(file: string, src: string): Map<string, string | string[]> {
+  const out = new Map(constants(src));
+  for (const m of src.matchAll(/import\s+(?:type\s+)?\{([^}]*)\}\s*from\s*'(\.[^']*)'/g)) {
+    const base = join(dirname(file), m[2]);
+    const target = [`${base}.ts`, join(base, 'index.ts')].find((p) => existsSync(p));
+    if (!target) continue;
+    for (const part of m[1].split(',')) {
+      const [name, alias] = part
+        .replace(/^\s*type\s+/, '')
+        .trim()
+        .split(/\s+as\s+/);
+      const local = (alias ?? name).trim();
+      const value = constantsOf(target).get(name.trim());
+      if (local && value !== undefined && !out.has(local)) out.set(local, value);
+    }
   }
   return out;
 }
@@ -86,11 +179,9 @@ function constants(src: string): Map<string, string | string[]> {
  * a dead filter "vouching for itself", and guarded two other forms of it.
  */
 function catalogSpans(src: string): [number, number][] {
-  const spans: [number, number][] = [];
-  for (const m of src.matchAll(/const\s+([A-Za-z0-9_]+)\s*(?::[^=]*)?=\s*\[([^\]]*)\]/g)) {
-    if (/\baction:\s*'/.test(m[2])) spans.push([m.index, m.index + m[0].length]);
-  }
-  return spans;
+  return arrays(src)
+    .filter(({ body }) => /\baction:\s*'/.test(body))
+    .map(({ start, end }): [number, number] => [start, end]);
 }
 
 /** Writers that take the journal action as a POSITIONAL argument. Both scans
@@ -101,14 +192,34 @@ const POSITIONAL_SKIP_WRITERS = ['journalEntrySkipOncePerDay', 'journalDeclinedE
 const positionalSkips = () =>
   new RegExp(`(?:${POSITIONAL_SKIP_WRITERS.join('|')})\\(\\s*[^,]+,\\s*'([a-z0-9_]+)'`, 'g');
 
-function scan(): { emitted: Set<string>; consumed: Map<string, Set<string>> } {
+/** Writers whose FIRST argument is the action, a literal or a constant.
+ *  mlRegime.ts journals every regime row this way; it was invisible until the
+ *  import resolution below made `ml_regime_changed`'s reader visible
+ *  (mlRegimeReadiness.ts imports the constant), which then read as dead. */
+const FIRST_ARG_WRITERS = ['journalOncePerDay'];
+const firstArgWrites = () =>
+  new RegExp(`\\b(?:${FIRST_ARG_WRITERS.join('|')})\\(\\s*(?:'([a-z0-9_]+)'|([A-Z][A-Z0-9_]*))`, 'g');
+
+/** The whole source by default; a test hands it a synthetic file. */
+function scan(
+  list: readonly string[] = files,
+  read: (path: string) => string = code,
+): { emitted: Set<string>; consumed: Map<string, Set<string>>; unresolved: string[] } {
   const emitted = new Set<string>();
   const consumed = new Map<string, Set<string>>();
+  const unresolved: string[] = [];
   const note = (a: string, f: string) => consumed.set(a, (consumed.get(a) ?? new Set()).add(f));
+  /** A filter's constant, or a note that it did not resolve: dropped quietly,
+   *  it would hide exactly the dead filter this file exists to find. */
+  const filterValues = (name: string, consts: Map<string, string | string[]>, f: string): string[] => {
+    const v = consts.get(name);
+    if (v === undefined) unresolved.push(`${name} (${f.split('/').pop()})`);
+    return typeof v === 'string' ? [v] : (v ?? []);
+  };
 
-  for (const f of files) {
-    const src = code(f);
-    const consts = constants(src);
+  for (const f of list) {
+    const src = read(f);
+    const consts = resolvable(f, src);
     const catalogs = catalogSpans(src);
 
     // EMIT side. Everything to the end of the `action:` line, so a ternary
@@ -150,14 +261,17 @@ function scan(): { emitted: Set<string>; consumed: Map<string, Set<string>> } {
     // POSITIONAL_SKIP_WRITERS so the two scans below cannot learn a new writer
     // separately.
     for (const m of src.matchAll(positionalSkips())) emitted.add(m[1]);
+    for (const m of src.matchAll(firstArgWrites())) {
+      const v = m[1] ?? consts.get(m[2]);
+      if (typeof v === 'string') emitted.add(v);
+    }
 
     // CONSUME side: `actions: [...]` filters and `e.action === '...'` compares.
     for (const m of src.matchAll(/actions:\s*\[([^\]]*)\]/g)) {
       const body = m[1];
       for (const a of body.matchAll(ACTION)) note(a[1], f);
       for (const id of body.matchAll(/\b([A-Z][A-Z0-9_]{2,})\b/g)) {
-        const v = consts.get(id[1]);
-        for (const a of typeof v === 'string' ? [v] : (v ?? [])) note(a, f);
+        for (const a of filterValues(id[1], consts, f)) note(a, f);
       }
     }
     // …and `actions: SOME_CONST`, with no brackets for the pattern above to
@@ -165,16 +279,15 @@ function scan(): { emitted: Set<string>; consumed: Map<string, Set<string>> } {
     // attribution filters on was invisible to the CONSUME side — meaning a dead
     // one among them could never have been reported.
     for (const m of src.matchAll(/actions:\s*([A-Z][A-Z0-9_]{2,})\b\.?/g)) {
-      const v = consts.get(m[1]);
-      for (const a of typeof v === 'string' ? [v] : (v ?? [])) note(a, f);
+      for (const a of filterValues(m[1], consts, f)) note(a, f);
     }
     for (const m of src.matchAll(/\.action\s*===\s*'([a-z0-9_]+)'/g)) note(m[1], f);
   }
-  return { emitted, consumed };
+  return { emitted, consumed, unresolved };
 }
 
 describe('journal action reachability', () => {
-  const { emitted, consumed } = scan();
+  const { emitted, consumed, unresolved } = scan();
 
   it('finds both sides of the wiring at all — a scan that matches nothing proves nothing', () => {
     // If a refactor changes how actions are written or read, the regexes above
@@ -189,6 +302,61 @@ describe('journal action reachability', () => {
       .filter(([a]) => !emitted.has(a))
       .map(([a, fs]) => `${a} (read in ${[...fs].map((f) => f.split('/').pop()).join(', ')})`);
     expect(dead).toEqual([]);
+  });
+
+  it('resolves every constant a filter names, through the file itself or its imports', () => {
+    // A name that resolves to nothing drops out of the CONSUME side, and a dead
+    // filter behind it could never be reported.
+    expect(unresolved).toEqual([]);
+  });
+
+  it('notes a filter constant that resolves to nothing rather than dropping it', () => {
+    const synthetic = join(SRC, 'synthetic.ts');
+    const src = 'listAutotradeEvents({ actions: [NOWHERE_ACTION] });\nlistAutotradeEvents({ actions: ALSO_NOWHERE });';
+    expect(scan([synthetic], () => src).unresolved).toEqual([
+      'NOWHERE_ACTION (synthetic.ts)',
+      'ALSO_NOWHERE (synthetic.ts)',
+    ]);
+  });
+
+  it('parses a declaration whole: an arrow in its type, a nested array, a bracket in a string or a comment', () => {
+    const src = [
+      'const CATALOG: { action: string; test?: (detail: string) => boolean }[] = [',
+      "  { action: 'first', tags: ['x'], label: 'closes ] early' },",
+      '  // so does ] this',
+      "  { action: 'last' },",
+      '];',
+    ].join('\n');
+    expect(constants(src).get('CATALOG')).toEqual(['first', 'last']);
+    const [catalog] = arrays(src);
+    expect(catalogSpans(src)).toEqual([[catalog.start, src.length - 1]]);
+  });
+
+  it('resolves an import under the name the file gives it', () => {
+    const loop = join(SRC, 'services/autotrading/loop.ts');
+    const src = "import { MARKET_TAPE_ACTION as TAPE_ACTION } from './marketTape';";
+    expect(resolvable(loop, src).get('TAPE_ACTION')).toBe('market_tape_read');
+  });
+
+  it('reads the execution catalog whole, and as a catalog', () => {
+    const src = code(join(SRC, 'services/autotrading/edgeLeakScanData.ts'));
+    const catalog = arrays(src).find((a) => a.name === 'EXECUTION_ACTIONS');
+    // Every entry the module holds at runtime, not the ones before the first
+    // `]` or none at all (#659's arrow-typed field).
+    expect(constants(src).get('EXECUTION_ACTIONS')).toEqual(
+      expect.arrayContaining(EXECUTION_ACTIONS.map((a) => a.action)),
+    );
+    // Its whole span is a catalog's, so no entry vouches for itself as a write.
+    expect(catalog && catalogSpans(src)).toContainEqual([catalog?.start, catalog?.end]);
+  });
+
+  it('follows an action constant to the module it is imported from, on both sides', () => {
+    // shockShadow.ts writes this one only through a constant it imports.
+    expect(emitted.has('market_shock_shadow')).toBe(true);
+    // And these two index modules filter only through imported constants.
+    const readers = (a: string) => [...(consumed.get(a) ?? [])].map((f) => f.split('/').pop());
+    expect(readers('market_direction_read')).toContain('marketDirectionIndex.ts');
+    expect(readers('market_tape_read')).toContain('marketTapeIndex.ts');
   });
 
   // -------------------------------------------------------------------------

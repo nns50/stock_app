@@ -5376,6 +5376,48 @@ describe('ML market-regime reading (integration)', () => {
       'disagrees',
     ]);
   });
+
+  it('serves the shock nowcast evidence on its own route and on the readiness object (2026-09-26)', async () => {
+    db.exec("DELETE FROM autotrade_events WHERE action = 'market_shock_shadow'");
+    // Three past sessions the measured range reached 2× its ATR, each followed
+    // by a reading that had seen the day and read High Volatility/Bearish.
+    const days: [string, string][] = [
+      ['2026-09-14', '2026-09-15'],
+      ['2026-09-15', '2026-09-16'],
+      ['2026-09-16', '2026-09-17'],
+    ];
+    for (const [day] of days) {
+      for (const level of [0, 1, 1.5, 2]) {
+        logAutotradeEvent({
+          stage: 'screen',
+          action: 'market_shock_shadow',
+          detail: { date: day, level, at: '10:30' },
+        });
+      }
+    }
+    for (const [day, next] of days) {
+      saveMlRegimeReading({ etDate: next, regime: 'high_vol_bearish', asOf: day, reading: {}, modelVersion: 'test' });
+    }
+    type Evidence = {
+      measuredSessions: number;
+      levels: { level: number; days: number; decided: number; highVolNext: number; meets: boolean }[];
+      proposal: { regimeShockRangeRatio: number } | null;
+      triggerRatio: number;
+    };
+    const e = (await getJson('/api/market/regime-ml/shock-evidence')) as Evidence;
+    expect(e.measuredSessions).toBe(3);
+    expect(e.levels.map((l) => l.level)).toEqual([1, 1.5, 2, 2.5, 3]);
+    expect(e.levels.find((l) => l.level === 1.5)).toMatchObject({ days: 3, decided: 3, highVolNext: 3, meets: true });
+    expect(e).toMatchObject({ triggerRatio: 0, proposal: { regimeShockRangeRatio: 1.5 } });
+    // The same object rides on the readiness and the dashboard, and is never a
+    // blocker: the overlay's own readiness does not wait on the nowcast.
+    const r = (await getJson('/api/market/regime-ml/readiness')) as { shockNowcast: Evidence; blockers: string[] };
+    expect(r.shockNowcast).toEqual(e);
+    expect(r.blockers.join(' ')).not.toMatch(/shock/i);
+    const dash = (await getJson('/api/autotrade/dashboard')) as { mlRegimeReadiness: { shockNowcast: Evidence } };
+    expect(dash.mlRegimeReadiness.shockNowcast).toEqual(e);
+    db.exec("DELETE FROM autotrade_events WHERE action = 'market_shock_shadow'");
+  });
 });
 
 describe('the ML regime overlay (integration, 2026-09-08)', () => {

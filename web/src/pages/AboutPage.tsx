@@ -326,15 +326,17 @@ export default function AboutPage() {
           <strong className="text-slate-200">ML regime overlay</strong> on (off by default) the sizing regime cut above
           reads it: new positions size down by the ML regime size cut while the reading is High Volatility/Bearish, and
           an intraday <strong className="text-slate-200">shock day</strong> (SPY’s range so far today at or above a set
-          multiple of its ATR) is treated the same way on the spot; a stale or unknown reading never cuts. The same
-          switch <strong className="text-slate-200">tightens the profit target</strong> in that regime by the ML regime
-          target tighten % (default 30): the equity target R-multiple and the options take-profit % are both multiplied
-          by <span className="tabular-nums">1 − tighten/100</span> at entry (a 2R target becomes 1.4R, a 60% take-profit
-          42%), the finish-line trim reasons about that same tightened payoff — converted into R for options, because a
-          take-profit is a percent of premium while only the disaster-stop share of that premium is the risk the
-          position was sized against — and the options exit rules read the regime stamped on the position rather than
-          today’s — so a High-Vol entry keeps its tighter target through a calm afternoon and a calm-tape entry is never
-          tightened later. The applied factor is stamped on every position, and that stamp feeds the{' '}
+          multiple of its ATR) is treated the same way on the spot; a stale or unknown reading never cuts. That multiple
+          ships at 0 (off); since 2026-09-26 the ratio is measured every session anyway, and a multiple is proposed only
+          once at least three sessions that reached it were followed by a High Volatility/Bearish reading on most. The
+          same switch <strong className="text-slate-200">tightens the profit target</strong> in that regime by the ML
+          regime target tighten % (default 30): the equity target R-multiple and the options take-profit % are both
+          multiplied by <span className="tabular-nums">1 − tighten/100</span> at entry (a 2R target becomes 1.4R, a 60%
+          take-profit 42%), the finish-line trim reasons about that same tightened payoff — converted into R for
+          options, because a take-profit is a percent of premium while only the disaster-stop share of that premium is
+          the risk the position was sized against — and the options exit rules read the regime stamped on the position
+          rather than today’s — so a High-Vol entry keeps its tighter target through a calm afternoon and a calm-tape
+          entry is never tightened later. The applied factor is stamped on every position, and that stamp feeds the{' '}
           <strong className="text-slate-200">regime-tighten ledger</strong> (Journal › Analytics): each closed stock
           trade’s MFE says whether the full, untightened target would have been reached, and a counterfactual R takes
           the most optimistic case for the full target — reached means banked there with no reversal, not reached means
