@@ -3508,6 +3508,21 @@ describe('AutoTradePage', () => {
     expect(openRow.compareDocumentPosition(closedRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   }
 
+  /** A book table's Open · Closed · All switch filters that table (2026-09-27),
+   *  then is put back to All. */
+  function expectBookFilter(table: string, open: string, closed: string) {
+    const tabs = screen.getByRole('tablist', { name: `Show ${table.toLowerCase()}` });
+    fireEvent.click(within(tabs).getByRole('tab', { name: 'Open' }));
+    let box = screen.getByRole('region', { name: table });
+    expect(within(box).getByText(open)).toBeInTheDocument();
+    expect(within(box).queryByText(closed)).toBeNull();
+    fireEvent.click(within(tabs).getByRole('tab', { name: 'Closed' }));
+    box = screen.getByRole('region', { name: table });
+    expect(within(box).queryByText(open)).toBeNull();
+    expect(within(box).getByText(closed)).toBeInTheDocument();
+    fireEvent.click(within(tabs).getByRole('tab', { name: 'All' }));
+  }
+
   describe('Dashboard layout', () => {
     it('groups the view into Now / History / Tools, in that order', async () => {
       // The view used to be six equally-weighted cards in the order they were
@@ -3558,7 +3573,7 @@ describe('AutoTradePage', () => {
       expect(header).toHaveTextContent(/real money/);
     });
 
-    it('scrolls each paper table in its own box, header pinned and open positions first', async () => {
+    it('scrolls each paper table in its own box, header pinned and open positions first, filtered by its own switch', async () => {
       // Both book cards rendered every row the lists return (up to 100 a
       // table), which ran them to ~4,700 and ~5,600 px (2026-09-27). The server
       // sends newest first, so a position still open from an earlier session
@@ -3578,6 +3593,88 @@ describe('AutoTradePage', () => {
       renderDashboard();
       await expectBookBox('Paper equity positions', 'AAPL', 'MSFT');
       await expectBookBox('Paper options positions', 'TSLA', 'NVDA');
+      expectBookFilter('Paper equity positions', 'AAPL', 'MSFT');
+      expectBookFilter('Paper options positions', 'TSLA', 'NVDA');
+    });
+
+    it('filters a book table to Open or Closed with its own switch, and remembers it per table', async () => {
+      vi.spyOn(client, 'autotradePaperPositions').mockResolvedValue({
+        positions: [
+          paperPosition({ id: 3, symbol: 'MSFT', status: 'closed', exitPrice: 101, exitAt: Date.now() }),
+          paperPosition({ id: 1, symbol: 'AAPL', status: 'open' }),
+        ],
+      });
+      renderDashboard();
+      const box = await screen.findByRole('region', { name: 'Paper equity positions' });
+      const equity = screen.getByRole('tablist', { name: 'Show paper equity positions' });
+      // All by default: the table reads as it did before the switch existed.
+      expect(within(equity).getByRole('tab', { name: 'All' })).toHaveAttribute('aria-selected', 'true');
+      expect(within(box).getByText('AAPL')).toBeInTheDocument();
+      expect(within(box).getByText('MSFT')).toBeInTheDocument();
+
+      fireEvent.click(within(equity).getByRole('tab', { name: 'Closed' }));
+      const closedBox = screen.getByRole('region', { name: 'Paper equity positions' });
+      expect(within(closedBox).getByText('MSFT')).toBeInTheDocument();
+      expect(within(closedBox).queryByText('AAPL')).toBeNull();
+
+      fireEvent.click(within(equity).getByRole('tab', { name: 'Open' }));
+      const openBox = screen.getByRole('region', { name: 'Paper equity positions' });
+      expect(within(openBox).getByText('AAPL')).toBeInTheDocument();
+      expect(within(openBox).queryByText('MSFT')).toBeNull();
+
+      // Remembered per table, and the other tables keep their own.
+      expect(localStorage.getItem('autotrade.bookFilter.paperEquity')).toBe(JSON.stringify('open'));
+      expect(
+        within(screen.getByRole('tablist', { name: 'Show paper options positions' })).getByRole('tab', {
+          name: 'All',
+        }),
+      ).toHaveAttribute('aria-selected', 'true');
+    });
+
+    it('says when a filter hides every row, and Show all brings them back', async () => {
+      localStorage.setItem('autotrade.bookFilter.paperEquity', JSON.stringify('open'));
+      vi.spyOn(client, 'autotradePaperPositions').mockResolvedValue({
+        positions: [paperPosition({ id: 3, symbol: 'MSFT', status: 'closed', exitPrice: 101, exitAt: Date.now() })],
+      });
+      renderDashboard();
+      expect(await screen.findByText('No open positions')).toBeInTheDocument();
+      expect(screen.queryByRole('region', { name: 'Paper equity positions' })).toBeNull();
+      // The ledger above still counts the whole book: one closed position.
+      expect(screen.getByText('Closed', { selector: 'dt' }).nextElementSibling).toHaveTextContent('1');
+
+      fireEvent.click(screen.getByRole('button', { name: 'Show all' }));
+      const box = await screen.findByRole('region', { name: 'Paper equity positions' });
+      expect(within(box).getByText('MSFT')).toBeInTheDocument();
+      expect(localStorage.getItem('autotrade.bookFilter.paperEquity')).toBe(JSON.stringify('all'));
+    });
+
+    it('keeps an empty book on its own empty state, whatever its filter', async () => {
+      localStorage.setItem('autotrade.bookFilter.paperEquity', JSON.stringify('open'));
+      renderDashboard();
+      // Nothing traded yet is not "nothing open".
+      expect(await screen.findByText('No paper trades yet')).toBeInTheDocument();
+      expect(screen.queryByText('No open positions')).toBeNull();
+    });
+
+    it("folds each table's note behind an ⓘ by its heading, and the paper card's behind a toggle", async () => {
+      renderDashboard();
+      const notes: [string, RegExp][] = [
+        ['About live equity', /The real fills the loop has actually placed through Webull/],
+        ['About live options', /The real options fills the loop has actually placed/],
+        ['About paper options', /Long calls\/puts or debit spreads/],
+        ['How paper trading runs', /When enabled above, the server runs this same/],
+      ];
+      for (const [name, text] of notes) {
+        const toggle = await screen.findByRole('button', { name });
+        expect(toggle).toHaveAttribute('aria-expanded', 'false');
+        expect(screen.getByText(text)).not.toBeVisible();
+        fireEvent.click(toggle);
+        expect(toggle).toHaveAttribute('aria-expanded', 'true');
+        expect(screen.getByText(text)).toBeVisible();
+      }
+      // The ⓘ sits beside the heading, so each heading is still named by its one word.
+      expect(screen.getAllByRole('heading', { level: 4, name: 'Equity' })).toHaveLength(2);
+      expect(screen.getAllByRole('heading', { level: 4, name: 'Options' })).toHaveLength(2);
     });
   });
 
@@ -4758,7 +4855,7 @@ describe('AutoTradePage', () => {
       };
     }
 
-    it('scrolls the live equity table in its own box, open positions first', async () => {
+    it('scrolls the live equity table in its own box, open positions first, filtered by its own switch', async () => {
       vi.spyOn(client, 'autotradeLivePositions').mockResolvedValue({
         positions: [
           livePosition({ id: 2, symbol: 'MSFT', status: 'closed', remainingQuantity: 0 }),
@@ -4767,6 +4864,7 @@ describe('AutoTradePage', () => {
       });
       renderDashboard();
       await expectBookBox('Live equity positions', 'AAPL', 'MSFT');
+      expectBookFilter('Live equity positions', 'AAPL', 'MSFT');
     });
 
     it('shows an empty state when there are no live positions', async () => {
@@ -4994,7 +5092,7 @@ describe('AutoTradePage', () => {
       };
     }
 
-    it('scrolls the live options table in its own box, open positions first', async () => {
+    it('scrolls the live options table in its own box, open positions first, filtered by its own switch', async () => {
       vi.spyOn(client, 'autotradeLiveOptionsPositions').mockResolvedValue({
         positions: [
           liveOptionsPosition({ id: 2, symbol: 'NVDA', status: 'closed', exitPrice: 2, exitAt: Date.now() }),
@@ -5003,6 +5101,7 @@ describe('AutoTradePage', () => {
       });
       renderDashboard();
       await expectBookBox('Live options positions', 'TSLA', 'NVDA');
+      expectBookFilter('Live options positions', 'TSLA', 'NVDA');
     });
 
     it('does not show the live options checkbox/caps until live trading itself is enabled', async () => {

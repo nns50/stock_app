@@ -453,16 +453,20 @@ export function Segmented<T extends string>({
   value,
   onChange,
   full,
+  ariaLabel,
 }: {
   options: { value: T; label: ReactNode }[];
   value: T;
   onChange: (v: T) => void;
   full?: boolean;
+  /** Names the control when a page carries several with the same options. */
+  ariaLabel?: string;
 }) {
   return (
     <div
       className={cx('p-0.5 rounded-lg bg-ink-900 border border-ink-600 gap-0.5', full ? 'flex' : 'inline-flex')}
       role="tablist"
+      aria-label={ariaLabel}
     >
       {options.map((o) => (
         <button
