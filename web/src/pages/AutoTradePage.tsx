@@ -467,6 +467,35 @@ function samePositions<T>(a: readonly T[], b: readonly T[]): boolean {
   return a === b || JSON.stringify(a) === JSON.stringify(b);
 }
 
+/** Open positions first, each group in the order the server sent it (newest
+ *  first). In a scroll box a position still open from an earlier day would sit
+ *  below a day of closed ones, out of sight, and what the book is holding is
+ *  the first thing anyone reads it for. */
+function openFirst<T extends { status: string }>(rows: readonly T[]): T[] {
+  return [...rows.filter((r) => r.status === 'open'), ...rows.filter((r) => r.status !== 'open')];
+}
+
+/** The box each of the four book tables scrolls in (2026-09-27). Every book
+ *  fetches up to 100 positions and every one was rendered, so at 1440×900 the
+ *  Live positions and Paper trading cards ran to ~4,700 and ~5,600 px and put
+ *  History and Tools a dozen screens down. A table now shows about ten rows and
+ *  scrolls the rest, its header row pinned by `sticky-thead` (the rule the
+ *  Positions and Journal pages use). A labelled, focusable region, so the
+ *  keyboard can scroll it too. */
+function BookTableScroll({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div
+      role="region"
+      aria-label={label}
+      tabIndex={0}
+      data-testid="book-table-scroll"
+      className="max-h-96 overflow-auto rounded-lg border border-ink-700/60 focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/60"
+    >
+      {children}
+    </div>
+  );
+}
+
 const PaperPositionsTable = memo(
   function PaperPositionsTable({ positions }: { positions: PaperPosition[] }) {
     if (positions.length === 0) {
@@ -478,9 +507,9 @@ const PaperPositionsTable = memo(
       );
     }
     return (
-      <div className="overflow-x-auto">
+      <BookTableScroll label="Paper equity positions">
         <table className="w-full">
-          <thead className="border-b border-ink-600/60">
+          <thead className="sticky-thead">
             <tr>
               <th className="th">Symbol</th>
               <th className="th">Side</th>
@@ -497,7 +526,7 @@ const PaperPositionsTable = memo(
             </tr>
           </thead>
           <tbody>
-            {positions.map((p) => {
+            {openFirst(positions).map((p) => {
               const pnl = paperPnl(p);
               const rMultiple = pnl !== null && p.riskAmount > 0 ? pnl / p.riskAmount : null;
               return (
@@ -560,7 +589,7 @@ const PaperPositionsTable = memo(
             })}
           </tbody>
         </table>
-      </div>
+      </BookTableScroll>
     );
   },
   (prev, next) => samePositions(prev.positions, next.positions),
@@ -648,9 +677,9 @@ const OptionsPaperPositionsTable = memo(
       );
     }
     return (
-      <div className="overflow-x-auto">
+      <BookTableScroll label="Paper options positions">
         <table className="w-full">
-          <thead className="border-b border-ink-600/60">
+          <thead className="sticky-thead">
             <tr>
               <th className="th">Symbol</th>
               <th className="th">Contract</th>
@@ -667,7 +696,7 @@ const OptionsPaperPositionsTable = memo(
             </tr>
           </thead>
           <tbody>
-            {positions.map((p) => {
+            {openFirst(positions).map((p) => {
               const pnl = optionsPaperPnl(p);
               const rMultiple = pnl !== null && p.riskAmount > 0 ? pnl / p.riskAmount : null;
               const currentValue = optionsPaperCurrentValue(p);
@@ -745,7 +774,7 @@ const OptionsPaperPositionsTable = memo(
             })}
           </tbody>
         </table>
-      </div>
+      </BookTableScroll>
     );
   },
   (prev, next) => samePositions(prev.positions, next.positions) && samePositions(prev.events, next.events),
@@ -904,9 +933,9 @@ const LiveOptionsPositionsTable = memo(
       );
     }
     return (
-      <div className="overflow-x-auto">
+      <BookTableScroll label="Live options positions">
         <table className="w-full">
-          <thead className="border-b border-ink-600/60">
+          <thead className="sticky-thead">
             <tr>
               <th className="th">Symbol</th>
               <th className="th">Contract</th>
@@ -924,7 +953,7 @@ const LiveOptionsPositionsTable = memo(
             </tr>
           </thead>
           <tbody>
-            {positions.map((p) => {
+            {openFirst(positions).map((p) => {
               const pnl = optionsPaperPnl(p);
               const rMultiple = pnl !== null && p.riskAmount > 0 ? pnl / p.riskAmount : null;
               const currentValue = optionsPaperCurrentValue(p);
@@ -1017,7 +1046,7 @@ const LiveOptionsPositionsTable = memo(
             })}
           </tbody>
         </table>
-      </div>
+      </BookTableScroll>
     );
   },
   (prev, next) => samePositions(prev.positions, next.positions) && samePositions(prev.events, next.events),
@@ -1044,9 +1073,9 @@ const LivePositionsTable = memo(
       );
     }
     return (
-      <div className="overflow-x-auto">
+      <BookTableScroll label="Live equity positions">
         <table className="w-full">
-          <thead className="border-b border-ink-600/60">
+          <thead className="sticky-thead">
             <tr>
               <th className="th">Symbol</th>
               <th className="th">Side</th>
@@ -1061,7 +1090,7 @@ const LivePositionsTable = memo(
             </tr>
           </thead>
           <tbody>
-            {positions.map((p) => {
+            {openFirst(positions).map((p) => {
               const isOption = p.assetType === 'option';
               const qty = p.remainingQuantity === p.quantity ? p.quantity : `${p.remainingQuantity}/${p.quantity}`;
               return (
@@ -1139,7 +1168,7 @@ const LivePositionsTable = memo(
             })}
           </tbody>
         </table>
-      </div>
+      </BookTableScroll>
     );
   },
   (prev, next) => samePositions(prev.positions, next.positions),
