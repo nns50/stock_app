@@ -1,4 +1,5 @@
-import { lazy, memo, ReactNode, Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, memo, ReactNode, Suspense, useCallback, useEffect, useId, useRef, useState } from 'react';
+import { Info } from 'lucide-react';
 import { client } from '../api/client';
 import { AsyncState, useAsync, useLocalStorage } from '../lib/hooks';
 import { useToast } from '../components/ToastContext';
@@ -1941,18 +1942,148 @@ function BookLedger({
 
 /** A book subsection inside one of the two position cards ("Equity" /
  *  "Options"). Both cards carried a full-sentence heading that repeated their
- *  own card title, so the page said "Live positions" twice before any data. */
-function BookHeading({ children, tone }: { children: ReactNode; tone?: 'bear' }) {
+ *  own card title, so the page said "Live positions" twice before any data.
+ *
+ *  Since 2026-09-27 the paragraph that explained each table sits behind the ⓘ
+ *  beside its heading, shut until asked for, and the table's row filter sits at
+ *  the heading's right. The ⓘ is the heading's sibling, not its child, so the
+ *  heading's accessible name stays its one word. */
+function BookHeading({
+  children,
+  tone,
+  book,
+  about,
+  filter,
+}: {
+  children: string;
+  tone?: 'bear';
+  book: 'live' | 'paper';
+  about?: ReactNode;
+  filter?: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const aboutId = useId();
   return (
-    <h4
-      className={cx(
-        'text-xs font-semibold uppercase tracking-wide mb-2',
-        tone === 'bear' ? 'text-bear' : 'text-slate-300',
+    <div className="mb-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5">
+          <h4
+            className={cx(
+              'text-xs font-semibold uppercase tracking-wide',
+              tone === 'bear' ? 'text-bear' : 'text-slate-300',
+            )}
+          >
+            {children}
+          </h4>
+          {about && (
+            <button
+              type="button"
+              aria-label={`About ${book} ${children.toLowerCase()}`}
+              aria-expanded={open}
+              aria-controls={aboutId}
+              onClick={() => setOpen(!open)}
+              className="rounded text-slate-500 hover:text-slate-300 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/60"
+            >
+              <Info className="h-3.5 w-3.5" aria-hidden />
+            </button>
+          )}
+        </div>
+        {filter}
+      </div>
+      {about && (
+        <p id={aboutId} hidden={!open} className="mt-1 text-xs text-slate-500">
+          {about}
+        </p>
       )}
-    >
-      {children}
-    </h4>
+    </div>
   );
+}
+
+/** A card's own explanation behind a one-line toggle (2026-09-27): the Paper
+ *  trading card opened on four lines about how the loop runs before any of its
+ *  numbers. */
+function BookAbout({ label, children }: { label: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  return (
+    <div className="mb-3">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={id}
+        onClick={() => setOpen(!open)}
+        className="inline-flex items-center gap-1 rounded text-xs text-slate-500 hover:text-slate-300 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/60"
+      >
+        <Info className="h-3.5 w-3.5" aria-hidden />
+        {label}
+      </button>
+      <p id={id} hidden={!open} className="mt-1 text-xs text-slate-500">
+        {children}
+      </p>
+    </div>
+  );
+}
+
+type BookFilter = 'open' | 'closed' | 'all';
+
+const BOOK_FILTER_OPTIONS: { value: BookFilter; label: string }[] = [
+  { value: 'open', label: 'Open' },
+  { value: 'closed', label: 'Closed' },
+  { value: 'all', label: 'All' },
+];
+
+/** One book table's row filter (2026-09-27), remembered per table in this
+ *  browser. All by default, so a table reads as it did until someone picks. */
+function useBookFilter(table: string) {
+  return useLocalStorage<BookFilter>(`autotrade.bookFilter.${table}`, 'all');
+}
+
+function BookFilterSwitch({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: BookFilter;
+  onChange: (v: BookFilter) => void;
+}) {
+  return <Segmented ariaLabel={label} options={BOOK_FILTER_OPTIONS} value={value} onChange={onChange} />;
+}
+
+/** A book's rows through its filter. An empty book keeps its table's own empty
+ *  state (nothing traded yet); a book whose every row the filter hides says so
+ *  and offers them back, the way the Positions page does. The ledger above it
+ *  still counts the whole book. */
+function FilteredBook<T extends { status: string }>({
+  rows,
+  filter,
+  onShowAll,
+  children,
+}: {
+  rows: T[];
+  filter: BookFilter;
+  onShowAll: () => void;
+  children: (shown: T[]) => ReactNode;
+}) {
+  const shown = filter === 'all' ? rows : rows.filter((r) => r.status === filter);
+  if (rows.length > 0 && shown.length === 0) {
+    return (
+      <EmptyState
+        title={filter === 'open' ? 'No open positions' : 'No closed positions'}
+        hint={
+          filter === 'open'
+            ? 'Everything in this table is closed. Switch to Closed or All to see it.'
+            : 'Nothing in this table has closed yet. Switch to Open or All to see it.'
+        }
+        action={
+          <button type="button" className="btn-ghost" onClick={onShowAll}>
+            Show all
+          </button>
+        }
+      />
+    );
+  }
+  return <>{children(shown)}</>;
 }
 
 // ---------------------------------------------------------------------------
@@ -3275,6 +3406,11 @@ export default function AutoTradePage() {
   const optionsPaperPositions = useAsync(() => client.autotradeOptionsPaperPositions({ limit: 100 }), []);
   const livePositions = useAsync(() => client.autotradeLivePositions({ limit: 100 }), []);
   const liveOptionsPositions = useAsync(() => client.autotradeLiveOptionsPositions({ limit: 100 }), []);
+  // Each book table's Open · Closed · All filter (2026-09-27).
+  const [liveEquityFilter, setLiveEquityFilter] = useBookFilter('liveEquity');
+  const [liveOptionsFilter, setLiveOptionsFilter] = useBookFilter('liveOptions');
+  const [paperEquityFilter, setPaperEquityFilter] = useBookFilter('paperEquity');
+  const [paperOptionsFilter, setPaperOptionsFilter] = useBookFilter('paperOptions');
   // Ex-dividend/earnings awareness for the options tables' assignment-risk
   // badge (AssignmentRiskBadge) — same batched-by-symbol fetch PositionsPage
   // uses for EarningsBadge, just keyed off both options position lists
@@ -7406,13 +7542,27 @@ export default function AutoTradePage() {
               </>
             }
           >
-            <BookHeading tone="bear">Equity</BookHeading>
-            <p className="text-xs text-slate-500 mb-3">
-              The real fills the loop has actually placed through Webull — the same{' '}
-              <code className="text-[11px]">positions</code> rows your own manual trades use, tagged so only
-              autotrade&apos;s own are shown here. Nothing here is simulated; see the Positions and Journal pages for
-              your full real book (autotrade&apos;s fills included, unmarked there).
-            </p>
+            <BookHeading
+              tone="bear"
+              book="live"
+              about={
+                <>
+                  The real fills the loop has actually placed through Webull — the same{' '}
+                  <code className="text-[11px]">positions</code> rows your own manual trades use, tagged so only
+                  autotrade&apos;s own are shown here. Nothing here is simulated; see the Positions and Journal pages
+                  for your full real book (autotrade&apos;s fills included, unmarked there).
+                </>
+              }
+              filter={
+                <BookFilterSwitch
+                  label="Show live equity positions"
+                  value={liveEquityFilter}
+                  onChange={setLiveEquityFilter}
+                />
+              }
+            >
+              Equity
+            </BookHeading>
             {livePositions.loading && !livePositions.data ? (
               <Spinner />
             ) : livePositions.error ? (
@@ -7435,20 +7585,36 @@ export default function AutoTradePage() {
                         unrealized={unrealizedKnown ? unrealizedTotal : null}
                       />
                     )}
-                    <LivePositionsTable positions={rows} onClose={setCloseEquityPos} />
+                    <FilteredBook rows={rows} filter={liveEquityFilter} onShowAll={() => setLiveEquityFilter('all')}>
+                      {(shown) => <LivePositionsTable positions={shown} onClose={setCloseEquityPos} />}
+                    </FilteredBook>
                   </>
                 );
               })()
             )}
 
             <div className="mt-5">
-              <BookHeading tone="bear">Options</BookHeading>
+              <BookHeading
+                tone="bear"
+                book="live"
+                about={
+                  <>
+                    The real options fills the loop has actually placed through Webull — its own ledger (
+                    <code className="text-[11px]">autotrade_live_options_positions</code>), separate from the equity
+                    live positions above since a debit spread needs a second leg&apos;s columns.
+                  </>
+                }
+                filter={
+                  <BookFilterSwitch
+                    label="Show live options positions"
+                    value={liveOptionsFilter}
+                    onChange={setLiveOptionsFilter}
+                  />
+                }
+              >
+                Options
+              </BookHeading>
             </div>
-            <p className="text-xs text-slate-500 mb-3">
-              The real options fills the loop has actually placed through Webull — its own ledger (
-              <code className="text-[11px]">autotrade_live_options_positions</code>), separate from the equity live
-              positions above since a debit spread needs a second leg&apos;s columns.
-            </p>
             {liveOptionsPositions.loading && !liveOptionsPositions.data ? (
               <Spinner />
             ) : liveOptionsPositions.error ? (
@@ -7472,11 +7638,15 @@ export default function AutoTradePage() {
                         unrealized={unrealizedKnown ? unrealizedTotal : null}
                       />
                     )}
-                    <LiveOptionsPositionsTable
-                      positions={rows}
-                      onClose={setCloseOptionsPos}
-                      events={symbolEvents.data?.events ?? []}
-                    />
+                    <FilteredBook rows={rows} filter={liveOptionsFilter} onShowAll={() => setLiveOptionsFilter('all')}>
+                      {(shown) => (
+                        <LiveOptionsPositionsTable
+                          positions={shown}
+                          onClose={setCloseOptionsPos}
+                          events={symbolEvents.data?.events ?? []}
+                        />
+                      )}
+                    </FilteredBook>
                   </>
                 );
               })()
@@ -7496,13 +7666,13 @@ export default function AutoTradePage() {
               </button>
             }
           >
-            <p className="text-xs text-slate-500 mb-3">
+            <BookAbout label="How paper trading runs">
               When enabled above, the server runs this same Screen → Decision → Risk Check → Execution cycle on its own
               every minute — this button just runs one cycle immediately, so you can watch it work without waiting.
               Every fill here is a local simulation from a live quote; it never places a real order (see
               docs/AUTOTRADING_SPEC.md). No entries in the first/last 15 minutes of the session, and a volatility filter
               (per-ticker and broad-market) can skip a cycle&apos;s entries entirely.
-            </p>
+            </BookAbout>
             {loopErr && <div className="text-bear text-sm mb-2">{loopErr}</div>}
             {loopSummary && (
               <p className="text-[11px] text-slate-500 mb-3">
@@ -7534,7 +7704,18 @@ export default function AutoTradePage() {
                 {loopSummary.optionsExitsChecked} ({loopSummary.optionsExitsClosed} closed).
               </p>
             )}
-            <BookHeading>Equity</BookHeading>
+            <BookHeading
+              book="paper"
+              filter={
+                <BookFilterSwitch
+                  label="Show paper equity positions"
+                  value={paperEquityFilter}
+                  onChange={setPaperEquityFilter}
+                />
+              }
+            >
+              Equity
+            </BookHeading>
             {paperPositions.loading && !paperPositions.data ? (
               <Spinner />
             ) : paperPositions.error ? (
@@ -7557,21 +7738,36 @@ export default function AutoTradePage() {
                         unrealized={unrealizedKnown ? unrealizedTotal : null}
                       />
                     )}
-                    <PaperPositionsTable positions={rows} />
+                    <FilteredBook rows={rows} filter={paperEquityFilter} onShowAll={() => setPaperEquityFilter('all')}>
+                      {(shown) => <PaperPositionsTable positions={shown} />}
+                    </FilteredBook>
                   </>
                 );
               })()
             )}
 
             <div className="mt-5">
-              <BookHeading>Options</BookHeading>
+              <BookHeading
+                book="paper"
+                about={
+                  <>
+                    Long calls/puts or debit spreads (whichever the Options strategy setting above builds), gated by the
+                    same combined risk budget as equity. A spread's Entry/Current/Exit $ show its net value (long leg
+                    minus short leg). Automated exit is time-based only (close as expiration approaches, no roll) —
+                    take-profit/stop-loss/delta-drift stay human-review-only on the Options page.
+                  </>
+                }
+                filter={
+                  <BookFilterSwitch
+                    label="Show paper options positions"
+                    value={paperOptionsFilter}
+                    onChange={setPaperOptionsFilter}
+                  />
+                }
+              >
+                Options
+              </BookHeading>
             </div>
-            <p className="text-xs text-slate-500 mb-3">
-              Long calls/puts or debit spreads (whichever the Options strategy setting above builds), gated by the same
-              combined risk budget as equity. A spread's Entry/Current/Exit $ show its net value (long leg minus short
-              leg). Automated exit is time-based only (close as expiration approaches, no roll) — take-profit/stop-loss/
-              delta-drift stay human-review-only on the Options page.
-            </p>
             {optionsPaperPositions.loading && !optionsPaperPositions.data ? (
               <Spinner />
             ) : optionsPaperPositions.error ? (
@@ -7594,7 +7790,15 @@ export default function AutoTradePage() {
                         unrealized={unrealizedKnown ? unrealizedTotal : null}
                       />
                     )}
-                    <OptionsPaperPositionsTable positions={rows} events={symbolEvents.data?.events ?? []} />
+                    <FilteredBook
+                      rows={rows}
+                      filter={paperOptionsFilter}
+                      onShowAll={() => setPaperOptionsFilter('all')}
+                    >
+                      {(shown) => (
+                        <OptionsPaperPositionsTable positions={shown} events={symbolEvents.data?.events ?? []} />
+                      )}
+                    </FilteredBook>
                   </>
                 );
               })()

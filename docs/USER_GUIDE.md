@@ -1280,7 +1280,13 @@ equally-weighted cards in the order they happened to be built:
   newest 100 positions, open ones first, in a box about ten rows tall that scrolls with
   its header row pinned; click or tab into a box to scroll it with the keyboard. The
   ledger above it counts those same rows. (Until 2026-09-27 every row was drawn, and the
-  two cards together ran to about eleven screens.) The positions routes return up to
+  two cards together ran to about eleven screens.) An **Open · Closed · All** switch at
+  the right of each heading filters that table alone. It reads **All** until you pick,
+  and each table remembers its own choice in this browser. When the switch hides every
+  row, the table says so and offers **Show all**, and the ledger above still counts every
+  row the table holds. The note on what each table holds sits behind the **ⓘ** beside its
+  heading, and the Paper trading card's note on how the loop runs behind **How paper
+  trading runs**; both stay shut until you open them. The positions routes return up to
   1,000 with `?limit=`. The reports that read a book's history read every closed trade,
   not that page: the edge-leak scan, the daily-target sweep, the results calendar and its
   backfill, the tune advice. Until 2026-09-23 they read only one page too (the routes'
